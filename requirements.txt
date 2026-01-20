@@ -1,0 +1,12 @@
+# Reddit Data Tools - CPU Dependencies
+# Used by: parse, ml_cpu, db_pg profiles
+
+# Core
+pyyaml>=6.0
+polars>=1.0.0
+
+# Language detection (ml_cpu profile)
+lingua-language-detector>=2.0.0
+
+# PostgreSQL (db_pg profile)
+psycopg[binary]>=3.1.0

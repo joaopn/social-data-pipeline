@@ -1,0 +1,97 @@
+# Reddit field list configuration (full)
+# Used by parse and db_pg profiles
+# Edit this file to customize which fields are extracted from the Reddit JSON dumps
+#
+# How it works:
+#   - Each field name maps directly to a JSON key in the dump files
+#   - Nested fields use dot notation: e.g., "_meta.removal_type" accesses data["_meta"]["removal_type"]
+#   - The order here determines column order in CSV and database tables
+#   - Field types are defined in reddit_field_types.yaml
+#
+# Mandatory fields (always included, not listed here):
+#   - dataset: derived from filename (e.g., RS_2023-01 -> "2023-01")
+#   - id: Reddit's unique identifier for the post/comment
+#   - retrieved_utc: when the data was retrieved, with format-specific fallbacks:
+#       - Old format: uses "retrieved_on" if "retrieved_utc" is missing
+#       - New format (2023-11+): uses "_meta.retrieved_2nd_on" when available (second retrieval)
+#
+# Special fields with automatic handling:
+#   - is_deleted: computed via waterfall algorithm checking (in priority order):
+#       1. _meta.removal_type (Arctic Shift 2023-11+, ground truth)
+#       2. _meta.was_deleted_later
+#       3. removed_by_category (gold standard, 2018+)
+#       4. spam boolean flag
+#       5. removed boolean flag
+#       6. banned_by field (legacy, 2008-2018)
+#       7. body/selftext content markers ([deleted], [removed])
+#       8. author == '[deleted]'
+#   - removal_type: canonical values (matching Arctic Shift _meta.removal_type):
+#       - 'deleted' - User deleted their own content
+#       - 'author' - Author deleted (synonym for 'deleted')
+#       - 'moderator' - Removed by subreddit moderator
+#       - 'reddit' - Removed by Reddit admin/spam filter (includes shadowbans)
+#       - 'automod_filtered' - Removed by AutoModerator
+#       - 'content_takedown' - Legal/DMCA takedown
+#       - 'copyright_takedown' - Copyright-specific takedown
+#       - 'community_ops' - Reddit Community Operations
+#       - '' (empty) - Not removed
+#   - id10: Reddit ID converted from base 36 to base 10 (bigint)
+#       Reddit uses base 36 IDs (0-9, a-z). This field provides the numeric
+#       equivalent for applications requiring integer IDs or numeric sorting.
+#   - subreddit, author: automatically lowercased
+
+submissions:
+# core
+  - created_utc
+  - id10
+  - score
+  - upvote_ratio
+  - num_comments
+  - num_crossposts
+  - total_awards_received
+# subreddit
+  - subreddit
+  - subreddit_subscribers
+# status and flags
+  - stickied
+  - gilded
+  - distinguished
+  - locked
+  - quarantine
+  - over_18
+  - is_deleted
+  - removal_type
+# author
+  - author
+  - author_flair_text
+  - author_created_utc
+# content
+  - link_flair_text
+  - domain
+  - url
+  - title
+  - selftext
+
+comments:
+# core
+  - created_utc
+  - link_id
+  - parent_id
+  - score
+  - controversiality
+  - total_awards_received
+# subreddit
+  - subreddit
+# status and flags
+  - stickied
+  - gilded
+  - distinguished
+  - is_deleted
+  - removal_type
+# author
+  - author
+  - author_flair_text
+  - author_created_utc
+  - is_submitter
+# content
+  - body

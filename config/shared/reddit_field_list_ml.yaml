@@ -1,0 +1,44 @@
+# Reddit field list configuration for ML profiles
+# Reduced set focused on text content for classification tasks
+#
+# How it works:
+#   - Each field name maps directly to a JSON key in the dump files
+#   - Nested fields use dot notation: e.g., "_meta.removal_type"
+#   - The order here determines column order in output CSVs
+#   - Field types are defined in reddit_field_types.yaml
+#
+# Mandatory fields (always included, not listed here):
+#   - dataset: derived from filename (e.g., RS_2023-01 -> "2023-01")
+#   - id: Reddit's unique identifier for the post/comment
+#   - retrieved_utc: when the data was retrieved
+#
+# Special computed fields:
+#   - is_deleted: computed via waterfall algorithm
+#   - removal_type: canonical removal type value
+#   - subreddit, author: automatically lowercased
+
+submissions:
+# core
+  - created_utc
+# subreddit
+  - subreddit
+# status
+  - is_deleted
+# author
+  - author
+# content (for classification)
+  - title
+  - selftext
+
+comments:
+# core
+  - created_utc
+  - link_id
+# subreddit
+  - subreddit
+# status
+  - is_deleted
+# author
+  - author
+# content (for classification)
+  - body

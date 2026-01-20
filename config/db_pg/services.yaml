@@ -1,0 +1,11 @@
+# Sidecar service definitions for data enrichment
+# Schema is defined here; presence in DB determines inclusion in views
+#
+# When sidecars are added, they follow this structure:
+#   sidecars:
+#     <name>:
+#       enabled: true/false
+#       columns:
+#         <column_name>: <type>   # Same format as reddit_field_types.yaml
+
+sidecars: {}

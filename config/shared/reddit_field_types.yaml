@@ -1,0 +1,38 @@
+# Reddit field type definitions
+# Used for data type enforcement during CSV parsing and database schema generation
+# Note: dataset, id, and retrieved_utc types are hardcoded (mandatory fields)
+
+created_utc: integer
+author_created_utc: integer
+score: integer
+stickied: boolean
+distinguished: text
+gilded: integer
+is_submitter: boolean
+controversiality: integer
+total_awards_received: integer
+link_id: ['varchar', 10]
+parent_id: ['varchar', 10]
+author: text
+author_flair_text: text
+subreddit: text
+body: text
+comment_karma: integer
+link_karma: integer
+profile_over_18: boolean
+active: boolean
+is_deleted: boolean
+removal_type: text
+num_comments: integer
+upvote_ratio: float
+num_crossposts: integer
+subreddit_subscribers: integer
+locked: boolean
+quarantine: boolean
+over_18: boolean
+link_flair_text: text
+domain: text
+url: text
+title: text
+selftext: text
+id10: bigint

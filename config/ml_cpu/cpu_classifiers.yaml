@@ -1,0 +1,121 @@
+# CPU Classifier configuration (Lingua language detection only)
+# This config is used by the ml_cpu profile
+
+# Global settings applied to all classifiers
+text_columns:              # Columns to use for classification (per data type)
+  submissions:             # Concatenates title + selftext
+    - title
+    - selftext
+  comments:
+    - body
+
+remove_strings:            # Exact strings removed from text before classification
+  - "[deleted]"
+  - "[removed]"
+  - "[unavailable]"
+
+remove_patterns:           # Regex patterns removed from text before classification
+  - 'https?://\S+'         # URLs
+  - 'r/\w+'                # Subreddit mentions (r/name)
+  - 'u/\w+'                # User mentions (u/name)
+
+# Lingua - Language detection
+# Text filtering uses a word-based algorithm derived from Lingua's official benchmarks:
+# - 3+ words: valid (enough context for reliable detection)
+# - 2 words with ≥8 chars: valid (Lingua tests on pairs ≥10 chars, we're lenient)
+# - 1 word with ≥5 chars: valid (Lingua tests on words ≥5 chars)
+# See: https://github.com/pemistahl/lingua#4-how-good-is-it
+lingua:
+  suffix: "_lingua"        # Suffix added to output filenames (e.g., RS_2024-01_lingua.csv)
+  low_accuracy: false      # Use low-accuracy mode for faster detection
+  workers: 16              # Total parallel workers (divided among file_workers if > 1)
+  file_workers: 2          # Number of files to process in parallel (1 = sequential)
+  batch_size: 2000000      # Rows per batch (larger = less overhead, more memory)
+  # Languages to detect (Lingua enum names)
+  # Comment shows ISO 639-1 code that appears in output
+  # Language statistics taken from here: https://worldpopulationreview.com/country-rankings/reddit-users-by-country
+  languages:
+      # --- Tier 1: Top 10 Countries ---
+      - english          # en
+      - german           # de
+      - spanish          # es
+      - portuguese       # pt
+      - french           # fr
+      - italian          # it
+      - russian          # ru
+      - hindi            # hi (India #3)
+      - tagalog          # tl (Philippines #10)
+      - turkish          # tr (Turkey #11)
+
+      # --- Tier 2: High Volume (1M - 6M Users) ---
+      - dutch            # nl
+      - swedish          # sv
+      - polish           # pl
+      - malay            # ms (Malaysia/Singapore)
+      - arabic           # ar (Middle East)
+      - vietnamese       # vi
+      - thai             # th
+      - chinese          # zh
+      - japanese         # ja
+      - korean           # ko
+      - romanian         # ro
+      - greek            # el
+      - czech            # cs
+      - danish           # da
+      - finnish          # fi
+      - bokmal           # nb (Norwegian)
+      - hebrew           # he
+
+      # --- Tier 3: Moderate Volume / Regional ---
+      - ukrainian        # uk
+      - hungarian        # hu
+      - slovak           # sk
+      - croatian         # hr
+      - serbian          # sr
+      - bulgarian        # bg
+      - slovene          # sl
+      - lithuanian       # lt
+      - latvian          # lv
+      - estonian         # et
+      - bosnian          # bs
+      - indonesian       # id (Added for Austronesian coverage)
+      - persian          # fa (Added for Diaspora)
+
+      # --- Tier 4: Indian Regional (India is #3 Traffic) ---
+      - bengali          # bn
+      - tamil            # ta
+      - telugu           # te
+      - marathi          # mr
+      - gujarati         # gu
+      - punjabi          # pa
+      - urdu             # ur
+
+      # --- Tier 5: Low Volume ---
+      # - afrikaans      # af
+      # - albanian       # sq
+      # - armenian       # hy
+      # - azerbaijani    # az
+      # - basque         # eu
+      # - belarusian     # be
+      # - catalan        # ca (Often confused with Spanish/French on short text)
+      # - esperanto      # eo
+      # - ganda          # lg
+      # - georgian       # ka
+      # - icelandic      # is
+      # - irish          # ga
+      # - kazakh         # kk
+      # - latin          # la (High false positive risk for "Lorem Ipsum" etc.)
+      # - macedonian     # mk
+      # - maori          # mi
+      # - mongolian      # mn
+      # - nynorsk        # nn (Hard to distinguish from Bokmal on short text)
+      # - shona          # sn
+      # - somali         # so
+      # - sotho          # st
+      # - swahili        # sw
+      # - tsonga         # ts
+      # - tswana         # tn
+      # - welsh          # cy
+      # - xhosa          # xh
+      # - yoruba         # yo
+      # - zulu           # zu

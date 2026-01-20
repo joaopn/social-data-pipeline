@@ -1,0 +1,13 @@
+# Reddit Data Tools - GPU Dependencies
+# Used by: ml profile (transformer classifiers)
+# Note: onnxruntime-gpu requires special pip index (handled in Dockerfile)
+
+# Core
+pyyaml>=6.0
+polars>=1.0.0
+
+# GPU ML
+scipy
+numpy
+transformers>=4.30.0
+# optimum[onnxruntime-gpu] - installed from special index in Dockerfile

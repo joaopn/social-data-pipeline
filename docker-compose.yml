@@ -1,0 +1,118 @@
+# Reddit Data Tools - Docker Compose
+# 
+# Profiles:
+#   parse    - Extract .zst and parse to CSV
+#   ml_cpu   - Run Lingua language detection (CPU only)
+#   ml       - Run GPU transformer classifiers
+#   db_pg    - Ingest data into PostgreSQL
+#
+# Usage:
+#   docker compose --profile parse up
+#   docker compose --profile ml_cpu up
+#   docker compose --profile ml up
+#   docker compose --profile db_pg up
+
+services:
+  # ==========================================================================
+  # Profile: parse - Decompress and parse to CSV
+  # ==========================================================================
+  parse:
+    profiles: [parse]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m reddit_data_tools.orchestrators.parse
+    volumes:
+      - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
+      - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
+      - ${CSV_PATH:-./data/csv}:/data/csv
+      - ${OUTPUT_PATH:-./data/output}:/data/output
+      - ./config:/app/config:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  # ==========================================================================
+  # Profile: ml_cpu - Language detection with Lingua (CPU)
+  # ==========================================================================
+  ml-cpu:
+    profiles: [ml_cpu]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m reddit_data_tools.orchestrators.ml
+    environment:
+      - PROFILE=ml_cpu
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${CSV_PATH:-./data/csv}:/data/csv:ro
+      - ${OUTPUT_PATH:-./data/output}:/data/output
+      - ./config:/app/config:ro
+
+  # ==========================================================================
+  # Profile: ml - GPU transformer classifiers
+  # ==========================================================================
+  ml-gpu:
+    profiles: [ml]
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    command: python -m reddit_data_tools.orchestrators.ml
+    environment:
+      - PROFILE=ml
+      - PYTHONUNBUFFERED=1
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - ${CSV_PATH:-./data/csv}:/data/csv:ro
+      - ${OUTPUT_PATH:-./data/output}:/data/output
+      - ./config:/app/config:ro
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ==========================================================================
+  # Profile: db_pg - PostgreSQL database ingestion
+  # ==========================================================================
+  postgres:
+    profiles: [db_pg]
+    image: postgres:16
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ${DB_DATA_PATH:-./data/database/pgdata}:/var/lib/postgresql/data
+      - ${CSV_PATH:-./data/csv}:/data/csv:ro
+      - ./config/db_pg/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/db_pg/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf -c hba_file=/etc/postgresql/pg_hba.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-pipeline:
+    profiles: [db_pg]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m reddit_data_tools.orchestrators.db_pg
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - DB_NAME=${DB_NAME:-datasets}
+      - DB_SCHEMA=${DB_SCHEMA:-reddit}
+    volumes:
+      - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
+      - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
+      - ${CSV_PATH:-./data/csv}:/data/csv
+      - ${DB_DATA_PATH:-./data/database}:/data/database
+      - ./config:/app/config:ro

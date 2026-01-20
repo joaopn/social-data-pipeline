@@ -1,0 +1,43 @@
+# Reddit Data Tools - GPU Image
+# Used for: ml profile (transformer classifiers)
+# Requires NVIDIA CUDA runtime
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    zstd \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies with special ONNX GPU index
+# Note: onnxruntime-gpu requires a special pip index for CUDA 12
+COPY requirements-gpu.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    pyyaml>=6.0 \
+    polars>=1.0.0 \
+    scipy \
+    numpy \
+    transformers>=4.30.0 \
+    --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
+    optimum[onnxruntime-gpu]
+
+# Copy application code
+COPY reddit_data_tools/ ./reddit_data_tools/
+COPY config/ ./config/
+
+# Create directories
+RUN mkdir -p /data/dumps /data/extracted /data/csv /data/output
+
+# Default command
+CMD ["python", "-m", "reddit_data_tools.orchestrators.ml"]

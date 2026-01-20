@@ -1,0 +1,110 @@
+# GPU Classifier configuration (Transformer models)
+# This config is used by the ml profile
+# Requires: CUDA-enabled GPU, onnxruntime-gpu, transformers
+
+# Global settings applied to all classifiers
+text_columns:              # Columns to use for classification (per data type)
+  submissions:             # Concatenates title + selftext
+    - title
+    - selftext
+  comments:
+    - body
+
+remove_strings:            # Exact strings removed from text before classification
+  - "[deleted]"
+  - "[removed]"
+  - "[unavailable]"
+
+remove_patterns:           # Regex patterns removed from text before classification
+  - 'https?://\S+'         # URLs
+  - 'r/\w+'                # Subreddit mentions (r/name)
+  - 'u/\w+'                # User mentions (u/name)
+
+# Global GPU and parallelization settings (for transformer classifiers)
+# Can be overridden per-classifier
+gpu_ids: [0]               # List of GPU IDs to parallelize across
+file_workers: 1            # Number of files to process in parallel (each loads own models)
+                           # Increase to improve GPU utilization with lightweight models
+tokenize_workers: 4        # Parallel workers for tokenization (0 = single-threaded)
+batch_size: 2000000        # Rows per disk I/O batch (prevents memory blow-up on large files)
+classifier_batch_size: 32  # Batch size per GPU for inference
+
+# Language filtering settings
+use_lingua: true           # If true, use 'lang' column from Lingua output for filtering
+                           # If false, classifiers process all texts regardless of language
+lang2_fallback: false      # If true, classify if either lang OR lang2 matches supported_languages
+                           # If false (default), only check lang column
+min_tokens: 0              # Global minimum token count for transformers (0 = no filter, can be overridden per-classifier)
+                           # Applied AFTER text cleaning (removal of URLs, mentions, etc.) and tokenization
+
+# Output field control (transformer classifiers only, not lingua)
+minimal_fields: true      # If true, remove 'dataset' and 'body' columns from output CSV to decrease file size
+
+# =============================================================================
+# Transformer Classifiers (GPU-based, config-driven)
+# =============================================================================
+# These classifiers use HuggingFace models with ONNX or PyTorch backends.
+# Output columns are auto-derived from model.config.id2label.
+#
+# Common options:
+#   type: onnx_fp16 | onnx | pytorch   # Model backend
+#   model: "org/model-name"            # HuggingFace model ID
+#   file_name: "model.onnx"            # ONNX model filename (for ONNX types)
+#   activation: sigmoid | softmax      # sigmoid for multi-label, softmax for single-label
+#   supported_languages: [en]          # Optional: filter by lang column (requires use_lingua: true)
+#   lang2_fallback: false              # Optional: if true, also check lang2 column for matches
+#   min_tokens: 3                      # Optional: minimum token count (overrides global min_tokens)
+#   minimal_fields: false              # Optional: if true, remove 'dataset' and 'body' from output
+#   batch_size: 2000000                # Rows per batch for disk I/O (default 2M, like Lingua)
+#   classifier_batch_size: 64          # Batch size per GPU for inference
+#   max_length: 512                    # Max tokens (BERT limit)
+#   gpu_ids: [0, 1]                    # Override global gpu_ids
+#   # Chunking for long texts (optional):
+#   chunking_strategy: truncate | chunk  # truncate (default) or chunk with overlap
+#   stride: 64                         # Overlap between windows when chunking
+#   top_k: 2                           # Top-k windows to average for prediction. If 1, does max-pooling
+
+# --- Toxicity Detection (Multi-label) ---
+toxic_roberta:
+  suffix: "_toxicity_en"
+  type: onnx_fp16
+  model: "joaopn/unbiased-toxic-roberta-onnx-fp16"
+  file_name: "model.onnx"
+  activation: sigmoid
+  supported_languages: [en]
+  classifier_batch_size: 8
+  max_length: 512
+  chunking_strategy: chunk
+  stride: 256
+  top_k: 1 # max-pooling
+  min_tokens: 1
+
+# --- Emotion Detection (Multi-label) ---
+go_emotions:
+  suffix: "_emotions"
+  type: onnx_fp16
+  model: "joaopn/roberta-base-go_emotions-onnx-fp16"
+  file_name: "model.onnx"
+  activation: sigmoid
+  supported_languages: [en]
+  classifier_batch_size: 8
+  max_length: 512
+  chunking_strategy: chunk
+  stride: 256
+  top_k: 3
+  min_tokens: 1
+
+# --- GPT2-Generated Text Detection (Single-label) ---
+# openai_detector:
+#   suffix: "_ai"
+#   type: onnx_fp16
+#   model: "joaopn/roberta-large-openai-detector-onnx-fp16"
+#   file_name: "model.onnx"
+#   activation: softmax
+#   supported_languages: [en]
+#   classifier_batch_size: 32
+#   max_length: 512
+#   # Example: use chunking for long posts
+#   chunking_strategy: chunk
+#   stride: 128
+#   top_k: 2

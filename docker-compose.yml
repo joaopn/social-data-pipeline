@@ -1,16 +1,24 @@
 # Reddit Data Tools - Docker Compose
 # 
 # Profiles:
-#   parse    - Extract .zst and parse to CSV
-#   ml_cpu   - Run Lingua language detection (CPU only)
-#   ml       - Run GPU transformer classifiers
-#   db_pg    - Ingest data into PostgreSQL
+#   parse           - Extract .zst and parse to CSV
+#   ml_cpu          - Run Lingua language detection (CPU only)
+#   ml              - Run GPU transformer classifiers
+#   postgres        - PostgreSQL database server only
+#   postgres_ingest - Base table ingestion (requires postgres running)
+#   postgres_ml     - Sidecar table ingestion (requires postgres running)
 #
 # Usage:
 #   docker compose --profile parse up
 #   docker compose --profile ml_cpu up
 #   docker compose --profile ml up
-#   docker compose --profile db_pg up
+#   
+#   # Database workflow: start postgres first, then run ingestion pipelines
+#   docker compose --profile postgres up -d
+#   docker compose --profile postgres_ingest up
+#   docker compose --profile postgres_ml up
+#   # Postgres keeps running for queries
+#   docker compose --profile postgres down
 
 services:
   # ==========================================================================
@@ -75,10 +83,10 @@ services:
               capabilities: [gpu]
 
   # ==========================================================================
-  # Profile: db_pg - PostgreSQL database ingestion
+  # Profile: postgres - PostgreSQL database server
   # ==========================================================================
   postgres:
-    profiles: [db_pg]
+    profiles: [postgres]
     image: postgres:18
     restart: unless-stopped
     stop_grace_period: 10m
@@ -91,7 +99,9 @@ services:
     volumes:
       - ${DB_DATA_PATH:-./data/database/pgdata}:/var/lib/postgresql
       - ${CSV_PATH:-./data/csv}:/data/csv:ro
-      - ./config/db_pg:/etc/postgresql/config:ro
+      - ${OUTPUT_PATH:-./data/output}:/data/output:ro
+      - ./data/database:/data/database
+      - ./config/postgres:/etc/postgresql/config:ro
     entrypoint: ["/bin/bash", "-c", "CFG=/etc/postgresql/config; PG_CONF=$$CFG/postgresql.conf; [ -f $$CFG/postgresql.local.conf ] && PG_CONF=$$CFG/postgresql.local.conf && echo '[CONFIG] Using local override: postgresql.local.conf'; HBA_CONF=$$CFG/pg_hba.conf; [ -f $$CFG/pg_hba.local.conf ] && HBA_CONF=$$CFG/pg_hba.local.conf && echo '[CONFIG] Using local override: pg_hba.local.conf'; chown -R postgres:postgres /var/lib/postgresql && exec docker-entrypoint.sh postgres -c config_file=$$PG_CONF -c hba_file=$$HBA_CONF -c port=${POSTGRES_PORT:-5432}"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ${DB_NAME:-datasets} -p ${POSTGRES_PORT:-5432}"]
@@ -99,15 +109,16 @@ services:
       timeout: 5s
       retries: 5
 
-  db-pipeline:
-    profiles: [db_pg]
+  # ==========================================================================
+  # Profile: postgres_ingest - Base table ingestion
+  # Requires: postgres profile to be running
+  # ==========================================================================
+  postgres-ingest:
+    profiles: [postgres_ingest]
     build:
       context: .
       dockerfile: Dockerfile
-    command: python -m reddit_data_tools.orchestrators.db_pg
-    depends_on:
-      postgres:
-        condition: service_healthy
+    command: python -m reddit_data_tools.orchestrators.postgres_ingest
     environment:
       - PYTHONUNBUFFERED=1
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
@@ -117,5 +128,25 @@ services:
       - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
       - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
       - ${CSV_PATH:-./data/csv}:/data/csv
+      - ${DB_DATA_PATH:-./data/database}:/data/database
+      - ./config:/app/config:ro
+
+  # ==========================================================================
+  # Profile: postgres_ml - Sidecar table ingestion from ML outputs
+  # Requires: postgres profile to be running
+  # ==========================================================================
+  postgres-ml:
+    profiles: [postgres_ml]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m reddit_data_tools.orchestrators.postgres_ml
+    environment:
+      - PYTHONUNBUFFERED=1
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - DB_NAME=${DB_NAME:-datasets}
+      - DB_SCHEMA=${DB_SCHEMA:-reddit}
+    volumes:
+      - ${OUTPUT_PATH:-./data/output}:/data/output:ro
       - ${DB_DATA_PATH:-./data/database}:/data/database
       - ./config:/app/config:ro

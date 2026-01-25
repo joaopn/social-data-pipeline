@@ -31,7 +31,7 @@ from ..db.postgres.ingest import (
 
 def load_config(config_dir: str = "/app/config", quiet: bool = False) -> Dict:
     """
-    Load db_pg profile configuration.
+    Load postgres_ingest profile configuration.
     
     Loads base config files and merges user.yaml overrides if present.
     Environment variables can override database settings.
@@ -46,13 +46,13 @@ def load_config(config_dir: str = "/app/config", quiet: bool = False) -> Dict:
     Raises:
         ConfigurationError: If required config is missing
     """
-    config = load_profile_config('db_pg', config_dir, quiet)
+    config = load_profile_config('postgres_ingest', config_dir, quiet)
     
     # Apply environment variable overrides for database settings
-    config = apply_env_overrides(config, 'db_pg')
+    config = apply_env_overrides(config, 'postgres_ingest')
     
     # Validate required config
-    validate_processing_config(config, 'db_pg')
+    validate_processing_config(config, 'postgres_ingest')
     validate_database_config(config)
     
     return config
@@ -177,7 +177,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     proc_config = config['processing']
     data_types = get_required(config, 'processing', 'data_types')
     
-    print(f"[CONFIG] Profile: db_pg")
+    print(f"[CONFIG] Profile: postgres_ingest")
     print(f"[CONFIG] Database: {db_config['name']}")
     print(f"[CONFIG] Schema: {db_config['schema']}")
     print(f"[CONFIG] Data types: {data_types}")
@@ -545,7 +545,7 @@ def run_pipeline(config_dir: str = "/app/config"):
         print("CREATING VIEWS")
         print("="*60)
         
-        db_pg_config_dir = f"{config_dir}/db_pg"
+        postgres_config_dir = f"{config_dir}/postgres"
         for data_type in data_types:
             try:
                 rebuild_view(
@@ -555,7 +555,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                     host=db_config['host'],
                     port=db_config['port'],
                     user=db_config['user'],
-                    config_dir=db_pg_config_dir
+                    config_dir=postgres_config_dir
                 )
             except Exception as e:
                 print(f"[VIEW] Warning: Failed to create view for {data_type}: {e}")

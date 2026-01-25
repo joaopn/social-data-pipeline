@@ -69,9 +69,10 @@ flowchart TB
         O_Out["output/other/"]
     end
 
-    subgraph DB_PG [db_pg profile]
-        Ingest["PostgreSQL Ingestion"]
+    subgraph Postgres [postgres profiles]
         PG[(PostgreSQL)]
+        Ingest["Base Ingestion"]
+        Sidecar["ML Sidecar Ingestion"]
         Views["Views:\nsubmissions\ncomments"]
     end
 
@@ -95,6 +96,11 @@ flowchart TB
 
     CSV --> Ingest
     Ingest --> PG
+    T_Out --> Sidecar
+    E_Out --> Sidecar
+    O_Out --> Sidecar
+    L_Out --> Sidecar
+    Sidecar --> PG
     PG --> Views
 ```
 
@@ -136,7 +142,7 @@ CSV_PATH=./data/csv
 OUTPUT_PATH=./data/output
 PGDATA_PATH=./data/database
 
-# Database (for db_pg profile)
+# Database (for postgres profiles)
 DB_NAME=datasets
 DB_SCHEMA=reddit
 POSTGRES_PORT=5432
@@ -158,11 +164,12 @@ docker compose --profile ml_cpu up
 # GPU classification (transformers, requires NVIDIA GPU)
 docker compose --profile ml up
 
-# Database ingestion (PostgreSQL)
-docker compose --profile db_pg up
-
-# Multiple profiles together
-docker compose --profile parse --profile ml_cpu --profile db_pg up
+# Database workflow: start postgres first, then run ingestion pipelines
+docker compose --profile postgres up -d
+docker compose --profile postgres_ingest up
+docker compose --profile postgres_ml up
+# Postgres keeps running for queries
+docker compose --profile postgres down
 ```
 
 ## Docker Profiles
@@ -172,7 +179,9 @@ docker compose --profile parse --profile ml_cpu --profile db_pg up
 | `parse` | Extract `.zst` files, parse JSON to CSV | `Dockerfile` | None |
 | `ml_cpu` | Run Lingua language detection (CPU-only) | `Dockerfile` | Requires parsed CSVs |
 | `ml` | Run transformer classifiers (GPU) | `Dockerfile.gpu` | Requires parsed CSVs, optionally Lingua output |
-| `db_pg` | Ingest CSVs into PostgreSQL | `Dockerfile` | Requires parsed CSVs |
+| `postgres` | Run PostgreSQL database server | `postgres:18` | None |
+| `postgres_ingest` | Ingest base CSVs into PostgreSQL | `Dockerfile` | Requires postgres running, parsed CSVs |
+| `postgres_ml` | Ingest ML outputs into PostgreSQL sidecars | `Dockerfile` | Requires postgres running, ML outputs |
 
 > **Note:** GPU profile requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 
@@ -211,11 +220,15 @@ config/
 │   ├── pipeline.yaml              # GPU classifier settings
 │   ├── gpu_classifiers.yaml       # Transformer configurations
 │   └── user.yaml.example          # User override template
-└── db_pg/
-    ├── pipeline.yaml              # Database ingestion settings
-    ├── services.yaml              # Sidecar service definitions
-    ├── postgresql.conf            # PostgreSQL tuning
-    ├── pg_hba.conf                # PostgreSQL authentication
+├── postgres/
+│   ├── pipeline.yaml              # Base ingestion settings
+│   ├── services.yaml              # Sidecar service definitions (for views)
+│   ├── postgresql.conf            # PostgreSQL tuning
+│   ├── pg_hba.conf                # PostgreSQL authentication
+│   └── user.yaml.example          # User override template
+└── postgres_ml/
+    ├── pipeline.yaml              # ML sidecar ingestion settings
+    ├── services.yaml              # ML sidecar definitions
     └── user.yaml.example          # User override template
 ```
 
@@ -311,7 +324,7 @@ go_emotions:
 
 ### Database Configuration
 
-#### config/db_pg/pipeline.yaml
+#### config/postgres/pipeline.yaml
 
 ```yaml
 database:
@@ -338,7 +351,7 @@ For optimal performance, use [PGTune](https://pgtune.leopard.in.ua/) to generate
 - **DB Type**: Data Warehouse
 - **Data Storage**: SSD
 
-Append the output to `config/db_pg/postgresql.conf`.
+Append the output to `config/postgres/postgresql.conf`.
 
 ## Classifiers
 
@@ -521,7 +534,8 @@ Future releases will add `db_mongo` and `db_starrocks` profiles.
 # Check logs
 docker compose logs parse
 docker compose logs ml_cpu
-docker compose logs db_pg
+docker compose logs postgres-ingest
+docker compose logs postgres-ml
 
 # Check state
 cat data/database/pipeline_state.json

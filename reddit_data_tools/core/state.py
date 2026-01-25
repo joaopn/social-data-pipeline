@@ -1,7 +1,7 @@
 """
 State management for reddit_data_tools pipeline.
 Tracks processed files to enable resume capability.
-Supports database recovery for db_pg profile.
+Supports database recovery for postgres_ingest profile.
 """
 
 import json
@@ -19,7 +19,7 @@ class PipelineState:
         
         Args:
             state_file: Path to state JSON file
-            db_config: Optional database config dict for recovery (db_pg profile)
+            db_config: Optional database config dict for recovery (postgres_ingest profile)
                       Expected keys: name, user, host, port, schema
         """
         self.state_file = Path(state_file)
@@ -53,7 +53,7 @@ class PipelineState:
     def recover_from_database(self):
         """
         Recover processed files list by querying unique datasets from database tables.
-        Only applicable for db_pg profile. Call this after database connection is available.
+        Only applicable for postgres_ingest profile. Call this after database connection is available.
         """
         if not self.db_config:
             print("[STATE] No database config provided, cannot recover from database")

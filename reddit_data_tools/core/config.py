@@ -112,7 +112,7 @@ def load_profile_config(
     List values in user.yaml fully replace base values (no merging).
     
     Args:
-        profile: Profile name ('parse', 'ml_cpu', 'ml', 'db_pg')
+        profile: Profile name ('parse', 'ml_cpu', 'ml', 'postgres_ingest', 'postgres_ml')
         config_dir: Base configuration directory
         quiet: If True, suppress informational output
         
@@ -122,7 +122,12 @@ def load_profile_config(
     Raises:
         ConfigurationError: If required config files are missing
     """
-    config_path = Path(config_dir) / profile
+    # Map profile names to config folder names
+    profile_folders = {
+        'postgres_ingest': 'postgres',
+    }
+    folder_name = profile_folders.get(profile, profile)
+    config_path = Path(config_dir) / folder_name
     
     if not config_path.exists():
         raise ConfigurationError(f"Config directory not found: {config_path}")
@@ -132,7 +137,8 @@ def load_profile_config(
         'parse': ['pipeline.yaml'],
         'ml_cpu': ['pipeline.yaml', 'cpu_classifiers.yaml'],
         'ml': ['pipeline.yaml', 'gpu_classifiers.yaml'],
-        'db_pg': ['pipeline.yaml', 'services.yaml'],
+        'postgres_ingest': ['pipeline.yaml', 'services.yaml'],
+        'postgres_ml': ['pipeline.yaml', 'services.yaml'],
     }
     
     if profile not in profile_configs:
@@ -319,7 +325,7 @@ def validate_processing_config(config: Dict, profile: str) -> None:
 
 def validate_database_config(config: Dict) -> None:
     """
-    Validate that required database config exists for db_pg profile.
+    Validate that required database config exists for postgres profiles.
     
     Args:
         config: Configuration dictionary
@@ -332,7 +338,7 @@ def validate_database_config(config: Dict) -> None:
     for key in required_keys:
         if 'database' not in config or key not in config['database']:
             raise ConfigurationError(
-                f"[db_pg] Required config missing: database.{key}"
+                f"[postgres] Required config missing: database.{key}"
             )
 
 
@@ -365,7 +371,7 @@ def apply_env_overrides(config: Dict, profile: str) -> Dict:
     """
     Apply environment variable overrides to configuration.
     
-    For db_pg profile, environment variables override database settings.
+    For postgres profiles, environment variables override database settings.
     
     Args:
         config: Configuration dictionary
@@ -376,7 +382,7 @@ def apply_env_overrides(config: Dict, profile: str) -> Dict:
     """
     result = deepcopy(config)
     
-    if profile == 'db_pg':
+    if profile in ('postgres_ingest', 'postgres_ml'):
         if 'database' not in result:
             result['database'] = {}
         

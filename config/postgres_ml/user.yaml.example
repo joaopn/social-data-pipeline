@@ -1,0 +1,45 @@
+# Sidecar pipeline user configuration
+# Copy this file to user.yaml and uncomment/modify settings as needed.
+#
+# Structure: Each key corresponds to a config file (without .yaml extension).
+
+# pipeline:                        # Overrides pipeline.yaml
+#   database:
+#     host: localhost              # Use localhost for external connections
+#     port: 5432
+#   processing:
+#     type_inference_rows: 500     # Fewer rows for faster inference
+#     watch_interval: 60           # Watch mode: check every 60 minutes
+
+# services:                        # Overrides services.yaml
+#   sidecars:
+#     lingua:
+#       enabled: false             # Disable lingua ingestion
+#       table_columns:             # Base columns to include in table (empty = classifier only)
+#         - subreddit
+#         - author
+#       view_columns:              # Columns to include in view (empty = all)
+#         - lang
+#         - lang2
+#       column_overrides:          # Force specific column types for table creation
+#         lang: text
+#         lang2: text
+#     
+#     toxic_roberta:
+#       enabled: true
+#       source_dir: toxic_roberta
+#       suffix: "_toxicity_en"
+#       table_columns: []          # Empty = classifier columns only
+#       view_columns: []           # Empty = include all columns in view
+#     
+#     go_emotions:
+#       enabled: true
+#       source_dir: go_emotions
+#       suffix: "_emotions"
+#       table_columns:             # Include these base columns in sidecar table
+#         - created_utc
+#         - subreddit
+#       view_columns:              # Specify which emotions to include in view
+#         - joy
+#         - sadness
+#         - anger

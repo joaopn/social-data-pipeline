@@ -1,5 +1,5 @@
 # Reddit field list configuration (full)
-# Used by parse and db_pg profiles
+# Used by parse and postgres_ingest profiles
 # Edit this file to customize which fields are extracted from the Reddit JSON dumps
 #
 # How it works:

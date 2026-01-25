@@ -1,5 +1,5 @@
 # Reddit Data Tools - CPU Base Image
-# Used for: parse, ml_cpu, db_pg profiles
+# Used for: parse, ml_cpu, postgres_ingest, postgres_ml profiles
 FROM python:3.11-slim
 
 # Prevent interactive prompts during package installation
@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     zstd \
+    miller \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

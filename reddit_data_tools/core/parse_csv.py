@@ -4,11 +4,12 @@ JSON to CSV parsing for Reddit data dumps.
 
 import json
 import os
-import yaml
 import logging
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from typing import Dict, List, Any, Optional, Tuple
+
+from .config import load_yaml_file, ConfigurationError
 
 
 def escape_string(value: str) -> str:
@@ -26,21 +27,6 @@ def quote_field(field: Any) -> str:
         escaped_field = field.replace('"', '""')
         return f'"{escaped_field}"'
     return str(field)
-
-
-def load_yaml_file(file_path: str) -> Optional[Dict]:
-    """Load a YAML configuration file, checking for .local.yaml override first."""
-    file_path = Path(file_path)
-    local_path = file_path.with_suffix('.local.yaml')
-    if local_path.exists():
-        file_path = local_path
-    
-    with open(file_path, 'r') as file:
-        try:
-            return yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(f"Error loading YAML file {file_path}: {exc}")
-            return None
 
 
 def get_nested_data(data: Dict, field: str) -> Any:
@@ -392,7 +378,7 @@ def parse_to_csv(
     input_file: str,
     output_dir: str,
     data_type: str,
-    config_dir: str = "/app/config",
+    config_dir: str,
     use_type_subdir: bool = True
 ) -> str:
     """
@@ -402,11 +388,14 @@ def parse_to_csv(
         input_file: Path to decompressed JSON file (e.g., RC_2023-01)
         output_dir: Directory for output CSV file (or base dir if use_type_subdir=True)
         data_type: 'submissions' or 'comments'
-        config_dir: Directory containing configuration files
+        config_dir: Directory containing configuration files (shared config dir)
         use_type_subdir: If True, output to output_dir/data_type/ (default: True)
         
     Returns:
         Path to the output CSV file
+        
+    Raises:
+        ConfigurationError: If config files are missing
     """
     config_dir = Path(config_dir)
     output_dir = Path(output_dir)
@@ -418,12 +407,14 @@ def parse_to_csv(
     field_types = load_yaml_file(config_dir / "reddit_field_types.yaml")
     field_list = load_yaml_file(config_dir / "reddit_field_list.yaml")
     
-    if field_types is None or field_list is None:
-        raise RuntimeError("Failed to load configuration files")
+    if field_types is None:
+        raise ConfigurationError(f"Required config file not found: {config_dir}/reddit_field_types.yaml")
+    if field_list is None:
+        raise ConfigurationError(f"Required config file not found: {config_dir}/reddit_field_list.yaml")
     
     fields_to_extract = field_list.get(data_type, [])
     if not fields_to_extract:
-        raise ValueError(f"No fields configured for data type: {data_type}")
+        raise ConfigurationError(f"No fields configured for data type: {data_type}")
     
     # Configure logging
     log_filename = output_dir / f"parsing_errors_{data_type}.log"
@@ -474,8 +465,8 @@ def _parse_file_worker(args: Tuple[str, str, str, str]) -> Tuple[str, str, str]:
 def parse_files_parallel(
     files: List[Tuple[str, str]],
     output_dir: str,
-    config_dir: str = "/app/config",
-    workers: int = 4
+    config_dir: str,
+    workers: int
 ) -> List[Tuple[str, str]]:
     """
     Parse multiple JSON files to CSV in parallel.
@@ -483,7 +474,7 @@ def parse_files_parallel(
     Args:
         files: List of tuples (input_file, data_type)
         output_dir: Directory for output CSV files
-        config_dir: Directory containing configuration files
+        config_dir: Directory containing configuration files (shared config dir)
         workers: Number of parallel workers
         
     Returns:

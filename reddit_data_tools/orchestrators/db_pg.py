@@ -7,7 +7,6 @@ Expects CSV files to already exist (run parse profile first).
 import os
 import re
 import time
-import yaml
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Dict, Tuple
@@ -15,30 +14,46 @@ from typing import List, Dict, Tuple
 from ..core.state import PipelineState
 from ..core.decompress import decompress_zst
 from ..core.parse_csv import parse_to_csv, parse_files_parallel
+from ..core.config import (
+    load_profile_config,
+    get_required,
+    get_optional,
+    validate_processing_config,
+    validate_database_config,
+    apply_env_overrides,
+    ConfigurationError,
+)
 from ..db.postgres.ingest import (
     ingest_csv, create_index, table_exists, analyze_table, rebuild_view,
     ensure_database_exists, ensure_schema_exists
 )
 
 
-def load_config(config_path: str = "/app/config/db_pg/pipeline.yaml") -> Dict:
-    """Load pipeline configuration from YAML, checking for .local.yaml override first."""
-    config_path = Path(config_path)
-    local_path = config_path.with_suffix('.local.yaml')
-    if local_path.exists():
-        config_path = local_path
-        print(f"[CONFIG] Using local override: {local_path.name}")
+def load_config(config_dir: str = "/app/config", quiet: bool = False) -> Dict:
+    """
+    Load db_pg profile configuration.
     
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    Loads base config files and merges user.yaml overrides if present.
+    Environment variables can override database settings.
     
-    # Override database settings from environment variables
-    if 'POSTGRES_PORT' in os.environ:
-        config['database']['port'] = int(os.environ['POSTGRES_PORT'])
-    if 'DB_NAME' in os.environ:
-        config['database']['name'] = os.environ['DB_NAME']
-    if 'DB_SCHEMA' in os.environ:
-        config['database']['schema'] = os.environ['DB_SCHEMA']
+    Args:
+        config_dir: Base configuration directory
+        quiet: If True, suppress informational output
+        
+    Returns:
+        Merged configuration dictionary
+        
+    Raises:
+        ConfigurationError: If required config is missing
+    """
+    config = load_profile_config('db_pg', config_dir, quiet)
+    
+    # Apply environment variable overrides for database settings
+    config = apply_env_overrides(config, 'db_pg')
+    
+    # Validate required config
+    validate_processing_config(config, 'db_pg')
+    validate_database_config(config)
     
     return config
 
@@ -146,25 +161,21 @@ def detect_csv_files(csv_dir: str, data_types: List[str]) -> List[Tuple[str, str
     return [(f[0], f[1], f[2]) for f in files]
 
 
-def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
+def run_pipeline(config_dir: str = "/app/config"):
     """
     Run the database ingestion pipeline.
     
     Handles full pipeline: extraction -> parsing -> ingestion -> indexing -> views
+    
+    Args:
+        config_dir: Base configuration directory
     """
     # Load configuration
-    config = load_config(config_path)
-    
-    # Check for field config overrides
-    config_dir = Path("/app/config/shared")
-    if (config_dir / "reddit_field_list.local.yaml").exists():
-        print("[CONFIG] Using local override: reddit_field_list.local.yaml")
-    if (config_dir / "reddit_field_types.local.yaml").exists():
-        print("[CONFIG] Using local override: reddit_field_types.local.yaml")
+    config = load_config(config_dir)
     
     db_config = config['database']
     proc_config = config['processing']
-    data_types = proc_config['data_types']
+    data_types = get_required(config, 'processing', 'data_types')
     
     print(f"[CONFIG] Profile: db_pg")
     print(f"[CONFIG] Database: {db_config['name']}")
@@ -235,7 +246,7 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
         return
     
     # Check which tables exist before processing
-    table_suffix = db_config.get('table_suffix', '')
+    table_suffix = get_required(config, 'database', 'table_suffix')
     tables_existed_before = {}
     for data_type in data_types:
         base_table = f"{data_type}{table_suffix}"
@@ -250,8 +261,8 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
     
     is_initial_ingestion = not all(tables_existed_before.values())
     
-    parallel_mode = proc_config.get('parallel_mode', False)
-    workers = proc_config.get('parse_workers', 4)
+    parallel_mode = get_required(config, 'processing', 'parallel_mode')
+    workers = get_required(config, 'processing', 'parse_workers')
     
     print(f"\n[PIPELINE] Mode: {'parallel' if parallel_mode else 'sequential'}")
     
@@ -301,15 +312,17 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
             
             try:
                 parse_input = [(json_path, data_type) for json_path, _, data_type in files_to_parse]
+                shared_config_dir = f"{config_dir}/shared"
                 parse_files_parallel(
                     files=parse_input,
                     output_dir=csv_dir,
-                    config_dir="/app/config/shared",
+                    config_dir=shared_config_dir,
                     workers=workers
                 )
                 
                 # Cleanup JSON files
-                if proc_config.get('cleanup_temp', True):
+                cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
+                if cleanup_temp:
                     for json_path, file_id, _ in files_to_parse:
                         if os.path.exists(json_path):
                             os.remove(json_path)
@@ -320,16 +333,18 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
                     state.mark_failed(file_id, f"Parsing failed: {e}")
                     fail_count += 1
         else:
+            shared_config_dir = f"{config_dir}/shared"
+            cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
             for json_path, file_id, data_type in files_to_parse:
                 try:
                     parse_to_csv(
                         input_file=json_path,
                         output_dir=csv_dir,
                         data_type=data_type,
-                        config_dir="/app/config/shared"
+                        config_dir=shared_config_dir
                     )
                     
-                    if proc_config.get('cleanup_temp', True) and os.path.exists(json_path):
+                    if cleanup_temp and os.path.exists(json_path):
                         os.remove(json_path)
                         print(f"[CLEANUP] Removed: {Path(json_path).name}")
                 except Exception as e:
@@ -350,8 +365,11 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
         
         t_start = time.time()
         
-        table_suffix = db_config.get('table_suffix', '')
-        parallel_ingestion = proc_config.get('parallel_ingestion', False)
+        table_suffix = get_required(config, 'database', 'table_suffix')
+        parallel_ingestion = get_required(config, 'processing', 'parallel_ingestion')
+        check_duplicates = get_required(config, 'processing', 'check_duplicates')
+        cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
+        shared_config_dir = f"{config_dir}/shared"
         
         # Ensure database and schema exist
         ensure_database_exists(
@@ -397,24 +415,23 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
                             host=db_config['host'],
                             port=db_config['port'],
                             user=db_config['user'],
-                            check_duplicates=proc_config.get('check_duplicates', True),
+                            check_duplicates=check_duplicates,
                             create_indexes=False,
-                            config_dir="/app/config/shared"
+                            config_dir=shared_config_dir
                         )
                         
                         state.mark_completed(file_id)
                         local_success += 1
                         
-                        if proc_config.get('cleanup_temp', True):
-                            if os.path.exists(csv_path):
-                                os.remove(csv_path)
-                                print(f"[CLEANUP] Removed: {Path(csv_path).name}")
+                        if cleanup_temp and os.path.exists(csv_path):
+                            os.remove(csv_path)
+                            print(f"[CLEANUP] Removed: {Path(csv_path).name}")
                                 
                     except Exception as e:
                         print(f"[INGEST] Error ingesting {file_id}: {e}")
                         state.mark_failed(file_id, f"Ingestion failed: {e}")
                         local_fail += 1
-                        if proc_config.get('cleanup_temp', True) and os.path.exists(csv_path):
+                        if cleanup_temp and os.path.exists(csv_path):
                             os.remove(csv_path)
                 
                 return local_success, local_fail
@@ -442,44 +459,40 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
                         host=db_config['host'],
                         port=db_config['port'],
                         user=db_config['user'],
-                        check_duplicates=proc_config.get('check_duplicates', True),
+                        check_duplicates=check_duplicates,
                         create_indexes=False,
-                        config_dir="/app/config/shared"
+                        config_dir=shared_config_dir
                     )
                     
                     state.mark_completed(file_id)
                     success_count += 1
                     
-                    if proc_config.get('cleanup_temp', True) and os.path.exists(csv_path):
+                    if cleanup_temp and os.path.exists(csv_path):
                         os.remove(csv_path)
                         print(f"[CLEANUP] Removed: {Path(csv_path).name}")
                 except Exception as e:
                     print(f"[INGEST] Error ingesting {file_id}: {e}")
                     state.mark_failed(file_id, f"Ingestion failed: {e}")
                     fail_count += 1
-                    if proc_config.get('cleanup_temp', True) and os.path.exists(csv_path):
+                    if cleanup_temp and os.path.exists(csv_path):
                         os.remove(csv_path)
         
         total_timings['ingestion'] = time.time() - t_start
     
     # Create indexes
-    if proc_config.get('create_indexes', True) and success_count > 0:
+    create_indexes = get_required(config, 'processing', 'create_indexes')
+    if create_indexes and success_count > 0:
         print("\n" + "="*60)
         print("CREATING INDEXES")
         print("="*60)
         
-        index_config = config.get('indexes', {})
-        table_suffix = db_config.get('table_suffix', '')
+        index_config = get_required(config, 'indexes')
+        table_suffix = get_required(config, 'database', 'table_suffix')
         
         t_start = time.time()
         for data_type in data_types:
             base_table = f"{data_type}{table_suffix}"
-            index_fields = index_config.get(data_type, [])
-            if not index_fields:
-                if data_type == 'submissions':
-                    index_fields = ['author', 'subreddit', 'domain', 'created_utc']
-                else:
-                    index_fields = ['author', 'subreddit', 'link_id', 'created_utc']
+            index_fields = get_required(config, 'indexes', data_type)
             
             print(f"[INDEX] Creating indexes for {base_table}: {index_fields}")
             for field in index_fields:
@@ -506,7 +519,7 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
         print("="*60)
         
         t_start = time.time()
-        table_suffix = db_config.get('table_suffix', '')
+        table_suffix = get_required(config, 'database', 'table_suffix')
         
         print("[ANALYZE] Running ANALYZE")
         
@@ -532,6 +545,7 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
         print("CREATING VIEWS")
         print("="*60)
         
+        db_pg_config_dir = f"{config_dir}/db_pg"
         for data_type in data_types:
             try:
                 rebuild_view(
@@ -541,7 +555,7 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
                     host=db_config['host'],
                     port=db_config['port'],
                     user=db_config['user'],
-                    config_dir="/app/config/db_pg"
+                    config_dir=db_pg_config_dir
                 )
             except Exception as e:
                 print(f"[VIEW] Warning: Failed to create view for {data_type}: {e}")
@@ -569,15 +583,16 @@ def run_pipeline(config_path: str = "/app/config/db_pg/pipeline.yaml"):
 
 def main():
     """Main entry point with optional watch mode."""
-    config = load_config()
-    watch_interval = config.get('processing', {}).get('watch_interval', 0)
+    config_dir = "/app/config"
+    config = load_config(config_dir)
+    watch_interval = get_required(config, 'processing', 'watch_interval')
     
     if watch_interval > 0:
         print(f"[WATCH] Watch mode enabled: checking every {watch_interval} minutes")
         interval_seconds = watch_interval * 60
         while True:
             try:
-                run_pipeline()
+                run_pipeline(config_dir)
             except Exception as e:
                 print(f"[WATCH] Pipeline error: {e}")
                 print("[WATCH] Will retry next interval...")
@@ -585,7 +600,7 @@ def main():
             print(f"\n[WATCH] Next check in {watch_interval} minutes...")
             time.sleep(interval_seconds)
     else:
-        run_pipeline()
+        run_pipeline(config_dir)
 
 
 if __name__ == "__main__":

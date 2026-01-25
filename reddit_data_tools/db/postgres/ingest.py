@@ -4,9 +4,10 @@ CSV to PostgreSQL ingestion for Reddit data.
 
 import psycopg
 import logging
-import yaml
 from pathlib import Path
 from typing import List, Optional, Dict
+
+from ...core.config import load_yaml_file, ConfigurationError
 
 
 # Mandatory fields always included (in this order at start of columns)
@@ -23,26 +24,22 @@ MANDATORY_FIELD_SQL = {
 # This disables PostgreSQL compression - use filesystem compression (ZFS, BTRFS) instead
 
 
-def load_yaml_file(file_path: str) -> Optional[Dict]:
-    """Load a YAML configuration file, checking for .local.yaml override first."""
-    file_path = Path(file_path)
-    local_path = file_path.with_suffix('.local.yaml')
-    if local_path.exists():
-        file_path = local_path
+def load_services_config(config_dir: str) -> Dict:
+    """
+    Load services.yaml configuration.
     
-    with open(file_path, 'r') as file:
-        try:
-            return yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(f"Error loading YAML file {file_path}: {exc}")
-            return None
-
-
-def load_services_config(config_dir: str = "/app/config") -> Dict:
-    """Load services.yaml configuration with .local override support."""
+    Args:
+        config_dir: Directory containing services.yaml (db_pg profile directory)
+        
+    Returns:
+        Services configuration dictionary
+        
+    Raises:
+        ConfigurationError: If services.yaml is missing
+    """
     config = load_yaml_file(Path(config_dir) / "services.yaml")
     if config is None:
-        return {"sidecars": {}}
+        raise ConfigurationError(f"Required config file not found: {config_dir}/services.yaml")
     return config
 
 
@@ -78,19 +75,29 @@ def yaml_type_to_sql(type_def) -> str:
     return 'TEXT STORAGE EXTERNAL'
 
 
-def get_column_list(data_type: str, config_dir: str = "/app/config") -> List[str]:
+def get_column_list(data_type: str, config_dir: str) -> List[str]:
     """
     Get ordered list of columns for a data type.
     
     Order: [dataset, id, retrieved_utc, ...fields from YAML...]
+    
+    Args:
+        data_type: 'submissions' or 'comments'
+        config_dir: Directory containing reddit_field_list.yaml
+        
+    Returns:
+        List of column names in order
+        
+    Raises:
+        ConfigurationError: If config file is missing or data type not configured
     """
     field_list = load_yaml_file(Path(config_dir) / "reddit_field_list.yaml")
     if field_list is None:
-        raise RuntimeError("Failed to load reddit_field_list.yaml")
+        raise ConfigurationError(f"Required config file not found: {config_dir}/reddit_field_list.yaml")
     
     yaml_fields = field_list.get(data_type, [])
     if not yaml_fields:
-        raise ValueError(f"No fields configured for data type: {data_type}")
+        raise ConfigurationError(f"No fields configured for data type: {data_type}")
     
     # Mandatory fields first, then YAML fields
     return MANDATORY_FIELDS + yaml_fields
@@ -100,13 +107,25 @@ def get_create_table_query(
     data_type: str, 
     schema: str, 
     table: str,
-    config_dir: str = "/app/config"
+    config_dir: str
 ) -> str:
     """
     Generate CREATE TABLE query dynamically from YAML configuration.
     
     All TEXT fields use STORAGE EXTERNAL (uncompressed TOAST) for external
     filesystem compression (ZFS, BTRFS).
+    
+    Args:
+        data_type: 'submissions' or 'comments'
+        schema: Database schema name
+        table: Table name
+        config_dir: Directory containing config files
+        
+    Returns:
+        CREATE TABLE SQL query
+        
+    Raises:
+        ConfigurationError: If config files are missing
     """
     
     full_table = f"{schema}.{table}"
@@ -114,7 +133,7 @@ def get_create_table_query(
     # Load field types
     field_types = load_yaml_file(Path(config_dir) / "reddit_field_types.yaml")
     if field_types is None:
-        raise RuntimeError("Failed to load reddit_field_types.yaml")
+        raise ConfigurationError(f"Required config file not found: {config_dir}/reddit_field_types.yaml")
     
     # Get column list
     columns = get_column_list(data_type, config_dir)
@@ -145,10 +164,20 @@ def get_ingest_query(
     schema: str, 
     table: str, 
     check_duplicates: bool,
-    config_dir: str = "/app/config"
+    config_dir: str
 ) -> str:
     """
     Generate COPY/INSERT query dynamically from YAML configuration.
+    
+    Args:
+        data_type: 'submissions' or 'comments'
+        schema: Database schema name
+        table: Table name
+        check_duplicates: Whether to handle duplicate IDs
+        config_dir: Directory containing config files
+        
+    Returns:
+        SQL query for data ingestion
     """
     
     full_table = f"{schema}.{table}"
@@ -380,15 +409,15 @@ def ingest_csv(
     csv_file: str,
     data_type: str,
     dbname: str,
-    schema: str = 'public',
-    table: Optional[str] = None,
-    host: str = '127.0.0.1',
-    port: int = 5432,
-    user: str = 'postgres',
-    check_duplicates: bool = True,
-    create_indexes: bool = True,
-    index_fields: Optional[List[str]] = None,
-    config_dir: str = "/app/config"
+    schema: str,
+    table: Optional[str],
+    host: str,
+    port: int,
+    user: str,
+    check_duplicates: bool,
+    create_indexes: bool,
+    config_dir: str,
+    index_fields: Optional[List[str]] = None
 ):
     """
     Ingest a CSV file into PostgreSQL.
@@ -397,15 +426,15 @@ def ingest_csv(
         csv_file: Path to the CSV file
         data_type: 'submissions' or 'comments'
         dbname: Database name
-        schema: Schema name (default: 'public')
-        table: Table name (default: data_type)
+        schema: Schema name
+        table: Table name (None to use data_type)
         host: Database host (hostname or IP)
         port: Database port
         user: Database user
         check_duplicates: Whether to handle duplicates
         create_indexes: Whether to create indexes after ingestion
-        index_fields: Fields to index (uses defaults if None)
         config_dir: Directory containing YAML configuration files
+        index_fields: Fields to index (uses defaults if None)
     """
     if table is None:
         table = data_type
@@ -529,15 +558,24 @@ def rebuild_view(
     data_type: str,
     schema: str,
     dbname: str,
-    host: str = '127.0.0.1',
-    port: int = 5432,
-    user: str = 'postgres',
-    config_dir: str = "/app/config"
+    host: str,
+    port: int,
+    user: str,
+    config_dir: str
 ):
     """
     Rebuild the view for a data type, including any existing sidecars.
     
     This is idempotent - can be called multiple times safely.
+    
+    Args:
+        data_type: 'submissions' or 'comments'
+        schema: Database schema name
+        dbname: Database name
+        host: Database host
+        port: Database port
+        user: Database user
+        config_dir: Directory containing services.yaml
     """
     # Load sidecar configuration
     services_config = load_services_config(config_dir)

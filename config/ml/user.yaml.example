@@ -1,0 +1,55 @@
+# ML GPU profile user configuration
+# Copy this file to user.yaml and uncomment/modify settings as needed.
+#
+# Structure: Each key corresponds to a config file (without .yaml extension).
+# List values fully replace the base config (no merging).
+
+# pipeline:                      # Overrides pipeline.yaml
+#   processing:
+#     data_types:                # Which data types to process
+#       - submissions
+#       - comments
+#     parallel_mode: false       # If true: parse multiple files in parallel
+#     parse_workers: 8           # Number of parallel workers for CSV parsing
+#     cleanup_temp: false        # Delete intermediate files after processing
+#     watch_interval: 0          # Check for new files every N minutes (0 = run once)
+#   gpu_classifiers:             # List of GPU classifiers to run (replaces default list)
+#     - toxic_roberta
+#     - go_emotions
+
+# gpu_classifiers:               # Overrides gpu_classifiers.yaml
+#   text_columns:
+#     submissions:
+#       - title
+#       - selftext
+#     comments:
+#       - body
+#   remove_strings:              # Replaces default list
+#     - "[deleted]"
+#     - "[removed]"
+#     - "[unavailable]"
+#   remove_patterns:             # Replaces default list
+#     - 'https?://\S+'
+#     - 'r/\w+'
+#     - 'u/\w+'
+#   gpu_ids:                     # List of GPU IDs to use (replaces default)
+#     - 0
+#   file_workers: 2              # Number of files to process in parallel
+#   tokenize_workers: 4          # Parallel workers for tokenization
+#   batch_size: 2000000          # Rows per disk I/O batch
+#   classifier_batch_size: 32    # Batch size per GPU for inference
+#   use_lingua: true             # Use 'lang' column from Lingua output for filtering
+#   lang2_fallback: false        # Also check lang2 column for language matches
+#   min_tokens: 0                # Minimum token count for transformers
+#   minimal_fields: true         # Remove 'dataset' and 'body' columns from output
+#
+#   # Classifier-specific overrides (nested under classifier name)
+#   toxic_roberta:
+#     classifier_batch_size: 8   # Override global batch size for this classifier
+#     gpu_ids:                   # Use specific GPUs for this classifier (replaces global)
+#       - 0
+#       - 1
+#   go_emotions:
+#     classifier_batch_size: 8
+#     supported_languages:       # Filter by language (replaces default)
+#       - en

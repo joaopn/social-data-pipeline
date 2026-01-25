@@ -8,27 +8,39 @@ import os
 import re
 import sys
 import time
-import yaml
 from pathlib import Path
 from typing import List, Dict, Tuple
 
 from ..core.state import PipelineState
 from ..core.decompress import decompress_zst
-from ..core.parse_csv import parse_to_csv, parse_files_parallel, load_yaml_file
+from ..core.parse_csv import parse_to_csv, parse_files_parallel
+from ..core.config import (
+    load_profile_config,
+    get_required,
+    get_optional,
+    validate_processing_config,
+    ConfigurationError,
+)
 
 
-def load_config(config_path: str = "/app/config/parse/pipeline.yaml", quiet: bool = False) -> Dict:
-    """Load pipeline configuration from YAML, checking for .local.yaml override first."""
-    config_path = Path(config_path)
-    local_path = config_path.with_suffix('.local.yaml')
-    if local_path.exists():
-        config_path = local_path
-        if not quiet:
-            print(f"[CONFIG] Using local override: {local_path.name}")
+def load_config(config_dir: str = "/app/config", quiet: bool = False) -> Dict:
+    """
+    Load parse profile configuration.
     
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    Loads base config files and merges user.yaml overrides if present.
     
+    Args:
+        config_dir: Base configuration directory
+        quiet: If True, suppress informational output
+        
+    Returns:
+        Merged configuration dictionary
+        
+    Raises:
+        ConfigurationError: If required config is missing
+    """
+    config = load_profile_config('parse', config_dir, quiet)
+    validate_processing_config(config, 'parse')
     return config
 
 
@@ -146,7 +158,7 @@ def get_file_identifier(filepath: str) -> str:
     return Path(filepath).stem
 
 
-def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
+def run_pipeline(config_dir: str = "/app/config"):
     """
     Run the parse pipeline.
     
@@ -154,19 +166,15 @@ def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
     1. Detect input sources (.zst files, existing JSON)
     2. Decompress .zst files
     3. Parse JSON to CSV
+    
+    Args:
+        config_dir: Base configuration directory
     """
     # Load configuration
-    config = load_config(config_path)
-    
-    # Check for field config overrides
-    config_dir = Path("/app/config/shared")
-    if (config_dir / "reddit_field_list.local.yaml").exists():
-        print("[CONFIG] Using local override: reddit_field_list.local.yaml")
-    if (config_dir / "reddit_field_types.local.yaml").exists():
-        print("[CONFIG] Using local override: reddit_field_types.local.yaml")
+    config = load_config(config_dir)
     
     proc_config = config['processing']
-    data_types = proc_config['data_types']
+    data_types = get_required(config, 'processing', 'data_types')
     
     print(f"[CONFIG] Profile: parse")
     print(f"[CONFIG] Data types: {data_types}")
@@ -255,8 +263,8 @@ def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
         print("="*60)
         
         t_start = time.time()
-        workers = proc_config.get('parse_workers', 4)
-        parallel_mode = proc_config.get('parallel_mode', False)
+        workers = get_required(config, 'processing', 'parse_workers')
+        parallel_mode = get_required(config, 'processing', 'parallel_mode')
         
         if parallel_mode and len(files_to_parse) > 1:
             print(f"[PARSE] Parallel mode: {len(files_to_parse)} files with {workers} workers")
@@ -264,10 +272,11 @@ def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
             parse_input = [(json_path, data_type) for json_path, file_id, data_type in files_to_parse]
             
             try:
+                shared_config_dir = f"{config_dir}/shared"
                 parse_files_parallel(
                     files=parse_input,
                     output_dir=csv_dir,
-                    config_dir="/app/config/shared",
+                    config_dir=shared_config_dir,
                     workers=workers
                 )
                 
@@ -276,10 +285,10 @@ def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
                     state.mark_completed(file_id)
                     success_count += 1
                     
-                    if proc_config.get('cleanup_temp', True):
-                        if os.path.exists(json_path):
-                            os.remove(json_path)
-                            print(f"[CLEANUP] Removed: {Path(json_path).name}")
+                    cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
+                    if cleanup_temp and os.path.exists(json_path):
+                        os.remove(json_path)
+                        print(f"[CLEANUP] Removed: {Path(json_path).name}")
                             
             except Exception as e:
                 print(f"[PARSE] Error in parallel parsing: {e}")
@@ -288,6 +297,7 @@ def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
                     fail_count += 1
         else:
             # Sequential parsing
+            shared_config_dir = f"{config_dir}/shared"
             for json_path, file_id, data_type in files_to_parse:
                 try:
                     state.mark_in_progress(file_id)
@@ -295,13 +305,14 @@ def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
                         input_file=json_path,
                         output_dir=csv_dir,
                         data_type=data_type,
-                        config_dir="/app/config/shared"
+                        config_dir=shared_config_dir
                     )
                     
                     state.mark_completed(file_id)
                     success_count += 1
                     
-                    if proc_config.get('cleanup_temp', True) and os.path.exists(json_path):
+                    cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
+                    if cleanup_temp and os.path.exists(json_path):
                         os.remove(json_path)
                         print(f"[CLEANUP] Removed: {Path(json_path).name}")
                         
@@ -332,15 +343,16 @@ def run_pipeline(config_path: str = "/app/config/parse/pipeline.yaml"):
 
 def main():
     """Main entry point with optional watch mode."""
-    config = load_config()
-    watch_interval = config.get('processing', {}).get('watch_interval', 0)
+    config_dir = "/app/config"
+    config = load_config(config_dir)
+    watch_interval = get_required(config, 'processing', 'watch_interval')
     
     if watch_interval > 0:
         print(f"[WATCH] Watch mode enabled: checking every {watch_interval} minutes")
         interval_seconds = watch_interval * 60
         while True:
             try:
-                run_pipeline()
+                run_pipeline(config_dir)
             except Exception as e:
                 print(f"[WATCH] Pipeline error: {e}")
                 print("[WATCH] Will retry next interval...")
@@ -348,7 +360,7 @@ def main():
             print(f"\n[WATCH] Next check in {watch_interval} minutes...")
             time.sleep(interval_seconds)
     else:
-        run_pipeline()
+        run_pipeline(config_dir)
 
 
 if __name__ == "__main__":

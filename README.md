@@ -144,7 +144,7 @@ POSTGRES_PORT=5432
 
 Edit configuration files in `config/` as needed (see [Configuration](#configuration)).
 
-> **Local overrides:** Create `.local.yaml` versions of config files (e.g., `pipeline.local.yaml`) to override defaults without modifying tracked files.
+> **User overrides:** Create a `user.yaml` file in any profile directory to override defaults without modifying tracked files. See `user.yaml.example` for available options.
 
 ### 3. Run
 
@@ -195,24 +195,54 @@ docker compose --profile parse --profile ml_cpu --profile db_pg up
 
 ```
 config/
-├── shared/                      # Shared across all profiles
-│   ├── reddit_field_list.yaml   # Full field list for database
-│   ├── reddit_field_list_ml.yaml # Minimal fields for ML
-│   └── reddit_field_types.yaml  # Field type definitions
+├── shared/                        # Shared across all profiles
+│   ├── reddit_field_list.yaml     # Full field list for database
+│   ├── reddit_field_list_ml.yaml  # Minimal fields for ML
+│   ├── reddit_field_types.yaml    # Field type definitions
+│   └── user.yaml.example          # User override template
 ├── parse/
-│   └── pipeline.yaml            # Parse-only settings
+│   ├── pipeline.yaml              # Parse-only settings
+│   └── user.yaml.example          # User override template
 ├── ml_cpu/
-│   ├── pipeline.yaml            # CPU classifier settings
-│   └── cpu_classifiers.yaml     # Lingua configuration
+│   ├── pipeline.yaml              # CPU classifier settings
+│   ├── cpu_classifiers.yaml       # Lingua configuration
+│   └── user.yaml.example          # User override template
 ├── ml/
-│   ├── pipeline.yaml            # GPU classifier settings
-│   └── gpu_classifiers.yaml     # Transformer configurations
+│   ├── pipeline.yaml              # GPU classifier settings
+│   ├── gpu_classifiers.yaml       # Transformer configurations
+│   └── user.yaml.example          # User override template
 └── db_pg/
-    ├── pipeline.yaml            # Database ingestion settings
-    ├── services.yaml            # Sidecar service definitions
-    ├── postgresql.conf          # PostgreSQL tuning
-    └── pg_hba.conf              # PostgreSQL authentication
+    ├── pipeline.yaml              # Database ingestion settings
+    ├── services.yaml              # Sidecar service definitions
+    ├── postgresql.conf            # PostgreSQL tuning
+    ├── pg_hba.conf                # PostgreSQL authentication
+    └── user.yaml.example          # User override template
 ```
+
+#### User Configuration Overrides
+
+Each profile supports a `user.yaml` file that overrides base settings without modifying tracked files. To customize a profile:
+
+1. Copy `user.yaml.example` to `user.yaml` in the profile directory
+2. Uncomment and modify the settings you want to change
+3. The pipeline will automatically merge your overrides with the base configuration
+
+**Important:** User overrides are scoped by config filename. Each top-level key in `user.yaml` corresponds to a config file (without the `.yaml` extension):
+
+```yaml
+# Example ml/user.yaml
+pipeline:              # Overrides settings from pipeline.yaml
+  processing:
+    parse_workers: 16
+
+gpu_classifiers:       # Overrides settings from gpu_classifiers.yaml
+  batch_size: 1000000
+  gpu_ids:
+    - 0
+    - 1
+```
+
+**List behavior:** Lists in `user.yaml` fully **replace** the base config lists (they don't merge). This lets you reduce field lists or change classifier lists without modifying the original files.
 
 ### Pipeline Configuration
 

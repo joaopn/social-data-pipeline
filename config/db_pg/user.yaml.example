@@ -1,0 +1,50 @@
+# PostgreSQL database profile user configuration
+# Copy this file to user.yaml and uncomment/modify settings as needed.
+#
+# Structure: Each key corresponds to a config file (without .yaml extension).
+# List values fully replace the base config (no merging).
+#
+# Note: Database settings can also be overridden via environment variables:
+#   POSTGRES_PORT, DB_NAME, DB_SCHEMA
+
+# pipeline:                      # Overrides pipeline.yaml
+#   database:
+#     host: postgres             # Docker service name or hostname
+#     port: 5432                 # Override with POSTGRES_PORT env var
+#     name: datasets             # Override with DB_NAME env var
+#     schema: reddit             # Override with DB_SCHEMA env var
+#     user: postgres
+#     table_suffix: _base        # Suffix for write targets (views use original names)
+#   processing:
+#     data_types:                # Which data types to process (replaces default list)
+#       - submissions
+#       - comments
+#     parallel_mode: false       # If true: extract all -> parse parallel -> ingest all
+#     parallel_ingestion: true   # If true: ingest submissions and comments concurrently
+#     parse_workers: 12          # Number of parallel workers for CSV parsing
+#     check_duplicates: true     # Handle duplicate IDs during ingestion
+#     create_indexes: true       # Create indexes after ingestion
+#     cleanup_temp: false        # Delete intermediate files after ingestion
+#     watch_interval: 0          # Check for new files every N minutes (0 = run once)
+#   indexes:                     # Index fields per data type (replaces default lists)
+#     submissions:
+#       - dataset
+#       - author
+#       - subreddit
+#       - domain
+#       - created_utc
+#     comments:
+#       - dataset
+#       - author
+#       - subreddit
+#       - link_id
+#       - created_utc
+
+# services:                      # Overrides services.yaml
+#   sidecars:
+#     # Example sidecar table configuration:
+#     # language:
+#     #   enabled: true
+#     #   columns:
+#     #     lang: text
+#     #     lang_prob: float

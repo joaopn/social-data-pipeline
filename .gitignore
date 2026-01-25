@@ -40,6 +40,7 @@ data/
 
 # Local config overrides
 *.local.yaml
+config/*/user.yaml
 
 # Logs
 *.log

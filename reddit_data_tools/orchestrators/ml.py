@@ -8,12 +8,19 @@ import os
 import re
 import sys
 import time
-import yaml
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 from ..core.state import PipelineState
+from ..core.config import (
+    load_profile_config,
+    get_required,
+    get_optional,
+    validate_processing_config,
+    validate_classifier_config,
+    ConfigurationError,
+)
 
 
 def _process_lingua_worker(args: Tuple[str, str, str, str, Dict, int]) -> Tuple[str, bool, str]:
@@ -76,39 +83,29 @@ def _process_transformer_batch(args: Tuple[List[Tuple[str, str, str]], str, Dict
     return results
 
 
-def load_config(config_dir: str = "/app/config", profile: str = "ml_cpu", quiet: bool = False) -> Tuple[Dict, Dict]:
-    """Load pipeline and classifier configuration for the given profile."""
-    config_dir = Path(config_dir)
+def load_config(config_dir: str = "/app/config", profile: str = "ml_cpu", quiet: bool = False) -> Dict:
+    """
+    Load ML profile configuration (both pipeline and classifiers merged).
     
-    # Determine config paths based on profile
-    if profile == "ml_cpu":
-        pipeline_path = config_dir / "ml_cpu" / "pipeline.yaml"
-        classifiers_path = config_dir / "ml_cpu" / "cpu_classifiers.yaml"
-    else:  # ml (GPU)
-        pipeline_path = config_dir / "ml" / "pipeline.yaml"
-        classifiers_path = config_dir / "ml" / "gpu_classifiers.yaml"
+    Loads base config files and merges user.yaml overrides if present.
     
-    # Load pipeline config with .local override
-    local_pipeline = pipeline_path.with_suffix('.local.yaml')
-    if local_pipeline.exists():
-        pipeline_path = local_pipeline
-        if not quiet:
-            print(f"[CONFIG] Using local override: {local_pipeline.name}")
+    Args:
+        config_dir: Base configuration directory
+        profile: 'ml_cpu' or 'ml'
+        quiet: If True, suppress informational output
+        
+    Returns:
+        Merged configuration dictionary containing both pipeline and classifier settings
+        
+    Raises:
+        ConfigurationError: If required config is missing
+    """
+    if profile not in ('ml_cpu', 'ml'):
+        raise ConfigurationError(f"Invalid ML profile: {profile}. Must be 'ml_cpu' or 'ml'")
     
-    with open(pipeline_path, 'r') as f:
-        pipeline_config = yaml.safe_load(f)
-    
-    # Load classifiers config with .local override
-    local_classifiers = classifiers_path.with_suffix('.local.yaml')
-    if local_classifiers.exists():
-        classifiers_path = local_classifiers
-        if not quiet:
-            print(f"[CONFIG] Using local override: {local_classifiers.name}")
-    
-    with open(classifiers_path, 'r') as f:
-        classifiers_config = yaml.safe_load(f) or {}
-    
-    return pipeline_config, classifiers_config
+    config = load_profile_config(profile, config_dir, quiet)
+    validate_processing_config(config, profile)
+    return config
 
 
 def detect_parsed_csv_files(csv_dir: str, data_types: List[str]) -> List[Tuple[str, str, str]]:
@@ -141,25 +138,25 @@ def detect_parsed_csv_files(csv_dir: str, data_types: List[str]) -> List[Tuple[s
     return [(f[0], f[1], f[2]) for f in files]
 
 
-def run_pipeline(profile: str = "ml_cpu", target_classifier: Optional[str] = None):
+def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", target_classifier: Optional[str] = None):
     """
     Run the ML classifier pipeline.
     
     Args:
         profile: 'ml_cpu' for Lingua only, 'ml' for GPU transformers
+        config_dir: Base configuration directory
         target_classifier: If set, run only up to this classifier
     """
-    # Load configuration
-    pipeline_config, classifiers_config = load_config(profile=profile)
+    # Load configuration (merged pipeline + classifiers with user overrides)
+    config = load_config(config_dir=config_dir, profile=profile)
     
-    proc_config = pipeline_config['processing']
-    data_types = proc_config['data_types']
+    data_types = get_required(config, 'processing', 'data_types')
     
     # Get list of classifiers to run
     if profile == "ml_cpu":
-        classifiers_to_run = pipeline_config.get('cpu_classifiers', [])
+        classifiers_to_run = get_required(config, 'cpu_classifiers')
     else:
-        classifiers_to_run = pipeline_config.get('gpu_classifiers', [])
+        classifiers_to_run = get_required(config, 'gpu_classifiers')
     
     # Optional: CLASSIFIER env var to run only a single classifier
     single_classifier = os.environ.get('CLASSIFIER', '')
@@ -170,46 +167,43 @@ def run_pipeline(profile: str = "ml_cpu", target_classifier: Optional[str] = Non
         classifiers_to_run = [single_classifier]
         print(f"[CONFIG] Running single classifier: {single_classifier}")
     
-    # Extract global settings
-    global_text_columns = classifiers_config.pop('text_columns', {})
-    global_remove_strings = classifiers_config.pop('remove_strings', [])
-    global_remove_patterns = classifiers_config.pop('remove_patterns', [])
-    global_batch_size = classifiers_config.pop('batch_size', 2_000_000)
-    global_classifier_batch_size = classifiers_config.pop('classifier_batch_size', 32)
-    global_gpu_ids = classifiers_config.pop('gpu_ids', [0])
-    global_file_workers = classifiers_config.pop('file_workers', 1)
-    global_use_lingua = classifiers_config.pop('use_lingua', True)
-    global_lang2_fallback = classifiers_config.pop('lang2_fallback', False)
-    global_min_tokens = classifiers_config.pop('min_tokens', 0)
-    global_tokenize_workers = classifiers_config.pop('tokenize_workers', 0)
-    global_minimal_fields = classifiers_config.pop('minimal_fields', False)
-    
+    # Extract global settings (required - must be in config files)
+    # Common settings for both profiles
     global_config = {
-        'text_columns': global_text_columns,
-        'remove_strings': global_remove_strings,
-        'remove_patterns': global_remove_patterns,
-        'batch_size': global_batch_size,
-        'classifier_batch_size': global_classifier_batch_size,
-        'gpu_ids': global_gpu_ids,
-        'file_workers': global_file_workers,
-        'use_lingua': global_use_lingua,
-        'lang2_fallback': global_lang2_fallback,
-        'min_tokens': global_min_tokens,
-        'tokenize_workers': global_tokenize_workers,
-        'minimal_fields': global_minimal_fields,
+        'text_columns': get_required(config, 'text_columns'),
+        'remove_strings': get_required(config, 'remove_strings'),
+        'remove_patterns': get_required(config, 'remove_patterns'),
     }
+    
+    # GPU-specific settings (only required for ml profile)
+    if profile == "ml":
+        global_config.update({
+            'batch_size': get_required(config, 'batch_size'),
+            'classifier_batch_size': get_required(config, 'classifier_batch_size'),
+            'gpu_ids': get_required(config, 'gpu_ids'),
+            'file_workers': get_required(config, 'file_workers'),
+            'use_lingua': get_required(config, 'use_lingua'),
+            'lang2_fallback': get_required(config, 'lang2_fallback'),
+            'min_tokens': get_required(config, 'min_tokens'),
+            'tokenize_workers': get_required(config, 'tokenize_workers'),
+            'minimal_fields': get_required(config, 'minimal_fields'),
+        })
     
     # Build list of classifiers with merged config
     enabled_classifiers = []
     for name in classifiers_to_run:
-        if name not in classifiers_config:
+        if name not in config:
             print(f"[WARNING] Classifier '{name}' not configured, skipping")
             continue
         
-        cfg = classifiers_config[name]
+        cfg = config[name]
         if not isinstance(cfg, dict):
             cfg = {}
         
+        # Validate classifier config
+        validate_classifier_config(cfg, name, profile)
+        
+        # Merge global config with classifier-specific config
         merged_cfg = {**global_config, **cfg}
         enabled_classifiers.append((name, merged_cfg))
         
@@ -221,7 +215,7 @@ def run_pipeline(profile: str = "ml_cpu", target_classifier: Optional[str] = Non
     print(f"[CONFIG] Classifiers: {[name for name, _ in enabled_classifiers]}")
     
     if profile == "ml":
-        print(f"[CONFIG] GPUs: {global_gpu_ids}, file_workers: {global_file_workers}")
+        print(f"[CONFIG] GPUs: {global_config['gpu_ids']}, file_workers: {global_config['file_workers']}")
     
     # Initialize state manager
     state_file = f"/data/output/{profile}_state.json"
@@ -266,29 +260,37 @@ def run_pipeline(profile: str = "ml_cpu", target_classifier: Optional[str] = Non
         
         # Set RAYON_NUM_THREADS before importing Lingua
         if is_lingua:
-            workers = classifier_config.get('workers', 8)
+            workers = classifier_config['workers']  # Required for lingua
             os.environ['RAYON_NUM_THREADS'] = str(workers)
         
         classifier_output_dir = Path(output_dir) / classifier_name
-        suffix = classifier_config.get('suffix', f'_{classifier_name}')
+        suffix = classifier_config['suffix']  # Required - validated earlier
         
-        # Determine input source for GPU classifiers
-        use_lingua = classifier_config.get('use_lingua', global_config.get('use_lingua', True))
-        supported_languages = classifier_config.get('supported_languages', None)
-        
-        if is_lingua or not use_lingua or not supported_languages:
+        # Determine input source
+        # Lingua always uses CSV input directly
+        # GPU classifiers check use_lingua setting
+        if is_lingua:
             input_files = parsed_csv_files
             input_source = "csv/"
         else:
-            # Read from Lingua output
-            lingua_suffix = classifiers_config.get('lingua', {}).get('suffix', '_lingua')
-            lingua_output_dir = Path(output_dir) / 'lingua'
-            input_files = []
-            for csv_path, file_id, data_type in parsed_csv_files:
-                lingua_file = lingua_output_dir / data_type / f"{file_id}{lingua_suffix}.csv"
-                if lingua_file.exists():
-                    input_files.append((str(lingua_file), file_id, data_type))
-            input_source = "output/lingua/"
+            # GPU classifier - check if we should use lingua output
+            use_lingua = classifier_config.get('use_lingua', global_config['use_lingua'])
+            supported_languages = classifier_config.get('supported_languages', None)
+            
+            if not use_lingua or not supported_languages:
+                input_files = parsed_csv_files
+                input_source = "csv/"
+            else:
+                # Read from Lingua output - get lingua suffix from config
+                lingua_config = config.get('lingua', {})
+                lingua_suffix = lingua_config.get('suffix', '_lingua')
+                lingua_output_dir = Path(output_dir) / 'lingua'
+                input_files = []
+                for csv_path, file_id, data_type in parsed_csv_files:
+                    lingua_file = lingua_output_dir / data_type / f"{file_id}{lingua_suffix}.csv"
+                    if lingua_file.exists():
+                        input_files.append((str(lingua_file), file_id, data_type))
+                input_source = "output/lingua/"
         
         # Find files to process (skip existing outputs)
         files_for_classifier = []
@@ -307,10 +309,10 @@ def run_pipeline(profile: str = "ml_cpu", target_classifier: Optional[str] = Non
         print(f"[{classifier_name.upper()}] {len(files_for_classifier)} files to process ({skipped_count} skipped)")
         
         if is_lingua:
-            # Run Lingua
-            languages = classifier_config.get('languages', [])
-            workers = classifier_config.get('workers', 8)
-            file_workers = classifier_config.get('file_workers', 1)
+            # Run Lingua (required config: languages, workers, file_workers)
+            languages = classifier_config['languages']
+            workers = classifier_config['workers']
+            file_workers = classifier_config['file_workers']
             print(f"[LINGUA] Languages: {len(languages)}, workers: {workers}, file_workers: {file_workers}")
             
             from ..classifiers import lingua as classifier_module
@@ -351,9 +353,10 @@ def run_pipeline(profile: str = "ml_cpu", target_classifier: Optional[str] = Non
             # Run transformer classifier
             from ..classifiers.base import get_classifier
             
-            gpu_ids = classifier_config.get('gpu_ids', global_config.get('gpu_ids', [0]))
-            model_id = classifier_config.get('model', 'unknown')
-            file_workers = classifier_config.get('file_workers', global_config.get('file_workers', 1))
+            # Use classifier-specific values or fall back to global config
+            gpu_ids = classifier_config.get('gpu_ids', global_config['gpu_ids'])
+            model_id = classifier_config['model']  # Required for transformer classifiers
+            file_workers = classifier_config.get('file_workers', global_config['file_workers'])
             
             print(f"[{classifier_name.upper()}] Model: {model_id}")
             print(f"[{classifier_name.upper()}] GPUs: {gpu_ids}, file_workers: {file_workers}")
@@ -420,6 +423,8 @@ def run_pipeline(profile: str = "ml_cpu", target_classifier: Optional[str] = Non
 
 def main():
     """Main entry point."""
+    config_dir = "/app/config"
+    
     # Determine profile from PROFILE env var
     profile = os.environ.get('PROFILE', 'ml_cpu')
     if profile not in ('ml_cpu', 'ml'):
@@ -430,15 +435,15 @@ def main():
     if len(sys.argv) > 1:
         target_classifier = sys.argv[1]
     
-    pipeline_config, _ = load_config(profile=profile)
-    watch_interval = pipeline_config.get('processing', {}).get('watch_interval', 0)
+    config = load_config(config_dir=config_dir, profile=profile)
+    watch_interval = get_required(config, 'processing', 'watch_interval')
     
     if watch_interval > 0:
         print(f"[WATCH] Watch mode enabled: checking every {watch_interval} minutes")
         interval_seconds = watch_interval * 60
         while True:
             try:
-                run_pipeline(profile=profile, target_classifier=target_classifier)
+                run_pipeline(profile=profile, config_dir=config_dir, target_classifier=target_classifier)
             except Exception as e:
                 print(f"[WATCH] Pipeline error: {e}")
                 print("[WATCH] Will retry next interval...")
@@ -446,7 +451,7 @@ def main():
             print(f"\n[WATCH] Next check in {watch_interval} minutes...")
             time.sleep(interval_seconds)
     else:
-        run_pipeline(profile=profile, target_classifier=target_classifier)
+        run_pipeline(profile=profile, config_dir=config_dir, target_classifier=target_classifier)
 
 
 if __name__ == "__main__":

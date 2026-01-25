@@ -1,0 +1,44 @@
+# ML CPU profile user configuration
+# Copy this file to user.yaml and uncomment/modify settings as needed.
+#
+# Structure: Each key corresponds to a config file (without .yaml extension).
+# List values fully replace the base config (no merging).
+
+# pipeline:                      # Overrides pipeline.yaml
+#   processing:
+#     data_types:                # Which data types to process
+#       - submissions
+#       - comments
+#     parallel_mode: false       # If true: parse multiple files in parallel
+#     parse_workers: 8           # Number of parallel workers for CSV parsing
+#     cleanup_temp: false        # Delete intermediate files after processing
+#     watch_interval: 0          # Check for new files every N minutes (0 = run once)
+#   cpu_classifiers:             # List of CPU classifiers to run (replaces default list)
+#     - lingua
+
+# cpu_classifiers:               # Overrides cpu_classifiers.yaml
+#   text_columns:                # Columns to use for classification (per data type)
+#     submissions:
+#       - title
+#       - selftext
+#     comments:
+#       - body
+#   remove_strings:              # Exact strings removed from text (replaces default list)
+#     - "[deleted]"
+#     - "[removed]"
+#     - "[unavailable]"
+#   remove_patterns:             # Regex patterns removed from text (replaces default list)
+#     - 'https?://\S+'
+#     - 'r/\w+'
+#     - 'u/\w+'
+#   lingua:                      # Lingua classifier settings
+#     suffix: "_lingua"          # Suffix added to output filenames
+#     low_accuracy: false        # Use low-accuracy mode for faster detection
+#     workers: 16                # Total parallel workers
+#     file_workers: 2            # Number of files to process in parallel
+#     batch_size: 2000000        # Rows per batch
+#     languages:                 # Languages to detect (replaces entire default list!)
+#       - english
+#       - german
+#       - spanish
+#       # ... add more as needed, see cpu_classifiers.yaml for full list

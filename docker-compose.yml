@@ -128,6 +128,7 @@ services:
       - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
       - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
       - ${CSV_PATH:-./data/csv}:/data/csv
+      - ${OUTPUT_PATH}:/data/output:ro
       - ${DB_DATA_PATH:-./data/database}:/data/database
       - ./config:/app/config:ro
 

@@ -56,15 +56,16 @@ def yaml_type_to_sql(type_def) -> str:
     return 'TEXT STORAGE EXTERNAL'
 
 
-def get_column_list(data_type: str, config_dir: str) -> List[str]:
+def get_column_list(data_type: str, config_dir: str, csv_file: str = None) -> List[str]:
     """
     Get ordered list of columns for a data type.
     
-    Order: [dataset, id, retrieved_utc, ...fields from YAML...]
+    Order: [dataset, id, retrieved_utc, ...fields from YAML..., (lingua fields if applicable)]
     
     Args:
         data_type: 'submissions' or 'comments'
         config_dir: Directory containing reddit_field_list.yaml
+        csv_file: Optional CSV file path - if contains 'lingua', lingua columns are appended
         
     Returns:
         List of column names in order
@@ -81,14 +82,21 @@ def get_column_list(data_type: str, config_dir: str) -> List[str]:
         raise ConfigurationError(f"No fields configured for data type: {data_type}")
     
     # Mandatory fields first, then YAML fields
-    return MANDATORY_FIELDS + yaml_fields
+    columns = MANDATORY_FIELDS + yaml_fields
+    
+    # Append lingua columns if this is a lingua file
+    if csv_file and 'lingua' in csv_file:
+        columns = columns + ['lang', 'lang_prob', 'lang2', 'lang2_prob']
+    
+    return columns
 
 
 def get_create_table_query(
     data_type: str, 
     schema: str, 
     table: str,
-    config_dir: str
+    config_dir: str,
+    csv_file: str = None
 ) -> str:
     """
     Generate CREATE TABLE query dynamically from YAML configuration.
@@ -101,6 +109,7 @@ def get_create_table_query(
         schema: Database schema name
         table: Table name
         config_dir: Directory containing config files
+        csv_file: Optional CSV file path - if contains 'lingua', lingua columns are included
         
     Returns:
         CREATE TABLE SQL query
@@ -116,8 +125,8 @@ def get_create_table_query(
     if field_types is None:
         raise ConfigurationError(f"Required config file not found: {config_dir}/reddit_field_types.yaml")
     
-    # Get column list
-    columns = get_column_list(data_type, config_dir)
+    # Get column list (includes lingua columns if csv_file is a lingua file)
+    columns = get_column_list(data_type, config_dir, csv_file)
     
     # Build column definitions
     col_defs = []
@@ -145,7 +154,8 @@ def get_ingest_query(
     schema: str, 
     table: str, 
     check_duplicates: bool,
-    config_dir: str
+    config_dir: str,
+    csv_file: str = None
 ) -> str:
     """
     Generate COPY/INSERT query dynamically from YAML configuration.
@@ -156,6 +166,7 @@ def get_ingest_query(
         table: Table name
         check_duplicates: Whether to handle duplicate IDs
         config_dir: Directory containing config files
+        csv_file: Optional CSV file path - if contains 'lingua', lingua columns are included
         
     Returns:
         SQL query for data ingestion
@@ -164,8 +175,8 @@ def get_ingest_query(
     full_table = f"{schema}.{table}"
     temp_table = f"temp_{data_type}"
     
-    # Get column list from YAML
-    columns_list = get_column_list(data_type, config_dir)
+    # Get column list from YAML (includes lingua columns if csv_file is a lingua file)
+    columns_list = get_column_list(data_type, config_dir, csv_file)
     columns = ", ".join(columns_list)
     
     # Fields to update on conflict (all except 'id' which is the primary key)
@@ -174,14 +185,16 @@ def get_ingest_query(
         f"{col} = EXCLUDED.{col}" for col in update_fields
     )
     
+    # Build COPY options - add FORCE_NULL for lingua probability columns (empty string -> NULL)
+    copy_options = "FORMAT csv, HEADER true, DELIMITER ','"
+    if csv_file and 'lingua' in csv_file:
+        copy_options += ", FORCE_NULL (lang_prob, lang2_prob)"
+    
     if not check_duplicates:
         return f"""
             COPY {full_table}({columns})
             FROM '%s'
-            DELIMITER ','
-            QUOTE '"'
-            HEADER
-            CSV;
+            WITH ({copy_options});
             """
     else:
         return f"""
@@ -190,7 +203,7 @@ def get_ingest_query(
 
             COPY {temp_table}({columns})
             FROM '%s'
-            WITH (FORMAT csv, HEADER true, DELIMITER ',');
+            WITH ({copy_options});
 
             WITH latest_rows AS (
                 SELECT DISTINCT ON (id)
@@ -426,12 +439,12 @@ def ingest_csv(
     ensure_database_exists(dbname, host, port, user)
     ensure_schema_exists(schema, dbname, host, port, user)
     
-    # Create table if needed (schema from YAML)
-    create_query = get_create_table_query(data_type, schema, table, config_dir)
+    # Create table if needed (schema from YAML, includes lingua columns if applicable)
+    create_query = get_create_table_query(data_type, schema, table, config_dir, csv_file)
     execute_query(create_query, dbname, host, port, user)
     
-    # Ingest data (columns from YAML)
-    ingest_query = get_ingest_query(data_type, schema, table, check_duplicates, config_dir)
+    # Ingest data (columns from YAML, includes lingua columns if applicable)
+    ingest_query = get_ingest_query(data_type, schema, table, check_duplicates, config_dir, csv_file)
     execute_query(ingest_query, dbname, host, port, user, args=[csv_file])
     
     # Create indexes if requested

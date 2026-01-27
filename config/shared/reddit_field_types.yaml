@@ -36,3 +36,9 @@ url: text
 title: text
 selftext: text
 id10: bigint
+
+# Lingua language detection fields (added by ml_cpu profile)
+lang: ['varchar', 2]         # ISO 639-1 language code (e.g., 'en', 'de', 'es')
+lang_prob: float             # Confidence probability for primary language (0.0-1.0)
+lang2: ['varchar', 2]        # ISO 639-1 code for second most likely language
+lang2_prob: float            # Confidence probability for secondary language

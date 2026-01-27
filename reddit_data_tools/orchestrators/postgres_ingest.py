@@ -9,7 +9,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 from ..core.state import PipelineState
 from ..core.decompress import decompress_zst
@@ -27,6 +27,7 @@ from ..db.postgres.ingest import (
     ingest_csv, create_index, table_exists, analyze_table,
     ensure_database_exists, ensure_schema_exists
 )
+from .ml import detect_parsed_csv_files
 
 
 def load_config(config_dir: str = "/app/config", quiet: bool = False) -> Dict:
@@ -161,6 +162,79 @@ def detect_csv_files(csv_dir: str, data_types: List[str]) -> List[Tuple[str, str
     return [(f[0], f[1], f[2]) for f in files]
 
 
+def get_lingua_config(config_dir: str) -> Optional[Dict]:
+    """
+    Load lingua configuration from ml_cpu profile.
+    
+    Returns:
+        Dict with 'suffix' and 'output_dir' keys, or None if config not found
+    """
+    try:
+        ml_config = load_profile_config('ml_cpu', config_dir, quiet=True)
+        lingua_config = ml_config.get('lingua', {})
+        return {
+            'suffix': lingua_config.get('suffix', '_lingua'),
+            'output_dir': '/data/output/lingua'  # Standard output path for lingua
+        }
+    except Exception:
+        return None
+
+
+def detect_csv_files_with_lingua(
+    csv_dir: str,
+    data_types: List[str],
+    lingua_config: Dict
+) -> Tuple[List[Tuple[str, str, str]], Dict[str, str]]:
+    """
+    Detect CSV files, preferring lingua versions when available.
+    
+    Uses detect_parsed_csv_files from ml.py to get base file list,
+    then checks for corresponding lingua files.
+    
+    Args:
+        csv_dir: Directory containing original CSVs
+        data_types: List of data types to search for
+        lingua_config: Dict with 'suffix' and 'output_dir' from get_lingua_config()
+        
+    Returns:
+        Tuple of:
+        - List of tuples: (filepath, file_id, data_type)
+        - Dict mapping file_id to source ('lingua' or 'original')
+    """
+    # Get list of original CSVs using ml.py's detection function
+    original_files = detect_parsed_csv_files(csv_dir, data_types)
+    
+    lingua_output_dir = Path(lingua_config['output_dir'])
+    lingua_suffix = lingua_config['suffix']
+    
+    result_files = []
+    source_map = {}
+    
+    # Debug: check what's in the lingua output directory
+    for data_type in data_types:
+        type_dir = lingua_output_dir / data_type
+        if type_dir.is_dir():
+            lingua_files_found = list(type_dir.glob("*.csv"))
+            if lingua_files_found:
+                print(f"[DEBUG] Found {len(lingua_files_found)} files in {type_dir}")
+                print(f"[DEBUG] First file: {lingua_files_found[0].name}")
+        else:
+            print(f"[DEBUG] Directory does not exist: {type_dir}")
+    
+    for csv_path, file_id, data_type in original_files:
+        # Check if lingua version exists
+        lingua_file = lingua_output_dir / data_type / f"{file_id}{lingua_suffix}.csv"
+        
+        if lingua_file.exists():
+            result_files.append((str(lingua_file), file_id, data_type))
+            source_map[file_id] = 'lingua'
+        else:
+            result_files.append((csv_path, file_id, data_type))
+            source_map[file_id] = 'original'
+    
+    return result_files, source_map
+
+
 def run_pipeline(config_dir: str = "/app/config"):
     """
     Run the database ingestion pipeline.
@@ -233,11 +307,33 @@ def run_pipeline(config_dir: str = "/app/config"):
     
     # Check for existing JSON/CSV files
     json_files = detect_json_files(extracted_dir, data_types)
-    csv_files = detect_csv_files(csv_dir, data_types)
+    
+    # Check if we should prefer lingua files
+    prefer_lingua = get_optional(config, 'processing', 'prefer_lingua', default=False)
+    lingua_config = None
+    csv_source_map = {}
+    
+    if prefer_lingua:
+        lingua_config = get_lingua_config(config_dir)
+        if lingua_config:
+            print(f"[CONFIG] Prefer lingua: enabled (suffix: {lingua_config['suffix']})")
+            csv_files, csv_source_map = detect_csv_files_with_lingua(
+                csv_dir, data_types, lingua_config
+            )
+            # Count sources
+            lingua_count = sum(1 for src in csv_source_map.values() if src == 'lingua')
+            original_count = sum(1 for src in csv_source_map.values() if src == 'original')
+            print(f"[DETECT] Found {lingua_count} lingua CSVs, {original_count} original CSVs (fallback)")
+        else:
+            print("[CONFIG] Prefer lingua: enabled but ml_cpu config not found, using original CSVs")
+            csv_files = detect_csv_files(csv_dir, data_types)
+    else:
+        csv_files = detect_csv_files(csv_dir, data_types)
+    
     pending_csv_files = [f for f in csv_files if not state.is_processed(f[1])]
     
     print(f"[DETECT] Found {len(json_files)} JSON files in extracted directory")
-    print(f"[DETECT] Found {len(pending_csv_files)} unprocessed CSV files in csv directory")
+    print(f"[DETECT] Found {len(pending_csv_files)} unprocessed CSV files to ingest")
     
     has_work = pending_zst_files or json_files or pending_csv_files
     
@@ -353,13 +449,25 @@ def run_pipeline(config_dir: str = "/app/config"):
         total_timings['parsing'] = time.time() - t_start
     
     # Phase 3: Ingest CSV files to PostgreSQL
-    csv_files = detect_csv_files(csv_dir, data_types)
+    # Re-detect CSV files (may have been created during parsing phase)
+    if prefer_lingua and lingua_config:
+        csv_files, csv_source_map = detect_csv_files_with_lingua(
+            csv_dir, data_types, lingua_config
+        )
+    else:
+        csv_files = detect_csv_files(csv_dir, data_types)
     files_to_ingest = [(p, fid, dt) for p, fid, dt in csv_files if not state.is_processed(fid)]
     
     if files_to_ingest:
         print("\n" + "="*60)
         print("PHASE 3: INGESTION")
         print("="*60)
+        
+        # Log source breakdown if prefer_lingua is enabled
+        if prefer_lingua and csv_source_map:
+            ingest_from_lingua = sum(1 for p, fid, dt in files_to_ingest if csv_source_map.get(fid) == 'lingua')
+            ingest_from_original = sum(1 for p, fid, dt in files_to_ingest if csv_source_map.get(fid) == 'original')
+            print(f"[INGEST] Sources: {ingest_from_lingua} lingua, {ingest_from_original} original (fallback)")
         
         t_start = time.time()
         

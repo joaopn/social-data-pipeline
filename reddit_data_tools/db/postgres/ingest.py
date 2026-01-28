@@ -822,17 +822,17 @@ def ingest_classifier_csv(
     # Ensure schema exists
     ensure_schema_exists(schema, dbname, host, port, user)
     
-    # Always infer schema to get nullable_cols for FORCE_NULL (even if table exists)
-    print(f"[{classifier_name.upper()}] Inferring schema from {type_inference_rows} rows...")
-    column_list, column_types, nullable_cols = infer_classifier_schema(
-        csv_file, type_inference_rows, column_overrides
-    )
-    
-    if nullable_cols:
-        print(f"[{classifier_name.upper()}] Columns with empty values (using FORCE_NULL): {nullable_cols}")
-    
-    # Check if table exists
+    # Check if table exists FIRST to avoid unnecessary CSV inference
     if not table_exists(table_name, schema, dbname, host, port, user):
+        # Table doesn't exist - infer schema from CSV and create it
+        print(f"[{classifier_name.upper()}] Inferring schema from {type_inference_rows} rows...")
+        column_list, column_types, nullable_cols = infer_classifier_schema(
+            csv_file, type_inference_rows, column_overrides
+        )
+        
+        if nullable_cols:
+            print(f"[{classifier_name.upper()}] Columns with empty values (using FORCE_NULL): {nullable_cols}")
+        
         print(f"[{classifier_name.upper()}] Inferred columns: {column_list}")
         
         # Check if main table exists when FK is requested
@@ -851,10 +851,12 @@ def ingest_classifier_csv(
         fk_status = " (with FK)" if actual_use_fk else " (no FK)"
         print(f"[{classifier_name.upper()}] Created table: {schema}.{table_name}{fk_status}")
     else:
-        # Get existing columns from database (in table order)
+        # Table exists - get schema from database (no CSV inference needed)
         column_list = get_table_column_list(
             table_name, schema, dbname, host, port, user
         )
+        # No need to determine nullable_cols - if there was an issue, first file would have failed
+        nullable_cols = []
     
     # Ingest data (COPY entire CSV directly, just like base table)
     ingest_query = get_classifier_ingest_query(

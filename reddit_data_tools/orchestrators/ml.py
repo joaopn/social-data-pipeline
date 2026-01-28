@@ -175,6 +175,21 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
         'remove_patterns': get_required(config, 'remove_patterns'),
     }
     
+    # CPU-specific settings (for ml_cpu profile / lingua)
+    if profile == "ml_cpu":
+        # Read prefer_lingua from postgres profile to control ingest output
+        try:
+            postgres_config = load_profile_config('postgres_ingest', config_dir, quiet=True)
+            prefer_lingua = postgres_config.get('processing', {}).get('prefer_lingua', True)
+        except Exception:
+            prefer_lingua = True  # Default to true if postgres config not found
+        
+        global_config.update({
+            'prefer_lingua': prefer_lingua,
+            'fields': get_optional(config, 'fields', default=[]),
+        })
+        print(f"[CONFIG] Prefer lingua: {prefer_lingua} (from postgres profile)")
+    
     # GPU-specific settings (only required for ml profile)
     if profile == "ml":
         global_config.update({

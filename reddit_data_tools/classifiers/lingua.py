@@ -25,6 +25,9 @@ except ImportError:
 # Output columns this classifier adds
 OUTPUT_COLUMNS = ['lang', 'lang_prob', 'lang2', 'lang2_prob']
 
+# Mandatory fields for ingest CSV (required for ON CONFLICT resolution)
+INGEST_MANDATORY_FIELDS = ['id', 'dataset', 'retrieved_utc']
+
 
 def _build_lingua_validity_expr(text_col: str = "_text") -> pl.Expr:
     """
@@ -174,6 +177,59 @@ def _build_text_expr(text_columns: List[str], remove_strings: List[str], remove_
     return text_expr
 
 
+def _get_ingest_columns(config: Dict) -> List[str]:
+    """
+    Get list of columns to include in ingest CSV.
+    
+    Returns mandatory fields (id, dataset, retrieved_utc) + configured fields + lingua output columns.
+    
+    Args:
+        config: Classifier config dict (should have 'fields' at top level)
+        
+    Returns:
+        List of column names for ingest CSV
+    """
+    # Start with mandatory fields for ON CONFLICT resolution
+    columns = list(INGEST_MANDATORY_FIELDS)
+    
+    # Add configured fields (from global config, not lingua-specific)
+    extra_fields = config.get('fields', [])
+    if extra_fields:
+        for field in extra_fields:
+            if field not in columns:
+                columns.append(field)
+    
+    # Add lingua output columns
+    columns.extend(OUTPUT_COLUMNS)
+    
+    return columns
+
+
+def _get_ingest_output_path(output_csv: str) -> Path:
+    """
+    Convert lingua output path to lingua_ingest output path.
+    
+    Example: /data/output/lingua/submissions/RS_2024-01_lingua.csv
+          -> /data/output/lingua_ingest/submissions/RS_2024-01_lingua.csv
+    
+    Args:
+        output_csv: Original output CSV path
+        
+    Returns:
+        Path object for ingest CSV
+    """
+    output_path = Path(output_csv)
+    
+    # Find 'lingua' in path parts and replace with 'lingua_ingest'
+    parts = list(output_path.parts)
+    for i, part in enumerate(parts):
+        if part == 'lingua':
+            parts[i] = 'lingua_ingest'
+            break
+    
+    return Path(*parts)
+
+
 def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -> int:
     """
     Process CSV file with language detection using Polars and Lingua.
@@ -184,6 +240,9 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     
     Uses a .temp file during writing and renames to final name on success.
     This ensures partial files from interrupted runs are not mistaken as complete.
+    
+    Optionally outputs a minimal "ingest" CSV to lingua_ingest folder with only
+    id, dataset, retrieved_utc + configured fields + lingua columns (for postgres_ml).
     
     Args:
         input_csv: Input CSV path
@@ -208,6 +267,9 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     text_columns = get_text_columns(data_type, config)
     remove_strings = config.get('remove_strings', [])
     remove_patterns = config.get('remove_patterns', [])
+    # Output ingest CSV only when prefer_lingua is false (lingua data ingested separately)
+    prefer_lingua = config.get('prefer_lingua', True)
+    output_ingest = not prefer_lingua
     
     # Set Polars thread count (same as Lingua/Rayon)
     os.environ['POLARS_MAX_THREADS'] = str(num_workers)
@@ -223,6 +285,21 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     if temp_path.exists():
         print(f"[{input_path.stem}] Removing incomplete temp file: {temp_path.name}")
         temp_path.unlink()
+    
+    # Setup ingest output if enabled
+    ingest_path = None
+    ingest_temp_path = None
+    ingest_columns = None
+    if output_ingest:
+        ingest_path = _get_ingest_output_path(output_csv)
+        ingest_path.parent.mkdir(parents=True, exist_ok=True)
+        ingest_temp_path = ingest_path.with_suffix(ingest_path.suffix + '.temp')
+        ingest_columns = _get_ingest_columns(config)
+        
+        # Clean up any leftover ingest temp file
+        if ingest_temp_path.exists():
+            print(f"[{input_path.stem}] Removing incomplete ingest temp file: {ingest_temp_path.name}")
+            ingest_temp_path.unlink()
     
     # Get cached detector (or build if first call / config changed)
     # quiet=True because initialization logging is handled by orchestrator
@@ -248,7 +325,7 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     # Note: Polars batch_size may not be respected (known issue), so we accumulate
     reader = pl.read_csv_batched(input_csv, batch_size=batch_size)
     
-    print(f"[{input_path.stem}] Starting")
+    print(f"[{input_path.stem}] Starting" + (" (with ingest output)" if output_ingest else ""))
     
     while True:
         t0 = time.time()
@@ -344,13 +421,26 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
             pl.Series("lang2_prob", prob2_col),
         ])
         
-        # Write batch to temp file
+        # Write batch to temp file (full output)
         if first_batch:
             df_out.write_csv(temp_path)
-            first_batch = False
         else:
             with open(temp_path, 'ab') as f:
                 df_out.write_csv(f, include_header=False)
+        
+        # Write minimal ingest CSV if enabled
+        if output_ingest and ingest_columns:
+            # Select only the ingest columns (filter to columns that exist in df_out)
+            available_ingest_cols = [c for c in ingest_columns if c in df_out.columns]
+            df_ingest = df_out.select(available_ingest_cols)
+            
+            if first_batch:
+                df_ingest.write_csv(ingest_temp_path)
+            else:
+                with open(ingest_temp_path, 'ab') as f:
+                    df_ingest.write_csv(f, include_header=False)
+        
+        first_batch = False
         write_time += time.time() - t0
         
         total_rows += n_rows
@@ -359,6 +449,10 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     # Rename temp file to final output path on success
     if temp_path.exists():
         temp_path.rename(output_path)
+    
+    # Rename ingest temp file to final path on success
+    if output_ingest and ingest_temp_path and ingest_temp_path.exists():
+        ingest_temp_path.rename(ingest_path)
     
     # Final stats
     elapsed = time.time() - start_time

@@ -138,12 +138,20 @@ def main():
     type_inference_rows = proc_config.get('type_inference_rows', 1000)
     use_foreign_key = proc_config.get('use_foreign_key', True)
     
+    # Read prefer_lingua from postgres profile (controls lingua ingestion behavior)
+    try:
+        postgres_config = load_profile_config('postgres_ingest', config_dir, quiet=True)
+        prefer_lingua = postgres_config.get('processing', {}).get('prefer_lingua', True)
+    except Exception:
+        prefer_lingua = True  # Default to true if postgres config not found
+    
     print(f"[CONFIG] Database: {db_config.get('name')}@{db_config.get('host')}:{db_config.get('port')}")
     print(f"[CONFIG] Schema: {db_config.get('schema')}")
     print(f"[CONFIG] Output dir: {output_dir}")
     print(f"[CONFIG] Data types: {data_types}")
     print(f"[CONFIG] Classifiers: {list(classifiers_config.keys())}")
     print(f"[CONFIG] Use foreign key: {use_foreign_key}")
+    print(f"[CONFIG] Prefer lingua: {prefer_lingua} (from postgres profile)")
     
     # Ensure database and schema exist
     ensure_database_exists(
@@ -176,7 +184,18 @@ def main():
             print(f"\n[{classifier_name.upper()}] Skipped (disabled)")
             continue
         
-        source_dir = classifier_cfg.get('source_dir', classifier_name)
+        # Handle lingua classifier specially based on prefer_lingua setting
+        if classifier_name == 'lingua':
+            if prefer_lingua:
+                # Lingua data is already in main table via postgres profile
+                print(f"\n[{classifier_name.upper()}] Skipped (prefer_lingua=true, data in main table)")
+                continue
+            else:
+                # Use lingua_ingest folder (minimal CSV for independent ingestion)
+                source_dir = classifier_cfg.get('source_dir_ingest', 'lingua_ingest')
+        else:
+            source_dir = classifier_cfg.get('source_dir', classifier_name)
+        
         suffix = classifier_cfg.get('suffix', f'_{classifier_name}')
         column_overrides = classifier_cfg.get('column_overrides', {})
         

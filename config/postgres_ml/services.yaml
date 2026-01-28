@@ -14,7 +14,8 @@
 classifiers:
   lingua:
     enabled: true
-    source_dir: lingua            # Directory under /data/output/
+    source_dir: lingua            # Directory under /data/output/ (used when prefer_lingua: true, but skipped)
+    source_dir_ingest: lingua_ingest  # Directory for minimal ingest CSVs (used when prefer_lingua: false)
     suffix: "_lingua"             # File suffix pattern (e.g., RS_2024-01_lingua.csv)
   
   # toxic_roberta:

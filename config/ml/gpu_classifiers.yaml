@@ -38,10 +38,10 @@ min_tokens: 0              # Global minimum token count for transformers (0 = no
                            # Applied AFTER text cleaning (removal of URLs, mentions, etc.) and tokenization
 
 # Output field control (transformer classifiers only, not lingua)
-# fields: list of columns to keep from input CSV (in addition to classifier output columns)
+# Mandatory fields (id, dataset, retrieved_utc) are ALWAYS included for ON CONFLICT resolution
+# fields: list of additional columns to keep from input CSV (in addition to mandatory + classifier output columns)
 # If not specified or empty, keeps all input columns
 fields:
-  - dataset
   - author
   - subreddit
 
@@ -59,7 +59,7 @@ fields:
 #   supported_languages: [en]          # Optional: filter by lang column (requires use_lingua: true)
 #   lang2_fallback: false              # Optional: if true, also check lang2 column for matches
 #   min_tokens: 3                      # Optional: minimum token count (overrides global min_tokens)
-#   fields: [dataset, author, subreddit]  # Optional: columns to keep from input (default: all)
+#   fields: [author, subreddit]           # Optional: extra columns to keep (id,dataset,retrieved_utc always included)
 #   batch_size: 2000000                # Rows per batch for disk I/O (default 2M, like Lingua)
 #   classifier_batch_size: 64          # Batch size per GPU for inference
 #   max_length: 512                    # Max tokens (BERT limit)

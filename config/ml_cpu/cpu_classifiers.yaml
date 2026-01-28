@@ -19,6 +19,13 @@ remove_patterns:           # Regex patterns removed from text before classificat
   - 'r/\w+'                # Subreddit mentions (r/name)
   - 'u/\w+'                # User mentions (u/name)
 
+# Output field control
+# fields: list of columns to keep from input CSV (in addition to lingua output columns)
+# These fields are used when generating the minimal ingest CSV (lingua_ingest folder)
+# If not specified or empty, the ingest CSV only includes id, dataset, retrieved_utc + lingua columns
+# Only used when prefer_lingua: false in postgres profile (lingua data ingested separately)
+fields: []
+
 # Lingua - Language detection
 # Text filtering uses a word-based algorithm derived from Lingua's official benchmarks:
 # - 3+ words: valid (enough context for reliable detection)

@@ -68,7 +68,6 @@ services:
     environment:
       - PROFILE=ml
       - PYTHONUNBUFFERED=1
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     volumes:
       - ${CSV_PATH:-./data/csv}:/data/csv:ro
       - ${OUTPUT_PATH:-./data/output}:/data/output

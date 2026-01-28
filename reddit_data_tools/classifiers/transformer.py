@@ -36,6 +36,10 @@ AutoTokenizer = None
 # Thread-local storage for worker models
 _thread_local = threading.local()
 
+# Mandatory fields always included in output (required for ON CONFLICT resolution)
+# Same as base table ingestion - ensures consistent duplicate handling
+MANDATORY_FIELDS = ['id', 'dataset', 'retrieved_utc']
+
 
 def _lazy_import_deps():
     """Lazy import all heavy dependencies to avoid loading in CPU-only containers."""
@@ -799,13 +803,22 @@ class TransformerClassifier:
                 df_out = df_out.drop(["_text", "_lang_ok", "_text_ok"])
             
             # Filter to specified fields if configured
-            # Keep: specified fields + classifier output columns (id2label values)
+            # Always keep: mandatory fields (id, dataset, retrieved_utc) for ON CONFLICT resolution
+            # Plus: specified fields + classifier output columns (id2label values)
+            classifier_cols = set(id2label.values())
+            
+            # Start with mandatory fields (same as base table for consistent duplicate handling)
+            cols_to_keep = [f for f in MANDATORY_FIELDS if f in df_out.columns]
+            
+            # Add configured fields (excluding mandatory to avoid duplicates)
             if self.fields:
-                classifier_cols = set(id2label.values())
-                # Always keep 'id' for joining, plus specified fields and classifier outputs
-                cols_to_keep = ['id'] + [f for f in self.fields if f in df_out.columns and f != 'id']
-                cols_to_keep += [c for c in df_out.columns if c in classifier_cols]
-                df_out = df_out.select(cols_to_keep)
+                for f in self.fields:
+                    if f in df_out.columns and f not in cols_to_keep:
+                        cols_to_keep.append(f)
+            
+            # Add classifier output columns
+            cols_to_keep += [c for c in df_out.columns if c in classifier_cols]
+            df_out = df_out.select(cols_to_keep)
             
             # Write batch to temp file
             if first_batch:

@@ -119,10 +119,13 @@ def detect_classifier_csvs(
     return sorted(files, key=lambda x: x[0])
 
 
-def main():
-    """Main entry point for postgres_ml profile."""
-    config_dir = os.environ.get('CONFIG_DIR', '/app/config')
+def run_pipeline(config_dir: str = "/app/config"):
+    """
+    Run the postgres_ml ingestion pipeline.
     
+    Args:
+        config_dir: Base configuration directory
+    """
     # Load configuration
     config = load_config(config_dir)
     
@@ -470,6 +473,28 @@ def main():
     print(f"Skipped:    {total_skipped}")
     print(f"Failed:     {total_fail}")
     print(f"Time:       {elapsed:.2f} minutes")
+
+
+def main():
+    """Main entry point with optional watch mode."""
+    config_dir = os.environ.get('CONFIG_DIR', '/app/config')
+    config = load_config(config_dir)
+    watch_interval = config.get('processing', {}).get('watch_interval', 0)
+    
+    if watch_interval > 0:
+        print(f"[WATCH] Watch mode enabled: checking every {watch_interval} minutes")
+        interval_seconds = watch_interval * 60
+        while True:
+            try:
+                run_pipeline(config_dir)
+            except Exception as e:
+                print(f"[WATCH] Pipeline error: {e}")
+                print("[WATCH] Will retry next interval...")
+            
+            print(f"\n[WATCH] Next check in {watch_interval} minutes...")
+            time.sleep(interval_seconds)
+    else:
+        run_pipeline(config_dir)
 
 
 if __name__ == "__main__":

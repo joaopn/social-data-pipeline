@@ -211,8 +211,7 @@ docker compose --profile postgres down
 ```
 config/
 ├── shared/                        # Shared across all profiles
-│   ├── reddit_field_list.yaml     # Full field list for database
-│   ├── reddit_field_list_ml.yaml  # Minimal fields for ML
+│   ├── reddit_field_list.yaml     # Field list for parsing/database
 │   └── reddit_field_types.yaml    # Field type definitions
 ├── parse/
 │   └── pipeline.yaml              # Parse-only settings

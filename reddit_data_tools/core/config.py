@@ -21,7 +21,7 @@ No hardcoded defaults - missing required config values will raise errors.
 import os
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from copy import deepcopy
 
 
@@ -171,85 +171,6 @@ def load_profile_config(
         merged_config = deep_merge(merged_config, config)
     
     return merged_config
-
-
-def load_shared_config(
-    config_dir: str = "/app/config",
-    ml_fields: bool = False,
-    quiet: bool = False
-) -> Tuple[Dict, Dict]:
-    """
-    Load shared configuration files (field list and field types).
-    
-    user.yaml structure for shared config:
-        reddit_field_list:      # Overrides reddit_field_list.yaml
-            submissions:
-                - field1
-                - field2
-        reddit_field_list_ml:   # Overrides reddit_field_list_ml.yaml
-            submissions:
-                - field1
-        reddit_field_types:     # Overrides reddit_field_types.yaml
-            my_field: text
-    
-    List values in user.yaml fully replace base values (no merging).
-    
-    Args:
-        config_dir: Base configuration directory
-        ml_fields: If True, use reddit_field_list_ml.yaml instead of reddit_field_list.yaml
-        quiet: If True, suppress informational output
-        
-    Returns:
-        Tuple of (field_list, field_types) dictionaries
-        
-    Raises:
-        ConfigurationError: If required config files are missing
-    """
-    shared_path = Path(config_dir) / 'shared'
-    
-    if not shared_path.exists():
-        raise ConfigurationError(f"Shared config directory not found: {shared_path}")
-    
-    # Load user.yaml if it exists
-    user_config_path = shared_path / 'user.yaml'
-    user_config = load_yaml_file(user_config_path)
-    has_user_config = user_config is not None
-    
-    if has_user_config and not quiet:
-        print(f"[CONFIG] Using user override: shared/user.yaml")
-    
-    # Determine which field list to use
-    if ml_fields:
-        field_list_file = 'reddit_field_list_ml.yaml'
-    else:
-        field_list_file = 'reddit_field_list.yaml'
-    
-    # Load field list
-    field_list_path = shared_path / field_list_file
-    field_list = load_yaml_file(field_list_path)
-    if field_list is None:
-        raise ConfigurationError(f"Required config file not found: {field_list_path}")
-    
-    # Apply user overrides for field list
-    if has_user_config:
-        field_list_key = get_config_key(field_list_file)
-        if field_list_key in user_config:
-            field_list = deep_merge(field_list, user_config[field_list_key])
-    
-    # Load field types
-    field_types_file = 'reddit_field_types.yaml'
-    field_types_path = shared_path / field_types_file
-    field_types = load_yaml_file(field_types_path)
-    if field_types is None:
-        raise ConfigurationError(f"Required config file not found: {field_types_path}")
-    
-    # Apply user overrides for field types
-    if has_user_config:
-        field_types_key = get_config_key(field_types_file)
-        if field_types_key in user_config:
-            field_types = deep_merge(field_types, user_config[field_types_key])
-    
-    return field_list, field_types
 
 
 def get_required(config: Dict, *keys: str, error_msg: str = None) -> Any:

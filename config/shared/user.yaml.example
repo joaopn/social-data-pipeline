@@ -3,11 +3,6 @@
 #
 # Structure: Each key corresponds to a config file (without .yaml extension).
 # List values fully replace the base config (no merging).
-#
-# IMPORTANT: reddit_field_list and reddit_field_list_ml have the same structure
-# but are used by different profiles. Use the correct key to override each:
-#   - reddit_field_list: Used by parse and postgres_ingest profiles
-#   - reddit_field_list_ml: Used by ml_cpu and ml profiles
 
 # reddit_field_list:             # Overrides reddit_field_list.yaml (for parse/postgres_ingest)
 #   submissions:                 # Replaces entire submissions field list!
@@ -20,19 +15,6 @@
 #   comments:                    # Replaces entire comments field list!
 #     - created_utc
 #     - score
-#     - subreddit
-#     - author
-#     - body
-
-# reddit_field_list_ml:          # Overrides reddit_field_list_ml.yaml (for ml profiles)
-#   submissions:                 # Replaces entire submissions field list!
-#     - created_utc
-#     - subreddit
-#     - author
-#     - title
-#     - selftext
-#   comments:                    # Replaces entire comments field list!
-#     - created_utc
 #     - subreddit
 #     - author
 #     - body

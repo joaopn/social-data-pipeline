@@ -1,6 +1,6 @@
 # Reddit Data Tools - CPU Base Image
 # Used for: parse, ml_cpu, postgres_ingest, postgres_ml profiles
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive

@@ -130,25 +130,23 @@ The pipeline also supports the torrent directory structure (`submissions/RS_YYYY
 
 ### 2. Configure
 
-Create a `.env` file in the project root:
+Confirm or edit paths in the `.env` file. 
 
 ```bash
 # Paths
-DUMPS_PATH=./data/dumps
-EXTRACTED_PATH=./data/extracted
-CSV_PATH=./data/csv
-OUTPUT_PATH=./data/output
-PGDATA_PATH=./data/database
+DUMPS_PATH=./data/dumps         # .zst compressed dumps
+EXTRACTED_PATH=./data/extracted # extracted ndjson location
+CSV_PATH=./data/csv             # parsed CSV files location
+OUTPUT_PATH=./data/output       # ml classifier location
+PGDATA_PATH=./data/database     # database location
 
 # Database (for postgres profiles)
-DB_NAME=datasets
-DB_SCHEMA=reddit
-POSTGRES_PORT=5432
+DB_NAME=datasets      # database name
+DB_SCHEMA=reddit      # database schema for the tables
+POSTGRES_PORT=5432    # PostgreSQL port to connect to
 ```
 
-Edit configuration files in `config/` as needed (see [Configuration](#configuration)).
-
-> **User overrides:** Create a `user.yaml` file in any profile directory to override defaults without modifying tracked files. See `user.yaml.example` for available options.
+There are *extensive* configuration options in `config/` (see [Configuration](#configuration)). Create a `user.yaml` file in any profile directory to override defaults (check `user.yaml.example` for templates).
 
 ### 3. Run
 
@@ -159,16 +157,26 @@ docker compose --profile parse up
 # CPU classification (Lingua language detection)
 docker compose --profile ml_cpu up
 
-# GPU classification (transformers, requires NVIDIA GPU)
+# GPU classification (optional, requires NVIDIA GPU)
 docker compose --profile ml up
 
 # Database workflow: start postgres first, then run ingestion pipelines
 docker compose --profile postgres up -d
 docker compose --profile postgres_ingest up
+
+# Ingests optional GPU-classified files if available
 docker compose --profile postgres_ml up
-# Postgres keeps running for queries
+```
+
+This runs everything and spawns the database. To shut it down
+
+```bash
+# Shuts down database
 docker compose --profile postgres down
 ```
+
+> **Long classification runtime:** Due to sheer size the machine learning classification can take very long to run, especially the transformers classifiers (~1 month on a cluster with 4X L40S GPUs per classifier for the entire dumps). It is recommended to obtain the preprocessed files from somewhere else. You can estimate the runtime on your system by checking here: https://github.com/joaopn/gpu_benchmark_goemotions
+
 
 ## Docker Profiles
 
@@ -181,7 +189,7 @@ docker compose --profile postgres down
 | `postgres_ingest` | Ingest CSVs into PostgreSQL main tables | `Dockerfile` | Requires postgres running, parsed CSVs |
 | `postgres_ml` | Ingest ML classifier outputs into PostgreSQL | `Dockerfile` | Requires postgres running, ML outputs |
 
-> **Note:** GPU profile requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+**Note:** GPU profile requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 
 ## Configuration
 
@@ -205,29 +213,22 @@ config/
 ├── shared/                        # Shared across all profiles
 │   ├── reddit_field_list.yaml     # Full field list for database
 │   ├── reddit_field_list_ml.yaml  # Minimal fields for ML
-│   ├── reddit_field_types.yaml    # Field type definitions
-│   └── user.yaml.example          # User override template
+│   └── reddit_field_types.yaml    # Field type definitions
 ├── parse/
-│   ├── pipeline.yaml              # Parse-only settings
-│   └── user.yaml.example          # User override template
+│   └── pipeline.yaml              # Parse-only settings
 ├── ml_cpu/
 │   ├── pipeline.yaml              # CPU classifier settings
-│   ├── cpu_classifiers.yaml       # Lingua configuration
-│   └── user.yaml.example          # User override template
+│   └── cpu_classifiers.yaml       # Lingua configuration
 ├── ml/
 │   ├── pipeline.yaml              # GPU classifier settings
-│   ├── gpu_classifiers.yaml       # Transformer configurations
-│   └── user.yaml.example          # User override template
+│   └── gpu_classifiers.yaml       # Transformer configurations
 ├── postgres/
 │   ├── pipeline.yaml              # Main table ingestion settings
-│   ├── services.yaml              # Service definitions (legacy, kept for compatibility)
 │   ├── postgresql.conf            # PostgreSQL tuning
-│   ├── pg_hba.conf                # PostgreSQL authentication
-│   └── user.yaml.example          # User override template
+│   └── pg_hba.conf                # PostgreSQL authentication
 └── postgres_ml/
     ├── pipeline.yaml              # ML classifier ingestion settings
-    ├── services.yaml              # ML classifier definitions
-    └── user.yaml.example          # User override template
+    └── services.yaml              # ML classifier definitions
 ```
 
 #### User Configuration Overrides
@@ -248,12 +249,7 @@ pipeline:              # Overrides settings from pipeline.yaml
 
 gpu_classifiers:       # Overrides settings from gpu_classifiers.yaml
   batch_size: 1000000
-  gpu_ids:
-    - 0
-    - 1
 ```
-
-**List behavior:** Lists in `user.yaml` fully **replace** the base config lists (they don't merge). This lets you reduce field lists or change classifier lists without modifying the original files.
 
 ### Pipeline Configuration
 
@@ -266,7 +262,7 @@ processing:
     - comments
   parallel_mode: true  # Process files in parallel
   parse_workers: 4     # Parallel workers for CSV parsing
-  cleanup_temp: true   # Delete temp files after processing
+  cleanup_temp: false   # Delete temp files after processing
   watch_interval: 0    # 0 = run once, >0 = check every N minutes
 ```
 
@@ -563,10 +559,6 @@ This project targets large-scale, Reddit-wide analysis. For queries not limited 
 ### Can I run classifiers without the database?
 
 Yes! Use `--profile ml_cpu` or `--profile ml` independently. The database profile is optional.
-
-### Can I add MongoDB/StarRocks support?
-
-Future releases will add `db_mongo` and `db_starrocks` profiles.
 
 ## Troubleshooting
 

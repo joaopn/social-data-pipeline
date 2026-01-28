@@ -65,6 +65,7 @@ services:
       context: .
       dockerfile: Dockerfile.gpu
     command: python -m reddit_data_tools.orchestrators.ml
+    ipc: host  # Required for PyTorch/CUDA shared memory
     environment:
       - PROFILE=ml
       - PYTHONUNBUFFERED=1

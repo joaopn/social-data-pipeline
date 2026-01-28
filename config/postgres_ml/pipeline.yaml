@@ -17,6 +17,7 @@ processing:
   use_foreign_key: true      # Add foreign key constraint to main table (submissions/comments)
                              # Requires main table to exist. Set false for independent ingestion.
   watch_interval: 0          # Check for new files every N minutes (0 = run once)
+  fast_initial_load: true   # If true: use optimized bulk load for initial ingestion (UNLOGGED table, blind COPY, post-load dedup)
   # Note: prefer_lingua is read from postgres profile (config/postgres/pipeline.yaml)
   # If true: skip lingua classifier (data already in main table)
   # If false: ingest lingua from lingua_ingest folder

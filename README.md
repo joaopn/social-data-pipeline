@@ -369,9 +369,22 @@ When `fast_initial_load: true`, the pipeline uses an optimized bulk ingestion st
 
 ```yaml
 processing:
-  use_foreign_key: true   # Add FK constraint to main tables (default: true)
-                          # Set false for independent ingestion without main table
+  use_foreign_key: true     # Add FK constraint to main tables (default: true)
+                            # Set false for independent ingestion without main table
+  fast_initial_load: false  # Use optimized bulk load for initial classifier ingestion
 ```
+
+The `fast_initial_load` option also works for ML classifier tables (`postgres_ml` profile). The process is similar to main tables but includes adding the FOREIGN KEY constraint after deduplication:
+
+1. Creates UNLOGGED table (no PK, no FK)
+2. Blind COPY of all classifier CSV files
+3. In-place deduplication
+4. Adds PRIMARY KEY constraint
+5. Adds FOREIGN KEY constraint (validates all ids exist in main table)
+6. VACUUM FREEZE
+7. Converts to LOGGED
+
+The same limitations apply: if the process fails mid-load, tables must be dropped and recreated.
 
 #### PostgreSQL Tuning
 

@@ -333,10 +333,11 @@ def delete_duplicates(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    order_column: Optional[str] = 'retrieved_utc'
 ) -> int:
     """
-    Delete duplicate rows keeping the one with highest retrieved_utc per id.
+    Delete duplicate rows keeping the best one per id.
     
     Uses ctid + ROW_NUMBER() window function. No temporary index needed -
     PostgreSQL's external merge sort handles this efficiently for rare duplicates.
@@ -348,18 +349,26 @@ def delete_duplicates(
         host: Database host
         port: Database port
         user: Database user
+        order_column: Column to use for ordering duplicates (keeps highest value).
+                      If None, arbitrary row is kept per id.
         
     Returns:
         Number of rows deleted
     """
     full_table = f"{schema}.{table}"
     
+    # Build ORDER BY clause
+    if order_column:
+        order_by = f"id, {order_column} DESC"
+    else:
+        order_by = "id"
+    
     query = f"""
         DELETE FROM {full_table}
         WHERE ctid IN (
             SELECT ctid FROM (
                 SELECT ctid, ROW_NUMBER() OVER (
-                    PARTITION BY id ORDER BY retrieved_utc DESC
+                    PARTITION BY id ORDER BY {order_by}
                 ) as rn
                 FROM {full_table}
             ) sub WHERE rn > 1
@@ -384,15 +393,17 @@ def finalize_fast_load_table(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    fk_reference_table: Optional[str] = None
 ):
     """
-    Finalize table after fast initial load: add PK, VACUUM FREEZE, SET LOGGED.
+    Finalize table after fast initial load: add PK, optionally add FK, VACUUM FREEZE, SET LOGGED.
     
     Steps:
     1. ADD PRIMARY KEY (id)
-    2. VACUUM FREEZE (mark all tuples as frozen, update visibility map)
-    3. SET LOGGED (ensure durability - triggers full WAL write)
+    2. ADD FOREIGN KEY (if fk_reference_table provided)
+    3. VACUUM FREEZE (mark all tuples as frozen, update visibility map)
+    4. SET LOGGED (ensure durability - triggers full WAL write)
     
     Args:
         table: Table name
@@ -401,6 +412,7 @@ def finalize_fast_load_table(
         host: Database host
         port: Database port
         user: Database user
+        fk_reference_table: If provided, add FK constraint referencing this table (same schema)
     """
     full_table = f"{schema}.{table}"
     
@@ -413,6 +425,22 @@ def finalize_fast_load_table(
             curr.execute(add_pk_query)
             conn.commit()
     print(f"[FINALIZE] PRIMARY KEY added to {full_table}")
+    
+    # Add FOREIGN KEY (if reference table provided)
+    if fk_reference_table:
+        ref_table = f"{schema}.{fk_reference_table}"
+        if table_exists(fk_reference_table, schema, dbname, host, port, user):
+            print(f"[FINALIZE] Adding FOREIGN KEY to {full_table} -> {ref_table}...")
+            fk_name = f"fk_{table}_id"
+            add_fk_query = f"ALTER TABLE {full_table} ADD CONSTRAINT {fk_name} FOREIGN KEY (id) REFERENCES {ref_table}(id);"
+            
+            with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+                with conn.cursor() as curr:
+                    curr.execute(add_fk_query)
+                    conn.commit()
+            print(f"[FINALIZE] FOREIGN KEY added to {full_table}")
+        else:
+            print(f"[FINALIZE] Warning: Reference table {ref_table} not found, skipping FK constraint")
     
     # VACUUM FREEZE (requires autocommit)
     print(f"[FINALIZE] Running VACUUM FREEZE on {full_table}...")
@@ -503,6 +531,77 @@ def create_fast_load_table(
     execute_query(create_query, dbname, host, port, user)
     
     print(f"[FAST-LOAD] Created UNLOGGED table {schema}.{table}")
+
+
+def create_fast_load_classifier_table(
+    table_name: str,
+    data_type: str,
+    schema: str,
+    dbname: str,
+    host: str,
+    port: int,
+    user: str,
+    column_list: List[str],
+    column_types: Dict[str, str]
+):
+    """
+    Create UNLOGGED classifier table for fast initial load (no PK, no FK).
+    
+    Args:
+        table_name: Classifier table name (e.g., 'submissions_lingua')
+        data_type: 'submissions' or 'comments' (for FK reference later)
+        schema: Schema name
+        dbname: Database name
+        host: Database host
+        port: Database port
+        user: Database user
+        column_list: List of column names in CSV order
+        column_types: Dict of column_name -> sql_type (excludes 'id')
+    """
+    print(f"[FAST-LOAD] Creating UNLOGGED table {schema}.{table_name} (no PK, no FK)...")
+    
+    ensure_schema_exists(schema, dbname, host, port, user)
+    
+    create_query = get_classifier_create_table_query(
+        table_name, data_type, schema, column_list, column_types,
+        use_foreign_key=False, unlogged=True, include_pk=False
+    )
+    execute_query(create_query, dbname, host, port, user)
+    
+    print(f"[FAST-LOAD] Created UNLOGGED table {schema}.{table_name}")
+
+
+def fast_ingest_classifier_csv(
+    csv_file: str,
+    table_name: str,
+    schema: str,
+    dbname: str,
+    host: str,
+    port: int,
+    user: str,
+    column_list: List[str],
+    nullable_cols: Optional[List[str]] = None
+):
+    """
+    Fast ingest a single classifier CSV file using blind COPY (no duplicate checking).
+    
+    Args:
+        csv_file: Path to the CSV file
+        table_name: Classifier table name (e.g., 'submissions_lingua')
+        schema: Schema name
+        dbname: Database name
+        host: Database host
+        port: Database port
+        user: Database user
+        column_list: List of column names in table order
+        nullable_cols: Columns that may have empty strings to treat as NULL
+    """
+    print(f"[FAST-INGEST] COPY: {csv_file}")
+    
+    copy_query = get_classifier_ingest_query(
+        table_name, schema, column_list, check_duplicates=False, nullable_cols=nullable_cols
+    )
+    execute_query(copy_query, dbname, host, port, user, args=[csv_file])
 
 
 def create_index(
@@ -791,13 +890,15 @@ def get_classifier_create_table_query(
     schema: str,
     column_list: List[str],
     column_types: Dict[str, str],
-    use_foreign_key: bool = True
+    use_foreign_key: bool = True,
+    unlogged: bool = False,
+    include_pk: bool = True
 ) -> str:
     """
     Generate CREATE TABLE query for a classifier output table.
     
     Classifier tables have:
-    - id VARCHAR(7) PRIMARY KEY
+    - id VARCHAR(7) PRIMARY KEY (unless include_pk=False)
     - Optional FOREIGN KEY to main table (submissions/comments)
     - All other columns from CSV with inferred types
     
@@ -808,6 +909,8 @@ def get_classifier_create_table_query(
         column_list: List of column names in CSV order
         column_types: Dict of column_name -> sql_type (excludes 'id')
         use_foreign_key: If True, add FK constraint to main table
+        unlogged: If True, create UNLOGGED table (faster, no WAL, no crash recovery)
+        include_pk: If True, include PRIMARY KEY on id column
         
     Returns:
         CREATE TABLE SQL query
@@ -819,19 +922,25 @@ def get_classifier_create_table_query(
     col_defs = []
     for col in column_list:
         if col == 'id':
-            col_defs.append("    id character varying(7) PRIMARY KEY")
+            if include_pk:
+                col_defs.append("    id character varying(7) PRIMARY KEY")
+            else:
+                col_defs.append("    id character varying(7)")
         else:
             sql_type = column_types.get(col, 'text')
             col_defs.append(f"    {col} {sql_type}")
     
-    # Add foreign key constraint if enabled
-    if use_foreign_key:
+    # Add foreign key constraint if enabled (only if also including PK)
+    if use_foreign_key and include_pk:
         col_defs.append(f"    CONSTRAINT fk_{table_name}_id FOREIGN KEY (id) REFERENCES {main_table}(id)")
     
     columns_sql = ",\n".join(col_defs)
     
+    # Build CREATE statement
+    create_type = "UNLOGGED TABLE" if unlogged else "TABLE"
+    
     return f"""
-        CREATE TABLE IF NOT EXISTS {full_table}
+        CREATE {create_type} IF NOT EXISTS {full_table}
         (
 {columns_sql}
         );"""

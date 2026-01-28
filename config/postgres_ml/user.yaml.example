@@ -14,6 +14,7 @@
 #     use_foreign_key: true        # Add FK constraint to main table (default: true)
 #                                  # Set false for independent ingestion without main table
 #     watch_interval: 60           # Watch mode: check every 60 minutes
+#     fast_initial_load: false     # WARNING: If true, uses optimized bulk load for initial ingestion. Database must be recreated if process fails mid-load.
 
 # services:                        # Overrides services.yaml
 #   classifiers:

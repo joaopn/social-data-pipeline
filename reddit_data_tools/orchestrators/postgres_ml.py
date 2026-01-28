@@ -19,6 +19,10 @@ from ..core.config import (
 )
 from ..db.postgres.ingest import (
     ensure_database_exists, ensure_schema_exists, ingest_classifier_csv,
+    table_exists, infer_classifier_schema,
+    # Fast initial load functions
+    create_fast_load_classifier_table, fast_ingest_classifier_csv,
+    delete_duplicates, finalize_fast_load_table,
 )
 from ..core.config import load_yaml_file
 
@@ -137,6 +141,7 @@ def main():
     check_duplicates = proc_config.get('check_duplicates', True)
     type_inference_rows = proc_config.get('type_inference_rows', 1000)
     use_foreign_key = proc_config.get('use_foreign_key', True)
+    fast_initial_load = proc_config.get('fast_initial_load', False)
     
     # Read prefer_lingua from postgres profile (controls lingua ingestion behavior)
     try:
@@ -151,6 +156,7 @@ def main():
     print(f"[CONFIG] Data types: {data_types}")
     print(f"[CONFIG] Classifiers: {list(classifiers_config.keys())}")
     print(f"[CONFIG] Use foreign key: {use_foreign_key}")
+    print(f"[CONFIG] Fast initial load: {fast_initial_load}")
     print(f"[CONFIG] Prefer lingua: {prefer_lingua} (from postgres profile)")
     
     # Ensure database and schema exist
@@ -214,43 +220,177 @@ def main():
         
         print(f"[{classifier_name.upper()}] Found {len(files)} CSV files")
         
-        # Process each file
+        # Filter out already processed files
+        pending_files = [(fp, dt, fid) for fp, dt, fid in files if not state.is_processed(fid)]
+        skip_count = len(files) - len(pending_files)
+        
+        if not pending_files:
+            print(f"[{classifier_name.upper()}] All files already processed, skipping")
+            total_skipped += skip_count
+            continue
+        
+        # Group files by data_type
+        files_by_type = {}
+        for filepath, data_type, file_id in pending_files:
+            if data_type not in files_by_type:
+                files_by_type[data_type] = []
+            files_by_type[data_type].append((filepath, file_id))
+        
+        # Check which tables exist for this classifier
+        tables_existed = {}
+        for dt in files_by_type.keys():
+            table_name = f"{dt}{suffix}"
+            tables_existed[dt] = table_exists(
+                table=table_name,
+                schema=db_config['schema'],
+                dbname=db_config['name'],
+                host=db_config['host'],
+                port=db_config['port'],
+                user=db_config['user']
+            )
+        
+        # Determine fast load eligibility per data_type
+        fast_load_types = set()
+        standard_load_types = set()
+        
+        if fast_initial_load:
+            for dt in files_by_type.keys():
+                if not tables_existed[dt]:
+                    fast_load_types.add(dt)
+                else:
+                    standard_load_types.add(dt)
+            
+            if fast_load_types:
+                print(f"[{classifier_name.upper()}] Fast initial load for: {', '.join(sorted(fast_load_types))}")
+                print(f"[{classifier_name.upper()}] WARNING: If process fails, tables must be recreated!")
+            if standard_load_types:
+                print(f"[{classifier_name.upper()}] Standard ON CONFLICT for: {', '.join(sorted(standard_load_types))}")
+        else:
+            standard_load_types = set(files_by_type.keys())
+        
         success_count = 0
         fail_count = 0
-        skip_count = 0
         
-        for filepath, data_type, file_id in files:
-            # Skip if already processed
-            if state.is_processed(file_id):
-                skip_count += 1
-                continue
+        # =====================================================================
+        # FAST INITIAL LOAD PATH (for classifier tables)
+        # =====================================================================
+        for dt in sorted(fast_load_types):
+            type_files = files_by_type[dt]
+            table_name = f"{dt}{suffix}"
+            
+            print(f"\n[{classifier_name.upper()}] Fast loading {table_name}: {len(type_files)} files")
+            
+            # Get first CSV to infer schema
+            first_csv = type_files[0][0]
             
             try:
-                state.mark_in_progress(file_id)
+                # Step 1: Infer schema from CSV
+                print(f"[{classifier_name.upper()}] Inferring schema from {type_inference_rows} rows...")
+                column_list, column_types, nullable_cols = infer_classifier_schema(
+                    first_csv, type_inference_rows, column_overrides
+                )
+                print(f"[{classifier_name.upper()}] Inferred columns: {column_list}")
                 
-                ingest_classifier_csv(
-                    csv_file=filepath,
-                    data_type=data_type,
-                    classifier_name=classifier_name,
-                    dbname=db_config['name'],
+                # Step 2: Create UNLOGGED table (no PK, no FK)
+                create_fast_load_classifier_table(
+                    table_name=table_name,
+                    data_type=dt,
                     schema=db_config['schema'],
+                    dbname=db_config['name'],
                     host=db_config['host'],
                     port=db_config['port'],
                     user=db_config['user'],
-                    check_duplicates=check_duplicates,
-                    type_inference_rows=type_inference_rows,
-                    column_overrides=column_overrides,
-                    use_foreign_key=use_foreign_key,
-                    suffix=suffix
+                    column_list=column_list,
+                    column_types=column_types
                 )
                 
-                state.mark_completed(file_id)
-                success_count += 1
+                # Step 3: Blind COPY all files
+                for filepath, file_id in type_files:
+                    try:
+                        state.mark_in_progress(file_id)
+                        fast_ingest_classifier_csv(
+                            csv_file=filepath,
+                            table_name=table_name,
+                            schema=db_config['schema'],
+                            dbname=db_config['name'],
+                            host=db_config['host'],
+                            port=db_config['port'],
+                            user=db_config['user'],
+                            column_list=column_list,
+                            nullable_cols=nullable_cols
+                        )
+                        state.mark_completed(file_id)
+                        success_count += 1
+                    except Exception as e:
+                        print(f"[{classifier_name.upper()}] ERROR during COPY {file_id}: {e}")
+                        state.mark_failed(file_id, str(e))
+                        fail_count += 1
+                        raise  # Abort fast load on any failure
+                
+                # Step 4: Delete duplicates
+                # Determine order column (retrieved_utc if present, else None)
+                order_col = 'retrieved_utc' if 'retrieved_utc' in column_list else None
+                delete_duplicates(
+                    table=table_name,
+                    schema=db_config['schema'],
+                    dbname=db_config['name'],
+                    host=db_config['host'],
+                    port=db_config['port'],
+                    user=db_config['user'],
+                    order_column=order_col
+                )
+                
+                # Step 5: Finalize (add PK, add FK if enabled, VACUUM FREEZE, SET LOGGED)
+                finalize_fast_load_table(
+                    table=table_name,
+                    schema=db_config['schema'],
+                    dbname=db_config['name'],
+                    host=db_config['host'],
+                    port=db_config['port'],
+                    user=db_config['user'],
+                    fk_reference_table=dt if use_foreign_key else None
+                )
+                
+                print(f"[{classifier_name.upper()}] Fast load completed for {table_name}")
                 
             except Exception as e:
-                state.mark_failed(file_id, str(e))
-                print(f"[{classifier_name.upper()}] ERROR {file_id}: {e}")
-                fail_count += 1
+                print(f"[{classifier_name.upper()}] CRITICAL ERROR for {table_name}: {e}")
+                print(f"[{classifier_name.upper()}] Table may be in inconsistent state. Manual recovery required.")
+                raise
+        
+        # =====================================================================
+        # STANDARD ON CONFLICT PATH
+        # =====================================================================
+        for dt in sorted(standard_load_types):
+            type_files = files_by_type[dt]
+            
+            for filepath, file_id in type_files:
+                try:
+                    state.mark_in_progress(file_id)
+                    
+                    ingest_classifier_csv(
+                        csv_file=filepath,
+                        data_type=dt,
+                        classifier_name=classifier_name,
+                        dbname=db_config['name'],
+                        schema=db_config['schema'],
+                        host=db_config['host'],
+                        port=db_config['port'],
+                        user=db_config['user'],
+                        check_duplicates=check_duplicates,
+                        type_inference_rows=type_inference_rows,
+                        column_overrides=column_overrides,
+                        use_foreign_key=use_foreign_key,
+                        suffix=suffix
+                    )
+                    
+                    state.mark_completed(file_id)
+                    success_count += 1
+                    
+                except Exception as e:
+                    state.mark_failed(file_id, str(e))
+                    print(f"[{classifier_name.upper()}] ERROR {file_id}: {e}")
+                    fail_count += 1
         
         print(f"[{classifier_name.upper()}] Completed: {success_count} success, {skip_count} skipped, {fail_count} failed")
         

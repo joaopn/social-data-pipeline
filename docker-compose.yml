@@ -268,7 +268,7 @@ services:
       REDASH_LOG_LEVEL: "WARNING"
       REDASH_REDIS_URL: "redis://redash-redis:6379/0"
       REDASH_DATABASE_URL: "postgresql://postgres:postgres@redash-postgres/redash"
-      QUEUES: "queries,scheduled_queries,celery"
+      QUEUES: "queries,scheduled_queries,celery,schemas,default,emails"
       WORKERS_COUNT: "2"
     depends_on:
       dashboard-init:
@@ -375,7 +375,7 @@ services:
             CREATE_RESPONSE=$$(curl -sf -X POST "http://redash-server:5000/api/data_sources" \
               -H "Authorization: Key $$API_KEY" \
               -H "Content-Type: application/json" \
-              -d '{"name":"Reddit Data","type":"pg","options":{"host":"postgres","port":5432,"dbname":"datasets","user":"postgres","password":"postgres","schema":"reddit"}}' || echo "FAILED")
+              -d '{"name":"Reddit Data","type":"pg","options":{"host":"postgres","port":5432,"dbname":"datasets","user":"postgres","password":"postgres"}}' || echo "FAILED")
             echo "[setup] Create response: $$CREATE_RESPONSE"
           fi
           
@@ -385,30 +385,29 @@ services:
           DS_ID=$$(echo "$$DS_INFO" | python -c "import sys,json; ds=[d for d in json.load(sys.stdin) if d.get('name')=='Reddit Data']; print(ds[0]['id'] if ds else '')" 2>/dev/null)
           
           if [ -n "$$DS_ID" ]; then
-            echo "[setup] Refreshing schema for data source $$DS_ID..."
-            curl -sf -X POST "http://redash-server:5000/api/data_sources/$$DS_ID/schema" \
-              -H "Authorization: Key $$API_KEY" || true
+            echo "[setup] Triggering schema refresh for data source $$DS_ID..."
+            # GET with ?refresh triggers async schema fetch job
+            SCHEMA_JOB=$$(curl -sf "http://redash-server:5000/api/data_sources/$$DS_ID/schema?refresh" \
+              -H "Authorization: Key $$API_KEY" || echo "{}")
+            echo "[setup] Schema job: $$SCHEMA_JOB"
+            
+            # Wait for schema to be fetched (poll until ready or timeout)
             echo "[setup] Waiting for schema to load..."
-            sleep 5
-            # Trigger schema fetch
-            curl -sf "http://redash-server:5000/api/data_sources/$$DS_ID/schema" \
-              -H "Authorization: Key $$API_KEY" >/dev/null 2>&1 || true
+            for i in 1 2 3 4 5 6; do
+              sleep 5
+              SCHEMA_RESULT=$$(curl -sf "http://redash-server:5000/api/data_sources/$$DS_ID/schema" \
+                -H "Authorization: Key $$API_KEY" 2>/dev/null || echo "{}")
+              if echo "$$SCHEMA_RESULT" | grep -q '"schema"'; then
+                echo "[setup] Schema loaded successfully"
+                break
+              fi
+              echo "[setup] Schema not ready yet, waiting..."
+            done
           fi
           
           # Set default home page to dashboards
           echo "[setup] Setting default home page to dashboards..."
-          python -c "
-          from redash import create_app
-          from redash.models import db, Organization
-          app = create_app()
-          with app.app_context():
-              org = Organization.query.first()
-              if org:
-                  org.settings['settings'] = org.settings.get('settings', {})
-                  org.settings['settings']['home_page'] = 'dashboards'
-                  db.session.commit()
-                  print('Home page set to dashboards')
-          " 2>/dev/null || echo "[setup] Could not set home page"
+          python -c "from redash import create_app; from redash.models import db, Organization; from sqlalchemy.orm.attributes import flag_modified; app = create_app(); ctx = app.app_context(); ctx.push(); org = Organization.query.first(); org.settings.setdefault('settings', {}); org.settings['settings']['home_page'] = 'dashboards'; flag_modified(org, 'settings'); db.session.commit(); print('Home page set to dashboards')" 2>/dev/null || echo "[setup] Could not set home page"
         fi
         
         echo "[setup] Complete!"

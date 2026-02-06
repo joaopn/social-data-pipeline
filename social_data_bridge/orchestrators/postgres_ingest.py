@@ -232,58 +232,32 @@ def get_lingua_config(config_dir: str) -> Optional[Dict]:
         return None
 
 
-def detect_csv_files_with_lingua(
-    csv_dir: str,
+def detect_lingua_csv_files(
     data_types: List[str],
     lingua_config: Dict
 ) -> Tuple[List[Tuple[str, str, str]], Dict[str, str]]:
     """
-    Detect CSV files, preferring lingua versions when available.
+    Detect CSV files in the lingua output directory only.
+    Used when prefer_lingua is true; original CSV dir is not checked.
     
-    Uses detect_parsed_csv_files from ml.py to get base file list,
-    then checks for corresponding lingua files.
-    
-    Args:
-        csv_dir: Directory containing original CSVs
-        data_types: List of data types to search for
-        lingua_config: Dict with 'suffix' and 'output_dir' from get_lingua_config()
-        
     Returns:
-        Tuple of:
-        - List of tuples: (filepath, file_id, data_type)
-        - Dict mapping file_id to source ('lingua' or 'original')
+        Tuple of (list of (filepath, file_id, data_type), source_map with 'lingua')
     """
-    # Get list of original CSVs using ml.py's detection function
-    original_files = detect_parsed_csv_files(csv_dir, data_types)
-    
     lingua_output_dir = Path(lingua_config['output_dir'])
     lingua_suffix = lingua_config['suffix']
-    
-    result_files = []
-    source_map = {}
-    
-    # Debug: check what's in the lingua output directory
+    files_with_name = []
     for data_type in data_types:
         type_dir = lingua_output_dir / data_type
         if type_dir.is_dir():
-            lingua_files_found = list(type_dir.glob("*.csv"))
-            if lingua_files_found:
-                print(f"[sdb] Found {len(lingua_files_found)} files in {type_dir}")
-                print(f"[sdb] First file: {lingua_files_found[0].name}")
-        else:
-            print(f"[sdb] Directory does not exist: {type_dir}")
-    
-    for csv_path, file_id, data_type in original_files:
-        # Check if lingua version exists
-        lingua_file = lingua_output_dir / data_type / f"{file_id}{lingua_suffix}.csv"
-        
-        if lingua_file.exists():
-            result_files.append((str(lingua_file), file_id, data_type))
-            source_map[file_id] = 'lingua'
-        else:
-            result_files.append((csv_path, file_id, data_type))
-            source_map[file_id] = 'original'
-    
+            for filepath in type_dir.glob(f"*{lingua_suffix}.csv"):
+                file_id = filepath.stem
+                if file_id.endswith(lingua_suffix):
+                    file_id = file_id[:-len(lingua_suffix)]
+                files_with_name.append((str(filepath), file_id, data_type, filepath.name))
+    type_order = {dt: i for i, dt in enumerate(data_types)}
+    files_with_name.sort(key=lambda x: (type_order.get(x[2], 99), x[3]))
+    result_files = [(f[0], f[1], f[2]) for f in files_with_name]
+    source_map = {f[1]: 'lingua' for f in result_files}
     return result_files, source_map
 
 
@@ -399,9 +373,7 @@ def run_pipeline(config_dir: str = "/app/config"):
         lingua_config = get_lingua_config(config_dir)
         if lingua_config:
             print(f"[sdb] Prefer lingua: enabled (suffix: {lingua_config['suffix']})")
-            csv_files, csv_source_map = detect_csv_files_with_lingua(
-                csv_dir, data_types, lingua_config
-            )
+            csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config)
             # Count sources
             lingua_count = sum(1 for src in csv_source_map.values() if src == 'lingua')
             original_count = sum(1 for src in csv_source_map.values() if src == 'original')
@@ -534,9 +506,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     # Phase 3: Ingest CSV files to PostgreSQL
     # Re-detect CSV files (may have been created during parsing phase)
     if prefer_lingua and lingua_config:
-        csv_files, csv_source_map = detect_csv_files_with_lingua(
-            csv_dir, data_types, lingua_config
-        )
+        csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config)
     else:
         csv_files = detect_csv_files(csv_dir, data_types, file_patterns)
     files_to_ingest = [(p, fid, dt) for p, fid, dt in csv_files if not state.is_processed(fid)]

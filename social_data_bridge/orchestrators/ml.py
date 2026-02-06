@@ -229,8 +229,36 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
     print(f"[sdb] Found {len(parsed_csv_files)} CSV files")
     
     if not parsed_csv_files:
-        print("\n[sdb] No input files found. Run 'parse' profile first.")
-        return
+        # When no CSV files exist, check if lingua files are available
+        if profile == "ml" and global_config.get('use_lingua', False):
+            print("[sdb] No CSV files found. Checking for lingua files...")
+            lingua_config = config.get('lingua', {})
+            lingua_suffix = lingua_config.get('suffix', '_lingua')
+            lingua_output_dir = Path(output_dir) / 'lingua'
+            
+            lingua_files_list = []
+            for data_type in data_types:
+                type_dir = lingua_output_dir / data_type
+                if type_dir.is_dir():
+                    for filepath in type_dir.glob(f"*{lingua_suffix}.csv"):
+                        file_id = filepath.stem
+                        if file_id.endswith(lingua_suffix):
+                            file_id = file_id[:-len(lingua_suffix)]
+                        lingua_files_list.append((str(filepath), file_id, data_type, filepath.name))
+            
+            # Same order as detect_parsed_csv_files: data_types first (submissions then comments), then by filename
+            type_order = {dt: i for i, dt in enumerate(data_types)}
+            lingua_files_list.sort(key=lambda x: (type_order.get(x[2], 99), x[3]))
+            parsed_csv_files = [(f[0], f[1], f[2]) for f in lingua_files_list]
+            
+            if parsed_csv_files:
+                print(f"[sdb] Found {len(parsed_csv_files)} lingua files to process")
+            else:
+                print("\n[sdb] No input files found. Run 'parse' profile first, then 'ml_cpu' profile to generate lingua files.")
+                return
+        else:
+            print("\n[sdb] No input files found. Run 'parse' profile first.")
+            return
     
     if not enabled_classifiers:
         print("\n[sdb] No classifiers enabled. Exiting.")
@@ -267,6 +295,7 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
                 input_files = parsed_csv_files
                 input_source = "csv/"
             else:
+                # Use lingua files - look them up based on CSV file list
                 lingua_config = config.get('lingua', {})
                 lingua_suffix = lingua_config.get('suffix', '_lingua')
                 lingua_output_dir = Path(output_dir) / 'lingua'

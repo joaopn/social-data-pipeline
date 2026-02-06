@@ -74,6 +74,7 @@ services:
     ipc: host  # Required for PyTorch/CUDA shared memory
     environment:
       - PROFILE=ml
+      - CLASSIFIER=${CLASSIFIER:-}
       - PYTHONUNBUFFERED=1
     volumes:
       - ${CSV_PATH:-./data/csv}:/data/csv:ro

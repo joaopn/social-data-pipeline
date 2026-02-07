@@ -311,7 +311,9 @@ def run_pipeline(config_dir: str = "/app/config"):
             file_prefixes[dt] = file_patterns[dt]['prefix']
 
     # Initialize state managers - one per data_type for isolation
-    state_dir = "/data/database/state_tracking"
+    pgdata_path = os.environ.get('PGDATA_PATH', '/data/database')
+    state_dir = f"{pgdata_path}/state_tracking"
+    os.makedirs(state_dir, exist_ok=True)
     states = {}
     total_processed = 0
     total_failed = 0

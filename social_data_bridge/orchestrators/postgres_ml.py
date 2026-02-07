@@ -212,7 +212,8 @@ def run_pipeline(config_dir: str = "/app/config"):
     )
 
     # Initialize state files per data_type
-    state_dir = f"{proc_config.get('state_dir', '/data/database')}/state_tracking"
+    pgdata_path = os.environ.get('PGDATA_PATH', '/data/database')
+    state_dir = f"{pgdata_path}/state_tracking"
     os.makedirs(state_dir, exist_ok=True)
 
     states = {}

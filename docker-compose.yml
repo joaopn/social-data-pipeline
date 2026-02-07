@@ -105,10 +105,10 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:${POSTGRES_PORT:-5432}"
     volumes:
-      - ${DB_DATA_PATH:-./data/database/pgdata}:/var/lib/postgresql
+      - ${PGDATA_PATH:-./data/database}/pgdata:/var/lib/postgresql
       - ${CSV_PATH:-./data/csv}:/data/csv:ro
       - ${OUTPUT_PATH:-./data/output}:/data/output:ro
-      - ./data/database:/data/database
+      - ${PGDATA_PATH:-./data/database}:/data/database
       - ./config/postgres:/etc/postgresql/config:ro
     entrypoint: ["/bin/bash", "-c", "CFG=/etc/postgresql/config; PG_CONF=$$CFG/postgresql.conf; [ -f $$CFG/postgresql.local.conf ] && PG_CONF=$$CFG/postgresql.local.conf && echo '[CONFIG] Using local override: postgresql.local.conf'; HBA_CONF=$$CFG/pg_hba.conf; [ -f $$CFG/pg_hba.local.conf ] && HBA_CONF=$$CFG/pg_hba.local.conf && echo '[CONFIG] Using local override: pg_hba.local.conf'; chown -R postgres:postgres /var/lib/postgresql && exec docker-entrypoint.sh postgres -c config_file=$$PG_CONF -c hba_file=$$HBA_CONF -c port=${POSTGRES_PORT:-5432}"]
     healthcheck:
@@ -132,12 +132,13 @@ services:
       - PLATFORM=${PLATFORM:-reddit}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - DB_NAME=${DB_NAME:-datasets}
+      - PGDATA_PATH=/data/database
     volumes:
       - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
       - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
       - ${CSV_PATH:-./data/csv}:/data/csv
       - ${OUTPUT_PATH}:/data/output:ro
-      - ${DB_DATA_PATH:-./data/database}:/data/database
+      - ${PGDATA_PATH:-./data/database}:/data/database
       - ./config:/app/config:ro
 
   # ==========================================================================
@@ -155,7 +156,8 @@ services:
       - PLATFORM=${PLATFORM:-reddit}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - DB_NAME=${DB_NAME:-datasets}
+      - PGDATA_PATH=/data/database
     volumes:
       - ${OUTPUT_PATH:-./data/output}:/data/output:ro
-      - ${DB_DATA_PATH:-./data/database}:/data/database
+      - ${PGDATA_PATH:-./data/database}:/data/database
       - ./config:/app/config:ro

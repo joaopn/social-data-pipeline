@@ -679,7 +679,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                         print(f"[sdb] CRITICAL ERROR for {data_type}: {e}")
                         print("[sdb] Database may be in inconsistent state. Manual recovery required.")
                         raise
-        
+
         # =====================================================================
         # STANDARD ON CONFLICT PATH
         # =====================================================================
@@ -782,33 +782,36 @@ def run_pipeline(config_dir: str = "/app/config"):
         print("\n" + "="*60)
         print("CREATING INDEXES")
         print("="*60)
-        
+
         # Get indexes from profile config, fall back to platform config
         index_config = config.get('indexes', {})
         if not index_config:
             index_config = platform_config.get('indexes', {})
-        
+
+        # Get parallelism settings from config
+        parallel_index_workers = get_optional(config, 'processing', 'parallel_index_workers', default=8)
+
         t_start = time.time()
         for data_type in data_types:
             index_fields = index_config.get(data_type, [])
             if not index_fields:
                 print(f"[sdb] No indexes configured for {data_type}, skipping")
                 continue
-            
-            print(f"[sdb] Creating indexes for {data_type}: {index_fields}")
-            for field in index_fields:
+
+            print(f"[sdb] Creating {len(index_fields)} indexes on {db_config['schema']}.{data_type} (workers_per_build={parallel_index_workers})")
+            for i, field in enumerate(index_fields):
                 try:
-                    created = create_index(
+                    create_index(
                         field=field,
                         table=data_type,
                         schema=db_config['schema'],
                         dbname=db_config['name'],
                         host=db_config['host'],
                         port=db_config['port'],
-                        user=db_config['user']
+                        user=db_config['user'],
+                        quiet=(i > 0),  # Only log session config for first index
+                        parallel_workers=parallel_index_workers
                     )
-                    if not created:
-                        print(f"[sdb] Already exists: idx_{data_type}_{field}")
                 except Exception as e:
                     print(f"[sdb] Warning: Failed to create index on {field}: {e}")
         total_timings['indexing'] = time.time() - t_start

@@ -24,6 +24,83 @@ MANDATORY_FIELD_SQL = {
 # This disables PostgreSQL compression - use filesystem compression (ZFS, BTRFS) instead
 
 
+def configure_ingestion_session(
+    cur,
+    quiet: bool = False,
+    parallel_workers: int = 8
+) -> Dict[str, any]:
+    """
+    Configure PostgreSQL session for optimal bulk ingestion.
+
+    Uses ONLY session-level settings that automatically clean up when the
+    connection closes. No ALTER SYSTEM calls - if the script crashes, the
+    server state is unaffected.
+
+    Settings applied (session-level only):
+    - wal_compression = 'zstd' (3-4x WAL size reduction)
+    - maintenance_work_mem = shared_buffers / (1 + parallel_workers)
+    - max_parallel_maintenance_workers (for parallel index builds)
+    - maintenance_io_concurrency = 500 (for NVMe)
+    - synchronous_commit = off
+    - temp_file_limit = -1
+
+    Note: max_wal_size cannot be set at session level. For large ingestions,
+    users should increase it in postgresql.conf (recommend 4x shared_buffers).
+
+    Args:
+        cur: Active psycopg cursor. The connection MUST stay open during the
+             entire ingestion for settings to remain active.
+        quiet: If True, suppress log output (useful for repeated calls).
+        parallel_workers: max_parallel_maintenance_workers per index build.
+
+    Returns:
+        Dict with applied settings for logging/verification
+    """
+    settings = {}
+
+    # Get current hardware constraints
+    cur.execute("SELECT setting::bigint FROM pg_settings WHERE name = 'shared_buffers'")
+    shared_buffers_pages = cur.fetchone()[0]
+    shared_buffers_gb = (shared_buffers_pages * 8192) / (1024**3)  # pages to GB
+
+    # Calculate maintenance memory to stay within shared_buffers
+    # Each index build uses: maintenance_work_mem * (1 + parallel_workers)
+    # Sequential builds: only 1 index at a time
+    total_processes = 1 + parallel_workers
+    maintenance_mem_mb = max(256, int((shared_buffers_gb * 1024) / total_processes))
+
+    # Session-level settings (auto-cleanup when connection closes)
+    cur.execute("SET synchronous_commit = 'off'")
+    cur.execute("SET temp_file_limit = '-1'")
+    cur.execute(f"SET maintenance_work_mem = '{maintenance_mem_mb}MB'")
+    cur.execute(f"SET max_parallel_maintenance_workers = {parallel_workers}")
+    cur.execute("SET wal_compression = 'zstd'")
+    cur.execute("SET maintenance_io_concurrency = 500")
+
+    settings['maintenance_work_mem'] = f'{maintenance_mem_mb}MB'
+    settings['max_parallel_maintenance_workers'] = parallel_workers
+    settings['wal_compression'] = 'zstd'
+    settings['maintenance_io_concurrency'] = 500
+
+    if not quiet:
+        # Log applied settings
+        print(f"[sdb] Session configured for ingestion:")
+        print(f"      shared_buffers = {shared_buffers_gb:.1f}GB (detected)")
+        for key, value in settings.items():
+            print(f"      {key} = {value}")
+
+        # Warn if max_wal_size is low (can't change at session level)
+        cur.execute("SELECT setting FROM pg_settings WHERE name = 'max_wal_size'")
+        max_wal_size = cur.fetchone()[0]
+        recommended_wal_gb = max(16, min(300, int(shared_buffers_gb * 4)))
+        cur.execute("SELECT pg_size_bytes(%s)", (max_wal_size,))
+        current_wal_bytes = cur.fetchone()[0]
+        if current_wal_bytes < recommended_wal_gb * 1024**3:
+            print(f"      [!] max_wal_size = {max_wal_size} (consider {recommended_wal_gb}GB in postgresql.conf)")
+
+    return settings
+
+
 def yaml_type_to_sql(type_def) -> str:
     """
     Convert YAML type definition to PostgreSQL type.
@@ -443,18 +520,22 @@ def finalize_fast_load_table(
             print(f"[sdb] Warning: Reference table {ref_table} not found, skipping FK constraint")
     
     # VACUUM FREEZE (requires autocommit)
+    # Configure session for optimal performance (maintenance_io_concurrency, etc.)
     print(f"[sdb] Running VACUUM FREEZE on {full_table}...")
     with psycopg.connect(dbname=dbname, user=user, host=host, port=port, autocommit=True) as conn:
         with conn.cursor() as curr:
+            configure_ingestion_session(curr)
             curr.execute(f"VACUUM FREEZE {full_table}")
     print(f"[sdb] VACUUM FREEZE complete on {full_table}")
-    
-    # SET LOGGED (ensure durability)
+
+    # SET LOGGED (ensure durability - triggers full WAL write)
+    # Configure session for wal_compression=zstd (3-4x smaller WAL)
     print(f"[sdb] Setting table to LOGGED (WAL flush)...")
     set_logged_query = f"ALTER TABLE {full_table} SET LOGGED;"
-    
+
     with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
         with conn.cursor() as curr:
+            configure_ingestion_session(curr)
             curr.execute(set_logged_query)
             conn.commit()
     print(f"[sdb] Table {full_table} is now LOGGED and durable")
@@ -611,23 +692,27 @@ def create_index(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    quiet: bool = False,
+    parallel_workers: int = 8
 ) -> bool:
     """Create an index on a table field. Returns True if created, False if already existed."""
-    
+
     full_table = f"{schema}.{table}"
     index_name = f"idx_{table}_{field}"
-    
+
     # Check if index already exists
     if index_exists(index_name, dbname, host, port, user):
         return False
-    
+
     query = f"CREATE INDEX IF NOT EXISTS {index_name} ON {full_table} ({field});"
-    
+
     print(f"[sdb] Creating index: {index_name}")
-    
+
     with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
         with conn.cursor() as curr:
+            # Configure session for optimal index creation (maintenance_work_mem, etc.)
+            configure_ingestion_session(curr, quiet=quiet, parallel_workers=parallel_workers)
             try:
                 curr.execute(query)
                 conn.commit()

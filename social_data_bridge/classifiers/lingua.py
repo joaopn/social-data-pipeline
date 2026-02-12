@@ -147,11 +147,11 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     """Process CSV file with language detection using Polars and Lingua."""
     if not LINGUA_AVAILABLE:
         raise ImportError("Lingua not available")
-    
+
     languages = config.get('languages', [])
     if not languages:
         raise ValueError("No languages specified in config")
-    
+
     low_accuracy = config.get('low_accuracy', False)
     num_workers = config.get('workers', 8)
     batch_size = config.get('batch_size', 2_000_000)
@@ -160,12 +160,18 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     remove_patterns = config.get('remove_patterns', [])
     prefer_lingua = config.get('prefer_lingua', True)
     output_ingest = not prefer_lingua
-    
+
     os.environ['POLARS_MAX_THREADS'] = str(num_workers)
-    
+
     input_path = Path(input_csv)
     output_path = Path(output_csv)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Get expected row count from input CSV
+    try:
+        expected_rows = pl.scan_csv(input_csv).select(pl.len()).collect().item()
+    except Exception as e:
+        raise RuntimeError(f"Failed to get row count from input CSV: {e}")
     
     temp_path = output_path.with_suffix(output_path.suffix + '.temp')
     
@@ -195,110 +201,136 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     first_batch = True
     start_time = time.time()
     
-    reader = pl.read_csv_batched(input_csv, batch_size=batch_size)
-    
+    try:
+        reader = pl.read_csv_batched(input_csv, batch_size=batch_size)
+    except Exception as e:
+        raise RuntimeError(f"Failed to create batched CSV reader: {e}")
+
     print(f"[{input_path.stem}] Starting" + (" (with ingest output)" if output_ingest else ""))
-    
-    while True:
-        accumulated = []
-        accumulated_rows = 0
-        while accumulated_rows < batch_size:
-            batches = reader.next_batches(1)
-            if not batches:
+
+    try:
+        while True:
+            accumulated = []
+            accumulated_rows = 0
+            while accumulated_rows < batch_size:
+                batches = reader.next_batches(1)
+                if not batches:
+                    break
+                accumulated.append(batches[0])
+                accumulated_rows += len(batches[0])
+
+            if not accumulated:
                 break
-            accumulated.append(batches[0])
-            accumulated_rows += len(batches[0])
-        
-        if not accumulated:
-            break
-        
-        if len(accumulated) == 1:
-            df = accumulated[0]
-        else:
-            df = pl.concat(accumulated)
-        n_rows = len(df)
-        
-        df_with_text = df.with_columns([
-            text_expr.alias("_text"),
-            text_expr.str.len_chars().alias("_len"),
-        ])
-        
-        validity_expr = _build_lingua_validity_expr("_text")
-        df_with_text = df_with_text.with_columns([validity_expr.alias("_valid")])
-        
-        valid_mask = df_with_text["_valid"]
-        valid_df = df_with_text.filter(valid_mask)
-        valid_texts = valid_df["_text"].to_list()
-        
-        lang1_col = [""] * n_rows
-        prob1_col = [""] * n_rows
-        lang2_col = [""] * n_rows
-        prob2_col = [""] * n_rows
-        
-        if valid_texts:
-            valid_indices = valid_mask.arg_true().to_list()
-            valid_lengths = valid_df["_len"].to_list()
-            
-            sorted_order = sorted(range(len(valid_texts)), key=lambda i: valid_lengths[i], reverse=True)
-            sorted_texts = [valid_texts[i] for i in sorted_order]
-            
-            t0 = time.time()
-            sorted_results = detector.compute_language_confidence_values_in_parallel(sorted_texts)
-            detect_time += time.time() - t0
-            
-            for sorted_i, res in enumerate(sorted_results):
-                if res:
-                    original_i = sorted_order[sorted_i]
-                    idx = valid_indices[original_i]
-                    r0 = res[0]
-                    lang1 = r0.language.iso_code_639_1.name.lower()
-                    lang1_col[idx] = lang1
-                    prob1_col[idx] = f"{r0.value:.4f}"
-                    
-                    if len(res) > 1:
-                        r1 = res[1]
-                        lang2_col[idx] = r1.language.iso_code_639_1.name.lower()
-                        prob2_col[idx] = f"{r1.value:.4f}"
-            
-            total_detected += len(valid_texts)
-        
-        df_out = df.with_columns([
-            pl.Series("lang", lang1_col),
-            pl.Series("lang_prob", prob1_col),
-            pl.Series("lang2", lang2_col),
-            pl.Series("lang2_prob", prob2_col),
-        ])
-        
-        if first_batch:
-            df_out.write_csv(temp_path)
-        else:
-            with open(temp_path, 'ab') as f:
-                df_out.write_csv(f, include_header=False)
-        
-        if output_ingest and ingest_columns:
-            available_ingest_cols = [c for c in ingest_columns if c in df_out.columns]
-            df_ingest = df_out.select(available_ingest_cols)
-            
-            if first_batch:
-                df_ingest.write_csv(ingest_temp_path)
+
+            if len(accumulated) == 1:
+                df = accumulated[0]
             else:
-                with open(ingest_temp_path, 'ab') as f:
-                    df_ingest.write_csv(f, include_header=False)
-        
-        first_batch = False
-        total_rows += n_rows
-    
+                df = pl.concat(accumulated)
+            n_rows = len(df)
+
+            df_with_text = df.with_columns([
+                text_expr.alias("_text"),
+                text_expr.str.len_chars().alias("_len"),
+            ])
+
+            validity_expr = _build_lingua_validity_expr("_text")
+            df_with_text = df_with_text.with_columns([validity_expr.alias("_valid")])
+
+            valid_mask = df_with_text["_valid"]
+            valid_df = df_with_text.filter(valid_mask)
+            valid_texts = valid_df["_text"].to_list()
+
+            lang1_col = [""] * n_rows
+            prob1_col = [""] * n_rows
+            lang2_col = [""] * n_rows
+            prob2_col = [""] * n_rows
+
+            if valid_texts:
+                valid_indices = valid_mask.arg_true().to_list()
+                valid_lengths = valid_df["_len"].to_list()
+
+                sorted_order = sorted(range(len(valid_texts)), key=lambda i: valid_lengths[i], reverse=True)
+                sorted_texts = [valid_texts[i] for i in sorted_order]
+
+                t0 = time.time()
+                sorted_results = detector.compute_language_confidence_values_in_parallel(sorted_texts)
+                detect_time += time.time() - t0
+
+                for sorted_i, res in enumerate(sorted_results):
+                    if res:
+                        original_i = sorted_order[sorted_i]
+                        idx = valid_indices[original_i]
+                        r0 = res[0]
+                        lang1 = r0.language.iso_code_639_1.name.lower()
+                        lang1_col[idx] = lang1
+                        prob1_col[idx] = f"{r0.value:.4f}"
+
+                        if len(res) > 1:
+                            r1 = res[1]
+                            lang2_col[idx] = r1.language.iso_code_639_1.name.lower()
+                            prob2_col[idx] = f"{r1.value:.4f}"
+
+                total_detected += len(valid_texts)
+
+            df_out = df.with_columns([
+                pl.Series("lang", lang1_col),
+                pl.Series("lang_prob", prob1_col),
+                pl.Series("lang2", lang2_col),
+                pl.Series("lang2_prob", prob2_col),
+            ])
+
+            if first_batch:
+                df_out.write_csv(temp_path)
+            else:
+                with open(temp_path, 'ab') as f:
+                    df_out.write_csv(f, include_header=False)
+
+            if output_ingest and ingest_columns:
+                available_ingest_cols = [c for c in ingest_columns if c in df_out.columns]
+                df_ingest = df_out.select(available_ingest_cols)
+
+                if first_batch:
+                    df_ingest.write_csv(ingest_temp_path)
+                else:
+                    with open(ingest_temp_path, 'ab') as f:
+                        df_ingest.write_csv(f, include_header=False)
+
+            first_batch = False
+            total_rows += n_rows
+
+    except Exception as e:
+        # Clean up temp files on error
+        if temp_path.exists():
+            temp_path.unlink()
+        if output_ingest and ingest_temp_path and ingest_temp_path.exists():
+            ingest_temp_path.unlink()
+        raise RuntimeError(f"Error during batch processing: {e}")
+
     if temp_path.exists():
         temp_path.rename(output_path)
-    
+
     if output_ingest and ingest_temp_path and ingest_temp_path.exists():
         ingest_temp_path.rename(ingest_path)
-    
+
+    # Validate output row count matches input
+    if total_rows != expected_rows:
+        # Clean up incomplete output files
+        if output_path.exists():
+            output_path.unlink()
+        if output_ingest and ingest_path and ingest_path.exists():
+            ingest_path.unlink()
+        raise RuntimeError(
+            f"Row count mismatch! Input: {expected_rows:,} rows, Output: {total_rows:,} rows. "
+            f"Processed only {total_rows/expected_rows*100:.1f}% of input. "
+            f"This indicates the batched CSV reader stopped early - possibly due to memory pressure, "
+            f"file corruption, or resource contention from parallel processing."
+        )
+
     elapsed = time.time() - start_time
     rate = total_detected / elapsed if elapsed > 0 else 0
     skipped = total_rows - total_detected
     skip_pct = (skipped / total_rows * 100) if total_rows > 0 else 0
-    
+
     print(f"[{input_path.stem}] Finished ({skip_pct:.0f}% skipped). detect={detect_time:.1f}s, total={elapsed:.1f}s ({rate:.0f} msg/s)")
-    
+
     return total_rows

@@ -180,6 +180,7 @@ cpu_classifiers:            # CPU classifiers to run
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `suffix` | Output filename suffix (e.g., `RS_2024-01_lingua.csv`). | `_lingua` |
+| `min_chars` | Minimum character count after text cleaning. Texts shorter than this are skipped. | `5` |
 | `low_accuracy` | Faster but less accurate detection mode. | `false` |
 | `workers` | Total parallel workers, divided among `file_workers`. | `16` |
 | `file_workers` | Number of files processed in parallel. | `2` |

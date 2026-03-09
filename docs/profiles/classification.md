@@ -27,12 +27,7 @@ Lingua provides fast language detection using a Rust-based library (Rayon parall
 
 1. **Text Cleaning**: Removes configured strings (`[deleted]`, `[removed]`, `[unavailable]`) and patterns (URLs, subreddit/user mentions), then normalizes whitespace.
 
-2. **Text Validity Filtering**: Texts must meet minimum thresholds derived from Lingua's official benchmarks:
-   - 3+ words, OR
-   - 2 words with 8+ total characters, OR
-   - 1 word with 5+ characters
-
-   Texts that don't meet these thresholds get empty language values.
+2. **Text Validity Filtering**: Texts shorter than `min_chars` (default 5) after cleaning are skipped and get empty language values.
 
 3. **Detection**: Texts are sorted by length (descending) for optimal Rayon parallel utilization. Detection runs in configurable batches (default 2M rows) to manage memory.
 
@@ -46,6 +41,7 @@ Lingua provides fast language detection using a Rust-based library (Rayon parall
 | `lang_prob` | Confidence score (0.0 - 1.0) |
 | `lang2` | Second most likely language |
 | `lang2_prob` | Confidence for second language |
+| `lang_chars` | Character count of cleaned text used for detection |
 
 ### Output Modes
 
@@ -71,6 +67,7 @@ Lingua settings:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `suffix` | Output filename suffix | `"_lingua"` |
+| `min_chars` | Minimum character count after text cleaning | `5` |
 | `low_accuracy` | Faster but less accurate | `false` |
 | `workers` | Total parallel workers (divided among file_workers) | `16` |
 | `file_workers` | Files processed in parallel | `2` |

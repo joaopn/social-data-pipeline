@@ -12,7 +12,6 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
-from ..core.state import PipelineState
 from ..core.config import (
     load_profile_config,
     get_required,
@@ -211,12 +210,6 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
     
     if profile == "ml":
         print(f"[sdb] GPUs: {global_config['gpu_ids']}, file_workers: {global_config['file_workers']}")
-    
-    state_file = f"/data/output/{profile}_state.json"
-    state = PipelineState(state_file=state_file)
-    
-    stats = state.get_stats()
-    print(f"[sdb] Previously processed: {stats['processed_count']} files")
     
     csv_dir = "/data/csv"
     output_dir = "/data/output"

@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from typing import List, Dict, Tuple
 
-from ..core.state import PipelineState
 from ..core.decompress import decompress_zst
 from ..core.config import (
     load_profile_config,
@@ -201,7 +200,7 @@ def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: 
 
 
 def get_file_identifier(filepath: str) -> str:
-    """Extract identifier from filepath for state tracking (e.g., RC_2023-01)."""
+    """Extract identifier from filepath (e.g., RC_2023-01 from RC_2023-01.zst)."""
     return Path(filepath).stem
 
 
@@ -240,20 +239,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     print(f"[sdb] Profile: parse")
     print(f"[sdb] Platform: {PLATFORM}")
     print(f"[sdb] Data types: {data_types}")
-    
-    # Initialize state manager
-    state = PipelineState(state_file="/data/output/parse_state.json")
-    
-    stats = state.get_stats()
-    print(f"[sdb] Previously processed: {stats['processed_count']} files")
-    print(f"[sdb] Previously failed: {stats['failed_count']} files")
-    
-    # Handle interrupted processing
-    interrupted_file = state.get_in_progress()
-    if interrupted_file:
-        print(f"[sdb] Found interrupted file: {interrupted_file} (will be retried)")
-        state.clear_in_progress()
-    
+
     # Paths
     dumps_dir = "/data/dumps"
     extracted_dir = "/data/extracted"
@@ -273,10 +259,16 @@ def run_pipeline(config_dir: str = "/app/config"):
     print(f"[sdb] Found {len(json_files)} JSON files in extracted directory")
     print(f"[sdb] Found {len(parsed_csv_files)} CSV files in csv directory")
     
-    # Filter out already processed files
-    pending_zst = [(p, dt) for p, dt in zst_files if not state.is_processed(get_file_identifier(p))]
-    pending_json = [(p, fid, dt) for p, fid, dt in json_files if not state.is_processed(fid)]
-    
+    # Filter out .zst files that already have extracted JSON
+    existing_json_ids = {fid for _, fid, _ in json_files}
+    existing_csv_ids = {fid for _, fid, _ in parsed_csv_files}
+    pending_zst = [(p, dt) for p, dt in zst_files
+                   if get_file_identifier(p) not in existing_json_ids
+                   and get_file_identifier(p) not in existing_csv_ids]
+
+    # Filter out JSON files that already have parsed CSV
+    pending_json = [(p, fid, dt) for p, fid, dt in json_files if fid not in existing_csv_ids]
+
     print(f"[sdb] Pending: {len(pending_zst)} .zst, {len(pending_json)} JSON")
     
     if not (pending_zst or pending_json):
@@ -298,16 +290,13 @@ def run_pipeline(config_dir: str = "/app/config"):
         for filepath, data_type in pending_zst:
             file_id = get_file_identifier(filepath)
             extract_dir = f"{extracted_dir}/{data_type}"
-            expected_json = Path(extract_dir) / file_id
-            
-            if not expected_json.exists():
-                try:
-                    state.mark_in_progress(file_id)
-                    decompress_zst(filepath, extract_dir)
-                except Exception as e:
-                    print(f"[sdb] Error extracting {file_id}: {e}")
-                    state.mark_failed(file_id, f"Extraction failed: {e}")
-                    fail_count += 1
+
+            try:
+                decompress_zst(filepath, extract_dir)
+                success_count += 1
+            except Exception as e:
+                print(f"[sdb] Error extracting {file_id}: {e}")
+                fail_count += 1
         
         total_timings['extraction'] = time.time() - t_start
     
@@ -340,45 +329,38 @@ def run_pipeline(config_dir: str = "/app/config"):
                     config_dir=platform_config_dir,
                     workers=workers
                 )
-                
-                # Mark files as completed and cleanup
+
                 for json_path, file_id, data_type in files_to_parse:
-                    state.mark_completed(file_id)
                     success_count += 1
-                    
+
                     cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
                     if cleanup_temp and os.path.exists(json_path):
                         os.remove(json_path)
                         print(f"[sdb] Removed: {Path(json_path).name}")
-                            
+
             except Exception as e:
                 print(f"[sdb] Error in parallel parsing: {e}")
-                for _, file_id, _ in files_to_parse:
-                    state.mark_failed(file_id, f"Parsing failed: {e}")
-                    fail_count += 1
+                fail_count += len(files_to_parse)
         else:
             # Sequential parsing
             for json_path, file_id, data_type in files_to_parse:
                 try:
-                    state.mark_in_progress(file_id)
                     parser.parse_to_csv(
                         input_file=json_path,
                         output_dir=csv_dir,
                         data_type=data_type,
                         config_dir=platform_config_dir
                     )
-                    
-                    state.mark_completed(file_id)
+
                     success_count += 1
-                    
+
                     cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
                     if cleanup_temp and os.path.exists(json_path):
                         os.remove(json_path)
                         print(f"[sdb] Removed: {Path(json_path).name}")
-                        
+
                 except Exception as e:
                     print(f"[sdb] Error parsing {file_id}: {e}")
-                    state.mark_failed(file_id, f"Parsing failed: {e}")
                     fail_count += 1
         
         total_timings['parsing'] = time.time() - t_start
@@ -389,10 +371,6 @@ def run_pipeline(config_dir: str = "/app/config"):
     print("="*60)
     print(f"[sdb] Successful: {success_count}")
     print(f"[sdb] Failed: {fail_count}")
-    
-    final_stats = state.get_stats()
-    print(f"[sdb] Total processed: {final_stats['processed_count']}")
-    print(f"[sdb] Total failed: {final_stats['failed_count']}")
     
     print(f"\n[sdb] Timing (minutes):")
     print(f"[sdb]   Extraction: {total_timings['extraction'] / 60:.2f}")

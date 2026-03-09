@@ -23,23 +23,10 @@ except ImportError:
 
 
 # Output columns this classifier adds
-OUTPUT_COLUMNS = ['lang', 'lang_prob', 'lang2', 'lang2_prob']
+OUTPUT_COLUMNS = ['lang', 'lang_prob', 'lang2', 'lang2_prob', 'lang_chars']
 
 # Mandatory fields for ingest CSV (required for ON CONFLICT resolution)
 INGEST_MANDATORY_FIELDS = ['id', 'dataset', 'retrieved_utc']
-
-
-def _build_lingua_validity_expr(text_col: str = "_text") -> pl.Expr:
-    """Build a Polars expression for Lingua validity filtering."""
-    text = pl.col(text_col)
-    char_len = text.str.len_chars()
-    word_count = text.str.split(" ").list.len()
-    
-    case_a = word_count >= 3
-    case_b = (word_count == 2) & (char_len >= 10)
-    case_c = (word_count == 1) & (char_len >= 5)
-    
-    return case_a | case_b | case_c
 
 
 _cached_detector = None
@@ -49,15 +36,15 @@ _cached_config_key = None
 def _get_detector(languages: List[str], low_accuracy: bool, num_workers: int, quiet: bool = False):
     """Get or create cached Lingua detector."""
     global _cached_detector, _cached_config_key
-    
+
     if not LINGUA_AVAILABLE:
         raise ImportError("Lingua not available. Install: pip install lingua-language-detector")
-    
+
     config_key = (tuple(sorted(languages)), low_accuracy)
-    
+
     if _cached_detector is not None and _cached_config_key == config_key:
         return _cached_detector
-    
+
     lang_enums = []
     for lang_code in languages:
         lang_upper = lang_code.upper()
@@ -66,18 +53,18 @@ def _get_detector(languages: List[str], low_accuracy: bool, num_workers: int, qu
         else:
             if not quiet:
                 print(f"[sdb] Warning: Unknown language '{lang_code}', skipping")
-    
+
     if not lang_enums:
         raise ValueError("No valid languages specified in config")
-    
+
     builder = LanguageDetectorBuilder.from_languages(*lang_enums)
-    
+
     if low_accuracy:
         builder = builder.with_low_accuracy_mode()
-    
+
     _cached_detector = builder.with_preloaded_language_models().build()
     _cached_config_key = config_key
-    
+
     return _cached_detector
 
 
@@ -100,46 +87,46 @@ def _build_text_expr(text_columns: List[str], remove_strings: List[str], remove_
             for c in text_columns
         ]
         text_expr = pl.concat_str(col_exprs_nullable, separator=" ", ignore_nulls=True)
-    
+
     for s in remove_strings:
         text_expr = text_expr.str.replace_all(s, "", literal=True)
-    
+
     for pattern in remove_patterns:
         text_expr = text_expr.str.replace_all(pattern, "")
-    
+
     text_expr = text_expr.str.replace_all("\n", " ", literal=True)
     text_expr = text_expr.str.replace_all("\\n", " ", literal=True)
     text_expr = text_expr.str.replace_all(r"\s+", " ")
     text_expr = text_expr.str.strip_chars()
-    
+
     return text_expr
 
 
 def _get_ingest_columns(config: Dict) -> List[str]:
     """Get list of columns to include in ingest CSV."""
     columns = list(INGEST_MANDATORY_FIELDS)
-    
+
     extra_fields = config.get('fields', [])
     if extra_fields:
         for field in extra_fields:
             if field not in columns:
                 columns.append(field)
-    
+
     columns.extend(OUTPUT_COLUMNS)
-    
+
     return columns
 
 
 def _get_ingest_output_path(output_csv: str) -> Path:
     """Convert lingua output path to lingua_ingest output path."""
     output_path = Path(output_csv)
-    
+
     parts = list(output_path.parts)
     for i, part in enumerate(parts):
         if part == 'lingua':
             parts[i] = 'lingua_ingest'
             break
-    
+
     return Path(*parts)
 
 
@@ -158,6 +145,7 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     text_columns = get_text_columns(data_type, config)
     remove_strings = config.get('remove_strings', [])
     remove_patterns = config.get('remove_patterns', [])
+    min_chars = config['min_chars']
     prefer_lingua = config.get('prefer_lingua', True)
     output_ingest = not prefer_lingua
 
@@ -172,13 +160,13 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
         expected_rows = pl.scan_csv(input_csv).select(pl.len()).collect().item()
     except Exception as e:
         raise RuntimeError(f"Failed to get row count from input CSV: {e}")
-    
+
     temp_path = output_path.with_suffix(output_path.suffix + '.temp')
-    
+
     if temp_path.exists():
         print(f"[{input_path.stem}] Removing incomplete temp file: {temp_path.name}")
         temp_path.unlink()
-    
+
     ingest_path = None
     ingest_temp_path = None
     ingest_columns = None
@@ -187,20 +175,20 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
         ingest_path.parent.mkdir(parents=True, exist_ok=True)
         ingest_temp_path = ingest_path.with_suffix(ingest_path.suffix + '.temp')
         ingest_columns = _get_ingest_columns(config)
-        
+
         if ingest_temp_path.exists():
             print(f"[{input_path.stem}] Removing incomplete ingest temp file: {ingest_temp_path.name}")
             ingest_temp_path.unlink()
-    
+
     detector = _get_detector(languages, low_accuracy, num_workers, quiet=True)
     text_expr = _build_text_expr(text_columns, remove_strings, remove_patterns)
-    
+
     total_rows = 0
     total_detected = 0
     detect_time = 0.0
     first_batch = True
     start_time = time.time()
-    
+
     try:
         reader = pl.read_csv_batched(input_csv, batch_size=batch_size)
     except Exception as e:
@@ -233,8 +221,14 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
                 text_expr.str.len_chars().alias("_len"),
             ])
 
-            validity_expr = _build_lingua_validity_expr("_text")
-            df_with_text = df_with_text.with_columns([validity_expr.alias("_valid")])
+            valid_expr = pl.col("_len") >= min_chars
+            df_with_text = df_with_text.with_columns([
+                valid_expr.alias("_valid"),
+                pl.when(valid_expr)
+                .then(pl.col("_len").cast(pl.Utf8))
+                .otherwise(pl.lit(""))
+                .alias("_lang_chars"),
+            ])
 
             valid_mask = df_with_text["_valid"]
             valid_df = df_with_text.filter(valid_mask)
@@ -277,6 +271,7 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
                 pl.Series("lang_prob", prob1_col),
                 pl.Series("lang2", lang2_col),
                 pl.Series("lang2_prob", prob2_col),
+                df_with_text["_lang_chars"].alias("lang_chars"),
             ])
 
             if first_batch:

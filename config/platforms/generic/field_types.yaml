@@ -26,3 +26,6 @@ title: text
 url: text
 score: integer
 count: integer
+
+# Lingua language detection fields
+lang_chars: integer          # Character count of cleaned text used for language detection

@@ -27,13 +27,12 @@ remove_patterns:           # Regex patterns removed from text before classificat
 fields: []
 
 # Lingua - Language detection
-# Text filtering uses a word-based algorithm derived from Lingua's official benchmarks:
-# - 3+ words: valid (enough context for reliable detection)
-# - 2 words with ≥8 chars: valid (Lingua tests on pairs ≥10 chars, we're lenient)
-# - 1 word with ≥5 chars: valid (Lingua tests on words ≥5 chars)
+# Texts shorter than min_chars (after cleaning) are skipped.
+# The output includes lang_chars so users can filter by text length at query time.
 # See: https://github.com/pemistahl/lingua#4-how-good-is-it
 lingua:
   suffix: "_lingua"        # Suffix added to output filenames (e.g., RS_2024-01_lingua.csv)
+  min_chars: 5             # Minimum character count for language detection (after text cleaning)
   low_accuracy: false      # Use low-accuracy mode for faster detection
   workers: 16              # Total parallel workers (divided among file_workers if > 1)
   file_workers: 2          # Number of files to process in parallel (1 = sequential)

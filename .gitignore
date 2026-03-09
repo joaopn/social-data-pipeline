@@ -51,3 +51,8 @@ logs/
 # Database
 *.db
 pgdata/
+
+# AI agent local files
+.claude/
+.codex/
+.opencode/

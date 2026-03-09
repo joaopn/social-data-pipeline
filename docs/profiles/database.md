@@ -82,14 +82,14 @@ When `prefer_lingua: false`:
 
 ### Standard Ingestion (ON CONFLICT)
 
-When `fast_initial_load: false` or when the table already exists:
+When the table already exists:
 - Uses COPY with ON CONFLICT for duplicate handling
 - Deduplicates by `(dataset, id)` composite key
 - `check_duplicates: true` enables ON CONFLICT DO UPDATE
 
-### Fast Initial Load
+### Fast Initial Load (New Tables)
 
-When `fast_initial_load: true` (default) and the table does not exist yet, the pipeline uses an optimized bulk ingestion strategy:
+When a table does not exist yet, the pipeline automatically uses an optimized bulk ingestion strategy:
 
 1. **CREATE TABLE (no PK)** — Table created without primary key to avoid per-row index maintenance
 2. **Blind COPY** — All CSV files loaded without duplicate checking
@@ -98,8 +98,7 @@ When `fast_initial_load: true` (default) and the table does not exist yet, the p
 
 **Performance**: Faster than ON CONFLICT for initial loads with billions of rows. The speedup comes from deferring index maintenance until after all data is loaded.
 
-**Limitations**:
-- **Initial load only**: Once the table exists, subsequent ingestions always use ON CONFLICT regardless of this setting
+Once the table exists, subsequent ingestions always use ON CONFLICT.
 
 ### Indexing
 
@@ -129,7 +128,6 @@ After ingestion, indexes are created on configured fields:
 | `processing.cleanup_temp` | Delete intermediate files | `false` |
 | `processing.watch_interval` | Poll for new files (0 = once) | `0` |
 | `processing.prefer_lingua` | Use Lingua CSVs as input | `true` |
-| `processing.fast_initial_load` | Optimized bulk load | `true` |
 | `indexes` | Index fields per data type | `{}` (from platform) |
 
 ---
@@ -152,7 +150,7 @@ Ingests ML classifier outputs into separate PostgreSQL tables.
 - When `prefer_lingua: true` in the postgres profile: lingua data is already in the main table, so `postgres_ml` skips the lingua classifier
 - When `prefer_lingua: false`: `postgres_ml` ingests lingua data from the `lingua_ingest` directory
 
-### Fast Initial Load
+### Fast Initial Load (New Tables)
 
 Same algorithm as postgres_ingest, with an additional step:
 
@@ -161,6 +159,8 @@ Same algorithm as postgres_ingest, with an additional step:
 3. Deduplication
 4. Add PRIMARY KEY
 5. **Add FOREIGN KEY** (validates all IDs exist in the main table)
+
+Once the table exists, subsequent ingestions use ON CONFLICT.
 
 ### Classifier Table Definitions
 
@@ -186,7 +186,6 @@ Each classifier entry has:
 | `processing.type_inference_rows` | Rows to sample for column type inference | `1000` |
 | `processing.use_foreign_key` | Add FK constraint to main table | `true` |
 | `processing.watch_interval` | Poll for new files (0 = once) | `0` |
-| `processing.fast_initial_load` | Optimized bulk load | `true` |
 
 ---
 

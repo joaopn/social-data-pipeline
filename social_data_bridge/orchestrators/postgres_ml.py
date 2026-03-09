@@ -178,8 +178,6 @@ def run_pipeline(config_dir: str = "/app/config"):
     parallel_ingestion = proc_config.get('parallel_ingestion', True)
     type_inference_rows = proc_config.get('type_inference_rows', 1000)
     use_foreign_key = proc_config.get('use_foreign_key', True)
-    fast_initial_load = proc_config.get('fast_initial_load', False)
-    
     # Read prefer_lingua from postgres profile (controls lingua ingestion behavior)
     try:
         postgres_config = load_profile_config('postgres_ingest', config_dir, quiet=True)
@@ -193,7 +191,6 @@ def run_pipeline(config_dir: str = "/app/config"):
     print(f"[sdb] Data types: {data_types}")
     print(f"[sdb] Classifiers: {list(classifiers_config.keys())}")
     print(f"[sdb] Use foreign key: {use_foreign_key}")
-    print(f"[sdb] Fast initial load: {fast_initial_load}")
     print(f"[sdb] Prefer lingua: {prefer_lingua} (from postgres profile)")
     
     # Ensure database and schema exist
@@ -292,24 +289,22 @@ def run_pipeline(config_dir: str = "/app/config"):
                 user=db_config['user']
             )
         
-        # Determine fast load eligibility per data_type
+        # Determine load strategy per data type:
+        # New tables use fast load (deferred PK, blind COPY, post-load dedup)
+        # Existing tables use standard ON CONFLICT upsert
         fast_load_types = set()
         standard_load_types = set()
-        
-        if fast_initial_load:
-            for dt in files_by_type.keys():
-                if not tables_existed[dt]:
-                    fast_load_types.add(dt)
-                else:
-                    standard_load_types.add(dt)
-            
-            if fast_load_types:
-                print(f"[sdb] Fast initial load for: {', '.join(sorted(fast_load_types))}")
-                print(f"[sdb] WARNING: If process fails, tables must be recreated!")
-            if standard_load_types:
-                print(f"[sdb] Standard ON CONFLICT for: {', '.join(sorted(standard_load_types))}")
-        else:
-            standard_load_types = set(files_by_type.keys())
+
+        for dt in files_by_type.keys():
+            if not tables_existed[dt]:
+                fast_load_types.add(dt)
+            else:
+                standard_load_types.add(dt)
+
+        if fast_load_types:
+            print(f"[sdb] Fast initial load for: {', '.join(sorted(fast_load_types))}")
+        if standard_load_types:
+            print(f"[sdb] Standard ON CONFLICT for: {', '.join(sorted(standard_load_types))}")
         
         success_count = 0
         fail_count = 0

@@ -297,7 +297,6 @@ processing:
   cleanup_temp: false        # Delete intermediate files
   watch_interval: 0          # Run once (0) or poll every N minutes
   prefer_lingua: true        # Ingest lingua CSVs instead of original
-  fast_initial_load: true    # Optimized bulk load (deferred PK, blind COPY)
 
 indexes: {}                  # Per-data-type index fields (set via platform config)
 ```
@@ -319,7 +318,6 @@ indexes: {}                  # Per-data-type index fields (set via platform conf
 | **processing.cleanup_temp** | Delete intermediate files after ingestion. | `false` |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
 | **processing.prefer_lingua** | Ingest lingua CSVs (from `ml_cpu` output) instead of original CSVs. Falls back to original if not found. | `true` |
-| **processing.fast_initial_load** | Optimized bulk load: deferred PK, blind `COPY`, post-load dedup. | `true` |
 | **indexes** | Index fields per data type (e.g., `{submissions: [dataset, author, subreddit]}`). | `{}` |
 
 #### ML Table Ingestion: `config/postgres_ml/pipeline.yaml`
@@ -339,7 +337,6 @@ processing:
   type_inference_rows: 1000  # Rows sampled for column type inference
   use_foreign_key: true      # FK constraint to main table
   watch_interval: 0
-  fast_initial_load: true
 ```
 
 | Setting | Description | Default |
@@ -350,8 +347,6 @@ processing:
 | **processing.type_inference_rows** | Number of rows sampled to infer column types from CSV data. | `1000` |
 | **processing.use_foreign_key** | Add foreign key constraint linking to the main table. Requires the main table to exist; set `false` for independent ingestion. | `true` |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
-| **processing.fast_initial_load** | Optimized bulk load (same behavior as postgres profile). | `true` |
-
 **Note:** `prefer_lingua` is read from the postgres profile (`config/postgres/pipeline.yaml`). When `true`, the lingua classifier is skipped during `postgres_ml` ingestion because lingua data is already in the main table. When `false`, lingua data is ingested from the `lingua_ingest` directory.
 
 #### Classifier Table Definitions: `config/postgres_ml/services.yaml`

@@ -26,7 +26,6 @@
 #     cleanup_temp: false        # Delete intermediate files after ingestion
 #     watch_interval: 0          # Check for new files every N minutes (0 = run once)
 #     prefer_lingua: false       # If true: ingest lingua CSVs (from ml_cpu output) instead of original CSVs
-#     fast_initial_load: false   # WARNING: If true, uses optimized bulk load for initial ingestion. Database must be recreated if process fails mid-load.
 #   indexes:                     # Index fields per data type (replaces default lists)
 #     submissions:
 #       - dataset

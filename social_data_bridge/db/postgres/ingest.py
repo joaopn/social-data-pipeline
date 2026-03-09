@@ -165,7 +165,7 @@ def get_column_list(data_type: str, config_dir: str, csv_file: str = None) -> Li
     
     # Append lingua columns if this is a lingua file
     if csv_file and 'lingua' in csv_file:
-        columns = columns + ['lang', 'lang_prob', 'lang2', 'lang2_prob']
+        columns = columns + ['lang', 'lang_prob', 'lang2', 'lang2_prob', 'lang_chars']
     
     return columns
 
@@ -277,10 +277,10 @@ def get_ingest_query(
         f"{col} = EXCLUDED.{col}" for col in update_fields
     )
     
-    # Build COPY options - add FORCE_NULL for lingua probability columns (empty string -> NULL)
+    # Build COPY options - add FORCE_NULL for lingua columns that may be empty (empty string -> NULL)
     copy_options = "FORMAT csv, HEADER true, DELIMITER ','"
     if csv_file and 'lingua' in csv_file:
-        copy_options += ", FORCE_NULL (lang_prob, lang2_prob)"
+        copy_options += ", FORCE_NULL (lang, lang_prob, lang2, lang2_prob, lang_chars)"
     
     if not check_duplicates:
         return f"""

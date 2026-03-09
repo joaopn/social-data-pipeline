@@ -19,7 +19,6 @@ processing:
   cleanup_temp: false        # Delete intermediate files after ingestion
   watch_interval: 0          # check for new files every N minutes (0 = run once)
   prefer_lingua: true        # If true: ingest lingua CSVs (from ml_cpu output) instead of original CSVs; falls back to original if not found
-  fast_initial_load: true   # If true: use optimized bulk load for initial ingestion (deferred PK, blind COPY, post-load dedup)
 
 # Index configuration (only used if create_indexes is true)
 # Override in user.yaml with platform-specific index fields

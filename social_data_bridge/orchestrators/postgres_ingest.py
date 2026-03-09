@@ -540,8 +540,6 @@ def run_pipeline(config_dir: str = "/app/config"):
         parallel_ingestion = get_required(config, 'processing', 'parallel_ingestion')
         check_duplicates = get_required(config, 'processing', 'check_duplicates')
         cleanup_temp = get_required(config, 'processing', 'cleanup_temp')
-        fast_initial_load = get_optional(config, 'processing', 'fast_initial_load', default=False)
-        
         # Ensure database and schema exist
         ensure_database_exists(
             dbname=db_config['name'],
@@ -559,24 +557,22 @@ def run_pipeline(config_dir: str = "/app/config"):
         
         data_types_with_files = set(dt for _, _, dt in files_to_ingest)
         
-        # Determine which data types can use fast initial load
-        # Fast load only applies to data types where table doesn't exist yet
+        # Determine load strategy per data type:
+        # New tables use fast load (deferred PK, blind COPY, post-load dedup)
+        # Existing tables use standard ON CONFLICT upsert
         fast_load_types = set()
         standard_load_types = set()
-        
-        if fast_initial_load:
-            for dt in data_types_with_files:
-                if not tables_existed_before.get(dt, True):
-                    fast_load_types.add(dt)
-                else:
-                    standard_load_types.add(dt)
-            
-            if fast_load_types:
-                print(f"[sdb] Fast initial load enabled for: {', '.join(sorted(fast_load_types))}")
-            if standard_load_types:
-                print(f"[sdb] Standard ON CONFLICT load for: {', '.join(sorted(standard_load_types))}")
-        else:
-            standard_load_types = data_types_with_files
+
+        for dt in data_types_with_files:
+            if not tables_existed_before.get(dt, True):
+                fast_load_types.add(dt)
+            else:
+                standard_load_types.add(dt)
+
+        if fast_load_types:
+            print(f"[sdb] Fast initial load for: {', '.join(sorted(fast_load_types))}")
+        if standard_load_types:
+            print(f"[sdb] Standard ON CONFLICT load for: {', '.join(sorted(standard_load_types))}")
         
         # =====================================================================
         # FAST INITIAL LOAD PATH

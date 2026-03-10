@@ -24,6 +24,56 @@ MANDATORY_FIELD_SQL = {
 # All TEXT fields use STORAGE EXTERNAL (uncompressed TOAST)
 # This disables PostgreSQL compression - use filesystem compression (ZFS, BTRFS) instead
 
+# Tablespace container path convention
+TABLESPACE_BASE_PATH = '/data/tablespace'
+
+
+def resolve_tablespace(name: Optional[str]) -> Optional[str]:
+    """Return tablespace name for SQL clauses, or None for default (pgdata)."""
+    if name is None or name == 'pgdata':
+        return None
+    return name
+
+
+def ensure_tablespaces(
+    tablespaces: Dict[str, str],
+    dbname: str,
+    host: str = '127.0.0.1',
+    port: int = 5432,
+    user: str = 'postgres'
+):
+    """
+    Create configured tablespaces if they don't already exist.
+    Skips 'pgdata' (the default PostgreSQL tablespace).
+
+    Args:
+        tablespaces: Dict of tablespace_name -> host_path
+        dbname: Database name
+        host: Database host
+        port: Database port
+        user: Database user
+    """
+    if not tablespaces:
+        return
+
+    with psycopg.connect(dbname=dbname, user=user, host=host, port=port, autocommit=True) as conn:
+        with conn.cursor() as curr:
+            for ts_name in tablespaces:
+                if ts_name == 'pgdata':
+                    continue
+                curr.execute(
+                    "SELECT 1 FROM pg_tablespace WHERE spcname = %s", (ts_name,)
+                )
+                if curr.fetchone() is None:
+                    location = f"{TABLESPACE_BASE_PATH}/{ts_name}"
+                    # CREATE TABLESPACE doesn't support parameterized LOCATION
+                    curr.execute(
+                        f"CREATE TABLESPACE {ts_name} LOCATION '{location}'"
+                    )
+                    print(f"[sdb] Created tablespace: {ts_name} -> {location}")
+                else:
+                    print(f"[sdb] Tablespace exists: {ts_name}")
+
 
 def configure_ingestion_session(
     cur,
@@ -171,20 +221,21 @@ def get_column_list(data_type: str, config_dir: str, csv_file: str = None) -> Li
 
 
 def get_create_table_query(
-    data_type: str, 
-    schema: str, 
+    data_type: str,
+    schema: str,
     table: str,
     config_dir: str,
     csv_file: str = None,
     unlogged: bool = False,
-    include_pk: bool = True
+    include_pk: bool = True,
+    tablespace: str = None
 ) -> str:
     """
     Generate CREATE TABLE query dynamically from YAML configuration.
-    
+
     All TEXT fields use STORAGE EXTERNAL (uncompressed TOAST) for external
     filesystem compression (ZFS, BTRFS).
-    
+
     Args:
         data_type: 'submissions' or 'comments'
         schema: Database schema name
@@ -193,10 +244,11 @@ def get_create_table_query(
         csv_file: Optional CSV file path - if contains 'lingua', lingua columns are included
         unlogged: If True, create UNLOGGED table (faster, no WAL, no crash recovery)
         include_pk: If True, include PRIMARY KEY on id column
-        
+        tablespace: Optional tablespace name (None = default pg_default)
+
     Returns:
         CREATE TABLE SQL query
-        
+
     Raises:
         ConfigurationError: If config files are missing
     """
@@ -228,17 +280,18 @@ def get_create_table_query(
         else:
             # Default to TEXT for unknown fields
             col_defs.append(f"    {col} TEXT")
-    
+
     columns_sql = ",\n".join(col_defs)
-    
+
     # Build CREATE statement
     create_type = "UNLOGGED TABLE" if unlogged else "TABLE"
-    
+    tablespace_clause = f"\n        TABLESPACE {tablespace}" if tablespace else ""
+
     return f"""
         CREATE {create_type} IF NOT EXISTS {full_table}
         (
 {columns_sql}
-        );"""
+        ){tablespace_clause};"""
 
 
 def get_ingest_query(
@@ -475,7 +528,8 @@ def finalize_fast_load_table(
     host: str = '127.0.0.1',
     port: int = 5432,
     user: str = 'postgres',
-    fk_reference_table: Optional[str] = None
+    fk_reference_table: Optional[str] = None,
+    tablespace: str = None
 ):
     """
     Finalize table after fast initial load: add PK, optionally add FK.
@@ -488,6 +542,7 @@ def finalize_fast_load_table(
         port: Database port
         user: Database user
         fk_reference_table: If provided, add FK constraint referencing this table (same schema)
+        tablespace: Optional tablespace name for PK index (None = default)
     """
     full_table = f"{schema}.{table}"
 
@@ -498,6 +553,8 @@ def finalize_fast_load_table(
     with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
         with conn.cursor() as curr:
             configure_ingestion_session(curr)
+            if tablespace:
+                curr.execute(f"SET default_tablespace = '{tablespace}'")
             curr.execute(add_pk_query)
             conn.commit()
     print(f"[sdb] PRIMARY KEY added to {full_table}")
@@ -563,7 +620,8 @@ def create_fast_load_table(
     port: int,
     user: str,
     config_dir: str,
-    csv_file: str = None
+    csv_file: str = None,
+    tablespace: str = None
 ):
     """
     Create table without PK for fast initial load (PK added after all data is loaded).
@@ -578,14 +636,16 @@ def create_fast_load_table(
         user: Database user
         config_dir: Directory containing YAML configuration files
         csv_file: Optional CSV file path for lingua column detection
+        tablespace: Optional tablespace name (None = default pg_default)
     """
-    print(f"[sdb] Creating table {schema}.{table} (no PK)...")
+    ts_label = f" on tablespace {tablespace}" if tablespace else ""
+    print(f"[sdb] Creating table {schema}.{table} (no PK){ts_label}...")
 
     # Ensure database and schema exist
     ensure_database_exists(dbname, host, port, user)
     ensure_schema_exists(schema, dbname, host, port, user)
 
-    create_query = get_create_table_query(data_type, schema, table, config_dir, csv_file, include_pk=False)
+    create_query = get_create_table_query(data_type, schema, table, config_dir, csv_file, include_pk=False, tablespace=tablespace)
     execute_query(create_query, dbname, host, port, user)
 
     print(f"[sdb] Created table {schema}.{table} (no PK)")
@@ -600,7 +660,8 @@ def create_fast_load_classifier_table(
     port: int,
     user: str,
     column_list: List[str],
-    column_types: Dict[str, str]
+    column_types: Dict[str, str],
+    tablespace: str = None
 ):
     """
     Create classifier table without PK/FK for fast initial load.
@@ -615,14 +676,16 @@ def create_fast_load_classifier_table(
         user: Database user
         column_list: List of column names in CSV order
         column_types: Dict of column_name -> sql_type (excludes 'id')
+        tablespace: Optional tablespace name (None = default pg_default)
     """
-    print(f"[sdb] Creating table {schema}.{table_name} (no PK, no FK)...")
+    ts_label = f" on tablespace {tablespace}" if tablespace else ""
+    print(f"[sdb] Creating table {schema}.{table_name} (no PK, no FK){ts_label}...")
 
     ensure_schema_exists(schema, dbname, host, port, user)
 
     create_query = get_classifier_create_table_query(
         table_name, data_type, schema, column_list, column_types,
-        use_foreign_key=False, include_pk=False
+        use_foreign_key=False, include_pk=False, tablespace=tablespace
     )
     execute_query(create_query, dbname, host, port, user)
 
@@ -671,7 +734,8 @@ def create_index(
     port: int = 5432,
     user: str = 'postgres',
     quiet: bool = False,
-    parallel_workers: int = 8
+    parallel_workers: int = 8,
+    tablespace: str = None
 ) -> bool:
     """Create an index on a table field. Returns True if created, False if already existed."""
 
@@ -682,7 +746,8 @@ def create_index(
     if index_exists(index_name, dbname, host, port, user):
         return False
 
-    query = f"CREATE INDEX IF NOT EXISTS {index_name} ON {full_table} ({field});"
+    tablespace_clause = f" TABLESPACE {tablespace}" if tablespace else ""
+    query = f"CREATE INDEX IF NOT EXISTS {index_name} ON {full_table} ({field}){tablespace_clause};"
 
     print(f"[sdb] Creating index: {index_name}")
 
@@ -765,11 +830,12 @@ def ingest_csv(
     check_duplicates: bool,
     create_indexes: bool,
     config_dir: str,
-    index_fields: Optional[List[str]] = None
+    index_fields: Optional[List[str]] = None,
+    tablespace: str = None
 ):
     """
     Ingest a CSV file into PostgreSQL.
-    
+
     Args:
         csv_file: Path to the CSV file
         data_type: 'submissions' or 'comments'
@@ -783,6 +849,7 @@ def ingest_csv(
         create_indexes: Whether to create indexes after ingestion
         config_dir: Directory containing YAML configuration files
         index_fields: Fields to index (uses defaults if None)
+        tablespace: Optional tablespace name (None = default pg_default)
     """
     if table is None:
         table = data_type
@@ -794,22 +861,22 @@ def ingest_csv(
     ensure_schema_exists(schema, dbname, host, port, user)
     
     # Create table if needed (schema from YAML, includes lingua columns if applicable)
-    create_query = get_create_table_query(data_type, schema, table, config_dir, csv_file)
+    create_query = get_create_table_query(data_type, schema, table, config_dir, csv_file, tablespace=tablespace)
     execute_query(create_query, dbname, host, port, user)
-    
+
     # Ingest data (columns from YAML, includes lingua columns if applicable)
     ingest_query = get_ingest_query(data_type, schema, table, check_duplicates, config_dir, csv_file)
     execute_query(ingest_query, dbname, host, port, user, args=[csv_file])
-    
+
     # Create indexes if requested
     if create_indexes:
         if index_fields is None:
             # No default index fields - must be configured per platform
             index_fields = []
-        
+
         for field in index_fields:
             try:
-                create_index(field, table, schema, dbname, host, port, user)
+                create_index(field, table, schema, dbname, host, port, user, tablespace=tablespace)
             except Exception as e:
                 print(f"[sdb] Warning: Failed to create index on {field}: {e}")
 
@@ -952,16 +1019,17 @@ def get_classifier_create_table_query(
     column_types: Dict[str, str],
     use_foreign_key: bool = True,
     unlogged: bool = False,
-    include_pk: bool = True
+    include_pk: bool = True,
+    tablespace: str = None
 ) -> str:
     """
     Generate CREATE TABLE query for a classifier output table.
-    
+
     Classifier tables have:
     - id VARCHAR(7) PRIMARY KEY (unless include_pk=False)
     - Optional FOREIGN KEY to main table (submissions/comments)
     - All other columns from CSV with inferred types
-    
+
     Args:
         table_name: Full table name (e.g., 'submissions_lingua')
         data_type: 'submissions' or 'comments' (for FK reference)
@@ -971,7 +1039,8 @@ def get_classifier_create_table_query(
         use_foreign_key: If True, add FK constraint to main table
         unlogged: If True, create UNLOGGED table (faster, no WAL, no crash recovery)
         include_pk: If True, include PRIMARY KEY on id column
-        
+        tablespace: Optional tablespace name (None = default pg_default)
+
     Returns:
         CREATE TABLE SQL query
     """
@@ -993,17 +1062,18 @@ def get_classifier_create_table_query(
     # Add foreign key constraint if enabled (only if also including PK)
     if use_foreign_key and include_pk:
         col_defs.append(f"    CONSTRAINT fk_{table_name}_id FOREIGN KEY (id) REFERENCES {main_table}(id)")
-    
+
     columns_sql = ",\n".join(col_defs)
-    
+
     # Build CREATE statement
     create_type = "UNLOGGED TABLE" if unlogged else "TABLE"
-    
+    tablespace_clause = f"\n        TABLESPACE {tablespace}" if tablespace else ""
+
     return f"""
         CREATE {create_type} IF NOT EXISTS {full_table}
         (
 {columns_sql}
-        );"""
+        ){tablespace_clause};"""
 
 
 def get_classifier_ingest_query(

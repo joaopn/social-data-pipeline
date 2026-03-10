@@ -321,6 +321,10 @@ indexes: {}                  # Per-data-type index fields (set via platform conf
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
 | **processing.prefer_lingua** | Ingest lingua CSVs (from `ml_cpu` output) instead of original CSVs. Falls back to original if not found. | `true` |
 | **indexes** | Index fields per data type (e.g., `{submissions: [dataset, author, subreddit]}`). | `{}` |
+| **tablespaces** | Tablespace definitions: map of name to host path (e.g., `{nvme1: /mnt/nvme1/pg-tablespace}`). | `{}` |
+| **table_tablespaces** | Table-to-tablespace assignments: map of data type to tablespace name (e.g., `{submissions: nvme1}`). Use `pgdata` for the default PostgreSQL data directory. | `{}` |
+
+See [Tablespaces](profiles/database.md#tablespaces) for details on multi-disk setups.
 
 #### ML Table Ingestion: `config/postgres_ml/pipeline.yaml`
 

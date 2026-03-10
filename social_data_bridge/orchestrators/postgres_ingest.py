@@ -27,7 +27,7 @@ from ..core.config import (
 )
 from ..db.postgres.ingest import (
     ingest_csv, create_index, table_exists, analyze_table,
-    ensure_database_exists, ensure_schema_exists,
+    ensure_database_exists, ensure_schema_exists, ensure_tablespaces, resolve_tablespace,
     # Fast initial load functions
     create_fast_load_table, fast_ingest_csv, delete_duplicates, finalize_fast_load_table,
 )
@@ -298,11 +298,20 @@ def run_pipeline(config_dir: str = "/app/config"):
     # Get platform-specific config directory
     platform_config_dir = get_platform_config_dir(config_dir)
     
+    # Tablespace configuration
+    tablespaces = config.get('tablespaces', {})
+    table_tablespaces = config.get('table_tablespaces', {})
+
+    def get_tablespace(data_type):
+        return resolve_tablespace(table_tablespaces.get(data_type))
+
     print(f"[sdb] Profile: postgres_ingest")
     print(f"[sdb] Platform: {PLATFORM}")
     print(f"[sdb] Database: {db_config['name']}")
     print(f"[sdb] Schema: {db_schema}")
     print(f"[sdb] Data types: {data_types}")
+    if table_tablespaces:
+        print(f"[sdb] Tablespace assignments: {table_tablespaces}")
     
     # Build file prefixes from platform config for state recovery
     file_prefixes = {}
@@ -554,7 +563,17 @@ def run_pipeline(config_dir: str = "/app/config"):
             port=db_config['port'],
             user=db_config['user']
         )
-        
+
+        # Create tablespaces if configured
+        if tablespaces:
+            ensure_tablespaces(
+                tablespaces=tablespaces,
+                dbname=db_config['name'],
+                host=db_config['host'],
+                port=db_config['port'],
+                user=db_config['user']
+            )
+
         data_types_with_files = set(dt for _, _, dt in files_to_ingest)
         
         # Determine load strategy per data type:
@@ -608,7 +627,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     port=db_config['port'],
                     user=db_config['user'],
                     config_dir=platform_config_dir,
-                    csv_file=first_csv
+                    csv_file=first_csv,
+                    tablespace=get_tablespace(data_type)
                 )
                 
                 # Step 2: Blind COPY all files
@@ -656,6 +676,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                     host=db_config['host'],
                     port=db_config['port'],
                     user=db_config['user'],
+                    tablespace=get_tablespace(data_type)
                 )
                 
                 print(f"[sdb] Completed {data_type}")
@@ -723,7 +744,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                                 user=db_config['user'],
                                 check_duplicates=check_duplicates,
                                 create_indexes=False,
-                                config_dir=platform_config_dir
+                                config_dir=platform_config_dir,
+                                tablespace=get_tablespace(data_type)
                             )
 
                             states[data_type].mark_completed(file_id)
@@ -741,7 +763,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                                 os.remove(csv_path)
 
                     return local_success, local_fail
-                
+
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     future_submissions = executor.submit(ingest_data_type_files, submissions_csvs)
                     future_comments = executor.submit(ingest_data_type_files, comments_csvs)
@@ -766,7 +788,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                             user=db_config['user'],
                             check_duplicates=check_duplicates,
                             create_indexes=False,
-                            config_dir=platform_config_dir
+                            config_dir=platform_config_dir,
+                            tablespace=get_tablespace(data_type)
                         )
 
                         states[data_type].mark_completed(file_id)
@@ -818,7 +841,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                         port=db_config['port'],
                         user=db_config['user'],
                         quiet=(i > 0),  # Only log session config for first index
-                        parallel_workers=parallel_index_workers
+                        parallel_workers=parallel_index_workers,
+                        tablespace=get_tablespace(data_type)
                     )
                 except Exception as e:
                     print(f"[sdb] Warning: Failed to create index on {field}: {e}")

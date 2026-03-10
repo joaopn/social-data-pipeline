@@ -10,6 +10,13 @@ HBA_CONF=$CFG/pg_hba.conf
 [ -f $CFG/pg_hba.local.conf ] && HBA_CONF=$CFG/pg_hba.local.conf && \
   echo '[CONFIG] Using local override: pg_hba.local.conf'
 
+# --- Tablespace directory permissions ---
+if [ -d /data/tablespace ]; then
+    for dir in /data/tablespace/*/; do
+        [ -d "$dir" ] && chown postgres:postgres "$dir"
+    done
+fi
+
 # --- Start PostgreSQL ---
 chown -R postgres:postgres /var/lib/postgresql
 exec docker-entrypoint.sh postgres \

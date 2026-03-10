@@ -174,6 +174,8 @@ Storage needs depend on pipeline mode and selected fields (estimates for full Re
 
 See [Database Profiles](docs/profiles/database.md#storage-requirements) for details on pipeline modes.
 
+**Multi-disk setups:** If your database doesn't fit on a single drive, use [PostgreSQL tablespaces](docs/profiles/database.md#tablespaces) to spread tables across multiple disks. Run `python setup.py` to configure tablespaces interactively.
+
 ## FAQ and Troubleshooting
 
 #### Can I run classifiers without the database?

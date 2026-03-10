@@ -22,8 +22,8 @@ from ..core.config import (
     ConfigurationError,
 )
 from ..db.postgres.ingest import (
-    ensure_database_exists, ensure_schema_exists, ingest_classifier_csv,
-    table_exists, infer_classifier_schema,
+    ensure_database_exists, ensure_schema_exists, ensure_tablespaces, resolve_tablespace,
+    ingest_classifier_csv, table_exists, infer_classifier_schema,
     # Fast initial load functions
     create_fast_load_classifier_table, fast_ingest_classifier_csv,
     delete_duplicates, finalize_fast_load_table,
@@ -178,13 +178,20 @@ def run_pipeline(config_dir: str = "/app/config"):
     parallel_ingestion = proc_config.get('parallel_ingestion', True)
     type_inference_rows = proc_config.get('type_inference_rows', 1000)
     use_foreign_key = proc_config.get('use_foreign_key', True)
-    # Read prefer_lingua from postgres profile (controls lingua ingestion behavior)
+    # Read settings from postgres profile (tablespaces, prefer_lingua)
     try:
         postgres_config = load_profile_config('postgres_ingest', config_dir, quiet=True)
         prefer_lingua = postgres_config.get('processing', {}).get('prefer_lingua', True)
+        tablespaces = postgres_config.get('tablespaces', {})
+        table_tablespaces = postgres_config.get('table_tablespaces', {})
     except Exception:
         prefer_lingua = True  # Default to true if postgres config not found
-    
+        tablespaces = {}
+        table_tablespaces = {}
+
+    def get_tablespace(data_type):
+        return resolve_tablespace(table_tablespaces.get(data_type))
+
     print(f"[sdb] Database: {db_config.get('name')}@{db_config.get('host')}:{db_config.get('port')}")
     print(f"[sdb] Schema: {db_config.get('schema')}")
     print(f"[sdb] Output dir: {output_dir}")
@@ -192,7 +199,9 @@ def run_pipeline(config_dir: str = "/app/config"):
     print(f"[sdb] Classifiers: {list(classifiers_config.keys())}")
     print(f"[sdb] Use foreign key: {use_foreign_key}")
     print(f"[sdb] Prefer lingua: {prefer_lingua} (from postgres profile)")
-    
+    if table_tablespaces:
+        print(f"[sdb] Tablespace assignments: {table_tablespaces}")
+
     # Ensure database and schema exist
     ensure_database_exists(
         dbname=db_config['name'],
@@ -207,6 +216,16 @@ def run_pipeline(config_dir: str = "/app/config"):
         port=db_config['port'],
         user=db_config['user']
     )
+
+    # Create tablespaces if configured
+    if tablespaces:
+        ensure_tablespaces(
+            tablespaces=tablespaces,
+            dbname=db_config['name'],
+            host=db_config['host'],
+            port=db_config['port'],
+            user=db_config['user']
+        )
 
     # Initialize state files per data_type
     pgdata_path = os.environ.get('PGDATA_PATH', '/data/database')
@@ -348,7 +367,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     port=db_config['port'],
                     user=db_config['user'],
                     column_list=column_list,
-                    column_types=column_types
+                    column_types=column_types,
+                    tablespace=get_tablespace(dt)
                 )
                 
                 # Step 3: Blind COPY all files
@@ -396,6 +416,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                     port=db_config['port'],
                     user=db_config['user'],
                     fk_reference_table=dt if use_foreign_key else None,
+                    tablespace=get_tablespace(dt)
                 )
                 
                 print(f"[sdb] Fast load completed for {table_name}")

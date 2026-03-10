@@ -23,3 +23,10 @@ processing:
 # Index configuration (only used if create_indexes is true)
 # Override in user.yaml with platform-specific index fields
 indexes: {}  # Example for Reddit: {submissions: [dataset, author, subreddit], comments: [dataset, author, link_id]}
+
+# Tablespace configuration (for multi-disk setups)
+# tablespaces: map of name -> host path (e.g. {nvme1: /mnt/nvme1/pg-tablespace})
+# table_tablespaces: map of data_type -> tablespace name (e.g. {submissions: nvme1, comments: nvme2})
+# Use "pgdata" to keep a table in the default PostgreSQL data directory.
+tablespaces: {}
+table_tablespaces: {}

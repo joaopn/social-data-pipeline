@@ -90,12 +90,14 @@ pipeline:
 ### 6. Run
 
 ```bash
-PLATFORM=generic docker compose --profile parse up
+python sdb.py run parse
 
 # Classification works the same way
-docker compose --profile ml_cpu up
-docker compose --profile ml up
+python sdb.py run ml_cpu
+python sdb.py run ml
 ```
+
+> **Note:** The platform is configured during `python sdb.py setup`. If you need to use the generic platform, select it during setup.
 
 ## Features
 

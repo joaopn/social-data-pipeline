@@ -7,6 +7,7 @@ A Docker-based toolkit for large-scale processing, classification, and database 
 - [Overview](#overview)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
+- [CLI Reference](#cli-reference)
 - [Profiles](#profiles)
 - [Platform Support](#platform-support)
 - [Storage Requirements](#storage-requirements)
@@ -76,41 +77,43 @@ data/dumps/
     └── RC_2024-02.zst
 ```
 
-#### 2. Configure (recommended)
+#### 2. Configure
 
-Run the interactive setup script to auto-detect your hardware and generate all user configuration files:
+Run the interactive setup to auto-detect your hardware and generate all configuration files:
 
 ```bash
-python setup.py
+python sdb.py setup
 ```
 
-The script detects your CPU, RAM, and GPUs, then walks you through every setting with sensible defaults — press Enter to accept or type to override. It generates `.env`, `user.yaml` for each profile, and `postgresql.local.conf` (with optional [PGTune](https://pgtune.leopard.in.ua/) integration). 
+The setup walks you through core settings (paths, parse, PostgreSQL), optionally classifier tuning, and Reddit-specific field/index configuration — all with sensible defaults. It generates `.env`, `user.yaml` for each profile, and `postgresql.local.conf` (with optional [PGTune](https://pgtune.leopard.in.ua/) integration).
 
 For manual configuration or to understand what each setting does, see the [Configuration Reference](docs/configuration.md).
 
 #### 3. Run
 
-Run the profiles in order. The setup script prints the commands for your selection, but the full pipeline is:
+Run the profiles in order. The setup prints the commands for your selection, but the full pipeline is:
 
 ```bash
 # Parse Reddit data to CSV
-docker compose --profile parse up
+python sdb.py run parse
 
 # CPU language detection (Lingua)
-docker compose --profile ml_cpu up
+python sdb.py run ml_cpu
 
 # GPU classifiers (optional, requires NVIDIA GPU)
-docker compose --profile ml up
+python sdb.py run ml
 
-# Spawns database
-docker compose --profile postgres up -d
+# Start database
+python sdb.py start
 
-# Ingests main files
-docker compose --profile postgres_ingest up
+# Ingest main files
+python sdb.py run postgres_ingest
 
-# Ingests files from GPU classifiers
-docker compose --profile postgres_ml up
+# Ingest files from GPU classifiers
+python sdb.py run postgres_ml
 ```
+
+Use `python sdb.py status` to check configuration and ingestion progress at any time.
 
 #### 4. Analyze
 
@@ -121,6 +124,41 @@ With an optimized PosgreSQL database running, you can now send large-scale analy
 - With agentic LLMs using e.g. [Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 
 **Important**: by default, the database accepts local, read-write, unauthenticated connections with user `postgres`. For multiple users (human or AI), it is recommended to add a password or read-only users. 
+
+## CLI Reference
+
+All operations go through `sdb.py`:
+
+```
+python sdb.py <command> [options]
+```
+
+### Configuration
+
+| Command | Description |
+|---------|-------------|
+| `sdb.py setup` | Full interactive configuration: core → classifiers → platform |
+| `sdb.py setup-reddit` | Configure Reddit fields, indexes, and schema |
+| `sdb.py add-classifiers` | Configure Lingua and GPU classifier settings |
+| `sdb.py unsetup` | Remove all generated configuration and optionally delete the database |
+
+`setup` is the main entrypoint — it runs core configuration first, then optionally walks you through classifier and platform setup. The individual commands (`setup-reddit`, `add-classifiers`) can be re-run independently to update specific settings.
+
+`unsetup` removes all generated files (`.env`, `user.yaml` overrides, `setup_state.yaml`, etc.). Database deletion requires two separate confirmations. Data files (CSVs, dumps, classifier outputs) are never deleted — their locations are printed for manual cleanup.
+
+### Pipeline
+
+| Command | Description |
+|---------|-------------|
+| `sdb.py run <profile>` | Run a pipeline profile |
+| `sdb.py run <profile> --build` | Rebuild the Docker image before running |
+| `sdb.py start` | Start the PostgreSQL database |
+| `sdb.py stop` | Stop the PostgreSQL database |
+| `sdb.py status` | Show configuration and ingestion progress |
+
+Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`.
+
+`status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database.
 
 ## Profiles
 
@@ -147,11 +185,7 @@ For detailed configuration and algorithm documentation, see the per-profile docs
 | `reddit` | Specialized Reddit features: waterfall deletion detection, base-36 ID conversion, format compatibility | Yes |
 | `generic` | Simple JSON-to-CSV for arbitrary data: dot-notation, array indexing, type enforcement | No |
 
-The default platform is Reddit. To process arbitrary JSON/NDJSON data, set `PLATFORM=generic` and configure field lists, field types, and file patterns:
-
-```bash
-PLATFORM=generic docker compose --profile parse up
-```
+The default platform is Reddit. To process arbitrary JSON/NDJSON data, select `generic` during `sdb.py setup` and configure field lists, field types, and file patterns.
 
 - [Reddit Platform Reference](docs/platforms/reddit.md)
 - [Generic Platform Setup](docs/platforms/generic.md)
@@ -174,13 +208,13 @@ Storage needs depend on pipeline mode and selected fields (estimates for full Re
 
 See [Database Profiles](docs/profiles/database.md#storage-requirements) for details on pipeline modes.
 
-**Multi-disk setups:** If your database doesn't fit on a single drive, use [PostgreSQL tablespaces](docs/profiles/database.md#tablespaces) to spread tables across multiple disks. Run `python setup.py` to configure tablespaces interactively.
+**Multi-disk setups:** If your database doesn't fit on a single drive, use [PostgreSQL tablespaces](docs/profiles/database.md#tablespaces) to spread tables across multiple disks. Run `python sdb.py setup` to configure tablespaces interactively.
 
 ## FAQ and Troubleshooting
 
 #### Can I run classifiers without the database?
 
-Yes! Use `--profile ml_cpu` or `--profile ml` independently. The database profile is optional.
+Yes! Use `python sdb.py run ml_cpu` or `python sdb.py run ml` independently. The database profile is optional.
 
 #### Can I use this for non-Reddit data?
 

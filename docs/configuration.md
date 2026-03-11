@@ -2,7 +2,7 @@
 
 This document is the master configuration reference for Social Data Bridge. It covers every environment variable, configuration file, and tunable setting across all profiles.
 
-**Recommended:** Run `python setup.py` to interactively generate all configuration files. The script auto-detects your hardware, walks you through every setting with sensible defaults, and generates `.env`, `user.yaml` for each profile, and `postgresql.local.conf`. The reference below documents what each setting does.
+**Recommended:** Run `python sdb.py setup` to interactively generate all configuration files. The script auto-detects your hardware, walks you through every setting with sensible defaults, and generates `.env`, `user.yaml` for each profile, and `postgresql.local.conf`. The reference below documents what each setting does.
 
 For profile-specific usage and workflows, see:
 - [Parse Profile](profiles/parse.md)
@@ -81,7 +81,7 @@ Every profile directory also ships a `user.yaml.example` file that can be copied
 
 ## 3. User Configuration Overrides (user.yaml)
 
-Each profile supports a `user.yaml` file that overrides base settings without modifying tracked (version-controlled) files. The easiest way to generate these is with `python setup.py`, but they can also be created manually:
+Each profile supports a `user.yaml` file that overrides base settings without modifying tracked (version-controlled) files. The easiest way to generate these is with `python sdb.py setup`, but they can also be created manually:
 
 ### How it works
 
@@ -400,7 +400,7 @@ The PostgreSQL container loads its configuration from `config/postgres/`:
 | `postgresql.local.conf` | **Local override** -- if present, replaces `postgresql.conf` |
 | `pg_hba.local.conf` | **Local override** -- if present, replaces `pg_hba.conf` |
 
-**Recommended approach:** Run `python setup.py`, which handles PGTune integration and ZFS optimization as part of the interactive setup.
+**Recommended approach:** Run `python sdb.py setup`, which handles PGTune integration and ZFS optimization as part of the interactive setup.
 
 **Manual approach:**
 

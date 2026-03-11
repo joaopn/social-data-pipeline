@@ -6,10 +6,10 @@ The `ml_cpu` and `ml` profiles run classifiers on parsed CSV files. The `ml_cpu`
 
 ```bash
 # CPU language detection
-docker compose --profile ml_cpu up
+python sdb.py run ml_cpu
 
 # GPU transformer classifiers (requires NVIDIA GPU)
-docker compose --profile ml up
+python sdb.py run ml
 
 # Run a single GPU classifier
 CLASSIFIER=toxic_roberta docker compose --profile ml up
@@ -207,7 +207,7 @@ Use the `CLASSIFIER` environment variable to run only one GPU classifier:
 CLASSIFIER=toxic_roberta docker compose --profile ml up
 ```
 
-This skips all other classifiers in the gpu_classifiers list.
+This skips all other classifiers in the gpu_classifiers list. This is a per-run override; for standard usage, configure classifiers during `python sdb.py setup` and run with `python sdb.py run ml`.
 
 ### Watch Mode
 

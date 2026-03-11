@@ -41,7 +41,7 @@ gpu_classifiers:
 
 ```bash
 # Run all classifiers
-docker compose --profile ml up
+python sdb.py run ml
 
 # Run only your classifier
 CLASSIFIER=my_classifier docker compose --profile ml up

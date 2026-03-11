@@ -110,8 +110,10 @@ def get_platform_parser(platform):
 ### 4. Run
 
 ```bash
-PLATFORM=my_platform docker compose --profile parse up
+python sdb.py run parse
 ```
+
+> **Note:** The platform is configured during `python sdb.py setup`. Select your custom platform during setup.
 
 ## Using the Generic Parser
 

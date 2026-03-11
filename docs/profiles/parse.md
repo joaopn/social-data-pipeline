@@ -6,12 +6,10 @@ The parse profile decompresses `.zst` compressed data dumps and parses JSON to C
 ## Running
 
 ```bash
-# Reddit data (default platform)
-docker compose --profile parse up
-
-# Generic platform data
-PLATFORM=generic docker compose --profile parse up
+python sdb.py run parse
 ```
+
+> **Note:** The platform (Reddit or generic) is configured during `python sdb.py setup`.
 
 ## How It Works
 

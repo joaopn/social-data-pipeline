@@ -1,0 +1,8 @@
+platform: reddit
+data_types:
+- submissions
+- comments
+profiles:
+- parse
+- ml_cpu
+- postgres_ingest

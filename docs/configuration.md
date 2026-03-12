@@ -27,6 +27,9 @@ All environment variables are set in the `.env` file at the project root. Docker
 | `DB_NAME` | PostgreSQL database name | `datasets` |
 | `DB_SCHEMA` | PostgreSQL schema name | Set per-platform |
 | `POSTGRES_PORT` | PostgreSQL port exposed to host | `5432` |
+| `MONGO_DATA_PATH` | MongoDB data directory | `./data/mongo` |
+| `MONGO_PORT` | MongoDB port exposed to host | `27017` |
+| `MONGO_CACHE_SIZE_GB` | MongoDB WiredTiger cache size in GB | `2` |
 | `HF_HOME` | HuggingFace model cache directory | (system default) |
 | `HF_TOKEN` | HuggingFace authentication token | (none) |
 | `CLASSIFIER` | Run a single GPU classifier by name | (all enabled) |
@@ -66,6 +69,10 @@ config/
 │   ├── pipeline.yaml              # Database ingestion settings
 │   ├── postgresql.conf            # PostgreSQL server tuning
 │   ├── pg_hba.conf                # PostgreSQL authentication
+│   └── user.yaml                  # User overrides
+├── mongo/
+│   ├── pipeline.yaml              # MongoDB ingestion settings
+│   ├── mongod.conf                # MongoDB server configuration
 │   └── user.yaml                  # User overrides
 └── postgres_ml/
     ├── pipeline.yaml              # ML classifier ingestion settings
@@ -115,6 +122,7 @@ In this example, `pipeline:` overrides keys in `config/ml/pipeline.yaml`, and `g
 | `config/ml/user.yaml` | `pipeline.yaml`, `gpu_classifiers.yaml` |
 | `config/postgres/user.yaml` | `pipeline.yaml` |
 | `config/postgres_ml/user.yaml` | `pipeline.yaml`, `services.yaml` |
+| `config/mongo/user.yaml` | `pipeline.yaml` |
 
 ---
 
@@ -434,6 +442,49 @@ The local override files (`postgresql.local.conf`, `pg_hba.local.conf`) are not 
 
 ---
 
+### MongoDB Profile
+
+#### Ingestion: `config/mongo/pipeline.yaml`
+
+```yaml
+database:
+  host: mongo              # Docker service name
+  port: 27017              # Override with MONGO_PORT env var
+
+processing:
+  data_types: []           # Set via platform config or user.yaml
+  num_insertion_workers: 4  # mongoimport --numInsertionWorkers
+  create_indexes: true      # Create indexes after ingestion
+  cleanup_temp: false       # Delete extracted JSON after ingestion
+  watch_interval: 0         # Run once (0) or poll every N minutes
+
+mongo_indexes: {}           # Per-data-type index fields (set via platform config)
+```
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **database.host** | MongoDB hostname (Docker service name). | `mongo` |
+| **database.port** | MongoDB port. Overridden by `MONGO_PORT` env var. | `27017` |
+| **processing.data_types** | Data types to process. Set via platform config or `user.yaml`. | `[]` |
+| **processing.num_insertion_workers** | Workers for `mongoimport --numInsertionWorkers`. | `4` |
+| **processing.create_indexes** | Create indexes after ingestion completes. | `true` |
+| **processing.cleanup_temp** | Delete extracted JSON files after ingestion. | `false` |
+| **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
+| **mongo_indexes** | Index fields per data type (e.g., `{submissions: [id, author]}`). Set via platform config. | `{}` |
+
+Platform-specific settings (`mongo_collection_strategy`, `mongo_db_name_template`, `mongo_indexes`) are configured in `platform.yaml`, not in the pipeline config. See [Platform Configuration](#5-platform-configuration).
+
+#### Server: `config/mongo/mongod.conf`
+
+Mounted into the mongo container. Key settings:
+- `directoryPerDB: true` — each database in its own directory
+- zstd compression for both journal and collection blocks
+- `diagnosticDataCollectionEnabled: false`
+
+Cache size is controlled via `MONGO_CACHE_SIZE_GB` env var (default: 2 GB), not in the conf file.
+
+---
+
 ## 5. Platform Configuration
 
 ### Overview
@@ -446,6 +497,9 @@ Each platform has a single `platform.yaml` in `config/platforms/<platform>/` tha
 | `data_types` | List of data types this platform supports. |
 | `file_patterns` | Regex patterns for file detection per data type (keys: `zst`, `json`, `csv`, `prefix`). |
 | `indexes` | Default index fields per data type (used by the postgres profile). |
+| `mongo_collection_strategy` | `per_file` or `per_data_type` (used by mongo_ingest). |
+| `mongo_db_name_template` | Database name template with `{platform}` and `{data_type}` placeholders. |
+| `mongo_indexes` | Index fields per data type (used by mongo_ingest). |
 | `field_types` | Type definitions for each field (integer, text, boolean, etc.). |
 | `fields` | Fields to extract per data type. |
 

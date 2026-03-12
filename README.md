@@ -5,9 +5,10 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose_v2-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![PostgreSQL 18](https://img.shields.io/badge/PostgreSQL-18-4169E1.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![MongoDB 8](https://img.shields.io/badge/MongoDB-8-47A248.svg?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900.svg?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
 
-A Docker-based toolkit for large-scale processing, classification, and database ingestion of social media data dumps. Designed for the [Reddit data dumps](https://github.com/ArthurHeitmann/arctic_shift), with support for multiple platforms through a configurable architecture.
+A Docker-based toolkit for large-scale processing, classification, and database ingestion of social media data dumps. Supports PostgreSQL (parsed CSVs) and MongoDB (raw JSON) as database destinations. Designed for the [Reddit data dumps](https://github.com/ArthurHeitmann/arctic_shift), with support for multiple platforms through a configurable architecture.
 
 </div>
 
@@ -21,9 +22,10 @@ python sdb.py setup
 python sdb.py run parse              # Decompress .zst → parse JSON → CSV
 python sdb.py run ml_cpu             # Language detection (Lingua, CPU)
 python sdb.py run ml                 # GPU classifiers (toxicity, emotions)
-python sdb.py start                  # Start PostgreSQL
-python sdb.py run postgres_ingest    # Ingest CSVs into database
+python sdb.py start                  # Start database(s)
+python sdb.py run postgres_ingest    # Ingest CSVs into PostgreSQL
 python sdb.py run postgres_ml        # Ingest classifier outputs
+python sdb.py run mongo_ingest       # Ingest raw JSON into MongoDB
 
 # 3. Check progress
 python sdb.py status
@@ -52,7 +54,8 @@ python sdb.py status
 - **Automatic detection and decompression** of `.zst` dump files
 - **Parsing** JSON to clean CSVs with configurable field extraction
 - **Modular classification** — CPU-based (Lingua) and GPU-based (transformers) with multi-GPU parallelization and language filtering
-- **PostgreSQL ingestion** with finetuned settings and duplicate handling
+- **PostgreSQL ingestion** of parsed CSVs with finetuned settings and duplicate handling
+- **MongoDB ingestion** of raw JSON/NDJSON directly after extraction, using `mongoimport` for fast bulk loading
 - **Config-based** addition of new classifiers, platforms, and database backends
 
 ### Architecture
@@ -60,12 +63,16 @@ python sdb.py status
 ```mermaid
 flowchart TD
     ZST[".zst dump files"]
+    JSON["Extracted JSON"]
     CSV["Parsed CSVs"]
     LINGUA["CSVs with language"]
     ML_OUT["ML Classifier outputs"]
     PG[(PostgreSQL)]
+    MONGO[(MongoDB)]
 
     ZST -->|"parse"| CSV
+    ZST -->|"mongo_ingest"| JSON
+    JSON -->|"mongoimport"| MONGO
     CSV -->|"ml_cpu"| LINGUA
     CSV -->|"ml"| ML_OUT
     LINGUA -.->|"lang filter"| ML_OUT
@@ -130,9 +137,10 @@ Run the profiles in order. The setup prints the commands for your selection, but
 python sdb.py run parse              # Parse Reddit data to CSV
 python sdb.py run ml_cpu             # CPU language detection (Lingua)
 python sdb.py run ml                 # GPU classifiers (optional, requires NVIDIA GPU)
-python sdb.py start                  # Start database
-python sdb.py run postgres_ingest    # Ingest main files
-python sdb.py run postgres_ml        # Ingest classifier outputs
+python sdb.py start                  # Start configured database(s)
+python sdb.py run postgres_ingest    # Ingest CSVs into PostgreSQL
+python sdb.py run postgres_ml        # Ingest classifier outputs into PostgreSQL
+python sdb.py run mongo_ingest       # Ingest raw JSON into MongoDB
 ```
 
 Use `python sdb.py status` to check configuration and ingestion progress at any time.
@@ -178,11 +186,11 @@ python sdb.py <command> [options]
 |---------|-------------|
 | `sdb.py run <profile>` | Run a pipeline profile |
 | `sdb.py run <profile> --build` | Rebuild the Docker image before running |
-| `sdb.py start` | Start the PostgreSQL database |
-| `sdb.py stop` | Stop the PostgreSQL database |
+| `sdb.py start [service]` | Start configured databases (postgres, mongo, or all) |
+| `sdb.py stop [service]` | Stop configured databases (postgres, mongo, or all) |
 | `sdb.py status` | Show configuration and ingestion progress |
 
-Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`.
+Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`.
 
 `status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database.
 
@@ -198,6 +206,8 @@ Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`.
 | `postgres` | PostgreSQL database server | — | — |
 | `postgres_ingest` | Ingest CSVs into PostgreSQL | Parsed CSVs (or Lingua CSVs) | PostgreSQL tables |
 | `postgres_ml` | Ingest ML outputs into PostgreSQL | Classifier output CSVs | PostgreSQL tables |
+| `mongo` | MongoDB database server | — | — |
+| `mongo_ingest` | Ingest raw JSON into MongoDB | Extracted JSON/NDJSON | MongoDB collections |
 
 > [!NOTE]
 > GPU profile requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html). All profiles track progress and resume automatically — rerun any profile safely without reprocessing completed files.
@@ -205,7 +215,7 @@ Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`.
 For detailed configuration and algorithm documentation, see the per-profile docs:
 - [Parse Profile](docs/profiles/parse.md)
 - [Classification Profiles (ml_cpu / ml)](docs/profiles/classification.md)
-- [Database Profiles (postgres / postgres_ingest / postgres_ml)](docs/profiles/database.md)
+- [Database Profiles (postgres / postgres_ingest / postgres_ml / mongo / mongo_ingest)](docs/profiles/database.md)
 
 ## ◾ Platform Support
 
@@ -292,10 +302,11 @@ docker compose logs postgres-ingest
 docker compose logs postgres-ml
 ```
 
-**PostgreSQL connection issues:**
+**Database connection issues:**
 ```bash
 docker compose ps
 docker compose logs postgres
+docker compose logs mongo
 ```
 
 **Out of disk space:**

@@ -1,18 +1,21 @@
 # Database Profiles
 
-Three profiles work together for PostgreSQL ingestion: `postgres` runs the database server, `postgres_ingest` loads parsed CSVs into main tables, and `postgres_ml` loads classifier outputs into separate tables.
+Social Data Bridge supports two database destinations:
+- **PostgreSQL** — ingests parsed CSVs via three profiles: `postgres` (server), `postgres_ingest` (main tables), `postgres_ml` (classifier outputs)
+- **MongoDB** — ingests raw JSON/NDJSON directly after extraction via two profiles: `mongo` (server), `mongo_ingest` (bulk import)
 
 ## Running
 
 ```bash
-python sdb.py start                  # Start PostgreSQL server
-python sdb.py run postgres_ingest    # Ingest parsed CSVs into main tables
-python sdb.py run postgres_ml        # Ingest ML classifier outputs
-python sdb.py stop                   # Stop PostgreSQL server
+python sdb.py start                  # Start configured database(s)
+python sdb.py run postgres_ingest    # Ingest parsed CSVs into PostgreSQL
+python sdb.py run postgres_ml        # Ingest ML classifier outputs into PostgreSQL
+python sdb.py run mongo_ingest       # Ingest raw JSON into MongoDB
+python sdb.py stop                   # Stop configured database(s)
 ```
 
 > [!IMPORTANT]
-> The `postgres` profile must be running before `postgres_ingest` or `postgres_ml` can connect.
+> Database servers must be running before ingestion profiles can connect. `sdb.py start` starts all databases selected during setup. Use `sdb.py start postgres` or `sdb.py start mongo` to start a specific one.
 
 ---
 
@@ -274,13 +277,19 @@ Estimates for full Reddit data dumps:
 
 ### State Tracking
 
-Each data type has a JSON state file in `$PGDATA_PATH/state_tracking/`:
+**PostgreSQL**: Each data type has a JSON state file in `$PGDATA_PATH/state_tracking/`:
 - `{PLATFORM}_postgres_ingest_{data_type}.json` — tracks ingested datasets
 - `{PLATFORM}_postgres_ml_{classifier}_{data_type}.json` — tracks ingested classifier files
 
+**MongoDB**: State files in `$MONGO_DATA_PATH/state_tracking/`:
+- `{PLATFORM}_mongo_ingest_{data_type}.json` — tracks ingested files
+
+Additionally, MongoDB stores ingested file IDs in a `_sdb_metadata` collection per database, enabling state recovery even if state files are lost.
+
 ### Database Recovery
 
-On first run, if no state file exists, `postgres_ingest` queries the database for unique datasets already present. This allows recovery after state file loss.
+- **PostgreSQL**: On first run, if no state file exists, `postgres_ingest` queries the database for unique datasets already present.
+- **MongoDB**: On first run, if no state file exists, `mongo_ingest` queries the `_sdb_metadata` collection to rebuild the list of already-ingested files.
 
 ### Reprocessing
 
@@ -295,3 +304,81 @@ rm data/database/state_tracking/reddit_postgres_ingest_comments.json
 psql -h localhost -U postgres -d datasets -c "DROP TABLE reddit.comments_toxicity_en;"
 rm data/database/state_tracking/reddit_postgres_ml_toxic_roberta_comments.json
 ```
+
+---
+
+## mongo Profile (Server)
+
+Runs a MongoDB 8 server using the official Docker image.
+
+### Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `config/mongo/mongod.conf` | Server configuration (storage, compression, networking) |
+
+### Server Settings
+
+The `mongod.conf` configures:
+- **`directoryPerDB: true`** — each database stored in its own directory
+- **zstd compression** — both journal and collection block compressor set to zstd
+- **Diagnostics disabled** — reduces disk noise
+
+WiredTiger cache size is controlled via the `MONGO_CACHE_SIZE_GB` environment variable (default: 2 GB), passed as a CLI flag in docker-compose.
+
+---
+
+## mongo_ingest Profile
+
+Ingests raw extracted JSON/NDJSON files directly into MongoDB using `mongoimport`. Operates on raw data right after decompression — no CSV parsing needed.
+
+### How It Works
+
+1. **Extract**: Detects `.zst` dump files, decompresses via `zstd`
+2. **Ingest**: For each extracted JSON file:
+   - Creates a collection with zstd WiredTiger compression
+   - Runs `mongoimport` for bulk insertion (blind insert, no upsert)
+   - Records the file in the `_sdb_metadata` collection for state tracking
+3. **Index**: Creates configured indexes on each collection
+
+### Collection Strategies
+
+Set per-platform in `platform.yaml` via `mongo_collection_strategy`:
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `per_file` | Each input file becomes its own collection | Reddit: monthly dumps (`RS_2024-01` → collection `2024-01` in db `reddit_submissions`) |
+| `per_data_type` | All files of a type merge into one collection | Twitter: many small files → single `tweets` collection |
+
+### Database Naming
+
+Controlled by `mongo_db_name_template` in `platform.yaml`:
+- Default: `{platform}_{data_type}` (e.g., `reddit_submissions`, `reddit_comments`)
+- `{platform}` and `{data_type}` are available placeholders
+
+### Configuration
+
+**Config file:** `config/mongo/pipeline.yaml`
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `database.host` | MongoDB hostname | `mongo` |
+| `database.port` | MongoDB port (override: `MONGO_PORT`) | `27017` |
+| `processing.data_types` | Data types to process | `[]` (from platform) |
+| `processing.num_insertion_workers` | `mongoimport --numInsertionWorkers` | `4` |
+| `processing.create_indexes` | Create indexes after ingestion | `true` |
+| `processing.cleanup_temp` | Delete extracted JSON after ingestion | `false` |
+| `processing.watch_interval` | Poll for new files (0 = once) | `0` |
+
+### Indexes
+
+Index fields are configured per-platform in `platform.yaml` under `mongo_indexes`:
+
+```yaml
+# config/platforms/reddit/platform.yaml
+mongo_indexes:
+  submissions: [id, author, subreddit, domain]
+  comments: [id, author, subreddit, link_id]
+```
+
+Each field gets a single ascending index per collection.

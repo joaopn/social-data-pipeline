@@ -47,6 +47,10 @@ config/*/*/user.yaml
 docker-compose.override.yml
 *.bak
 
+# Config
+.env
+config/db
+
 # Logs
 *.log
 logs/

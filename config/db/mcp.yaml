@@ -1,8 +1,0 @@
-postgres:
-  enabled: true
-  port: 8001
-  access_mode: restricted
-mongo:
-  enabled: true
-  port: 3002
-  read_only: true

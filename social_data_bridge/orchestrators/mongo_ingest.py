@@ -134,10 +134,17 @@ def detect_json_files(
 
 
 def get_file_identifier(filepath: str) -> str:
-    """Extract identifier from filepath, stripping compression extensions."""
+    """Extract identifier from filepath, stripping compression extensions.
+
+    Matches the naming used by decompress_file: compression extension removed,
+    then .json suffix removed (extracted files have no extension).
+    """
     name = Path(filepath).name
     if is_compressed(name):
-        return strip_compression_extension(name)
+        stem = strip_compression_extension(name)
+        if stem.endswith('.json'):
+            stem = stem[:-5]
+        return stem
     return Path(filepath).stem
 
 
@@ -282,29 +289,31 @@ def run_pipeline(config_dir: str = "/app/config"):
 
     # Detect files
     dump_files = detect_dump_files(dumps_dir, data_types, file_patterns)
-    print(f"\n[sdb] Found {len(dump_files)} .zst files in {dumps_dir}")
+    json_files = detect_json_files(extracted_dir, data_types, file_patterns)
+    existing_json_ids = {fid for _, fid, _ in json_files}
 
-    # Filter out already processed .zst files
+    print(f"\n[sdb] Found {len(dump_files)} compressed files in {dumps_dir}")
+    print(f"[sdb] Found {len(json_files)} JSON files in extracted directory")
+
+    # Filter out dumps that already have extracted JSON or are already ingested
     pending_zst_files = []
     skipped_count = 0
     for filepath, data_type in dump_files:
         file_id = get_file_identifier(filepath)
-        if states[data_type].is_processed(file_id):
+        if states[data_type].is_processed(file_id) or file_id in existing_json_ids:
             skipped_count += 1
         else:
             pending_zst_files.append((filepath, data_type))
 
     if skipped_count > 0:
-        print(f"[sdb] Skipping {skipped_count} already processed .zst files")
+        print(f"[sdb] Skipping {skipped_count} already extracted/processed compressed files")
 
-    # Check for existing JSON files
-    json_files = detect_json_files(extracted_dir, data_types, file_patterns)
+    # Filter out JSON files already ingested
     pending_json_files = [
         (p, fid, dt) for p, fid, dt in json_files
         if not states[dt].is_processed(fid)
     ]
 
-    print(f"[sdb] Found {len(json_files)} JSON files in extracted directory")
     print(f"[sdb] {len(pending_json_files)} unprocessed JSON files to ingest")
 
     has_work = pending_zst_files or pending_json_files

@@ -183,11 +183,18 @@ def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: 
 def get_file_identifier(filepath: str) -> str:
     """Extract identifier from filepath, stripping compression extensions.
 
+    Matches the naming used by decompress_file: compression extension removed,
+    then .json suffix removed (extracted files have no extension).
+
     E.g., RC_2023-01.zst -> RC_2023-01, data.json.gz -> data
     """
     name = Path(filepath).name
     if is_compressed(name):
-        return strip_compression_extension(name)
+        stem = strip_compression_extension(name)
+        # decompress_gz also strips .json (extracted files have no extension)
+        if stem.endswith('.json'):
+            stem = stem[:-5]
+        return stem
     return Path(filepath).stem
 
 
@@ -246,11 +253,16 @@ def run_pipeline(config_dir: str = "/app/config"):
     print(f"[sdb] Found {len(parsed_csv_files)} CSV files in csv directory")
 
     # Filter out compressed files that already have extracted JSON or parsed CSV
-    existing_json_ids = {fid for _, fid, _ in json_files}
+    # Use direct file existence check rather than pattern matching, so extracted
+    # files are recognized even if file_patterns change across reconfigurations
     existing_csv_ids = {fid for _, fid, _ in parsed_csv_files}
-    pending_dumps = [(p, dt) for p, dt in dump_files
-                     if get_file_identifier(p) not in existing_json_ids
-                     and get_file_identifier(p) not in existing_csv_ids]
+    pending_dumps = []
+    for p, dt in dump_files:
+        file_id = get_file_identifier(p)
+        extracted_path = Path(extracted_dir) / dt / file_id
+        if extracted_path.exists() or file_id in existing_csv_ids:
+            continue
+        pending_dumps.append((p, dt))
 
     # Filter out JSON files that already have parsed CSV
     pending_json = [(p, fid, dt) for p, fid, dt in json_files if fid not in existing_csv_ids]

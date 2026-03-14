@@ -126,10 +126,17 @@ def detect_dump_files(dumps_dir: str, data_types: List[str], file_patterns: Dict
 
 
 def get_file_identifier(filepath: str) -> str:
-    """Extract identifier from filepath, stripping compression extensions."""
+    """Extract identifier from filepath, stripping compression extensions.
+
+    Matches the naming used by decompress_file: compression extension removed,
+    then .json suffix removed (extracted files have no extension).
+    """
     name = Path(filepath).name
     if is_compressed(name):
-        return strip_compression_extension(name)
+        stem = strip_compression_extension(name)
+        if stem.endswith('.json'):
+            stem = stem[:-5]
+        return stem
     return Path(filepath).stem
 
 

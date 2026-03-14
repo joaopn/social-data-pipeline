@@ -100,6 +100,7 @@ def run_questionnaire(hw, source_name, db_setup):
 
     # ---- PostgreSQL settings (per-source) ----
     has_postgres = any(p.startswith("postgres") for p in profiles)
+    has_mongo = "mongo_ingest" in profiles
     if has_postgres:
         section_header("PostgreSQL Settings (for this source)")
 
@@ -167,7 +168,7 @@ def run_questionnaire(hw, source_name, db_setup):
         print("    data/extracted/<source>/<data_type>/ — the pipeline will")
         print("    pick them up automatically with no dump files needed.")
 
-        if "mongo_ingest" in profiles:
+        if has_mongo:
             print()
             settings["mongo_collection_strategy"] = ask_choice(
                 "MongoDB collection strategy:",
@@ -183,6 +184,29 @@ def run_questionnaire(hw, source_name, db_setup):
                 print("    (per_file: one collection per input file, named from filename)")
 
             settings["mongo_db_name"] = ask("MongoDB database name", source_name)
+
+        # ---- Index configuration ----
+        if has_postgres or has_mongo:
+            section_header("Database Indexes")
+            print("  Indexes speed up queries on specific columns.")
+            print("  Enter column names (comma-separated) to index per data type.")
+            print("  Leave empty for no indexes.")
+
+            if has_postgres:
+                print()
+                settings["custom_indexes"] = {}
+                for dt in data_types:
+                    idx = ask_list(f"  PostgreSQL indexes for '{dt}'")
+                    if idx:
+                        settings["custom_indexes"][dt] = idx
+
+            if has_mongo:
+                print()
+                settings["custom_mongo_indexes"] = {}
+                for dt in data_types:
+                    idx = ask_list(f"  MongoDB indexes for '{dt}'")
+                    if idx:
+                        settings["custom_mongo_indexes"][dt] = idx
 
     return settings
 
@@ -211,8 +235,11 @@ def generate_platform_yaml(settings):
         if "mongo_collections" in settings:
             config["mongo_collections"] = settings["mongo_collections"]
 
+    if settings.get("custom_mongo_indexes"):
+        config["mongo_indexes"] = settings["custom_mongo_indexes"]
+
     config.update({
-        "indexes": {},
+        "indexes": settings.get("custom_indexes", {}),
         "field_types": {
             # Common field types — add or modify as needed
             "id": "text",
@@ -353,6 +380,14 @@ def print_summary(settings, files_to_write):
     if settings["platform"].startswith("custom/"):
         print(f"  Custom Platform:")
         print(f"    Schema:              {settings.get('db_schema', source_name)}")
+        if settings.get("custom_indexes"):
+            print(f"    PostgreSQL indexes:")
+            for dt, idx in settings["custom_indexes"].items():
+                print(f"      {dt}: {', '.join(idx)}")
+        if settings.get("custom_mongo_indexes"):
+            print(f"    MongoDB indexes:")
+            for dt, idx in settings["custom_mongo_indexes"].items():
+                print(f"      {dt}: {', '.join(idx)}")
         print()
 
     print("  Files to write:")

@@ -312,14 +312,18 @@ def load_db_setup():
             result["databases"].append("postgres")
             if "tablespaces" in pg_config:
                 result["tablespaces"] = pg_config["tablespaces"]
+            if pg_config.get("auth"):
+                result["postgres_auth"] = True
         except (OSError, yaml.YAMLError):
             pass
 
     mongo_path = DB_CONFIG_DIR / "mongo.yaml"
     if mongo_path.exists():
         try:
-            yaml.safe_load(mongo_path.read_text())
+            mongo_config = yaml.safe_load(mongo_path.read_text()) or {}
             result["databases"].append("mongo")
+            if mongo_config.get("auth"):
+                result["mongo_auth"] = True
         except (OSError, yaml.YAMLError):
             pass
 

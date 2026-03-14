@@ -6,6 +6,8 @@ Generates config/db/mcp.yaml and updates .env with MCP port/access settings.
 Requires databases to be configured first via `sdb db setup`.
 """
 
+import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -56,6 +58,10 @@ def run_questionnaire(db_setup):
         else:
             settings["mongo_mcp_enabled"] = False
 
+    # Track auth status from db_setup for credential generation
+    settings["postgres_auth"] = db_setup.get("postgres_auth", False)
+    settings["mongo_auth"] = db_setup.get("mongo_auth", False)
+
     return settings
 
 
@@ -73,6 +79,8 @@ def generate_mcp_yaml(settings):
             "port": settings["postgres_mcp_port"],
             "access_mode": settings["postgres_mcp_access_mode"],
         }
+        if settings.get("postgres_auth"):
+            config["postgres"]["mcp_user"] = "readonly_mcp"
 
     if settings.get("mongo_mcp_enabled"):
         config["mongo"] = {
@@ -80,8 +88,62 @@ def generate_mcp_yaml(settings):
             "port": settings["mongo_mcp_port"],
             "read_only": settings["mongo_mcp_read_only"],
         }
+        if settings.get("mongo_auth"):
+            config["mongo"]["mcp_user"] = "readonly_mcp"
 
     return yaml.dump(config, default_flow_style=False, sort_keys=False)
+
+
+def write_mcp_credentials(settings):
+    """Write MCP readonly credentials to database data volumes.
+
+    Creates .mcp_credentials files (chmod 600) in the database data paths.
+    Format: username:password (single line).
+    """
+    mcp_password = secrets.token_urlsafe(24)
+
+    # Read data paths from .env
+    env_path = ROOT / ".env"
+    env_vars = {}
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                env_vars[key.strip()] = value.strip()
+
+    credentials = f"readonly_mcp:{mcp_password}"
+    written = []
+
+    def _write_cred_file(data_path: Path, label: str):
+        cred_file = data_path / ".mcp_credentials"
+        cred_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            cred_file.write_text(credentials + "\n")
+            os.chmod(cred_file, 0o600)
+        except PermissionError:
+            # Directory owned by container user (root) — write via docker
+            import subprocess
+            abs_parent = cred_file.resolve().parent
+            subprocess.run(
+                ["docker", "run", "--rm", "-i",
+                 "-v", f"{abs_parent}:/data",
+                 "alpine", "sh", "-c",
+                 "cat > /data/.mcp_credentials && chmod 600 /data/.mcp_credentials"],
+                input=(credentials + "\n").encode(),
+                check=True, capture_output=True,
+            )
+        written.append(str(cred_file))
+
+    if settings.get("postgres_mcp_enabled") and settings.get("postgres_auth"):
+        pgdata_path = Path(env_vars.get("PGDATA_PATH", "./data/database/postgres"))
+        _write_cred_file(pgdata_path, "PostgreSQL")
+
+    if settings.get("mongo_mcp_enabled") and settings.get("mongo_auth"):
+        mongo_data_path = Path(env_vars.get("MONGO_DATA_PATH", "./data/database/mongo"))
+        _write_cred_file(mongo_data_path, "MongoDB")
+
+    return mcp_password, written
 
 
 # ============================================================================
@@ -160,14 +222,25 @@ def main():
     print()
     write_files(files_to_write)
 
+    # Write MCP credentials if any database has auth enabled
+    has_auth = settings.get("postgres_auth") or settings.get("mongo_auth")
+    if has_auth:
+        mcp_password, cred_files = write_mcp_credentials(settings)
+        for cf in cred_files:
+            print(f"  Written:   {cf} (chmod 600)")
+
     # Update .env with MCP settings
     env_updates = {}
     if settings.get("postgres_mcp_enabled"):
         env_updates["POSTGRES_MCP_PORT"] = str(settings["postgres_mcp_port"])
         env_updates["POSTGRES_MCP_ACCESS_MODE"] = settings["postgres_mcp_access_mode"]
+        if settings.get("postgres_auth"):
+            env_updates["POSTGRES_MCP_USER"] = "readonly_mcp"
     if settings.get("mongo_mcp_enabled"):
         env_updates["MONGO_MCP_PORT"] = str(settings["mongo_mcp_port"])
         env_updates["MONGO_MCP_READ_ONLY"] = str(settings["mongo_mcp_read_only"]).lower()
+        if settings.get("mongo_auth"):
+            env_updates["MONGO_MCP_USER"] = "readonly_mcp"
 
     if env_updates:
         update_env_file(env_updates)

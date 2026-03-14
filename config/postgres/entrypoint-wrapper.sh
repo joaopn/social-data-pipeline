@@ -17,6 +17,22 @@ if [ -d /data/tablespace ]; then
     done
 fi
 
+# --- Auth migration for existing databases ---
+if [ "${POSTGRES_AUTH_ENABLED:-}" = "true" ]; then
+    # Check if this is an existing database (not first init)
+    if [ -f "/var/lib/postgresql/data/PG_VERSION" ]; then
+        echo '[CONFIG] Auth enabled on existing database — setting password'
+        # Start postgres temporarily with trust auth to set password
+        su postgres -c "pg_ctl start -D /var/lib/postgresql/data \
+            -o \"-c hba_file=$CFG/pg_hba.conf -c port=${POSTGRES_PORT:-5432}\" \
+            -w -l /tmp/pg_auth_init.log"
+        su postgres -c "psql -p ${POSTGRES_PORT:-5432} -c \
+            \"ALTER USER postgres WITH PASSWORD '${POSTGRES_PASSWORD}'\""
+        su postgres -c "pg_ctl stop -D /var/lib/postgresql/data -w"
+        echo '[CONFIG] Password set successfully'
+    fi
+fi
+
 # --- Start PostgreSQL ---
 chown -R postgres:postgres /var/lib/postgresql
 exec docker-entrypoint.sh postgres \

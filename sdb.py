@@ -10,6 +10,7 @@ Usage:
     sdb.py db stop [postgres|mongo]          Stop database services + MCPs (all if unspecified)
     sdb.py db status                         Show database config and health
     sdb.py db unsetup                        Remove database config (and optionally data)
+    sdb.py db recover-password               Reset database admin password
 
     sdb.py source add <name>                 Add a new source (interactive setup)
     sdb.py source configure <name>           Reconfigure existing source (platform-specific)
@@ -29,6 +30,7 @@ import os
 import shutil
 import subprocess
 import sys
+from getpass import getpass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -105,6 +107,39 @@ def _load_mcp_config():
         return {}
 
 
+def _is_auth_enabled():
+    """Check if database authentication is enabled via .env."""
+    env = load_env()
+    return env.get("POSTGRES_AUTH_ENABLED") == "true" or env.get("MONGO_AUTH_ENABLED") == "true"
+
+
+def _load_db_yaml(name):
+    """Load a config/db/<name>.yaml file. Returns dict or empty."""
+    path = CONFIG_DIR / "db" / f"{name}.yaml"
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(path.read_text()) or {}
+    except Exception:
+        return {}
+
+
+def _prompt_db_password(label="Database admin password"):
+    """Prompt for the database admin password. Returns the password string."""
+    pw = getpass(f"  {label}: ")
+    if not pw:
+        print("  Error: Password cannot be empty.")
+        sys.exit(1)
+    return pw
+
+
+def _set_auth_env(password):
+    """Set authentication env vars for docker compose subprocess."""
+    os.environ["POSTGRES_PASSWORD"] = password
+    os.environ["MONGO_ADMIN_PASSWORD"] = password
+
+
 # ============================================================================
 # sdb db setup
 # ============================================================================
@@ -157,7 +192,8 @@ def _cmd_db_mcp_delete():
     env_path = ROOT / ".env"
     if env_path.exists():
         mcp_keys = {"POSTGRES_MCP_PORT", "POSTGRES_MCP_ACCESS_MODE",
-                     "MONGO_MCP_PORT", "MONGO_MCP_READ_ONLY"}
+                     "MONGO_MCP_PORT", "MONGO_MCP_READ_ONLY",
+                     "POSTGRES_MCP_USER", "MONGO_MCP_USER"}
         lines = env_path.read_text().splitlines()
         new_lines = []
         for line in lines:
@@ -193,6 +229,11 @@ def cmd_db_start(args):
         targets = [service]
     else:
         targets = configured
+
+    # Prompt for admin password if auth is enabled
+    if _is_auth_enabled():
+        password = _prompt_db_password()
+        _set_auth_env(password)
 
     compose_args = []
     mcp_services = _get_configured_mcp_services()
@@ -253,6 +294,17 @@ def cmd_db_status(args):
     if not configured:
         print("\n  No databases configured. Run: python sdb.py db setup\n")
         return 0
+
+    # Authentication status
+    auth_enabled = env.get("POSTGRES_AUTH_ENABLED") == "true" or env.get("MONGO_AUTH_ENABLED") == "true"
+    print(f"\n  Authentication: {'enabled' if auth_enabled else 'disabled'}")
+    if auth_enabled:
+        ro_user = env.get("POSTGRES_RO_USER") or env.get("MONGO_RO_USER")
+        if ro_user:
+            print(f"    RO user:       {ro_user} (no password)")
+        mcp_user = env.get("POSTGRES_MCP_USER") or env.get("MONGO_MCP_USER")
+        if mcp_user:
+            print(f"    MCP user:      {mcp_user}")
 
     # Check which services are running
     running_services = set()
@@ -386,6 +438,7 @@ DB_GENERATED_FILES = [
     "config/db/mongo.yaml",
     "config/db/mcp.yaml",
     "config/postgres/postgresql.local.conf",
+    "config/postgres/pg_hba.local.conf",
     "docker-compose.override.yml",
     ".env",
 ]
@@ -536,6 +589,31 @@ def cmd_db_unsetup(args):
                 print("  MongoDB data removal skipped.")
             print()
 
+    # --- Remove MCP credentials from data directories ---
+    for data_path_str in (pgdata_path, mongo_data_path):
+        if not data_path_str:
+            continue
+        dp = Path(data_path_str)
+        if not dp.is_absolute():
+            dp = ROOT / dp
+        cred_file = dp / ".mcp_credentials"
+        if cred_file.exists():
+            try:
+                cred_file.unlink()
+                print(f"  Removed {cred_file}")
+            except PermissionError:
+                # File owned by container user (root) — fix via docker
+                subprocess.run(
+                    ["docker", "run", "--rm",
+                     "-v", f"{cred_file.resolve().parent}:/data",
+                     "alpine", "rm", "-f", "/data/.mcp_credentials"],
+                    cwd=ROOT, capture_output=True,
+                )
+                if not cred_file.exists():
+                    print(f"  Removed {cred_file}")
+                else:
+                    print(f"  [!] Could not remove {cred_file} — run: sudo rm {cred_file}")
+
     # --- Remove config files ---
     if removed or backups:
         for rel in removed + backups:
@@ -569,6 +647,173 @@ def cmd_db_unsetup(args):
 
     print()
     print("  Database unsetup complete.\n")
+    return 0
+
+
+# ============================================================================
+# sdb db recover-password
+# ============================================================================
+
+def cmd_db_recover_password(args):
+    """Reset database admin password by temporarily using trust auth."""
+    env = load_env()
+
+    if not _is_auth_enabled():
+        print("\n  Authentication is not enabled. Nothing to recover.\n")
+        return 0
+
+    print()
+    print("  Social Data Bridge - Password Recovery")
+    print("  ========================================")
+    print()
+    print("  This will temporarily restart PostgreSQL with trust auth,")
+    print("  set a new admin password, and restore scram-sha-256 auth.")
+    print()
+
+    new_password = getpass("  New admin password: ")
+    if not new_password:
+        print("  Error: Password cannot be empty.")
+        return 1
+    confirm = getpass("  Confirm new password: ")
+    if new_password != confirm:
+        print("  Error: Passwords do not match.")
+        return 1
+
+    configured = _get_configured_db_services()
+
+    # --- PostgreSQL recovery ---
+    if "postgres" in configured:
+        pg_config = _load_db_yaml("postgres")
+        if pg_config.get("auth"):
+            print("\n  Recovering PostgreSQL password...")
+
+            pg_hba_local = CONFIG_DIR / "postgres" / "pg_hba.local.conf"
+            pg_hba_backup = CONFIG_DIR / "postgres" / "pg_hba.local.conf.recovery_bak"
+
+            if not pg_hba_local.exists():
+                print("  Error: pg_hba.local.conf not found. Is auth configured?")
+                return 1
+
+            # Backup current pg_hba and replace with trust-only version
+            shutil.copy2(pg_hba_local, pg_hba_backup)
+            trust_hba = (
+                "# TEMPORARY — trust auth for password recovery\n"
+                "local   all   all   trust\n"
+                "host    all   all   0.0.0.0/0   trust\n"
+            )
+            pg_hba_local.write_text(trust_hba)
+
+            # Restart postgres with trust auth
+            print("  Restarting PostgreSQL with trust auth...")
+            docker_compose("--profile", "postgres", "restart")
+
+            # Wait for healthy
+            print("  Waiting for PostgreSQL to be ready...")
+            port = env.get("POSTGRES_PORT", "5432")
+            db_name = env.get("DB_NAME", "datasets")
+            subprocess.run(
+                ["docker", "compose", "exec", "postgres",
+                 "pg_isready", "-U", "postgres", "-d", db_name, "-p", port, "--timeout=30"],
+                cwd=ROOT,
+            )
+
+            # Set new password (use PGPASSWORD env to avoid shell interpolation of password)
+            escaped_pw = new_password.replace("'", "''")
+            alter_cmd = f"ALTER USER postgres WITH PASSWORD '{escaped_pw}'"
+            result = subprocess.run(
+                ["docker", "compose", "exec", "postgres",
+                 "psql", "-U", "postgres", "-p", port, "-c", alter_cmd],
+                cwd=ROOT,
+            )
+            if result.returncode != 0:
+                print("  Error: Failed to set new password.")
+                # Restore backup
+                shutil.copy2(pg_hba_backup, pg_hba_local)
+                pg_hba_backup.unlink(missing_ok=True)
+                docker_compose("--profile", "postgres", "restart")
+                return 1
+
+            # Restore original pg_hba
+            shutil.copy2(pg_hba_backup, pg_hba_local)
+            pg_hba_backup.unlink(missing_ok=True)
+
+            # Restart with proper auth
+            print("  Restoring scram-sha-256 auth and restarting...")
+            docker_compose("--profile", "postgres", "restart")
+            print("  PostgreSQL password updated successfully.")
+
+    # --- MongoDB recovery ---
+    if "mongo" in configured:
+        mongo_config = _load_db_yaml("mongo")
+        if mongo_config.get("auth"):
+            print("\n  Recovering MongoDB password...")
+            mongo_admin_user = env.get("MONGO_ADMIN_USER", "admin")
+
+            # Stop mongo
+            print("  Stopping MongoDB...")
+            docker_compose("--profile", "mongo", "down", "--timeout", "30")
+
+            # Start mongo without auth temporarily
+            mongo_data_path = env.get("MONGO_DATA_PATH", "./data/database/mongo")
+            mongo_cache = env.get("MONGO_CACHE_SIZE_GB", "2")
+
+            print("  Starting MongoDB without auth for recovery...")
+            result = subprocess.run(
+                ["docker", "run", "--rm", "-d",
+                 "--name", "sdb-mongo-recovery",
+                 "-v", f"{mongo_data_path}/db:/data/db",
+                 "mongo:8",
+                 "mongod", "--bind_ip", "0.0.0.0",
+                 "--wiredTigerCacheSizeGB", mongo_cache],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                print(f"  Error: Failed to start recovery container: {result.stderr}")
+                return 1
+
+            # Wait for mongod to be ready
+            import time
+            for _ in range(15):
+                check = subprocess.run(
+                    ["docker", "exec", "sdb-mongo-recovery",
+                     "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"],
+                    capture_output=True, text=True,
+                )
+                if check.returncode == 0:
+                    break
+                time.sleep(2)
+
+            # Update password (escape single quotes for JS string literal)
+            escaped_user = mongo_admin_user.replace("'", "\\'")
+            escaped_pw = new_password.replace("\\", "\\\\").replace("'", "\\'")
+            update_script = (
+                "db = db.getSiblingDB('admin');"
+                f"db.changeUserPassword('{escaped_user}', '{escaped_pw}');"
+                "print('Password updated');"
+            )
+            result = subprocess.run(
+                ["docker", "exec", "sdb-mongo-recovery",
+                 "mongosh", "--quiet", "--eval", update_script],
+                cwd=ROOT,
+            )
+
+            # Stop recovery container
+            subprocess.run(["docker", "stop", "sdb-mongo-recovery"],
+                         capture_output=True)
+
+            if result.returncode != 0:
+                print("  Error: Failed to update MongoDB password.")
+                return 1
+
+            print("  MongoDB password updated successfully.")
+
+            # Restart mongo with auth
+            print("  Restarting MongoDB with auth...")
+            os.environ["MONGO_ADMIN_PASSWORD"] = new_password
+            docker_compose("--profile", "mongo", "up", "-d")
+
+    print("\n  Password recovery complete.")
+    print("  IMPORTANT: Remember your new password — it is not stored anywhere.\n")
     return 0
 
 
@@ -816,6 +1061,12 @@ def cmd_run(args):
     else:
         platform = f"custom/{source}"
 
+    # Prompt for admin password if auth enabled and profile accesses a database
+    db_profiles = {"postgres_ingest", "postgres_ml", "mongo_ingest"}
+    if profile in db_profiles and _is_auth_enabled():
+        password = _prompt_db_password()
+        _set_auth_env(password)
+
     # Build per-source environment (read paths from source config, with defaults)
     paths = source_config.get("paths", {}) if source_config else {}
     env_overrides = {
@@ -828,7 +1079,6 @@ def cmd_run(args):
     }
 
     # Set env vars for docker compose
-    import os
     for key, value in env_overrides.items():
         os.environ[key] = value
 
@@ -879,6 +1129,9 @@ def build_parser():
 
     db_unsetup_p = db_sub.add_parser("unsetup", help="Remove database configuration")
     db_unsetup_p.set_defaults(func=cmd_db_unsetup)
+
+    db_recover_p = db_sub.add_parser("recover-password", help="Reset database admin password")
+    db_recover_p.set_defaults(func=cmd_db_recover_password)
 
     # ---- sdb source ----
     source_parser = subparsers.add_parser("source", help="Source management")

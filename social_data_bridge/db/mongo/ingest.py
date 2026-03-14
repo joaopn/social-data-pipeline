@@ -14,15 +14,21 @@ from pathlib import Path
 from typing import List, Optional
 
 
-def get_mongo_uri(host: str, port: int) -> str:
-    """Build MongoDB connection URI."""
+def get_mongo_uri(host: str, port: int, user: str = None, password: str = None) -> str:
+    """Build MongoDB connection URI. Uses authSource=admin when credentials are provided."""
+    if user and password:
+        from urllib.parse import quote_plus
+        return f"mongodb://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/?authSource=admin"
+    if user:
+        from urllib.parse import quote_plus
+        return f"mongodb://{quote_plus(user)}:@{host}:{port}/?authSource=admin"
     return f"mongodb://{host}:{port}"
 
 
-def _get_client(host: str, port: int):
+def _get_client(host: str, port: int, user: str = None, password: str = None):
     """Lazy-import pymongo and return a MongoClient."""
     from pymongo import MongoClient
-    return MongoClient(get_mongo_uri(host, port))
+    return MongoClient(get_mongo_uri(host, port, user, password))
 
 
 def ensure_collection(
@@ -30,13 +36,15 @@ def ensure_collection(
     collection_name: str,
     host: str,
     port: int,
+    user: str = None,
+    password: str = None,
 ) -> bool:
     """
     Ensure a collection exists with zstd WiredTiger compression.
 
     Returns True if the collection was newly created, False if it already existed.
     """
-    client = _get_client(host, port)
+    client = _get_client(host, port, user, password)
     try:
         if collection_name in client[db_name].list_collection_names():
             return False
@@ -61,6 +69,8 @@ def mongoimport_file(
     collection_name: str,
     host: str,
     port: int,
+    user: str = None,
+    password: str = None,
     num_workers: int = 4,
     log_dir: str = "/data/mongo/logs",
 ) -> None:
@@ -72,7 +82,7 @@ def mongoimport_file(
     """
     command = [
         "mongoimport",
-        f"--uri={get_mongo_uri(host, port)}",
+        f"--uri={get_mongo_uri(host, port, user, password)}",
         "--db", db_name,
         "--collection", collection_name,
         "--file", filepath,
@@ -109,11 +119,13 @@ def create_index(
     field: str,
     host: str,
     port: int,
+    user: str = None,
+    password: str = None,
 ) -> None:
     """Create a single ascending index on a collection."""
     from pymongo import ASCENDING
 
-    client = _get_client(host, port)
+    client = _get_client(host, port, user, password)
     try:
         index_name = f"{field}_1"
         existing = client[db_name][collection_name].list_indexes()
@@ -132,9 +144,9 @@ def create_index(
         client.close()
 
 
-def get_collection_names(db_name: str, host: str, port: int) -> List[str]:
+def get_collection_names(db_name: str, host: str, port: int, user: str = None, password: str = None) -> List[str]:
     """Get list of collection names in a database (excludes system/metadata collections)."""
-    client = _get_client(host, port)
+    client = _get_client(host, port, user, password)
     try:
         names = client[db_name].list_collection_names()
         return [n for n in sorted(names) if not n.startswith('_')]
@@ -149,6 +161,8 @@ def record_ingested_file(
     collection_name: str,
     host: str,
     port: int,
+    user: str = None,
+    password: str = None,
 ) -> None:
     """
     Record an ingested file in the _sdb_metadata collection.
@@ -156,7 +170,7 @@ def record_ingested_file(
     Stores file_id, data_type, collection_name, and timestamp.
     Used for state recovery when the state JSON file is lost.
     """
-    client = _get_client(host, port)
+    client = _get_client(host, port, user, password)
     try:
         metadata = client[db_name]['_sdb_metadata']
         metadata.update_one(
@@ -179,6 +193,8 @@ def get_ingested_files(
     db_name: str,
     host: str,
     port: int,
+    user: str = None,
+    password: str = None,
     data_type: Optional[str] = None,
 ) -> List[str]:
     """
@@ -193,7 +209,7 @@ def get_ingested_files(
     Returns:
         List of file_id strings
     """
-    client = _get_client(host, port)
+    client = _get_client(host, port, user, password)
     try:
         metadata = client[db_name]['_sdb_metadata']
         query = {'data_type': data_type} if data_type else {}

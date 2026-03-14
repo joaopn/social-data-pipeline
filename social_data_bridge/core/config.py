@@ -456,6 +456,8 @@ def apply_env_overrides(config: Dict, profile: str) -> Dict:
             result['database']['name'] = os.environ['DB_NAME']
         if 'DB_SCHEMA' in os.environ:
             result['database']['schema'] = os.environ['DB_SCHEMA']
+        if os.environ.get('POSTGRES_PASSWORD'):
+            result['database']['password'] = os.environ['POSTGRES_PASSWORD']
 
     if profile == 'mongo_ingest':
         if 'database' not in result:
@@ -463,5 +465,9 @@ def apply_env_overrides(config: Dict, profile: str) -> Dict:
 
         if 'MONGO_PORT' in os.environ:
             result['database']['port'] = int(os.environ['MONGO_PORT'])
+        if os.environ.get('MONGO_ADMIN_USER'):
+            result['database']['user'] = os.environ['MONGO_ADMIN_USER']
+        if os.environ.get('MONGO_ADMIN_PASSWORD'):
+            result['database']['password'] = os.environ['MONGO_ADMIN_PASSWORD']
 
     return result

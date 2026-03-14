@@ -259,6 +259,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     platform_config = load_platform_config(config_dir)
     
     db_config = config['database']
+    password = db_config.get('password')
     proc_config = config['processing']
     
     # Get db_schema from profile config, fall back to platform config
@@ -318,7 +319,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                 'user': db_config['user'],
                 'host': db_config['host'],
                 'port': db_config['port'],
-                'schema': db_config['schema']
+                'schema': db_config['schema'],
+                'password': db_config.get('password')
             },
             data_types=[dt],
             file_prefixes={dt: file_prefixes.get(dt)}
@@ -407,7 +409,8 @@ def run_pipeline(config_dir: str = "/app/config"):
             dbname=db_config['name'],
             host=db_config['host'],
             port=db_config['port'],
-            user=db_config['user']
+            user=db_config['user'],
+            password=password
         )
     
     is_initial_ingestion = not all(tables_existed_before.values())
@@ -535,14 +538,16 @@ def run_pipeline(config_dir: str = "/app/config"):
             dbname=db_config['name'],
             host=db_config['host'],
             port=db_config['port'],
-            user=db_config['user']
+            user=db_config['user'],
+            password=password
         )
         ensure_schema_exists(
             schema=db_config['schema'],
             dbname=db_config['name'],
             host=db_config['host'],
             port=db_config['port'],
-            user=db_config['user']
+            user=db_config['user'],
+            password=password
         )
 
         # Create tablespaces if configured
@@ -552,7 +557,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                 dbname=db_config['name'],
                 host=db_config['host'],
                 port=db_config['port'],
-                user=db_config['user']
+                user=db_config['user'],
+                password=password
             )
 
         data_types_with_files = set(dt for _, _, dt in files_to_ingest)
@@ -609,7 +615,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     user=db_config['user'],
                     platform_config=platform_config,
                     csv_file=first_csv,
-                    tablespace=get_tablespace(data_type)
+                    tablespace=get_tablespace(data_type),
+                    password=password
                 )
                 
                 # Step 2: Blind COPY all files
@@ -625,7 +632,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                             host=db_config['host'],
                             port=db_config['port'],
                             user=db_config['user'],
-                            platform_config=platform_config
+                            platform_config=platform_config,
+                            password=password
                         )
                         states[data_type].mark_completed(file_id)
                         local_success += 1
@@ -646,9 +654,10 @@ def run_pipeline(config_dir: str = "/app/config"):
                     dbname=db_config['name'],
                     host=db_config['host'],
                     port=db_config['port'],
-                    user=db_config['user']
+                    user=db_config['user'],
+                    password=password
                 )
-                
+
                 # Step 4: Finalize (add PK)
                 finalize_fast_load_table(
                     table=data_type,
@@ -657,7 +666,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     host=db_config['host'],
                     port=db_config['port'],
                     user=db_config['user'],
-                    tablespace=get_tablespace(data_type)
+                    tablespace=get_tablespace(data_type),
+                    password=password
                 )
                 
                 print(f"[sdb] Completed {data_type}")
@@ -726,7 +736,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                                 check_duplicates=check_duplicates,
                                 create_indexes=False,
                                 platform_config=platform_config,
-                                tablespace=get_tablespace(data_type)
+                                tablespace=get_tablespace(data_type),
+                                password=password
                             )
 
                             states[data_type].mark_completed(file_id)
@@ -770,7 +781,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                             check_duplicates=check_duplicates,
                             create_indexes=False,
                             platform_config=platform_config,
-                            tablespace=get_tablespace(data_type)
+                            tablespace=get_tablespace(data_type),
+                            password=password
                         )
 
                         states[data_type].mark_completed(file_id)
@@ -823,7 +835,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                         user=db_config['user'],
                         quiet=(i > 0),  # Only log session config for first index
                         parallel_workers=parallel_index_workers,
-                        tablespace=get_tablespace(data_type)
+                        tablespace=get_tablespace(data_type),
+                        password=password
                     )
                 except Exception as e:
                     print(f"[sdb] Warning: Failed to create index on {field}: {e}")
@@ -847,7 +860,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     dbname=db_config['name'],
                     host=db_config['host'],
                     port=db_config['port'],
-                    user=db_config['user']
+                    user=db_config['user'],
+                    password=password
                 )
             except Exception as e:
                 print(f"[sdb] Warning: Failed to analyze {data_type}: {e}")

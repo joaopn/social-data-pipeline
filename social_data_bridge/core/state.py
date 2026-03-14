@@ -73,12 +73,15 @@ class PipelineState:
         recovered = []
         
         try:
-            with psycopg.connect(
+            connect_kwargs = dict(
                 dbname=self.db_config['name'],
                 user=self.db_config['user'],
                 host=self.db_config['host'],
-                port=self.db_config['port']
-            ) as conn:
+                port=self.db_config['port'],
+            )
+            if self.db_config.get('password'):
+                connect_kwargs['password'] = self.db_config['password']
+            with psycopg.connect(**connect_kwargs) as conn:
                 with conn.cursor() as curr:
                     schema = self.db_config.get('schema', 'public')
                     
@@ -211,6 +214,8 @@ class PipelineState:
                         host=host,
                         port=port,
                         data_type=data_type,
+                        user=self.db_config.get('user'),
+                        password=self.db_config.get('password'),
                     )
                     for fid in file_ids:
                         if fid not in recovered:

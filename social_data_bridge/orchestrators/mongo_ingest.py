@@ -222,6 +222,8 @@ def run_pipeline(config_dir: str = "/app/config"):
 
     host = db_config['host']
     port = db_config['port']
+    user = db_config.get('user')
+    password = db_config.get('password')
 
     print(f"[sdb] Profile: mongo_ingest")
     print(f"[sdb] Platform: {PLATFORM}")
@@ -249,6 +251,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                 'host': host,
                 'port': port,
                 'db_name_func': db_name_func,
+                'user': user,
+                'password': password,
             },
             data_types=[dt],
         )
@@ -367,7 +371,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                 states[data_type].mark_in_progress(file_id)
 
                 # Ensure collection exists with zstd compression
-                ensure_collection(db_name, collection_name, host, port)
+                ensure_collection(db_name, collection_name, host, port, user=user, password=password)
 
                 # Ingest via mongoimport
                 print(f"[sdb] Ingesting {file_id} -> {db_name}.{collection_name}")
@@ -379,6 +383,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     port=port,
                     num_workers=num_workers,
                     log_dir=log_dir,
+                    user=user,
+                    password=password,
                 )
 
                 # Record in metadata collection
@@ -389,6 +395,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     collection_name=collection_name,
                     host=host,
                     port=port,
+                    user=user,
+                    password=password,
                 )
 
                 states[data_type].mark_completed(file_id)
@@ -449,6 +457,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                                 field=field,
                                 host=host,
                                 port=port,
+                                user=user,
+                                password=password,
                             )
                         except Exception as e:
                             print(f"[sdb] Warning: Failed to create index on {field}: {e}")

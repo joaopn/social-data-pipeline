@@ -141,6 +141,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     
     # Extract configuration
     db_config = config.get('database', {})
+    password = db_config.get('password')
     proc_config = config.get('processing', {})
     classifiers_config = config.get('classifiers', {})
     
@@ -191,14 +192,16 @@ def run_pipeline(config_dir: str = "/app/config"):
         dbname=db_config['name'],
         host=db_config['host'],
         port=db_config['port'],
-        user=db_config['user']
+        user=db_config['user'],
+        password=password
     )
     ensure_schema_exists(
         schema=db_config['schema'],
         dbname=db_config['name'],
         host=db_config['host'],
         port=db_config['port'],
-        user=db_config['user']
+        user=db_config['user'],
+        password=password
     )
 
     # Create tablespaces if configured
@@ -208,7 +211,8 @@ def run_pipeline(config_dir: str = "/app/config"):
             dbname=db_config['name'],
             host=db_config['host'],
             port=db_config['port'],
-            user=db_config['user']
+            user=db_config['user'],
+            password=password
         )
 
     # Initialize state files per data_type
@@ -289,7 +293,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                 dbname=db_config['name'],
                 host=db_config['host'],
                 port=db_config['port'],
-                user=db_config['user']
+                user=db_config['user'],
+                password=password
             )
         
         # Determine load strategy per data type:
@@ -352,7 +357,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     user=db_config['user'],
                     column_list=column_list,
                     column_types=column_types,
-                    tablespace=get_tablespace(dt)
+                    tablespace=get_tablespace(dt),
+                    password=password
                 )
                 
                 # Step 3: Blind COPY all files
@@ -368,7 +374,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                             port=db_config['port'],
                             user=db_config['user'],
                             column_list=column_list,
-                            nullable_cols=nullable_cols
+                            nullable_cols=nullable_cols,
+                            password=password
                         )
                         states[dt].mark_completed(file_id)
                         local_success += 1
@@ -388,7 +395,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     host=db_config['host'],
                     port=db_config['port'],
                     user=db_config['user'],
-                    order_column=order_col
+                    order_column=order_col,
+                    password=password
                 )
                 
                 # Step 5: Finalize (add PK, add FK if enabled)
@@ -400,7 +408,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                     port=db_config['port'],
                     user=db_config['user'],
                     fk_reference_table=dt if use_foreign_key else None,
-                    tablespace=get_tablespace(dt)
+                    tablespace=get_tablespace(dt),
+                    password=password
                 )
                 
                 print(f"[sdb] Fast load completed for {table_name}")
@@ -466,7 +475,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                             type_inference_rows=type_inference_rows,
                             column_overrides=column_overrides,
                             use_foreign_key=use_foreign_key,
-                            suffix=suffix
+                            suffix=suffix,
+                            password=password
                         )
 
                         states[dt].mark_completed(file_id)

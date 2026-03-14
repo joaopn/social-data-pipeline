@@ -105,9 +105,10 @@ services:
     restart: unless-stopped
     stop_grace_period: 10m
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${DB_NAME:-datasets}
+      POSTGRES_AUTH_ENABLED: ${POSTGRES_AUTH_ENABLED:-}
     ports:
       - "${POSTGRES_PORT:-5432}:${POSTGRES_PORT:-5432}"
     volumes:
@@ -140,6 +141,7 @@ services:
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - DB_NAME=${DB_NAME:-datasets}
       - PGDATA_PATH=/data/database
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
     volumes:
       - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
       - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
@@ -165,6 +167,7 @@ services:
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - DB_NAME=${DB_NAME:-datasets}
       - PGDATA_PATH=/data/database
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
     volumes:
       - ${OUTPUT_PATH:-./data/output}:/data/output:ro
       - ${PGDATA_PATH:-./data/database/postgres}:/data/database
@@ -182,8 +185,13 @@ services:
       - "${MONGO_PORT:-27017}:27017"
     volumes:
       - ${MONGO_DATA_PATH:-./data/database/mongo}/db:/data/db
-      - ./config/mongo/mongod.conf:/etc/mongod.conf:ro
-    command: ["mongod", "--config", "/etc/mongod.conf", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_SIZE_GB:-2}"]
+      - ./config/mongo:/etc/mongo/config:ro
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMIN_USER:-}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMIN_PASSWORD:-}
+      MONGO_AUTH_ENABLED: ${MONGO_AUTH_ENABLED:-}
+      MONGO_CACHE_SIZE_GB: ${MONGO_CACHE_SIZE_GB:-2}
+    entrypoint: ["bash", "/etc/mongo/config/entrypoint-wrapper.sh"]
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -198,13 +206,69 @@ services:
     profiles: [postgres_mcp]
     image: crystaldba/postgres-mcp
     restart: unless-stopped
+    entrypoint: ["sh", "/mcp-config/entrypoint-postgres.sh"]
     command: >-
       --access-mode=${POSTGRES_MCP_ACCESS_MODE:-restricted}
       --transport=sse
     environment:
-      DATABASE_URI: postgresql://postgres:postgres@postgres:${POSTGRES_PORT:-5432}/${DB_NAME:-datasets}
+      DATABASE_URI: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:${POSTGRES_PORT:-5432}/${DB_NAME:-datasets}
+      POSTGRES_MCP_USER: ${POSTGRES_MCP_USER:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      DB_NAME: ${DB_NAME:-datasets}
+    volumes:
+      - ${PGDATA_PATH:-./data/database/postgres}:/data/database:ro
+      - ./config/mcp:/mcp-config:ro
     ports:
       - "${POSTGRES_MCP_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # MCP init: creates readonly_mcp user in PostgreSQL (runs once, on first MCP start with auth)
+  postgres-mcp-init:
+    profiles: [postgres_mcp]
+    image: postgres:18
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        CONN="postgresql://postgres:$${POSTGRES_PASSWORD}@postgres:$${POSTGRES_PORT:-5432}/$${DB_NAME:-datasets}"
+        # Read MCP password from credentials file
+        if [ ! -f /data/database/.mcp_credentials ]; then
+          echo '[MCP-INIT] No credentials file — skipping (auth not enabled)'
+          exit 0
+        fi
+        MCP_PWD=$$(cut -d: -f2- /data/database/.mcp_credentials)
+        MCP_USER=$$(cut -d: -f1 /data/database/.mcp_credentials)
+        echo "[MCP-INIT] Creating MCP user: $$MCP_USER"
+        psql "$$CONN" -c "
+          DO \$$\$$ BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$$MCP_USER') THEN
+              CREATE ROLE $$MCP_USER LOGIN PASSWORD '$$MCP_PWD';
+              GRANT pg_read_all_data TO $$MCP_USER;
+              RAISE NOTICE 'Created MCP user: %', '$$MCP_USER';
+            ELSE
+              RAISE NOTICE 'MCP user already exists: %', '$$MCP_USER';
+            END IF;
+          END \$$\$$;"
+        # Also create convenience RO user if configured
+        if [ -n "$${POSTGRES_RO_USER:-}" ]; then
+          echo "[MCP-INIT] Creating RO user: $$POSTGRES_RO_USER"
+          psql "$$CONN" -c "
+            DO \$$\$$ BEGIN
+              IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$${POSTGRES_RO_USER}') THEN
+                CREATE ROLE $${POSTGRES_RO_USER} LOGIN;
+                GRANT pg_read_all_data TO $${POSTGRES_RO_USER};
+              END IF;
+            END \$$\$$;"
+        fi
+        echo '[MCP-INIT] PostgreSQL MCP init complete'
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      DB_NAME: ${DB_NAME:-datasets}
+      POSTGRES_RO_USER: ${POSTGRES_RO_USER:-}
+    volumes:
+      - ${PGDATA_PATH:-./data/database/postgres}:/data/database:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -224,6 +288,9 @@ services:
       MCP_MONGODB_URI: mongodb://mongo:27017
       MCP_MONGODB_READONLY: "${MONGO_MCP_READ_ONLY:-true}"
       MCP_PORT: "3000"
+      MCP_MONGODB_USER: ${MONGO_MCP_USER:-}
+    volumes:
+      - ${MONGO_DATA_PATH:-./data/database/mongo}:/data/mongo:ro
     ports:
       - "${MONGO_MCP_PORT:-3000}:3000"
     depends_on:
@@ -231,6 +298,69 @@ services:
         condition: service_healthy
     # Note: internal port is always 3000 (set via MCP_PORT -> --port in entrypoint).
     # MONGO_MCP_PORT only changes the host-side mapping.
+
+  # MCP init: creates readonly_mcp user in MongoDB (runs once, on first MCP start with auth)
+  mongo-mcp-init:
+    profiles: [mongo_mcp]
+    image: mongo:8
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        # Check for credentials file
+        if [ ! -f /data/mongo/.mcp_credentials ]; then
+          echo '[MCP-INIT] No credentials file — skipping (auth not enabled)'
+          exit 0
+        fi
+        MCP_USER=$$(cut -d: -f1 /data/mongo/.mcp_credentials)
+        MCP_PWD=$$(cut -d: -f2- /data/mongo/.mcp_credentials)
+        CONN="mongodb://$${MONGO_ADMIN_USER}:$${MONGO_ADMIN_PASSWORD}@mongo:27017/admin"
+        echo "[MCP-INIT] Creating MCP user: $$MCP_USER"
+        mongosh "$$CONN" --quiet --eval "
+          try {
+            db.createUser({
+              user: '$$MCP_USER',
+              pwd: '$$MCP_PWD',
+              roles: [{role: 'readAnyDatabase', db: 'admin'}]
+            });
+            print('[MCP-INIT] Created MCP user: $$MCP_USER');
+          } catch (e) {
+            if (e.codeName === 'DuplicateKey' || e.code === 51003) {
+              print('[MCP-INIT] MCP user already exists');
+            } else {
+              throw e;
+            }
+          }
+        "
+        # Create convenience RO user if configured
+        if [ -n "$${MONGO_RO_USER:-}" ]; then
+          echo "[MCP-INIT] Creating RO user: $$MONGO_RO_USER"
+          mongosh "$$CONN" --quiet --eval "
+            try {
+              db.createUser({
+                user: '$${MONGO_RO_USER}',
+                pwd: '',
+                roles: [{role: 'readAnyDatabase', db: 'admin'}]
+              });
+              print('[MCP-INIT] Created RO user: $${MONGO_RO_USER}');
+            } catch (e) {
+              if (e.codeName === 'DuplicateKey' || e.code === 51003) {
+                print('[MCP-INIT] RO user already exists');
+              } else {
+                print('[MCP-INIT] Warning: Could not create RO user: ' + e.message);
+              }
+            }
+          "
+        fi
+        echo '[MCP-INIT] MongoDB MCP init complete'
+    environment:
+      MONGO_ADMIN_USER: ${MONGO_ADMIN_USER:-}
+      MONGO_ADMIN_PASSWORD: ${MONGO_ADMIN_PASSWORD:-}
+      MONGO_RO_USER: ${MONGO_RO_USER:-}
+    volumes:
+      - ${MONGO_DATA_PATH:-./data/database/mongo}:/data/mongo:ro
+    depends_on:
+      mongo:
+        condition: service_healthy
 
   # ==========================================================================
   # Profile: mongo_ingest - Raw JSON ingestion to MongoDB
@@ -248,6 +378,8 @@ services:
       - SOURCE=${SOURCE:-}
       - MONGO_PORT=${MONGO_PORT:-27017}
       - MONGO_DATA_PATH=/data/mongo
+      - MONGO_ADMIN_USER=${MONGO_ADMIN_USER:-}
+      - MONGO_ADMIN_PASSWORD=${MONGO_ADMIN_PASSWORD:-}
     volumes:
       - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
       - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted

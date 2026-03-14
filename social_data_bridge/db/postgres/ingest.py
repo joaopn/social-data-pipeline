@@ -11,6 +11,14 @@ from typing import List, Optional, Dict
 from ...core.config import ConfigurationError
 
 
+def _connect(dbname, user, host, port, password=None, **kwargs):
+    """Create a psycopg connection, including password if provided."""
+    params = dict(dbname=dbname, user=user, host=host, port=port, **kwargs)
+    if password:
+        params['password'] = password
+    return psycopg.connect(**params)
+
+
 # Mandatory fields always included (in this order at start of columns)
 MANDATORY_FIELDS = ['dataset', 'id', 'retrieved_utc']
 
@@ -40,7 +48,8 @@ def ensure_tablespaces(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    password: str = None
 ):
     """
     Create configured tablespaces if they don't already exist.
@@ -56,7 +65,7 @@ def ensure_tablespaces(
     if not tablespaces:
         return
 
-    with psycopg.connect(dbname=dbname, user=user, host=host, port=port, autocommit=True) as conn:
+    with _connect(dbname, user, host, port, password, autocommit=True) as conn:
         with conn.cursor() as curr:
             for ts_name in tablespaces:
                 if ts_name == 'pgdata':
@@ -373,11 +382,12 @@ def execute_query(
     host: str = '127.0.0.1',
     port: int = 5432,
     user: str = 'postgres',
+    password: str = None,
     args: List[str] = None
 ):
     """Execute a query, optionally with arguments."""
-    
-    with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+
+    with _connect(dbname, user, host, port, password) as conn:
         with conn.cursor() as curr:
             if args is None or len(args) == 0:
                 try:
@@ -401,11 +411,12 @@ def index_exists(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    password: str = None
 ) -> bool:
     """Check if an index exists in the database."""
     query = "SELECT 1 FROM pg_indexes WHERE indexname = %s"
-    with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+    with _connect(dbname, user, host, port, password) as conn:
         with conn.cursor() as curr:
             curr.execute(query, (index_name,))
             return curr.fetchone() is not None
@@ -417,15 +428,16 @@ def table_exists(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    password: str = None
 ) -> bool:
     """Check if a table exists in the database."""
     query = """
-        SELECT 1 FROM information_schema.tables 
+        SELECT 1 FROM information_schema.tables
         WHERE table_schema = %s AND table_name = %s
     """
     try:
-        with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+        with _connect(dbname, user, host, port, password) as conn:
             with conn.cursor() as curr:
                 curr.execute(query, (schema, table))
                 return curr.fetchone() is not None
@@ -439,12 +451,13 @@ def analyze_table(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    password: str = None
 ):
     """Run ANALYZE on a table. Used after initial bulk load."""
     full_table = f"{schema}.{table}"
-    
-    with psycopg.connect(dbname=dbname, user=user, host=host, port=port, autocommit=True) as conn:
+
+    with _connect(dbname, user, host, port, password, autocommit=True) as conn:
         with conn.cursor() as curr:
             curr.execute(f"ANALYZE {full_table}")
     
@@ -464,6 +477,7 @@ def delete_duplicates(
     host: str = '127.0.0.1',
     port: int = 5432,
     user: str = 'postgres',
+    password: str = None,
     order_column: Optional[str] = 'retrieved_utc'
 ) -> int:
     """
@@ -507,7 +521,7 @@ def delete_duplicates(
     
     print(f"[sdb] Removing duplicates from {full_table}...")
     
-    with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+    with _connect(dbname, user, host, port, password) as conn:
         with conn.cursor() as curr:
             curr.execute(query)
             deleted_count = curr.rowcount
@@ -524,6 +538,7 @@ def finalize_fast_load_table(
     host: str = '127.0.0.1',
     port: int = 5432,
     user: str = 'postgres',
+    password: str = None,
     fk_reference_table: Optional[str] = None,
     tablespace: str = None
 ):
@@ -546,7 +561,7 @@ def finalize_fast_load_table(
     print(f"[sdb] Adding PRIMARY KEY to {full_table}...")
     add_pk_query = f"ALTER TABLE {full_table} ADD PRIMARY KEY (id);"
 
-    with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+    with _connect(dbname, user, host, port, password) as conn:
         with conn.cursor() as curr:
             configure_ingestion_session(curr)
             if tablespace:
@@ -558,12 +573,12 @@ def finalize_fast_load_table(
     # Add FOREIGN KEY (if reference table provided)
     if fk_reference_table:
         ref_table = f"{schema}.{fk_reference_table}"
-        if table_exists(fk_reference_table, schema, dbname, host, port, user):
+        if table_exists(fk_reference_table, schema, dbname, host, port, user, password):
             print(f"[sdb] Adding FOREIGN KEY to {full_table} -> {ref_table}...")
             fk_name = f"fk_{table}_id"
             add_fk_query = f"ALTER TABLE {full_table} ADD CONSTRAINT {fk_name} FOREIGN KEY (id) REFERENCES {ref_table}(id);"
 
-            with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+            with _connect(dbname, user, host, port, password) as conn:
                 with conn.cursor() as curr:
                     curr.execute(add_fk_query)
                     conn.commit()
@@ -581,7 +596,8 @@ def fast_ingest_csv(
     host: str,
     port: int,
     user: str,
-    platform_config: Dict
+    platform_config: Dict,
+    password: str = None
 ):
     """
     Fast ingest a single CSV file using blind COPY (no duplicate checking).
@@ -604,7 +620,7 @@ def fast_ingest_csv(
 
     # Use existing get_ingest_query with check_duplicates=False for blind COPY
     copy_query = get_ingest_query(data_type, schema, table, check_duplicates=False, platform_config=platform_config, csv_file=csv_file)
-    execute_query(copy_query, dbname, host, port, user, args=[csv_file])
+    execute_query(copy_query, dbname, host, port, user, password, args=[csv_file])
 
 
 def create_fast_load_table(
@@ -616,6 +632,7 @@ def create_fast_load_table(
     port: int,
     user: str,
     platform_config: Dict,
+    password: str = None,
     csv_file: str = None,
     tablespace: str = None
 ):
@@ -638,11 +655,11 @@ def create_fast_load_table(
     print(f"[sdb] Creating table {schema}.{table} (no PK){ts_label}...")
 
     # Ensure database and schema exist
-    ensure_database_exists(dbname, host, port, user)
-    ensure_schema_exists(schema, dbname, host, port, user)
+    ensure_database_exists(dbname, host, port, user, password)
+    ensure_schema_exists(schema, dbname, host, port, user, password)
 
     create_query = get_create_table_query(data_type, schema, table, platform_config, csv_file, include_pk=False, tablespace=tablespace)
-    execute_query(create_query, dbname, host, port, user)
+    execute_query(create_query, dbname, host, port, user, password)
 
     print(f"[sdb] Created table {schema}.{table} (no PK)")
 
@@ -657,6 +674,7 @@ def create_fast_load_classifier_table(
     user: str,
     column_list: List[str],
     column_types: Dict[str, str],
+    password: str = None,
     tablespace: str = None
 ):
     """
@@ -677,13 +695,13 @@ def create_fast_load_classifier_table(
     ts_label = f" on tablespace {tablespace}" if tablespace else ""
     print(f"[sdb] Creating table {schema}.{table_name} (no PK, no FK){ts_label}...")
 
-    ensure_schema_exists(schema, dbname, host, port, user)
+    ensure_schema_exists(schema, dbname, host, port, user, password)
 
     create_query = get_classifier_create_table_query(
         table_name, data_type, schema, column_list, column_types,
         use_foreign_key=False, include_pk=False, tablespace=tablespace
     )
-    execute_query(create_query, dbname, host, port, user)
+    execute_query(create_query, dbname, host, port, user, password)
 
     print(f"[sdb] Created table {schema}.{table_name} (no PK, no FK)")
 
@@ -697,6 +715,7 @@ def fast_ingest_classifier_csv(
     port: int,
     user: str,
     column_list: List[str],
+    password: str = None,
     nullable_cols: Optional[List[str]] = None
 ):
     """
@@ -718,7 +737,7 @@ def fast_ingest_classifier_csv(
     copy_query = get_classifier_ingest_query(
         table_name, schema, column_list, check_duplicates=False, nullable_cols=nullable_cols
     )
-    execute_query(copy_query, dbname, host, port, user, args=[csv_file])
+    execute_query(copy_query, dbname, host, port, user, password, args=[csv_file])
 
 
 def create_index(
@@ -729,6 +748,7 @@ def create_index(
     host: str = '127.0.0.1',
     port: int = 5432,
     user: str = 'postgres',
+    password: str = None,
     quiet: bool = False,
     parallel_workers: int = 8,
     tablespace: str = None
@@ -739,7 +759,7 @@ def create_index(
     index_name = f"idx_{table}_{field}"
 
     # Check if index already exists
-    if index_exists(index_name, dbname, host, port, user):
+    if index_exists(index_name, dbname, host, port, user, password):
         return False
 
     tablespace_clause = f" TABLESPACE {tablespace}" if tablespace else ""
@@ -747,7 +767,7 @@ def create_index(
 
     print(f"[sdb] Creating index: {index_name}")
 
-    with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+    with _connect(dbname, user, host, port, password) as conn:
         with conn.cursor() as curr:
             # Configure session for optimal index creation (maintenance_work_mem, etc.)
             configure_ingestion_session(curr, quiet=quiet, parallel_workers=parallel_workers)
@@ -765,17 +785,12 @@ def ensure_database_exists(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    password: str = None
 ):
     """Create database if it doesn't exist."""
-    
-    with psycopg.connect(
-        dbname='postgres',
-        user=user,
-        host=host,
-        port=port,
-        autocommit=True
-    ) as conn:
+
+    with _connect('postgres', user, host, port, password, autocommit=True) as conn:
         with conn.cursor() as curr:
             # Check if database exists first
             curr.execute(
@@ -792,20 +807,15 @@ def ensure_schema_exists(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    password: str = None
 ):
     """Create schema if it doesn't exist. Thread-safe with exception handling."""
-    
+
     if schema == 'public':
         return  # public schema always exists
-    
-    with psycopg.connect(
-        dbname=dbname,
-        user=user,
-        host=host,
-        port=port,
-        autocommit=True
-    ) as conn:
+
+    with _connect(dbname, user, host, port, password, autocommit=True) as conn:
         with conn.cursor() as curr:
             try:
                 curr.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
@@ -826,6 +836,7 @@ def ingest_csv(
     check_duplicates: bool,
     create_indexes: bool,
     platform_config: Dict,
+    password: str = None,
     index_fields: Optional[List[str]] = None,
     tablespace: str = None
 ):
@@ -853,16 +864,16 @@ def ingest_csv(
     print(f"[sdb] Starting ingestion: {csv_file} -> {schema}.{table}")
 
     # Ensure database and schema exist
-    ensure_database_exists(dbname, host, port, user)
-    ensure_schema_exists(schema, dbname, host, port, user)
+    ensure_database_exists(dbname, host, port, user, password)
+    ensure_schema_exists(schema, dbname, host, port, user, password)
 
     # Create table if needed (schema from platform config, includes lingua columns if applicable)
     create_query = get_create_table_query(data_type, schema, table, platform_config, csv_file, tablespace=tablespace)
-    execute_query(create_query, dbname, host, port, user)
+    execute_query(create_query, dbname, host, port, user, password)
 
     # Ingest data (columns from platform config, includes lingua columns if applicable)
     ingest_query = get_ingest_query(data_type, schema, table, check_duplicates, platform_config, csv_file)
-    execute_query(ingest_query, dbname, host, port, user, args=[csv_file])
+    execute_query(ingest_query, dbname, host, port, user, password, args=[csv_file])
 
     # Create indexes if requested
     if create_indexes:
@@ -872,7 +883,7 @@ def ingest_csv(
 
         for field in index_fields:
             try:
-                create_index(field, table, schema, dbname, host, port, user, tablespace=tablespace)
+                create_index(field, table, schema, dbname, host, port, user, password, tablespace=tablespace)
             except Exception as e:
                 print(f"[sdb] Warning: Failed to create index on {field}: {e}")
 
@@ -1166,7 +1177,8 @@ def get_table_column_list(
     dbname: str,
     host: str = '127.0.0.1',
     port: int = 5432,
-    user: str = 'postgres'
+    user: str = 'postgres',
+    password: str = None
 ) -> List[str]:
     """
     Get column names for an existing table in ordinal position order.
@@ -1192,7 +1204,7 @@ def get_table_column_list(
     
     columns = []
     try:
-        with psycopg.connect(dbname=dbname, user=user, host=host, port=port) as conn:
+        with _connect(dbname, user, host, port, password) as conn:
             with conn.cursor() as curr:
                 curr.execute(query, (schema, table_name))
                 columns = [row[0] for row in curr.fetchall()]
@@ -1211,6 +1223,7 @@ def ingest_classifier_csv(
     host: str,
     port: int,
     user: str,
+    password: str = None,
     check_duplicates: bool = True,
     type_inference_rows: int = 1000,
     column_overrides: Optional[Dict[str, str]] = None,
@@ -1248,10 +1261,10 @@ def ingest_classifier_csv(
     print(f"[sdb] Starting ingestion: {csv_file} -> {schema}.{table_name}")
     
     # Ensure schema exists
-    ensure_schema_exists(schema, dbname, host, port, user)
-    
+    ensure_schema_exists(schema, dbname, host, port, user, password)
+
     # Check if table exists FIRST to avoid unnecessary CSV inference
-    if not table_exists(table_name, schema, dbname, host, port, user):
+    if not table_exists(table_name, schema, dbname, host, port, user, password):
         # Table doesn't exist - infer schema from CSV and create it
         print(f"[sdb] Inferring schema from {type_inference_rows} rows...")
         column_list, column_types, nullable_cols = infer_classifier_schema(
@@ -1264,7 +1277,7 @@ def ingest_classifier_csv(
         print(f"[sdb] Inferred columns: {column_list}")
         
         # Check if main table exists when FK is requested
-        main_table_exists = table_exists(data_type, schema, dbname, host, port, user)
+        main_table_exists = table_exists(data_type, schema, dbname, host, port, user, password)
         actual_use_fk = use_foreign_key and main_table_exists
         
         if use_foreign_key and not main_table_exists:
@@ -1275,13 +1288,13 @@ def ingest_classifier_csv(
             table_name, data_type, schema, column_list, column_types, 
             use_foreign_key=actual_use_fk
         )
-        execute_query(create_query, dbname, host, port, user)
+        execute_query(create_query, dbname, host, port, user, password)
         fk_status = " (with FK)" if actual_use_fk else " (no FK)"
         print(f"[sdb] Created table: {schema}.{table_name}{fk_status}")
     else:
         # Table exists - get schema from database (no CSV inference needed)
         column_list = get_table_column_list(
-            table_name, schema, dbname, host, port, user
+            table_name, schema, dbname, host, port, user, password
         )
         # No need to determine nullable_cols - if there was an issue, first file would have failed
         nullable_cols = []
@@ -1290,6 +1303,6 @@ def ingest_classifier_csv(
     ingest_query = get_classifier_ingest_query(
         table_name, schema, column_list, check_duplicates, nullable_cols
     )
-    execute_query(ingest_query, dbname, host, port, user, args=[csv_file])
+    execute_query(ingest_query, dbname, host, port, user, password, args=[csv_file])
     
     print(f"[sdb] Ingestion complete: {schema}.{table_name}")

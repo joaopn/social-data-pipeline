@@ -28,6 +28,7 @@ from ..core.config import (
 from ..db.postgres.ingest import (
     ingest_csv, create_index, table_exists, analyze_table,
     ensure_database_exists, ensure_schema_exists, ensure_tablespaces, resolve_tablespace,
+    ensure_pg_parquet,
     # Fast initial load functions
     create_fast_load_table, fast_ingest_csv, delete_duplicates, finalize_fast_load_table,
 )
@@ -173,26 +174,28 @@ def detect_json_files(extracted_dir: str, data_types: List[str], file_patterns: 
     return [(f[0], f[1], f[2]) for f in files]
 
 
-def detect_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict) -> List[Tuple[str, str, str]]:
-    """Detect parsed CSV files in the csv directory."""
+def detect_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
+    """Detect parsed CSV/Parquet files in the csv directory."""
     csv_base = Path(csv_dir)
     files = []
-    
+
+    ext = 'parquet' if file_format == 'parquet' else 'csv'
+
     # Build patterns from platform config
     patterns = {}
     for data_type in data_types:
-        if data_type in file_patterns and 'csv' in file_patterns[data_type]:
-            patterns[data_type] = re.compile(file_patterns[data_type]['csv'])
-    
+        if data_type in file_patterns and file_format in file_patterns[data_type]:
+            patterns[data_type] = re.compile(file_patterns[data_type][file_format])
+
     for data_type in data_types:
         if data_type not in patterns:
             continue
-            
+
         type_dir = csv_base / data_type
         if not type_dir.is_dir():
             continue
-            
-        for filepath in type_dir.glob("*.csv"):
+
+        for filepath in type_dir.glob(f"*.{ext}"):
             filename = filepath.name
             match = patterns[data_type].match(filename)
             if match:
@@ -225,22 +228,24 @@ def get_lingua_config(config_dir: str) -> Optional[Dict]:
 
 def detect_lingua_csv_files(
     data_types: List[str],
-    lingua_config: Dict
+    lingua_config: Dict,
+    file_format: str = 'csv'
 ) -> Tuple[List[Tuple[str, str, str]], Dict[str, str]]:
     """
-    Detect CSV files in the lingua output directory only.
+    Detect CSV/Parquet files in the lingua output directory only.
     Used when prefer_lingua is true; original CSV dir is not checked.
-    
+
     Returns:
         Tuple of (list of (filepath, file_id, data_type), source_map with 'lingua')
     """
     lingua_output_dir = Path(lingua_config['output_dir'])
     lingua_suffix = lingua_config['suffix']
+    ext = 'parquet' if file_format == 'parquet' else 'csv'
     files_with_name = []
     for data_type in data_types:
         type_dir = lingua_output_dir / data_type
         if type_dir.is_dir():
-            for filepath in type_dir.glob(f"*{lingua_suffix}.csv"):
+            for filepath in type_dir.glob(f"*{lingua_suffix}.{ext}"):
                 file_id = filepath.stem
                 if file_id.endswith(lingua_suffix):
                     file_id = file_id[:-len(lingua_suffix)]
@@ -284,8 +289,10 @@ def run_pipeline(config_dir: str = "/app/config"):
     if not data_types:
         raise ConfigurationError("No data_types configured. Set in user.yaml or platform config.")
     
-    # Get file patterns from platform config
+    # Get file patterns and format from platform config
     file_patterns = platform_config.get('file_patterns', {})
+    file_format = platform_config.get('file_format', 'csv')
+    ext = 'parquet' if file_format == 'parquet' else 'csv'
 
     # Tablespace configuration
     tablespaces = config.get('tablespaces', {})
@@ -375,26 +382,26 @@ def run_pipeline(config_dir: str = "/app/config"):
     
     # Check for existing JSON/CSV files
     json_files = detect_json_files(extracted_dir, data_types, file_patterns)
-    
+
     # Check if we should prefer lingua files
     prefer_lingua = get_optional(config, 'processing', 'prefer_lingua', default=False)
     lingua_config = None
     csv_source_map = {}
-    
+
     if prefer_lingua:
         lingua_config = get_lingua_config(config_dir)
         if lingua_config:
             print(f"[sdb] Prefer lingua: enabled (suffix: {lingua_config['suffix']})")
-            csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config)
+            csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config, file_format=file_format)
             # Count sources
             lingua_count = sum(1 for src in csv_source_map.values() if src == 'lingua')
             original_count = sum(1 for src in csv_source_map.values() if src == 'original')
             print(f"[sdb] Found {lingua_count} lingua CSVs, {original_count} original CSVs (fallback)")
         else:
             print("[sdb] Prefer lingua: enabled but ml_cpu config not found, using original CSVs")
-            csv_files = detect_csv_files(csv_dir, data_types, file_patterns)
+            csv_files = detect_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
     else:
-        csv_files = detect_csv_files(csv_dir, data_types, file_patterns)
+        csv_files = detect_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
     
     pending_csv_files = [f for f in csv_files if not states[f[2]].is_processed(f[1])]
     
@@ -457,8 +464,8 @@ def run_pipeline(config_dir: str = "/app/config"):
     json_files = detect_json_files(extracted_dir, data_types, file_patterns)
     files_to_parse = []
     for json_path, file_id, data_type in json_files:
-        expected_csv = Path(f"{csv_dir}/{data_type}") / f"{file_id}.csv"
-        if not expected_csv.exists():
+        expected_output = Path(f"{csv_dir}/{data_type}") / f"{file_id}.{ext}"
+        if not expected_output.exists():
             files_to_parse.append((json_path, file_id, data_type))
     
     if files_to_parse:
@@ -519,9 +526,9 @@ def run_pipeline(config_dir: str = "/app/config"):
     # Phase 3: Ingest CSV files to PostgreSQL
     # Re-detect CSV files (may have been created during parsing phase)
     if prefer_lingua and lingua_config:
-        csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config)
+        csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config, file_format=file_format)
     else:
-        csv_files = detect_csv_files(csv_dir, data_types, file_patterns)
+        csv_files = detect_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
     files_to_ingest = [(p, fid, dt) for p, fid, dt in csv_files if not states[dt].is_processed(fid)]
     
     if files_to_ingest:
@@ -556,6 +563,16 @@ def run_pipeline(config_dir: str = "/app/config"):
             user=db_config['user'],
             password=password
         )
+
+        # Ensure pg_parquet extension for parquet format
+        if file_format == 'parquet':
+            ensure_pg_parquet(
+                dbname=db_config['name'],
+                host=db_config['host'],
+                port=db_config['port'],
+                user=db_config['user'],
+                password=password
+            )
 
         # Create tablespaces if configured
         if tablespaces:

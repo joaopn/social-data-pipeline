@@ -562,94 +562,79 @@ class TransformerClassifier:
     
     def process_csv(self, input_csv: str, output_csv: str, data_type: str, config: Dict, quiet_gpu: bool = False) -> int:
         """
-        Process CSV file with transformer classification.
-        
-        Uses batched CSV reading/writing to handle very large files (50GB+).
+        Process input file with transformer classification.
+
+        Supports both CSV and Parquet formats (detected from file extension).
+        Uses batched reading/writing to handle very large files.
         Uses a .temp file during writing and renames to final name on success.
-        This ensures partial files from interrupted runs are not mistaken as complete.
-        
+
         Args:
-            input_csv: Input CSV path
-            output_csv: Output CSV path
+            input_csv: Input file path (CSV or Parquet)
+            output_csv: Output file path (CSV or Parquet)
             data_type: 'submissions' or 'comments'
             config: Full classifier config (merged global + per-classifier)
             quiet_gpu: Suppress per-GPU loading logs (for parallel file workers)
-        
+
         Returns:
             Number of rows processed
         """
         _lazy_import_deps()
-        
+
+        from ..classifiers.lingua import _create_batched_reader, _OutputWriter
+
         start_time = time.time()
         input_path = Path(input_csv)
         output_path = Path(output_csv)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        file_format = 'parquet' if input_path.suffix == '.parquet' else 'csv'
+
         # Use temp file during writing, rename on success
         temp_path = output_path.with_suffix(output_path.suffix + '.temp')
-        
+
         # Build worker suffix for logging
         worker_suffix = f" (worker {self.worker_id})" if self.worker_id is not None else ""
-        
+
         # Clean up any leftover temp file from interrupted run
         if temp_path.exists():
             print(f"[{self.name.upper()}] [{input_path.stem}] Removing incomplete temp file: {temp_path.name}{worker_suffix}")
             temp_path.unlink()
-        
+
         # Get model config for id2label (needed for output columns)
         from transformers import AutoConfig
         model_config = AutoConfig.from_pretrained(self.model_id)
         num_labels = model_config.num_labels if hasattr(model_config, 'num_labels') else 2
         id2label = model_config.id2label if hasattr(model_config, 'id2label') else {i: f'label_{i}' for i in range(num_labels)}
-        
+
         # Build text expression once (reused per batch)
         text_columns = self._get_text_columns(data_type)
         text_expr = self._build_text_expr(text_columns)
-        
+
         # Ensure GPU models are loaded before processing
         self._ensure_executors(quiet=quiet_gpu)
-        
+
         # Use cached tokenizer
         tokenizer = self._tokenizer
         tokenizer.model_max_length = int(1e30)  # Disable warning, we handle chunking
-        
+
         # Set tokenizer parallelism if configured
         if self.tokenize_workers > 0:
             os.environ['TOKENIZERS_PARALLELISM'] = 'true'
             os.environ['RAYON_NUM_THREADS'] = str(self.tokenize_workers)
-        
+
         # Initialize counters and timing
         total_rows = 0
         total_classified = 0
         tok_time = 0.0
         inf_time = 0.0
-        first_batch = True
-        
-        # Use batched CSV reader for streaming large files
-        reader = pl.read_csv_batched(input_csv, batch_size=self.batch_size)
-        
+
+        # Create format-aware reader and writer
+        reader = _create_batched_reader(input_csv, file_format, self.batch_size)
+        writer = _OutputWriter(temp_path, file_format)
+
         print(f"[{self.name.upper()}] [{input_path.stem}] Starting{worker_suffix}")
-        
-        while True:
-            # Read batches until we have enough rows or EOF
-            accumulated = []
-            accumulated_rows = 0
-            while accumulated_rows < self.batch_size:
-                batches = reader.next_batches(1)
-                if not batches:
-                    break
-                accumulated.append(batches[0])
-                accumulated_rows += len(batches[0])
-            
-            if not accumulated:
-                break
-            
-            # Concatenate accumulated batches
-            if len(accumulated) == 1:
-                df = accumulated[0]
-            else:
-                df = pl.concat(accumulated)
-            
+
+        for df in reader:
             batch_rows = len(df)
             total_rows += batch_rows
             
@@ -836,15 +821,11 @@ class TransformerClassifier:
             cols_to_keep += [c for c in df_out.columns if c in classifier_cols]
             df_out = df_out.select(cols_to_keep)
             
-            # Write batch to temp file
-            if first_batch:
-                df_out.write_csv(temp_path)
-                first_batch = False
-            else:
-                with open(temp_path, 'ab') as f:
-                    df_out.write_csv(f, include_header=False)
-        
-        # Rename temp file to final output path on success
+            # Write batch
+            writer.write_batch(df_out)
+
+        # Close writer and rename temp file
+        writer.close()
         if temp_path.exists():
             temp_path.rename(output_path)
         

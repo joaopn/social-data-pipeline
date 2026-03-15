@@ -549,6 +549,13 @@ def derive_file_patterns(dump_glob, compression):
         csv_regex = csv_regex[4:-3]
     csv_regex = '^' + csv_regex + '$'
 
+    # Build parquet regex (stem + .parquet)
+    parquet_glob = stem_glob + '.parquet'
+    parquet_regex = fnmatch.translate(parquet_glob)
+    if parquet_regex.startswith('(?s:') and parquet_regex.endswith(')\\Z'):
+        parquet_regex = parquet_regex[4:-3]
+    parquet_regex = '^' + parquet_regex + '$'
+
     # Derive prefix (everything before the first wildcard)
     prefix = dump_glob.split('*')[0] if '*' in dump_glob else dump_glob
 
@@ -557,6 +564,7 @@ def derive_file_patterns(dump_glob, compression):
         'dump_glob': dump_glob,
         'json': json_regex,
         'csv': csv_regex,
+        'parquet': parquet_regex,
         'prefix': prefix,
         'compression': compression,
     }

@@ -149,16 +149,18 @@ def detect_json_files(extracted_dir: str, data_types: List[str], file_patterns: 
     return [(f[0], f[1], f[2]) for f in files]
 
 
-def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict) -> List[Tuple[str, str, str]]:
-    """Detect parsed CSV files in the CSV directory."""
+def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
+    """Detect parsed CSV/Parquet files in the CSV directory."""
     csv_base = Path(csv_dir)
     files = []
+
+    ext = 'parquet' if file_format == 'parquet' else 'csv'
 
     # Build patterns from platform config
     patterns = {}
     for data_type in data_types:
-        if data_type in file_patterns and 'csv' in file_patterns[data_type]:
-            patterns[data_type] = re.compile(file_patterns[data_type]['csv'])
+        if data_type in file_patterns and file_format in file_patterns[data_type]:
+            patterns[data_type] = re.compile(file_patterns[data_type][file_format])
 
     for data_type in data_types:
         if data_type not in patterns:
@@ -168,7 +170,7 @@ def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: 
         if not type_dir.is_dir():
             continue
 
-        for filepath in type_dir.glob("*.csv"):
+        for filepath in type_dir.glob(f"*.{ext}"):
             filename = filepath.name
             match = patterns[data_type].match(filename)
             if match:
@@ -246,11 +248,14 @@ def run_pipeline(config_dir: str = "/app/config"):
     dump_files = detect_dump_files(dumps_dir, data_types, file_patterns)
     print(f"[sdb] Found {len(dump_files)} compressed files in {dumps_dir}")
 
+    file_format = platform_config.get('file_format', 'csv')
+    ext = 'parquet' if file_format == 'parquet' else 'csv'
+
     json_files = detect_json_files(extracted_dir, data_types, file_patterns)
-    parsed_csv_files = detect_parsed_csv_files(csv_dir, data_types, file_patterns)
+    parsed_csv_files = detect_parsed_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
 
     print(f"[sdb] Found {len(json_files)} JSON files in extracted directory")
-    print(f"[sdb] Found {len(parsed_csv_files)} CSV files in csv directory")
+    print(f"[sdb] Found {len(parsed_csv_files)} {ext.upper()} files in csv directory")
 
     # Filter out compressed files that already have extracted JSON or parsed CSV
     # Use direct file existence check rather than pattern matching, so extracted
@@ -302,8 +307,8 @@ def run_pipeline(config_dir: str = "/app/config"):
     json_files = detect_json_files(extracted_dir, data_types, file_patterns)  # Re-detect
     files_to_parse = []
     for json_path, file_id, data_type in json_files:
-        expected_csv = Path(csv_dir) / data_type / f"{file_id}.csv"
-        if not expected_csv.exists():
+        expected_output = Path(csv_dir) / data_type / f"{file_id}.{ext}"
+        if not expected_output.exists():
             files_to_parse.append((json_path, file_id, data_type))
 
     if files_to_parse:

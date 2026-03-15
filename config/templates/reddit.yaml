@@ -18,12 +18,14 @@ file_patterns:
     zst: '^RS_(\d{4}-\d{2})\.zst$'       # Legacy: .zst only
     json: '^RS_(\d{4}-\d{2})$'           # Decompressed JSON files
     csv: '^RS_(\d{4}-\d{2})\.csv$'       # Parsed CSV files
+    parquet: '^RS_(\d{4}-\d{2})\.parquet$'  # Parsed Parquet files
     prefix: 'RS_'                         # File prefix for this data type
   comments:
     dump: '^RC_(\d{4}-\d{2})\..+$'
     zst: '^RC_(\d{4}-\d{2})\.zst$'
     json: '^RC_(\d{4}-\d{2})$'
     csv: '^RC_(\d{4}-\d{2})\.csv$'
+    parquet: '^RC_(\d{4}-\d{2})\.parquet$'  # Parsed Parquet files
     prefix: 'RC_'
 
 # Default index fields for PostgreSQL tables

@@ -1,10 +1,11 @@
 """
-Generic JSON to CSV parsing utilities.
+Generic JSON to CSV/Parquet parsing utilities.
 
 This module contains shared utilities used by all platform-specific parsers.
 Platform-specific logic (like Reddit's waterfall algorithm) lives in platforms/*.
 """
 
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 
@@ -146,3 +147,93 @@ def flatten_record(record: Dict, fields: List[str], types: Dict) -> List[Any]:
 def write_csv_row(values: List[Any]) -> str:
     """Convert a list of values to a CSV row string."""
     return ','.join(map(quote_field, values))
+
+
+# ---------------------------------------------------------------------------
+# Parquet support
+# ---------------------------------------------------------------------------
+
+def escape_string_parquet(value: str) -> str:
+    """Escape string for parquet output — only strips null bytes."""
+    if isinstance(value, str):
+        return value.replace('\u0000', '')
+    return value
+
+
+def yaml_type_to_polars(type_def):
+    """Map a YAML type definition to a Polars dtype.
+
+    Args:
+        type_def: 'integer', 'bigint', 'float', 'boolean', 'text',
+                  or ['char', N] / ['varchar', N]
+
+    Returns:
+        Polars DataType
+    """
+    import polars as pl
+    if isinstance(type_def, list):
+        return pl.Utf8
+    mapping = {
+        'integer': pl.Int64,
+        'bigint': pl.Int64,
+        'float': pl.Float64,
+        'boolean': pl.Boolean,
+        'text': pl.Utf8,
+        'char': pl.Utf8,
+        'varchar': pl.Utf8,
+    }
+    return mapping.get(type_def, pl.Utf8)
+
+
+def build_parquet_schema(columns: List[str], field_types: Dict) -> dict:
+    """Build a column→dtype mapping for a Polars DataFrame from YAML field_types."""
+    import polars as pl
+    schema = {}
+    for col in columns:
+        type_def = field_types.get(col)
+        schema[col] = yaml_type_to_polars(type_def) if type_def else pl.Utf8
+    return schema
+
+
+def write_parquet_file(
+    rows: List[Dict[str, Any]],
+    columns: List[str],
+    field_types: Dict,
+    output_path: str,
+) -> int:
+    """Write a list of row dicts as a Parquet file with proper dtypes.
+
+    Uses a temp file + atomic rename.  Returns the number of rows written.
+    """
+    import polars as pl
+    output_path = Path(output_path)
+    temp_path = output_path.with_suffix(output_path.suffix + '.temp')
+
+    if temp_path.exists():
+        temp_path.unlink()
+
+    schema = build_parquet_schema(columns, field_types)
+
+    try:
+        df = pl.DataFrame(rows, schema=schema, orient='row')
+        df.write_parquet(temp_path)
+        temp_path.rename(output_path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+    return len(rows)
+
+
+def flatten_record_parquet(record: Dict, fields: List[str], types: Dict) -> List[Any]:
+    """Like flatten_record but uses parquet escaping (null-byte strip only)."""
+    row = []
+    for field in fields:
+        value = get_nested_data(record, field)
+        if isinstance(value, str):
+            value = escape_string_parquet(value)
+        last_key = field.split('.')[-1]
+        value = enforce_data_type(last_key, value, types)
+        row.append(value)
+    return row

@@ -21,8 +21,13 @@ from social_data_bridge.setup.utils import (
     detect_hardware,
     ask, ask_int, ask_bool, ask_choice, ask_list, ask_multi_select,
     section_header, write_files, list_sources, load_db_setup,
-    print_pipeline_commands,
+    print_pipeline_commands, update_env_file,
     detect_compression_from_glob, derive_file_patterns,
+)
+from social_data_bridge.setup.classifiers import (
+    run_questionnaire as run_classifier_questionnaire,
+    generate_ml_cpu_user_yaml,
+    generate_ml_user_yaml,
 )
 
 
@@ -73,6 +78,14 @@ def run_questionnaire(hw, source_name, db_setup):
     settings["extracted_path"] = ask("Extracted directory", f"./data/extracted/{source_name}")
     settings["csv_path"] = ask("CSV directory", f"./data/csv/{source_name}")
     settings["output_path"] = ask("Output directory", f"./data/output/{source_name}")
+
+    # ---- File format ----
+    section_header("File Format")
+    print("  Parquet files are smaller, enforce schema, and preserve text")
+    print("  without escaping. CSV is the legacy format.")
+    settings["file_format"] = ask_choice(
+        "Intermediate file format", ["parquet", "csv"], default="parquet",
+    )
 
     # ---- Profiles ----
     section_header("Profiles")
@@ -218,6 +231,7 @@ def run_questionnaire(hw, source_name, db_setup):
 def generate_platform_yaml(settings):
     """Generate config/sources/<name>/platform.yaml for custom platforms."""
     config = {
+        "file_format": settings.get("file_format", "parquet"),
         "db_schema": settings.get("db_schema", settings["source_name"]),
         "data_types": settings["data_types"],
         "paths": {
@@ -273,6 +287,7 @@ def generate_reddit_platform_yaml(settings):
         print(f"  Error: Could not read {base_path}: {e}")
         sys.exit(1)
 
+    base_config["file_format"] = settings.get("file_format", "parquet")
     base_config["paths"] = {
         "dumps": settings["dumps_path"],
         "extracted": settings["extracted_path"],
@@ -357,6 +372,7 @@ def print_summary(settings, files_to_write):
 
     print(f"  Source:      {source_name}")
     print(f"  Platform:    {settings['platform']}")
+    print(f"  File format: {settings.get('file_format', 'parquet')}")
     print(f"  Data types:  {', '.join(settings['data_types'])}")
     print(f"  Profiles:    {', '.join(profiles)}")
     print()
@@ -441,6 +457,18 @@ def main(source_name=None):
     settings = run_questionnaire(hw, source_name, db_setup)
     profiles = settings["profiles"]
 
+    # Run classifier configuration inline if ml profiles are selected
+    has_classifiers = "ml_cpu" in profiles or "ml" in profiles
+    if has_classifiers:
+        classifier_state = {
+            "platform": settings["platform"],
+            "data_types": settings["data_types"],
+            "profiles": profiles,
+            "source": source_name,
+        }
+        classifier_settings = run_classifier_questionnaire(hw, classifier_state)
+        settings["classifier_settings"] = classifier_settings
+
     # Build file list
     source_config_dir = CONFIG_DIR / "sources" / source_name
     files_to_write = []
@@ -482,6 +510,18 @@ def main(source_name=None):
             generate_mongo_yaml(settings),
         ))
 
+    # Classifier config files (from inline questionnaire)
+    if "ml_cpu" in profiles and "classifier_settings" in settings:
+        files_to_write.append((
+            source_config_dir / "ml_cpu.yaml",
+            generate_ml_cpu_user_yaml(settings["classifier_settings"]),
+        ))
+    if "ml" in profiles and "classifier_settings" in settings:
+        files_to_write.append((
+            source_config_dir / "ml.yaml",
+            generate_ml_user_yaml(settings["classifier_settings"]),
+        ))
+
     # Summary and confirm
     print_summary(settings, files_to_write)
 
@@ -492,19 +532,18 @@ def main(source_name=None):
     print()
     write_files(files_to_write)
 
+    # Update .env with HF_TOKEN if provided during classifier setup
+    cs = settings.get("classifier_settings")
+    if cs and cs.get("hf_token"):
+        update_env_file({"HF_TOKEN": cs["hf_token"]})
+        print(f"  Updated:   .env (HF_TOKEN)")
+
     print(f"\n  Done! Source '{source_name}' has been configured.")
 
     # Print next steps
-    has_classifiers = "ml_cpu" in profiles or "ml" in profiles
     if settings["platform"] == "reddit":
-        print("\n  Next steps:")
-        if has_classifiers:
-            print(f"    python sdb.py source add-classifiers {source_name}")
-        print(f"    python sdb.py source configure {source_name}  # Customize Reddit fields/indexes")
-        print()
-    elif has_classifiers:
         print("\n  Next step:")
-        print(f"    python sdb.py source add-classifiers {source_name}")
+        print(f"    python sdb.py source configure {source_name}  # Customize Reddit fields/indexes")
         print()
     else:
         print()

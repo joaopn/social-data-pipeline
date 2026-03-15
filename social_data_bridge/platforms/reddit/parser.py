@@ -18,9 +18,11 @@ from typing import Dict, List, Any, Optional, Tuple
 from ...core.config import ConfigurationError
 from ...core.parser import (
     escape_string,
+    escape_string_parquet,
     quote_field,
     get_nested_data,
     enforce_data_type,
+    write_parquet_file,
 )
 
 
@@ -182,64 +184,67 @@ def get_all_columns(data_type: str, fields_to_extract: List[str]) -> List[str]:
     return ['dataset'] + MANDATORY_FIELDS + fields_to_extract
 
 
-def transform_json(data: Dict, dataset: str, data_type_config: Dict, fields_to_extract: List[str]) -> List:
+def transform_json(data: Dict, dataset: str, data_type_config: Dict, fields_to_extract: List[str], file_format: str = 'csv') -> List:
     """
     Transform Reddit JSON data into a list of extracted values.
-    
+
     CSV column order: [dataset, id, retrieved_utc, ...fields from YAML...]
-    
+
     Handles both old and new Reddit data formats:
     - Uses retrieved_on as retrieved_utc if retrieved_utc is not present (old format)
     - For new format (2023-11+), uses _meta.retrieved_2nd_on as retrieved_utc when available
     - Detects deletions/removals from multiple fields across different Reddit API eras
     """
     meta = data.get('_meta', {})
-    
+
     # Handle retrieved_utc field (mandatory, with fallback for old format)
     data['retrieved_utc'] = data.get('retrieved_utc', data.get('retrieved_on', ''))
-    
+
     # For new format (2023-11+), use second retrieval time if available
     if meta and meta.get('retrieved_2nd_on'):
         data['retrieved_utc'] = meta['retrieved_2nd_on']
-    
+
     # Determine deletion status and removal type
     is_deleted, removal_type = determine_removal_status(data)
-    
+
     # Add deletion status to data
     data['is_deleted'] = is_deleted
     data['removal_type'] = removal_type
-    
+
     # Compute id10 only if requested in field list (base 36 id to base 10)
     if 'id10' in fields_to_extract:
         data['id10'] = base36_to_int(data.get('id', ''))
-    
+
     # Normalize text fields
     data['subreddit'] = (data.get('subreddit') or '').lower()
     data['author'] = (data.get('author') or '').lower()
 
     # Merge mandatory field types with config types
     all_types = {**MANDATORY_FIELD_TYPES, **data_type_config}
-    
+
+    # Select escape function based on format
+    _escape = escape_string_parquet if file_format == 'parquet' else escape_string
+
     # Build extracted list: [dataset, id, retrieved_utc, ...yaml fields...]
     extracted = [dataset]
-    
+
     # Add mandatory fields first (id, retrieved_utc)
     for field in MANDATORY_FIELDS:
         value = get_nested_data(data, field)
         if isinstance(value, str):
-            value = escape_string(value)
+            value = _escape(value)
         value = enforce_data_type(field, value, all_types)
         extracted.append(value)
-    
+
     # Add user-configured fields from YAML
     for field in fields_to_extract:
         value = get_nested_data(data, field)
         if isinstance(value, str):
-            value = escape_string(value)
+            value = _escape(value)
         last_key = field.split('.')[-1]
         value = enforce_data_type(last_key, value, all_types)
         extracted.append(value)
-    
+
     return extracted
 
 
@@ -248,79 +253,100 @@ def process_single_file(
     output_file: str,
     data_type: str,
     data_type_config: Dict,
-    fields_to_extract: List[str]
+    fields_to_extract: List[str],
+    file_format: str = 'csv',
 ) -> tuple:
     """
-    Process a single Reddit JSON file and write to CSV with headers.
-    
+    Process a single Reddit JSON file and write to CSV or Parquet.
+
     Uses a .temp file during writing and renames to final name on success.
     This ensures partial files from interrupted runs are not mistaken as complete.
-    
+
     Args:
         input_file: Path to decompressed JSON file
-        output_file: Path for output CSV file
+        output_file: Path for output file (.csv or .parquet)
         data_type: 'submissions' or 'comments'
         data_type_config: Field type configuration
         fields_to_extract: List of fields to extract
-        
+        file_format: 'csv' or 'parquet'
+
     Returns:
         Tuple of (input_size, output_file)
     """
     prefix = "RS_" if data_type == "submissions" else "RC_"
     dataset = Path(input_file).name.replace(prefix, "")
-    
+
     output_path = Path(output_file)
     temp_path = output_path.with_suffix(output_path.suffix + '.temp')
-    
+
     # Clean up any leftover temp file from interrupted run
     if temp_path.exists():
         print(f"[sdb] Removing incomplete temp file: {temp_path.name}")
         temp_path.unlink()
-    
+
     line_count = 0
     error_count = 0
-    
+
     # Get column names for header
     columns = get_all_columns(data_type, fields_to_extract)
-    header_row = ','.join(columns)
-    
+
     try:
-        with open(input_file, 'r', encoding='utf-8', errors='replace') as infile, \
-             open(temp_path, 'w', newline='', encoding='utf-8') as outfile:
-            
-            # Write header row
-            outfile.write(header_row + '\n')
-            
-            for line in infile:
-                cleaned_line = line.replace('\x00', '')
-                if not cleaned_line.strip():
-                    continue
-                try:
-                    data = json.loads(cleaned_line)
-                    csv_data = transform_json(data, dataset, data_type_config, fields_to_extract)
-                    csv_row = ','.join(map(quote_field, csv_data))
-                    outfile.write(csv_row + '\n')
-                    line_count += 1
-                except json.JSONDecodeError as e:
-                    error_count += 1
-                    logging.error(f"Failed to decode line in {input_file}: {cleaned_line[:100]}... Error: {e}")
-                    continue
-        
-        # Rename temp file to final output path on success
-        temp_path.rename(output_path)
-        
+        if file_format == 'parquet':
+            # Parquet: accumulate rows as dicts, write with Polars at end
+            rows = []
+            with open(input_file, 'r', encoding='utf-8', errors='replace') as infile:
+                for line in infile:
+                    cleaned_line = line.replace('\x00', '')
+                    if not cleaned_line.strip():
+                        continue
+                    try:
+                        data = json.loads(cleaned_line)
+                        values = transform_json(data, dataset, data_type_config, fields_to_extract, file_format='parquet')
+                        rows.append(dict(zip(columns, values)))
+                        line_count += 1
+                    except json.JSONDecodeError as e:
+                        error_count += 1
+                        logging.error(f"Failed to decode line in {input_file}: {cleaned_line[:100]}... Error: {e}")
+                        continue
+
+            write_parquet_file(rows, columns, data_type_config, str(output_path))
+
+        else:
+            # CSV: original row-by-row write
+            header_row = ','.join(columns)
+            with open(input_file, 'r', encoding='utf-8', errors='replace') as infile, \
+                 open(temp_path, 'w', newline='', encoding='utf-8') as outfile:
+
+                outfile.write(header_row + '\n')
+
+                for line in infile:
+                    cleaned_line = line.replace('\x00', '')
+                    if not cleaned_line.strip():
+                        continue
+                    try:
+                        data = json.loads(cleaned_line)
+                        csv_data = transform_json(data, dataset, data_type_config, fields_to_extract)
+                        csv_row = ','.join(map(quote_field, csv_data))
+                        outfile.write(csv_row + '\n')
+                        line_count += 1
+                    except json.JSONDecodeError as e:
+                        error_count += 1
+                        logging.error(f"Failed to decode line in {input_file}: {cleaned_line[:100]}... Error: {e}")
+                        continue
+
+            temp_path.rename(output_path)
+
     except Exception:
-        # Clean up temp file on failure
         if temp_path.exists():
             temp_path.unlink()
         raise
-    
+
     input_size = os.path.getsize(input_file)
     output_size = os.path.getsize(output_file)
-    
+
     print(f"[sdb] {Path(input_file).name} -> {Path(output_file).name}")
     print(f"[sdb] Rows: {line_count:,}, Errors: {error_count}, Output: {output_size / (1024**3):.2f} GB")
-    
+
     return input_size, output_file
 
 
@@ -332,17 +358,19 @@ def parse_to_csv(
     use_type_subdir: bool = True
 ) -> str:
     """
-    Parse a decompressed Reddit JSON file to CSV with headers.
+    Parse a decompressed Reddit JSON file to CSV or Parquet.
+
+    Output format is determined by platform_config['file_format'] (default: 'csv').
 
     Args:
         input_file: Path to decompressed JSON file (e.g., RC_2023-01)
-        output_dir: Directory for output CSV file (or base dir if use_type_subdir=True)
+        output_dir: Directory for output file (or base dir if use_type_subdir=True)
         data_type: 'submissions' or 'comments'
         platform_config: Loaded platform configuration dict (fields, field_types, etc.)
         use_type_subdir: If True, output to output_dir/data_type/ (default: True)
 
     Returns:
-        Path to the output CSV file
+        Path to the output file
 
     Raises:
         ConfigurationError: If config is missing required keys
@@ -360,7 +388,9 @@ def parse_to_csv(
     fields_to_extract = platform_config.get('fields', {}).get(data_type, [])
     if not fields_to_extract:
         raise ConfigurationError(f"No fields configured for data type: {data_type}")
-    
+
+    file_format = platform_config.get('file_format', 'csv')
+
     # Configure logging
     log_filename = output_dir / f"parsing_errors_{data_type}.log"
     logging.basicConfig(
@@ -368,27 +398,29 @@ def parse_to_csv(
         level=logging.ERROR,
         format='%(asctime)s:%(levelname)s:%(message)s'
     )
-    
+
     # Determine output filename
     input_path = Path(input_file)
-    output_file = output_dir / f"{input_path.name}.csv"
-    
+    ext = '.parquet' if file_format == 'parquet' else '.csv'
+    output_file = output_dir / f"{input_path.name}{ext}"
+
     # Process the file
     _, output_path = process_single_file(
         input_file=str(input_path),
         output_file=str(output_file),
         data_type=data_type,
         data_type_config=field_types,
-        fields_to_extract=fields_to_extract
+        fields_to_extract=fields_to_extract,
+        file_format=file_format,
     )
-    
+
     # Clean up empty log file
     try:
         if log_filename.exists() and log_filename.stat().st_size == 0:
             log_filename.unlink()
     except Exception:
         pass
-    
+
     return output_path
 
 

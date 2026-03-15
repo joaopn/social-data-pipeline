@@ -100,7 +100,9 @@ services:
   # ==========================================================================
   postgres:
     profiles: [postgres]
-    image: postgres:18
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
     ipc: host  # Fixes 64MB shared memory limit from default Docker IPC
     restart: unless-stopped
     stop_grace_period: 10m

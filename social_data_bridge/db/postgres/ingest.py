@@ -11,6 +11,25 @@ from typing import List, Optional, Dict
 from ...core.config import ConfigurationError
 
 
+def _pg_server_path(container_path: str) -> str:
+    """Translate ingestion container path to PostgreSQL server-visible path.
+
+    The ingestion container mounts source-specific dirs (e.g. ./data/csv/reddit)
+    at /data/csv and /data/output.  The PostgreSQL container mounts the *parent*
+    dirs (./data/csv, ./data/output) at the same mount points.  Server-side COPY
+    reads from the PostgreSQL container's filesystem, so paths must include the
+    source subdirectory.
+    """
+    source = os.environ.get('SOURCE', '')
+    if not source:
+        return container_path
+
+    for prefix in ('/data/csv/', '/data/output/'):
+        if container_path.startswith(prefix):
+            return f"{prefix}{source}/{container_path[len(prefix):]}"
+    return container_path
+
+
 def _connect(dbname, user, host, port, password=None, **kwargs):
     """Create a psycopg connection, including password if provided."""
     params = dict(dbname=dbname, user=user, host=host, port=port, **kwargs)
@@ -299,6 +318,13 @@ def get_create_table_query(
         ){tablespace_clause};"""
 
 
+def _detect_file_format(filepath: str) -> str:
+    """Detect file format from extension."""
+    if filepath and Path(filepath).suffix == '.parquet':
+        return 'parquet'
+    return 'csv'
+
+
 def get_ingest_query(
     data_type: str,
     schema: str,
@@ -310,13 +336,16 @@ def get_ingest_query(
     """
     Generate COPY/INSERT query dynamically from platform configuration.
 
+    Supports both CSV and Parquet formats (detected from file extension).
+    Parquet uses pg_parquet extension (FORMAT parquet).
+
     Args:
         data_type: 'submissions' or 'comments'
         schema: Database schema name
         table: Table name
         check_duplicates: Whether to handle duplicate IDs
         platform_config: Loaded platform configuration dict (must contain 'fields')
-        csv_file: Optional CSV file path - if contains 'lingua', lingua columns are included
+        csv_file: Optional file path - if contains 'lingua', lingua columns are included
 
     Returns:
         SQL query for data ingestion
@@ -328,18 +357,23 @@ def get_ingest_query(
     # Get column list from platform config (includes lingua columns if csv_file is a lingua file)
     columns_list = get_column_list(data_type, platform_config, csv_file)
     columns = ", ".join(columns_list)
-    
+
     # Fields to update on conflict (all except 'id' which is the primary key)
     update_fields = [col for col in columns_list if col != 'id']
     update_set = ",\n                ".join(
         f"{col} = EXCLUDED.{col}" for col in update_fields
     )
-    
-    # Build COPY options - add FORCE_NULL for lingua columns that may be empty (empty string -> NULL)
-    copy_options = "FORMAT csv, HEADER true, DELIMITER ','"
-    if csv_file and 'lingua' in csv_file:
-        copy_options += ", FORCE_NULL (lang, lang_prob, lang2, lang2_prob, lang_chars)"
-    
+
+    # Build COPY options based on file format
+    file_format = _detect_file_format(csv_file)
+    if file_format == 'parquet':
+        # pg_parquet: no HEADER, DELIMITER, or FORCE_NULL needed
+        copy_options = "FORMAT parquet"
+    else:
+        copy_options = "FORMAT csv, HEADER true, DELIMITER ','"
+        if csv_file and 'lingua' in csv_file:
+            copy_options += ", FORCE_NULL (lang, lang_prob, lang2, lang2_prob, lang_chars)"
+
     if not check_duplicates:
         return f"""
             COPY {full_table}({columns})
@@ -620,7 +654,7 @@ def fast_ingest_csv(
 
     # Use existing get_ingest_query with check_duplicates=False for blind COPY
     copy_query = get_ingest_query(data_type, schema, table, check_duplicates=False, platform_config=platform_config, csv_file=csv_file)
-    execute_query(copy_query, dbname, host, port, user, password, args=[csv_file])
+    execute_query(copy_query, dbname, host, port, user, password, args=[_pg_server_path(csv_file)])
 
 
 def create_fast_load_table(
@@ -733,11 +767,11 @@ def fast_ingest_classifier_csv(
         nullable_cols: Columns that may have empty strings to treat as NULL
     """
     print(f"[sdb] COPY: {csv_file}")
-    
+
     copy_query = get_classifier_ingest_query(
-        table_name, schema, column_list, check_duplicates=False, nullable_cols=nullable_cols
+        table_name, schema, column_list, check_duplicates=False, nullable_cols=nullable_cols, csv_file=csv_file
     )
-    execute_query(copy_query, dbname, host, port, user, password, args=[csv_file])
+    execute_query(copy_query, dbname, host, port, user, password, args=[_pg_server_path(csv_file)])
 
 
 def create_index(
@@ -800,6 +834,20 @@ def ensure_database_exists(
             if curr.fetchone() is None:
                 curr.execute(f"CREATE DATABASE {dbname}")
                 print(f"[sdb] Created database: {dbname}")
+
+
+def ensure_pg_parquet(
+    dbname: str,
+    host: str = '127.0.0.1',
+    port: int = 5432,
+    user: str = 'postgres',
+    password: str = None
+):
+    """Create pg_parquet extension if it doesn't exist. Required for parquet COPY."""
+
+    with _connect(dbname, user, host, port, password, autocommit=True) as conn:
+        with conn.cursor() as curr:
+            curr.execute("CREATE EXTENSION IF NOT EXISTS pg_parquet")
 
 
 def ensure_schema_exists(
@@ -873,7 +921,7 @@ def ingest_csv(
 
     # Ingest data (columns from platform config, includes lingua columns if applicable)
     ingest_query = get_ingest_query(data_type, schema, table, check_duplicates, platform_config, csv_file)
-    execute_query(ingest_query, dbname, host, port, user, password, args=[csv_file])
+    execute_query(ingest_query, dbname, host, port, user, password, args=[_pg_server_path(csv_file)])
 
     # Create indexes if requested
     if create_indexes:
@@ -952,54 +1000,86 @@ def infer_sql_type(values: List[str]) -> tuple:
     return ('text', has_empty)
 
 
+def _arrow_type_to_sql(arrow_type) -> str:
+    """Map a PyArrow type to a PostgreSQL SQL type."""
+    import pyarrow as pa
+    if pa.types.is_integer(arrow_type):
+        if arrow_type.bit_width <= 32:
+            return 'integer'
+        return 'bigint'
+    if pa.types.is_floating(arrow_type):
+        if arrow_type.bit_width <= 32:
+            return 'real'
+        return 'double precision'
+    if pa.types.is_boolean(arrow_type):
+        return 'boolean'
+    return 'text'
+
+
 def infer_classifier_schema(
     csv_file: str,
     n_rows: int = 1000,
     column_overrides: Optional[Dict[str, str]] = None
 ) -> tuple:
     """
-    Infer column list and types for classifier table from CSV data.
-    
-    Reads N rows from CSV and infers SQL types for all columns.
-    Returns columns in CSV header order (important for COPY).
-    
+    Infer column list and types for classifier table from a CSV or Parquet file.
+
+    CSV: reads N sample rows and infers SQL types from values.
+    Parquet: reads typed schema from file metadata (no sampling needed).
+
+    Returns columns in file order (important for COPY).
+
     Args:
-        csv_file: Path to CSV file
-        n_rows: Number of rows to sample for type inference
+        csv_file: Path to CSV or Parquet file
+        n_rows: Number of rows to sample for type inference (CSV only)
         column_overrides: Optional dict of column_name -> sql_type overrides
-        
+
     Returns:
         Tuple of (column_list, column_types_dict, nullable_cols) where:
-        - column_list: List of column names in CSV order
+        - column_list: List of column names in file order
         - column_types_dict: Dict of column_name -> sql_type
-        - nullable_cols: List of columns that have empty values (need FORCE_NULL)
+        - nullable_cols: List of columns that have empty values (need FORCE_NULL, CSV only)
     """
-    import csv
-    
     column_overrides = column_overrides or {}
-    
+
+    if _detect_file_format(csv_file) == 'parquet':
+        import pyarrow.parquet as pq
+        schema = pq.read_schema(csv_file)
+        all_cols = schema.names
+        column_types = {}
+        for field in schema:
+            if field.name == 'id':
+                continue
+            if field.name in column_overrides:
+                column_types[field.name] = yaml_type_to_sql(column_overrides[field.name])
+            else:
+                column_types[field.name] = _arrow_type_to_sql(field.type)
+        return all_cols, column_types, []
+
+    import csv
+
     with open(csv_file, 'r', newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         header = reader.fieldnames
-        
+
         if not header:
             raise ValueError(f"CSV file has no header: {csv_file}")
-        
+
         # Keep all columns in original order
         all_cols = list(header)
-        
+
         if not all_cols:
             raise ValueError(f"No columns found in CSV: {csv_file}")
-        
+
         # Collect sample values for each column (except 'id' which is always varchar)
         samples: Dict[str, List[str]] = {col: [] for col in all_cols if col != 'id'}
-        
+
         for i, row in enumerate(reader):
             if i >= n_rows:
                 break
             for col in samples:
                 samples[col].append(row.get(col, ""))
-    
+
     # Infer types (id is always varchar(7) PRIMARY KEY, handled separately)
     column_types = {}
     nullable_cols = []
@@ -1014,7 +1094,7 @@ def infer_classifier_schema(
             # Track columns with empty values that aren't text (need FORCE_NULL for COPY)
             if has_empty and sql_type != 'text':
                 nullable_cols.append(col)
-    
+
     return all_cols, column_types, nullable_cols
 
 
@@ -1088,33 +1168,39 @@ def get_classifier_ingest_query(
     schema: str,
     column_list: List[str],
     check_duplicates: bool,
-    nullable_cols: Optional[List[str]] = None
+    nullable_cols: Optional[List[str]] = None,
+    csv_file: str = None
 ) -> str:
     """
     Generate COPY/INSERT query for classifier output table.
-    
+
     Mirrors the base table ingestion pattern exactly.
-    
+
     Args:
         table_name: Full table name (e.g., 'submissions_lingua')
         schema: Database schema name
         column_list: List of column names in CSV order
         check_duplicates: Whether to handle duplicate IDs
         nullable_cols: Columns that may have empty strings to treat as NULL
-        
+        csv_file: Optional file path for format detection
+
     Returns:
         SQL query for data ingestion
     """
     full_table = f"{schema}.{table_name}"
     temp_table = f"temp_{table_name}"
-    
+
     columns = ", ".join(column_list)
-    
-    # Build COPY options - FORCE_NULL for columns with empty values
-    copy_options = "FORMAT csv, HEADER true, DELIMITER ',', NULL ''"
-    if nullable_cols:
-        force_null_cols = ", ".join(nullable_cols)
-        copy_options += f", FORCE_NULL ({force_null_cols})"
+
+    # Build COPY options based on file format
+    file_format = _detect_file_format(csv_file)
+    if file_format == 'parquet':
+        copy_options = "FORMAT parquet"
+    else:
+        copy_options = "FORMAT csv, HEADER true, DELIMITER ',', NULL ''"
+        if nullable_cols:
+            force_null_cols = ", ".join(nullable_cols)
+            copy_options += f", FORCE_NULL ({force_null_cols})"
     
     # Fields to update on conflict (all except 'id' which is the primary key)
     update_fields = [col for col in column_list if col != 'id']
@@ -1301,8 +1387,8 @@ def ingest_classifier_csv(
     
     # Ingest data (COPY entire CSV directly, just like base table)
     ingest_query = get_classifier_ingest_query(
-        table_name, schema, column_list, check_duplicates, nullable_cols
+        table_name, schema, column_list, check_duplicates, nullable_cols, csv_file=csv_file
     )
-    execute_query(ingest_query, dbname, host, port, user, password, args=[csv_file])
+    execute_query(ingest_query, dbname, host, port, user, password, args=[_pg_server_path(csv_file)])
     
     print(f"[sdb] Ingestion complete: {schema}.{table_name}")

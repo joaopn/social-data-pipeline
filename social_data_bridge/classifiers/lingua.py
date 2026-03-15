@@ -1,8 +1,9 @@
 """
 Lingua language detection for social_data_bridge pipeline.
-Uses Polars for vectorized CSV I/O and text processing.
+Uses Polars for vectorized I/O and text processing.
 Uses Lingua's native Rust parallelism via Rayon for detection.
 Processes large files in batches to avoid memory blow-up.
+Supports both CSV and Parquet file formats.
 """
 
 import os
@@ -25,7 +26,7 @@ except ImportError:
 # Output columns this classifier adds
 OUTPUT_COLUMNS = ['lang', 'lang_prob', 'lang2', 'lang2_prob', 'lang_chars']
 
-# Mandatory fields for ingest CSV (required for ON CONFLICT resolution)
+# Mandatory fields for ingest output (required for ON CONFLICT resolution)
 INGEST_MANDATORY_FIELDS = ['id', 'dataset', 'retrieved_utc']
 
 
@@ -103,7 +104,7 @@ def _build_text_expr(text_columns: List[str], remove_strings: List[str], remove_
 
 
 def _get_ingest_columns(config: Dict) -> List[str]:
-    """Get list of columns to include in ingest CSV."""
+    """Get list of columns to include in ingest output."""
     columns = list(INGEST_MANDATORY_FIELDS)
 
     extra_fields = config.get('fields', [])
@@ -117,9 +118,9 @@ def _get_ingest_columns(config: Dict) -> List[str]:
     return columns
 
 
-def _get_ingest_output_path(output_csv: str) -> Path:
+def _get_ingest_output_path(output_path: str) -> Path:
     """Convert lingua output path to lingua_ingest output path."""
-    output_path = Path(output_csv)
+    output_path = Path(output_path)
 
     parts = list(output_path.parts)
     for i, part in enumerate(parts):
@@ -130,8 +131,84 @@ def _get_ingest_output_path(output_csv: str) -> Path:
     return Path(*parts)
 
 
+def _detect_format(filepath: str) -> str:
+    """Detect file format from extension."""
+    return 'parquet' if Path(filepath).suffix == '.parquet' else 'csv'
+
+
+def _get_expected_rows(input_path: str, file_format: str) -> int:
+    """Get expected row count from input file."""
+    if file_format == 'parquet':
+        import pyarrow.parquet as pq
+        return pq.ParquetFile(input_path).metadata.num_rows
+    else:
+        return pl.scan_csv(input_path).select(pl.len()).collect().item()
+
+
+def _create_batched_reader(input_path: str, file_format: str, batch_size: int):
+    """Create a batched reader that yields DataFrames.
+
+    Returns an iterator of pl.DataFrame batches.
+    """
+    if file_format == 'parquet':
+        import pyarrow.parquet as pq
+        pf = pq.ParquetFile(input_path)
+        def _iter():
+            for batch in pf.iter_batches(batch_size=batch_size):
+                yield pl.from_arrow(batch)
+        return _iter()
+    else:
+        # CSV: use Polars batched reader, wrapped as a simple iterator
+        reader = pl.read_csv_batched(input_path, batch_size=batch_size)
+        def _iter():
+            while True:
+                batches = reader.next_batches(1)
+                if not batches:
+                    break
+                yield batches[0]
+        return _iter()
+
+
+class _OutputWriter:
+    """Abstraction for batched output writing (CSV append or Parquet row-groups)."""
+
+    def __init__(self, temp_path: Path, file_format: str):
+        self.temp_path = temp_path
+        self.file_format = file_format
+        self._first_batch = True
+        self._pq_writer = None
+
+    def write_batch(self, df: pl.DataFrame):
+        if self.file_format == 'parquet':
+            import pyarrow.parquet as pq
+            table = df.to_arrow()
+            if self._pq_writer is None:
+                self._pq_writer = pq.ParquetWriter(str(self.temp_path), table.schema)
+            self._pq_writer.write_table(table)
+        else:
+            if self._first_batch:
+                df.write_csv(self.temp_path)
+            else:
+                with open(self.temp_path, 'ab') as f:
+                    df.write_csv(f, include_header=False)
+        self._first_batch = False
+
+    def close(self):
+        if self._pq_writer is not None:
+            self._pq_writer.close()
+            self._pq_writer = None
+
+    def cleanup(self):
+        self.close()
+        if self.temp_path.exists():
+            self.temp_path.unlink()
+
+
 def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -> int:
-    """Process CSV file with language detection using Polars and Lingua."""
+    """Process input file with language detection using Polars and Lingua.
+
+    Supports both CSV and Parquet formats (detected from file extension).
+    """
     if not LINGUA_AVAILABLE:
         raise ImportError("Lingua not available")
 
@@ -155,11 +232,13 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     output_path = Path(output_csv)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Get expected row count from input CSV
+    file_format = _detect_format(input_csv)
+
+    # Get expected row count
     try:
-        expected_rows = pl.scan_csv(input_csv).select(pl.len()).collect().item()
+        expected_rows = _get_expected_rows(input_csv, file_format)
     except Exception as e:
-        raise RuntimeError(f"Failed to get row count from input CSV: {e}")
+        raise RuntimeError(f"Failed to get row count from input file: {e}")
 
     temp_path = output_path.with_suffix(output_path.suffix + '.temp')
 
@@ -167,8 +246,9 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
         print(f"[{input_path.stem}] Removing incomplete temp file: {temp_path.name}")
         temp_path.unlink()
 
+    # Ingest output setup
     ingest_path = None
-    ingest_temp_path = None
+    ingest_writer = None
     ingest_columns = None
     if output_ingest:
         ingest_path = _get_ingest_output_path(output_csv)
@@ -179,6 +259,8 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
         if ingest_temp_path.exists():
             print(f"[{input_path.stem}] Removing incomplete ingest temp file: {ingest_temp_path.name}")
             ingest_temp_path.unlink()
+    else:
+        ingest_temp_path = None
 
     detector = _get_detector(languages, low_accuracy, num_workers, quiet=True)
     text_expr = _build_text_expr(text_columns, remove_strings, remove_patterns)
@@ -186,34 +268,21 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
     total_rows = 0
     total_detected = 0
     detect_time = 0.0
-    first_batch = True
     start_time = time.time()
 
-    try:
-        reader = pl.read_csv_batched(input_csv, batch_size=batch_size)
-    except Exception as e:
-        raise RuntimeError(f"Failed to create batched CSV reader: {e}")
+    # Create writers
+    main_writer = _OutputWriter(temp_path, file_format)
+    if output_ingest and ingest_temp_path:
+        ingest_writer = _OutputWriter(ingest_temp_path, file_format)
 
     print(f"[{input_path.stem}] Starting" + (" (with ingest output)" if output_ingest else ""))
 
     try:
-        while True:
-            accumulated = []
-            accumulated_rows = 0
-            while accumulated_rows < batch_size:
-                batches = reader.next_batches(1)
-                if not batches:
-                    break
-                accumulated.append(batches[0])
-                accumulated_rows += len(batches[0])
+        reader = _create_batched_reader(input_csv, file_format, batch_size)
 
-            if not accumulated:
-                break
-
-            if len(accumulated) == 1:
-                df = accumulated[0]
-            else:
-                df = pl.concat(accumulated)
+        for df in reader:
+            # Accumulate small batches up to batch_size
+            # (PyArrow iter_batches already returns correct sizes; CSV reader may return smaller)
             n_rows = len(df)
 
             df_with_text = df.with_columns([
@@ -226,7 +295,7 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
                 valid_expr.alias("_valid"),
                 pl.when(valid_expr)
                 .then(pl.col("_len").cast(pl.Utf8))
-                .otherwise(pl.lit(""))
+                .otherwise(pl.lit(None) if file_format == 'parquet' else pl.lit(""))
                 .alias("_lang_chars"),
             ])
 
@@ -234,10 +303,11 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
             valid_df = df_with_text.filter(valid_mask)
             valid_texts = valid_df["_text"].to_list()
 
-            lang1_col = [""] * n_rows
-            prob1_col = [""] * n_rows
-            lang2_col = [""] * n_rows
-            prob2_col = [""] * n_rows
+            empty = None if file_format == 'parquet' else ""
+            lang1_col = [empty] * n_rows
+            prob1_col = [empty] * n_rows
+            lang2_col = [empty] * n_rows
+            prob2_col = [empty] * n_rows
 
             if valid_texts:
                 valid_indices = valid_mask.arg_true().to_list()
@@ -274,42 +344,33 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
                 df_with_text["_lang_chars"].alias("lang_chars"),
             ])
 
-            if first_batch:
-                df_out.write_csv(temp_path)
-            else:
-                with open(temp_path, 'ab') as f:
-                    df_out.write_csv(f, include_header=False)
+            main_writer.write_batch(df_out)
 
-            if output_ingest and ingest_columns:
+            if ingest_writer and ingest_columns:
                 available_ingest_cols = [c for c in ingest_columns if c in df_out.columns]
                 df_ingest = df_out.select(available_ingest_cols)
+                ingest_writer.write_batch(df_ingest)
 
-                if first_batch:
-                    df_ingest.write_csv(ingest_temp_path)
-                else:
-                    with open(ingest_temp_path, 'ab') as f:
-                        df_ingest.write_csv(f, include_header=False)
-
-            first_batch = False
             total_rows += n_rows
 
     except Exception as e:
-        # Clean up temp files on error
-        if temp_path.exists():
-            temp_path.unlink()
-        if output_ingest and ingest_temp_path and ingest_temp_path.exists():
-            ingest_temp_path.unlink()
+        main_writer.cleanup()
+        if ingest_writer:
+            ingest_writer.cleanup()
         raise RuntimeError(f"Error during batch processing: {e}")
 
+    # Close writers and rename temp files
+    main_writer.close()
     if temp_path.exists():
         temp_path.rename(output_path)
 
-    if output_ingest and ingest_temp_path and ingest_temp_path.exists():
-        ingest_temp_path.rename(ingest_path)
+    if ingest_writer:
+        ingest_writer.close()
+        if ingest_temp_path and ingest_temp_path.exists():
+            ingest_temp_path.rename(ingest_path)
 
     # Validate output row count matches input
     if total_rows != expected_rows:
-        # Clean up incomplete output files
         if output_path.exists():
             output_path.unlink()
         if output_ingest and ingest_path and ingest_path.exists():
@@ -317,7 +378,7 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
         raise RuntimeError(
             f"Row count mismatch! Input: {expected_rows:,} rows, Output: {total_rows:,} rows. "
             f"Processed only {total_rows/expected_rows*100:.1f}% of input. "
-            f"This indicates the batched CSV reader stopped early - possibly due to memory pressure, "
+            f"This indicates the batched reader stopped early - possibly due to memory pressure, "
             f"file corruption, or resource contention from parallel processing."
         )
 

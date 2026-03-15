@@ -23,6 +23,7 @@ from ..core.config import (
 )
 from ..db.postgres.ingest import (
     ensure_database_exists, ensure_schema_exists, ensure_tablespaces, resolve_tablespace,
+    ensure_pg_parquet,
     ingest_classifier_csv, table_exists, infer_classifier_schema,
     # Fast initial load functions
     create_fast_load_classifier_table, fast_ingest_classifier_csv,
@@ -71,11 +72,12 @@ def detect_classifier_csvs(
     source_dir: str,
     suffix: str,
     data_types: List[str],
-    file_patterns: Dict = None
+    file_patterns: Dict = None,
+    file_format: str = 'csv'
 ) -> List[Tuple[str, str, str]]:
     """
-    Detect classifier CSV files for a given classifier.
-    
+    Detect classifier CSV/Parquet files for a given classifier.
+
     Args:
         output_dir: Base output directory (/data/output)
         classifier_name: Name of the classifier (e.g., 'lingua')
@@ -83,36 +85,39 @@ def detect_classifier_csvs(
         suffix: File suffix pattern (e.g., '_lingua')
         data_types: List of data types to look for
         file_patterns: Optional dict of file patterns per data type from platform config
-        
+        file_format: File format ('csv' or 'parquet')
+
     Returns:
         List of (filepath, data_type, file_id) tuples
     """
     base_path = Path(output_dir) / source_dir
     files = []
-    
-    # Build patterns - use platform config if available, otherwise match any CSV with suffix
+
+    ext = 'parquet' if file_format == 'parquet' else 'csv'
+
+    # Build patterns - use platform config if available, otherwise match any file with suffix
     patterns = {}
     for data_type in data_types:
-        if file_patterns and data_type in file_patterns and 'csv' in file_patterns[data_type]:
+        if file_patterns and data_type in file_patterns and file_format in file_patterns[data_type]:
             # Modify the platform pattern to include the classifier suffix
-            base_pattern = file_patterns[data_type]['csv']
-            # Replace .csv$ with {suffix}.csv$
-            suffix_pattern = base_pattern.replace(r'\.csv$', rf'{re.escape(suffix)}\.csv$')
+            base_pattern = file_patterns[data_type][file_format]
+            # Replace .ext$ with {suffix}.ext$
+            suffix_pattern = base_pattern.replace(rf'\.{ext}$', rf'{re.escape(suffix)}\.{ext}$')
             patterns[data_type] = re.compile(suffix_pattern)
         else:
-            # Fallback: match any file ending with suffix.csv
-            patterns[data_type] = re.compile(rf'^.+{re.escape(suffix)}\.csv$')
-    
+            # Fallback: match any file ending with suffix.ext
+            patterns[data_type] = re.compile(rf'^.+{re.escape(suffix)}\.{re.escape(ext)}$')
+
     for data_type in data_types:
         type_dir = base_path / data_type
         if not type_dir.is_dir():
             continue
-            
+
         pattern = patterns.get(data_type)
         if not pattern:
             continue
-            
-        for filepath in type_dir.glob("*.csv"):
+
+        for filepath in type_dir.glob(f"*.{ext}"):
             match = pattern.match(filepath.name)
             if match:
                 file_id = f"{classifier_name}/{filepath.stem}"
@@ -177,6 +182,8 @@ def run_pipeline(config_dir: str = "/app/config"):
     def get_tablespace(data_type):
         return resolve_tablespace(table_tablespaces.get(data_type))
 
+    file_format = platform_config.get('file_format', 'csv')
+
     print(f"[sdb] Database: {db_config.get('name')}@{db_config.get('host')}:{db_config.get('port')}")
     print(f"[sdb] Schema: {db_config.get('schema')}")
     print(f"[sdb] Output dir: {output_dir}")
@@ -203,6 +210,16 @@ def run_pipeline(config_dir: str = "/app/config"):
         user=db_config['user'],
         password=password
     )
+
+    # Ensure pg_parquet extension for parquet format
+    if file_format == 'parquet':
+        ensure_pg_parquet(
+            dbname=db_config['name'],
+            host=db_config['host'],
+            port=db_config['port'],
+            user=db_config['user'],
+            password=password
+        )
 
     # Create tablespaces if configured
     if tablespaces:
@@ -258,14 +275,14 @@ def run_pipeline(config_dir: str = "/app/config"):
         print(f"[sdb] Source: {output_dir}/{source_dir}")
         print(f"[sdb] Suffix: {suffix}")
         
-        # Detect CSV files
-        files = detect_classifier_csvs(output_dir, classifier_name, source_dir, suffix, data_types)
+        # Detect classifier files
+        files = detect_classifier_csvs(output_dir, classifier_name, source_dir, suffix, data_types, file_format=file_format)
         
         if not files:
             print(f"[sdb] {classifier_name}: No CSV files found")
             continue
         
-        print(f"[sdb] {classifier_name}: Found {len(files)} CSV files")
+        print(f"[sdb] {classifier_name}: Found {len(files)} files")
         
         # Filter out already processed files
         pending_files = [(fp, dt, fid) for fp, dt, fid in files if not states[dt].is_processed(fid)]

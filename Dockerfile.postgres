@@ -1,0 +1,17 @@
+FROM postgres:18
+
+# Install pg_parquet extension from Pigsty apt repository.
+# pg_parquet adds COPY ... WITH (FORMAT parquet) support to PostgreSQL.
+# https://github.com/CrunchyData/pg_parquet
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+ && curl -fsSL https://repo.pigsty.io/key | gpg --dearmor -o /etc/apt/keyrings/pigsty.gpg \
+ && echo "deb [signed-by=/etc/apt/keyrings/pigsty.gpg] https://repo.pigsty.io/apt/pgsql/bookworm bookworm main" \
+    > /etc/apt/sources.list.d/pigsty.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-18-pg-parquet \
+ && apt-get purge -y --auto-remove curl gnupg \
+ && rm -rf /var/lib/apt/lists/*
+
+# Create pg_parquet extension on first database initialization
+COPY config/postgres/initdb.d/ /docker-entrypoint-initdb.d/

@@ -1,0 +1,214 @@
+diff --git a/src/schemas/call.ts b/src/schemas/call.ts
+index c0a4774..c2fa40f 100644
+--- a/src/schemas/call.ts
++++ b/src/schemas/call.ts
+@@ -41,7 +41,8 @@ type MongoOperation =
+   | "insert"
+   | "createIndex"
+   | "count"
+-  | "listCollections";
++  | "listCollections"
++  | "listDatabases";
+ 
+ // Define operations that require a collection
+ const COLLECTION_OPERATIONS = [
+@@ -76,10 +77,13 @@ export async function handleCallToolRequest({
+   // Extract ObjectId conversion mode from args (default to 'auto')
+   const objectIdMode = (args.objectIdMode as ObjectIdConversionMode) || "auto";
+ 
+-  // Create new args object without objectIdMode property
++  // Resolve target database: use explicit database param or fall back to default
++  const targetDb = args.database ? client.db(args.database as string) : db;
++
++  // Create new args object without objectIdMode and database properties
+   const filteredArgs: Record<string, unknown> = {};
+   for (const [key, value] of Object.entries(args)) {
+-    if (key !== "objectIdMode") {
++    if (key !== "objectIdMode" && key !== "database") {
+       filteredArgs[key] = value;
+     }
+   }
+@@ -110,7 +114,7 @@ export async function handleCallToolRequest({
+       );
+     }
+ 
+-    collection = db.collection(collectionName);
++    collection = targetDb.collection(collectionName);
+ 
+     // Validate collection
+     validateCollection(collection);
+@@ -125,7 +129,7 @@ export async function handleCallToolRequest({
+     case "update":
+       return handleUpdate(collection, args, objectIdMode);
+     case "serverInfo":
+-      return handleServerInfo(db, isReadOnlyMode, args);
++      return handleServerInfo(targetDb, isReadOnlyMode, args);
+     case "insert":
+       return handleInsert(collection, args, objectIdMode);
+     case "createIndex":
+@@ -133,7 +137,9 @@ export async function handleCallToolRequest({
+     case "count":
+       return handleCount(collection, args, objectIdMode);
+     case "listCollections":
+-      return handleListCollections(db, args, objectIdMode);
++      return handleListCollections(targetDb, args, objectIdMode);
++    case "listDatabases":
++      return handleListDatabases(client, args);
+     default:
+       throw new Error(`Unknown operation: ${operation}`);
+   }
+@@ -151,6 +157,7 @@ function validateOperation(operation: MongoOperation): void {
+     "createIndex",
+     "count",
+     "listCollections",
++    "listDatabases",
+   ];
+ 
+   if (!validOperations.includes(operation)) {
+@@ -840,3 +847,25 @@ async function handleListCollections(
+     return handleError(error, "list collections");
+   }
+ }
++
++async function handleListDatabases(
++  client: MongoClient,
++  args: Record<string, unknown>,
++) {
++  const { nameOnly } = args;
++
++  try {
++    const adminDb = client.db("admin");
++    const result = await adminDb.admin().listDatabases();
++
++    if (nameOnly) {
++      return formatResponse(
++        result.databases.map((db: { name: string }) => db.name),
++      );
++    }
++
++    return formatResponse(result.databases);
++  } catch (error) {
++    return handleError(error, "list databases");
++  }
++}
+diff --git a/src/schemas/tools.ts b/src/schemas/tools.ts
+index 2b4a222..0cdbcd0 100644
+--- a/src/schemas/tools.ts
++++ b/src/schemas/tools.ts
+@@ -21,6 +21,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             collection: {
+               type: "string",
+               description: "Name of the collection to query",
+@@ -61,6 +66,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             collection: {
+               type: "string",
+               description: "Name of the collection to aggregate",
+@@ -95,6 +105,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             collection: {
+               type: "string",
+               description: "Name of the collection to update",
+@@ -135,6 +150,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             includeDebugInfo: {
+               type: "boolean",
+               description:
+@@ -149,6 +169,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             collection: {
+               type: "string",
+               description: "Name of the collection to insert into",
+@@ -187,6 +212,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             collection: {
+               type: "string",
+               description: "Name of the collection to create indexes on",
+@@ -253,6 +283,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             collection: { type: "string", description: "Collection name" },
+             query: { type: "object", description: "Query filter to count" },
+             limit: { type: "integer", description: "Max documents to count" },
+@@ -283,6 +318,11 @@ export async function handleListToolsRequest({
+         inputSchema: {
+           type: "object",
+           properties: {
++            database: {
++              type: "string",
++              description:
++                "Target database name. If omitted, uses the default database from the connection URI",
++            },
+             nameOnly: {
+               type: "boolean",
+               description: "If true, return only collection names",
+@@ -300,6 +340,20 @@ export async function handleListToolsRequest({
+           },
+         },
+       },
++      {
++        name: "listDatabases",
++        description:
++          "List all databases on the MongoDB server with their sizes",
++        inputSchema: {
++          type: "object",
++          properties: {
++            nameOnly: {
++              type: "boolean",
++              description: "If true, return only database names",
++            },
++          },
++        },
++      },
+     ],
+   };
+ }

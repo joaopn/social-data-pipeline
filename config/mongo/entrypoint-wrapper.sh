@@ -26,16 +26,19 @@ if [ "${MONGO_AUTH_ENABLED:-}" = "true" ]; then
         # the official entrypoint checks multiple files. Instead, create
         # users via the localhost exception: start WITH --auth, connect
         # locally, create the first user (localhost exception allows this).
+        # Use a different port for the temporary start to avoid tripping the healthcheck
+        AUTH_INIT_PORT=27018
         mongod --fork --logpath /tmp/mongod_auth_init.log \
             --config /etc/mongo/config/mongod.conf \
             --bind_ip 127.0.0.1 \
+            --port $AUTH_INIT_PORT \
             --auth \
             --wiredTigerCacheSizeGB "${MONGO_CACHE_SIZE_GB:-2}" \
         || { echo '[ERROR] mongod fork failed — log:'; cat /tmp/mongod_auth_init.log; exit 1; }
 
         # Wait for mongod
         for i in $(seq 1 30); do
-            if mongosh --host 127.0.0.1 --port 27017 --quiet --eval 'quit(0)' >/dev/null 2>&1; then
+            if mongosh --host 127.0.0.1 --port $AUTH_INIT_PORT --quiet --eval 'quit(0)' >/dev/null 2>&1; then
                 break
             fi
             sleep 1
@@ -44,7 +47,7 @@ if [ "${MONGO_AUTH_ENABLED:-}" = "true" ]; then
         # Localhost exception allows creating the first user without auth
         ADMIN_USER="${MONGO_ADMIN_USER:-admin}"
         ADMIN_PWD="${MONGO_ADMIN_PASSWORD}"
-        mongosh --host 127.0.0.1 --port 27017 --quiet admin <<EOJS
+        mongosh --host 127.0.0.1 --port $AUTH_INIT_PORT --quiet admin <<EOJS
 db.createUser({
     user: $(_js_escape "$ADMIN_USER"),
     pwd: $(_js_escape "$ADMIN_PWD"),
@@ -55,7 +58,7 @@ EOJS
 
         # Create RO user — now authenticate as admin
         if [ -n "${MONGO_RO_USER:-}" ]; then
-            mongosh --host 127.0.0.1 --port 27017 --quiet \
+            mongosh --host 127.0.0.1 --port $AUTH_INIT_PORT --quiet \
                 -u "$ADMIN_USER" -p "$ADMIN_PWD" --authenticationDatabase admin admin <<EOJS
 try {
     db.createUser({

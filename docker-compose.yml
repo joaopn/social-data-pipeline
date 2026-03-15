@@ -226,55 +226,6 @@ services:
       postgres:
         condition: service_healthy
 
-  # MCP init: creates readonly_mcp user in PostgreSQL (runs once, on first MCP start with auth)
-  postgres-mcp-init:
-    profiles: [postgres_mcp]
-    image: postgres:18
-    entrypoint: ["bash", "-c"]
-    command:
-      - |
-        CONN="postgresql://postgres:$${POSTGRES_PASSWORD}@postgres:$${POSTGRES_PORT:-5432}/$${DB_NAME:-datasets}"
-        # Read MCP password from credentials file
-        if [ ! -f /data/database/.mcp_credentials ]; then
-          echo '[MCP-INIT] No credentials file — skipping (auth not enabled)'
-          exit 0
-        fi
-        MCP_PWD=$$(cut -d: -f2- /data/database/.mcp_credentials)
-        MCP_USER=$$(cut -d: -f1 /data/database/.mcp_credentials)
-        echo "[MCP-INIT] Creating MCP user: $$MCP_USER"
-        psql "$$CONN" -c "
-          DO \$$\$$ BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$$MCP_USER') THEN
-              CREATE ROLE $$MCP_USER LOGIN PASSWORD '$$MCP_PWD';
-              GRANT pg_read_all_data TO $$MCP_USER;
-              RAISE NOTICE 'Created MCP user: %', '$$MCP_USER';
-            ELSE
-              RAISE NOTICE 'MCP user already exists: %', '$$MCP_USER';
-            END IF;
-          END \$$\$$;"
-        # Also create convenience RO user if configured
-        if [ -n "$${POSTGRES_RO_USER:-}" ]; then
-          echo "[MCP-INIT] Creating RO user: $$POSTGRES_RO_USER"
-          psql "$$CONN" -c "
-            DO \$$\$$ BEGIN
-              IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$${POSTGRES_RO_USER}') THEN
-                CREATE ROLE $${POSTGRES_RO_USER} LOGIN;
-                GRANT pg_read_all_data TO $${POSTGRES_RO_USER};
-              END IF;
-            END \$$\$$;"
-        fi
-        echo '[MCP-INIT] PostgreSQL MCP init complete'
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-      DB_NAME: ${DB_NAME:-datasets}
-      POSTGRES_RO_USER: ${POSTGRES_RO_USER:-}
-    volumes:
-      - ${PGDATA_PATH:-./data/database/postgres}:/data/database:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-
   # ==========================================================================
   # Profile: mongo_mcp - MongoDB MCP server (Streamable HTTP)
   # Uses: kiliczsh/mcp-mongo-server (built from source)
@@ -300,69 +251,6 @@ services:
         condition: service_healthy
     # Note: internal port is always 3000 (set via MCP_PORT -> --port in entrypoint).
     # MONGO_MCP_PORT only changes the host-side mapping.
-
-  # MCP init: creates readonly_mcp user in MongoDB (runs once, on first MCP start with auth)
-  mongo-mcp-init:
-    profiles: [mongo_mcp]
-    image: mongo:8
-    entrypoint: ["bash", "-c"]
-    command:
-      - |
-        # Check for credentials file
-        if [ ! -f /data/mongo/.mcp_credentials ]; then
-          echo '[MCP-INIT] No credentials file — skipping (auth not enabled)'
-          exit 0
-        fi
-        MCP_USER=$$(cut -d: -f1 /data/mongo/.mcp_credentials)
-        MCP_PWD=$$(cut -d: -f2- /data/mongo/.mcp_credentials)
-        CONN="mongodb://$${MONGO_ADMIN_USER}:$${MONGO_ADMIN_PASSWORD}@mongo:27017/admin"
-        echo "[MCP-INIT] Creating MCP user: $$MCP_USER"
-        mongosh "$$CONN" --quiet --eval "
-          try {
-            db.createUser({
-              user: '$$MCP_USER',
-              pwd: '$$MCP_PWD',
-              roles: [{role: 'readAnyDatabase', db: 'admin'}]
-            });
-            print('[MCP-INIT] Created MCP user: $$MCP_USER');
-          } catch (e) {
-            if (e.codeName === 'DuplicateKey' || e.code === 51003) {
-              print('[MCP-INIT] MCP user already exists');
-            } else {
-              throw e;
-            }
-          }
-        "
-        # Create convenience RO user if configured
-        if [ -n "$${MONGO_RO_USER:-}" ]; then
-          echo "[MCP-INIT] Creating RO user: $$MONGO_RO_USER"
-          mongosh "$$CONN" --quiet --eval "
-            try {
-              db.createUser({
-                user: '$${MONGO_RO_USER}',
-                pwd: '',
-                roles: [{role: 'readAnyDatabase', db: 'admin'}]
-              });
-              print('[MCP-INIT] Created RO user: $${MONGO_RO_USER}');
-            } catch (e) {
-              if (e.codeName === 'DuplicateKey' || e.code === 51003) {
-                print('[MCP-INIT] RO user already exists');
-              } else {
-                print('[MCP-INIT] Warning: Could not create RO user: ' + e.message);
-              }
-            }
-          "
-        fi
-        echo '[MCP-INIT] MongoDB MCP init complete'
-    environment:
-      MONGO_ADMIN_USER: ${MONGO_ADMIN_USER:-}
-      MONGO_ADMIN_PASSWORD: ${MONGO_ADMIN_PASSWORD:-}
-      MONGO_RO_USER: ${MONGO_RO_USER:-}
-    volumes:
-      - ${MONGO_DATA_PATH:-./data/database/mongo}:/data/mongo:ro
-    depends_on:
-      mongo:
-        condition: service_healthy
 
   # ==========================================================================
   # Profile: mongo_ingest - Raw JSON ingestion to MongoDB

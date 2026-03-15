@@ -165,7 +165,7 @@ def print_summary(settings, files_to_write):
         print(f"  MongoDB MCP:")
         print(f"    Port:        {settings['mongo_mcp_port']}")
         print(f"    Read-only:   {settings['mongo_mcp_read_only']}")
-        print(f"    Endpoint:    http://localhost:{settings['mongo_mcp_port']}/sse")
+        print(f"    Endpoint:    http://localhost:{settings['mongo_mcp_port']}/mcp")
         print()
 
     if not settings.get("postgres_mcp_enabled") and not settings.get("mongo_mcp_enabled"):

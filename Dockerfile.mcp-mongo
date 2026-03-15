@@ -1,12 +1,17 @@
 # Social Data Bridge - MongoDB MCP Server
 # Used for: mongo_mcp profile
 # Based on kiliczsh/mcp-mongo-server (built from source, no published image)
+# Pinned to commit 65c57d4 with multi-database patch (listDatabases + database param)
 FROM oven/bun:1 AS builder
 
 WORKDIR /app
 
+COPY config/mcp/mongo-mcp-multidb.patch /tmp/mongo-mcp-multidb.patch
+
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/* \
-    && git clone --depth 1 https://github.com/kiliczsh/mcp-mongo-server.git . \
+    && git clone https://github.com/kiliczsh/mcp-mongo-server.git . \
+    && git checkout 65c57d45a11271ba33bf56fcf972b26977395b8c \
+    && git apply /tmp/mongo-mcp-multidb.patch \
     && bun install --frozen-lockfile --ignore-scripts \
     && bun run build
 

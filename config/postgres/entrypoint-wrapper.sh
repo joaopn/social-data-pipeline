@@ -22,11 +22,13 @@ if [ "${POSTGRES_AUTH_ENABLED:-}" = "true" ]; then
     # Check if this is an existing database (not first init)
     if [ -f "/var/lib/postgresql/data/PG_VERSION" ]; then
         echo '[CONFIG] Auth enabled on existing database — setting password'
-        # Start postgres temporarily with trust auth to set password
+        # Start postgres temporarily with trust auth on a different port to set password.
+        # Uses port 54321 and localhost-only to avoid tripping the healthcheck.
+        AUTH_INIT_PORT=54321
         su postgres -c "pg_ctl start -D /var/lib/postgresql/data \
-            -o \"-c hba_file=$CFG/pg_hba.conf -c port=${POSTGRES_PORT:-5432}\" \
+            -o \"-c hba_file=$CFG/pg_hba.conf -c port=$AUTH_INIT_PORT -c listen_addresses=127.0.0.1\" \
             -w -l /tmp/pg_auth_init.log"
-        su postgres -c "psql -p ${POSTGRES_PORT:-5432} -c \
+        su postgres -c "psql -p $AUTH_INIT_PORT -c \
             \"ALTER USER postgres WITH PASSWORD '${POSTGRES_PASSWORD}'\""
         su postgres -c "pg_ctl stop -D /var/lib/postgresql/data -w"
         echo '[CONFIG] Password set successfully'

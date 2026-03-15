@@ -140,6 +140,135 @@ def _set_auth_env(password):
     os.environ["MONGO_ADMIN_PASSWORD"] = password
 
 
+def _ensure_mcp_users(targets, password):
+    """Ensure MCP and RO database users exist before starting MCP servers.
+
+    Runs one-off containers against already-running databases to check/create
+    readonly users. Called from cmd_db_start after DBs are healthy but before
+    MCP containers start.
+    """
+    env = load_env()
+    mcp_config = _load_mcp_config()
+
+    if "postgres" in targets and mcp_config.get("postgres", {}).get("enabled"):
+        mcp_user = mcp_config["postgres"].get("mcp_user")
+        if mcp_user:
+            _ensure_postgres_mcp_user(env, password, mcp_user)
+
+    if "mongo" in targets and mcp_config.get("mongo", {}).get("enabled"):
+        mcp_user = mcp_config["mongo"].get("mcp_user")
+        if mcp_user:
+            _ensure_mongo_mcp_user(env, password, mcp_user)
+
+
+def _ensure_postgres_mcp_user(env, password, mcp_user):
+    """Create MCP and RO users in PostgreSQL if they don't exist."""
+    pgdata_path = env.get("PGDATA_PATH", "./data/database/postgres")
+    cred_file = Path(pgdata_path) / ".mcp_credentials"
+    if not cred_file.exists():
+        return
+    creds = cred_file.read_text().strip()
+    mcp_pwd = creds.split(":", 1)[1] if ":" in creds else ""
+
+    port = env.get("POSTGRES_PORT", "5432")
+    db = env.get("DB_NAME", "datasets")
+    ro_user = env.get("POSTGRES_RO_USER", "")
+
+    sql = f"""
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{mcp_user}') THEN
+    CREATE ROLE {mcp_user} LOGIN PASSWORD '{mcp_pwd}';
+    GRANT pg_read_all_data TO {mcp_user};
+    RAISE NOTICE 'Created MCP user: %', '{mcp_user}';
+  ELSE
+    RAISE NOTICE 'MCP user already exists: %', '{mcp_user}';
+  END IF;
+END $$;
+"""
+    if ro_user:
+        sql += f"""
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{ro_user}') THEN
+    CREATE ROLE {ro_user} LOGIN;
+    GRANT pg_read_all_data TO {ro_user};
+    RAISE NOTICE 'Created RO user: %', '{ro_user}';
+  ELSE
+    RAISE NOTICE 'RO user already exists: %', '{ro_user}';
+  END IF;
+END $$;
+"""
+    # Exec into the already-running postgres container
+    result = subprocess.run(
+        ["docker", "compose", "exec",
+         "-e", f"PGPASSWORD={password}",
+         "postgres", "psql",
+         "-p", port, "-U", "postgres", "-d", db, "-c", sql],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    if result.returncode == 0:
+        print("  [MCP-INIT] PostgreSQL MCP users ready")
+    else:
+        print(f"  [MCP-INIT] PostgreSQL user setup failed: {result.stderr.strip()}")
+
+
+def _ensure_mongo_mcp_user(env, password, mcp_user):
+    """Create MCP and RO users in MongoDB if they don't exist."""
+    mongo_data_path = env.get("MONGO_DATA_PATH", "./data/database/mongo")
+    cred_file = Path(mongo_data_path) / ".mcp_credentials"
+    if not cred_file.exists():
+        return
+    creds = cred_file.read_text().strip()
+    mcp_pwd = creds.split(":", 1)[1] if ":" in creds else ""
+
+    admin_user = env.get("MONGO_ADMIN_USER", "admin")
+    conn = f"mongodb://{admin_user}:{password}@127.0.0.1:27017/admin"
+    ro_user = env.get("MONGO_RO_USER", "")
+
+    js = f"""
+try {{
+  db.createUser({{
+    user: '{mcp_user}',
+    pwd: '{mcp_pwd}',
+    roles: [{{role: 'readAnyDatabase', db: 'admin'}}]
+  }});
+  print('[MCP-INIT] Created MCP user: {mcp_user}');
+}} catch (e) {{
+  if (e.codeName === 'DuplicateKey' || e.code === 51003) {{
+    print('[MCP-INIT] MCP user already exists');
+  }} else {{
+    throw e;
+  }}
+}}
+"""
+    if ro_user:
+        js += f"""
+try {{
+  db.createUser({{
+    user: '{ro_user}',
+    pwd: '',
+    roles: [{{role: 'readAnyDatabase', db: 'admin'}}]
+  }});
+  print('[MCP-INIT] Created RO user: {ro_user}');
+}} catch (e) {{
+  if (e.codeName === 'DuplicateKey' || e.code === 51003) {{
+    print('[MCP-INIT] RO user already exists');
+  }} else {{
+    print('[MCP-INIT] Warning: Could not create RO user: ' + e.message);
+  }}
+}}
+"""
+    # Exec into the already-running mongo container
+    result = subprocess.run(
+        ["docker", "compose", "exec",
+         "mongo", "mongosh", conn, "--quiet", "--eval", js],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    if result.returncode == 0:
+        print("  [MCP-INIT] MongoDB MCP users ready")
+    else:
+        print(f"  [MCP-INIT] MongoDB user setup failed: {result.stderr.strip()}")
+
+
 # ============================================================================
 # sdb db setup
 # ============================================================================
@@ -231,21 +360,42 @@ def cmd_db_start(args):
         targets = configured
 
     # Prompt for admin password if auth is enabled
+    password = None
     if _is_auth_enabled():
         password = _prompt_db_password()
         _set_auth_env(password)
 
-    compose_args = []
+    # Determine which MCP profiles to start
     mcp_services = _get_configured_mcp_services()
+    mcp_targets = []
     for svc in targets:
-        compose_args += ["--profile", svc]
-        # Include MCP profile alongside its parent DB
         mcp_profile = f"{svc}_mcp"
         if mcp_profile in mcp_services:
-            compose_args += ["--profile", mcp_profile]
-    compose_args += ["up", "-d"]
+            mcp_targets.append(mcp_profile)
 
-    result = docker_compose(*compose_args)
+    # Start databases first (without MCP), wait for healthchecks
+    db_args = []
+    for svc in targets:
+        db_args += ["--profile", svc]
+    db_args += ["up", "-d", "--wait"]
+    result = docker_compose(*db_args)
+    if result.returncode != 0:
+        return result.returncode
+
+    # Ensure MCP/RO users exist before starting MCP servers
+    if mcp_targets and password:
+        _ensure_mcp_users(targets, password)
+
+    # Start MCP servers
+    if mcp_targets:
+        mcp_args = []
+        for svc in targets:
+            mcp_args += ["--profile", svc]
+        for mp in mcp_targets:
+            mcp_args += ["--profile", mp]
+        mcp_args += ["up", "-d"]
+        result = docker_compose(*mcp_args)
+
     return result.returncode
 
 
@@ -373,7 +523,7 @@ def cmd_db_status(args):
             print(f"\n  PostgreSQL MCP:")
             print(f"    Port:      {port}")
             print(f"    Access:    {access}")
-            print(f"    Endpoint:  http://localhost:{port}/sse")
+            print(f"    Endpoint:  http://<server_ip>:{port}/sse (type: sse)")
             print(f"    Running:   {running}")
 
         mongo_mcp = mcp_config.get("mongo", {})
@@ -384,7 +534,7 @@ def cmd_db_status(args):
             print(f"\n  MongoDB MCP:")
             print(f"    Port:      {port}")
             print(f"    Read-only: {read_only}")
-            print(f"    Endpoint:  http://localhost:{port}/sse")
+            print(f"    Endpoint:  http://<server_ip>:{port}/mcp (type: http)")
             print(f"    Running:   {running}")
 
     print()
@@ -507,8 +657,9 @@ def _print_ingestion_state(state_dir, label_split, db_type):
 
             count = len(processed)
             latest = processed[-1] if processed else "-"
+            tag = "main data" if db_type == "postgres" else ""
             source_entries[source].append(
-                ("main data", table, count, latest, in_progress, failed, last_updated)
+                (tag, table, count, latest, in_progress, failed, last_updated)
             )
 
     # Print grouped by source
@@ -516,7 +667,9 @@ def _print_ingestion_state(state_dir, label_split, db_type):
     for source, entries in sorted(source_entries.items()):
         print(f"      platform: {source}")
         for tag, table, count, latest, in_progress, failed, last_updated in entries:
-            line = f"        ({tag}) {table}: {count} datasets"
+            line = f"        - {table}: {count} datasets"
+            if tag:
+                line += f" ({tag})"
             if in_progress:
                 line += f" [in progress: {in_progress}]"
             if failed:
@@ -528,7 +681,7 @@ def _print_ingestion_state(state_dir, label_split, db_type):
             if last_updated:
                 details.append(f"updated: {last_updated[:10]}")
             if details:
-                print(f"          {', '.join(details)}")
+                print(f"            {', '.join(details)}")
 
 
 # ============================================================================

@@ -1,7 +1,7 @@
 """Classifier configuration for Social Data Bridge.
 
 Configures language detection (Lingua) and GPU transformer classifiers.
-Generates config/ml_cpu/user.yaml, config/ml/user.yaml, and updates .env.
+Generates config/lingua/user.yaml, config/ml/user.yaml, and updates .env.
 """
 
 import sys
@@ -159,7 +159,7 @@ def run_questionnaire(hw, state):
     settings["gpu_fields"] = gpu_fields
 
     # ---- Lingua ----
-    if "ml_cpu" in profiles:
+    if "lingua" in profiles:
         section_header("Language Detection (Lingua)")
         settings["lingua_workers"] = ask_int("Lingua workers (total Rayon threads)", defaults["lingua_workers"])
         settings["lingua_file_workers"] = ask_int("Lingua file workers (concurrent files)", defaults["lingua_file_workers"])
@@ -206,8 +206,8 @@ def run_questionnaire(hw, state):
 # Config generators
 # ============================================================================
 
-def generate_ml_cpu_user_yaml(settings):
-    """Generate config/ml_cpu/user.yaml content."""
+def generate_lingua_user_yaml(settings):
+    """Generate config/lingua/user.yaml content."""
     config = {
         "pipeline": {
             "processing": {
@@ -284,7 +284,7 @@ def print_summary(settings, files_to_write):
         print(f"    {dt}: {', '.join(cols)}")
     print()
 
-    if "ml_cpu" in profiles:
+    if "lingua" in profiles:
         print(f"  Lingua:")
         print(f"    Workers:        {settings['lingua_workers']}")
         print(f"    File workers:   {settings['lingua_file_workers']}")
@@ -334,12 +334,12 @@ def main(source_name):
     state = require_source_state(source_name)
     profiles = state["profiles"]
 
-    has_ml_cpu = "ml_cpu" in profiles
+    has_lingua = "lingua" in profiles
     has_ml = "ml" in profiles
 
-    if not has_ml_cpu and not has_ml:
-        print("  No classifier profiles (ml_cpu, ml) were selected during setup.")
-        print("  Re-run source setup and select ml_cpu and/or ml profiles.\n")
+    if not has_lingua and not has_ml:
+        print("  No classifier profiles (lingua, ml) were selected during setup.")
+        print("  Re-run source setup and select lingua and/or ml profiles.\n")
         sys.exit(0)
 
     # Detect hardware
@@ -352,10 +352,10 @@ def main(source_name):
     files_to_write = []
     source_dir = CONFIG_DIR / "sources" / source_name
 
-    if has_ml_cpu:
+    if has_lingua:
         files_to_write.append((
-            source_dir / "ml_cpu.yaml",
-            generate_ml_cpu_user_yaml(settings),
+            source_dir / "lingua.yaml",
+            generate_lingua_user_yaml(settings),
         ))
     if has_ml:
         files_to_write.append((

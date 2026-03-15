@@ -32,7 +32,7 @@ from ..db.postgres.ingest import (
     # Fast initial load functions
     create_fast_load_table, fast_ingest_csv, delete_duplicates, finalize_fast_load_table,
 )
-from .ml import detect_parsed_csv_files
+from .ml import detect_parsed_files
 
 
 # Platform and source selection via environment variables
@@ -174,9 +174,9 @@ def detect_json_files(extracted_dir: str, data_types: List[str], file_patterns: 
     return [(f[0], f[1], f[2]) for f in files]
 
 
-def detect_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
-    """Detect parsed CSV/Parquet files in the csv directory."""
-    csv_base = Path(csv_dir)
+def detect_parsed_files(parsed_dir: str, data_types: List[str], file_patterns: Dict, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
+    """Detect parsed files (Parquet or CSV) in the parsed directory."""
+    parsed_base = Path(parsed_dir)
     files = []
 
     ext = 'parquet' if file_format == 'parquet' else 'csv'
@@ -191,7 +191,7 @@ def detect_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict, f
         if data_type not in patterns:
             continue
 
-        type_dir = csv_base / data_type
+        type_dir = parsed_base / data_type
         if not type_dir.is_dir():
             continue
 
@@ -210,13 +210,13 @@ def detect_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict, f
 
 def get_lingua_config(config_dir: str) -> Optional[Dict]:
     """
-    Load lingua configuration from ml_cpu profile.
+    Load lingua configuration from lingua profile.
     
     Returns:
         Dict with 'suffix' and 'output_dir' keys, or None if config not found
     """
     try:
-        ml_config = load_profile_config('ml_cpu', config_dir, source=SOURCE, quiet=True)
+        ml_config = load_profile_config('lingua', config_dir, source=SOURCE, quiet=True)
         lingua_config = ml_config.get('lingua', {})
         return {
             'suffix': lingua_config.get('suffix', '_lingua'),
@@ -226,14 +226,14 @@ def get_lingua_config(config_dir: str) -> Optional[Dict]:
         return None
 
 
-def detect_lingua_csv_files(
+def detect_lingua_files(
     data_types: List[str],
     lingua_config: Dict,
     file_format: str = 'csv'
 ) -> Tuple[List[Tuple[str, str, str]], Dict[str, str]]:
     """
-    Detect CSV/Parquet files in the lingua output directory only.
-    Used when prefer_lingua is true; original CSV dir is not checked.
+    Detect files in the lingua output directory only.
+    Used when prefer_lingua is true; original parsed dir is not checked.
 
     Returns:
         Tuple of (list of (filepath, file_id, data_type), source_map with 'lingua')
@@ -361,7 +361,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     # Paths
     dumps_dir = "/data/dumps"
     extracted_dir = "/data/extracted"
-    csv_dir = "/data/csv"
+    parsed_dir = "/data/parsed"
     
     # Detect files
     files = detect_dump_files(dumps_dir, data_types, file_patterns)
@@ -386,29 +386,29 @@ def run_pipeline(config_dir: str = "/app/config"):
     # Check if we should prefer lingua files
     prefer_lingua = get_optional(config, 'processing', 'prefer_lingua', default=False)
     lingua_config = None
-    csv_source_map = {}
+    parsed_source_map = {}
 
     if prefer_lingua:
         lingua_config = get_lingua_config(config_dir)
         if lingua_config:
             print(f"[sdb] Prefer lingua: enabled (suffix: {lingua_config['suffix']})")
-            csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config, file_format=file_format)
+            parsed_files, parsed_source_map = detect_lingua_files(data_types, lingua_config, file_format=file_format)
             # Count sources
-            lingua_count = sum(1 for src in csv_source_map.values() if src == 'lingua')
-            original_count = sum(1 for src in csv_source_map.values() if src == 'original')
-            print(f"[sdb] Found {lingua_count} lingua CSVs, {original_count} original CSVs (fallback)")
+            lingua_count = sum(1 for src in parsed_source_map.values() if src == 'lingua')
+            original_count = sum(1 for src in parsed_source_map.values() if src == 'original')
+            print(f"[sdb] Found {lingua_count} lingua files, {original_count} original files (fallback)")
         else:
-            print("[sdb] Prefer lingua: enabled but ml_cpu config not found, using original CSVs")
-            csv_files = detect_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
+            print("[sdb] Prefer lingua: enabled but lingua config not found, using original parsed files")
+            parsed_files = detect_parsed_files(parsed_dir, data_types, file_patterns, file_format=file_format)
     else:
-        csv_files = detect_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
-    
-    pending_csv_files = [f for f in csv_files if not states[f[2]].is_processed(f[1])]
-    
+        parsed_files = detect_parsed_files(parsed_dir, data_types, file_patterns, file_format=file_format)
+
+    pending_parsed_files = [f for f in parsed_files if not states[f[2]].is_processed(f[1])]
+
     print(f"[sdb] Found {len(json_files)} JSON files in extracted directory")
-    print(f"[sdb] Found {len(pending_csv_files)} unprocessed CSV files to ingest")
-    
-    has_work = pending_zst_files or json_files or pending_csv_files
+    print(f"[sdb] Found {len(pending_parsed_files)} unprocessed parsed files to ingest")
+
+    has_work = pending_zst_files or json_files or pending_parsed_files
     
     if not has_work:
         print("\n[sdb] No files to process. Exiting.")
@@ -464,7 +464,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     json_files = detect_json_files(extracted_dir, data_types, file_patterns)
     files_to_parse = []
     for json_path, file_id, data_type in json_files:
-        expected_output = Path(f"{csv_dir}/{data_type}") / f"{file_id}.{ext}"
+        expected_output = Path(f"{parsed_dir}/{data_type}") / f"{file_id}.{ext}"
         if not expected_output.exists():
             files_to_parse.append((json_path, file_id, data_type))
     
@@ -485,7 +485,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                 parse_input = [(json_path, data_type) for json_path, _, data_type in files_to_parse]
                 parser.parse_files_parallel(
                     files=parse_input,
-                    output_dir=csv_dir,
+                    output_dir=parsed_dir,
                     platform_config=platform_config,
                     workers=workers
                 )
@@ -508,7 +508,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                 try:
                     parser.parse_to_csv(
                         input_file=json_path,
-                        output_dir=csv_dir,
+                        output_dir=parsed_dir,
                         data_type=data_type,
                         platform_config=platform_config
                     )
@@ -523,13 +523,13 @@ def run_pipeline(config_dir: str = "/app/config"):
         
         total_timings['parsing'] = time.time() - t_start
     
-    # Phase 3: Ingest CSV files to PostgreSQL
-    # Re-detect CSV files (may have been created during parsing phase)
+    # Phase 3: Ingest parsed files to PostgreSQL
+    # Re-detect parsed files (may have been created during parsing phase)
     if prefer_lingua and lingua_config:
-        csv_files, csv_source_map = detect_lingua_csv_files(data_types, lingua_config, file_format=file_format)
+        parsed_files, parsed_source_map = detect_lingua_files(data_types, lingua_config, file_format=file_format)
     else:
-        csv_files = detect_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
-    files_to_ingest = [(p, fid, dt) for p, fid, dt in csv_files if not states[dt].is_processed(fid)]
+        parsed_files = detect_parsed_files(parsed_dir, data_types, file_patterns, file_format=file_format)
+    files_to_ingest = [(p, fid, dt) for p, fid, dt in parsed_files if not states[dt].is_processed(fid)]
     
     if files_to_ingest:
         print("\n" + "="*60)
@@ -537,9 +537,9 @@ def run_pipeline(config_dir: str = "/app/config"):
         print("="*60)
         
         # Log source breakdown if prefer_lingua is enabled
-        if prefer_lingua and csv_source_map:
-            ingest_from_lingua = sum(1 for p, fid, dt in files_to_ingest if csv_source_map.get(fid) == 'lingua')
-            ingest_from_original = sum(1 for p, fid, dt in files_to_ingest if csv_source_map.get(fid) == 'original')
+        if prefer_lingua and parsed_source_map:
+            ingest_from_lingua = sum(1 for p, fid, dt in files_to_ingest if parsed_source_map.get(fid) == 'lingua')
+            ingest_from_original = sum(1 for p, fid, dt in files_to_ingest if parsed_source_map.get(fid) == 'original')
             print(f"[sdb] Sources: {ingest_from_lingua} lingua, {ingest_from_original} original (fallback)")
         
         t_start = time.time()
@@ -626,7 +626,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                 print(f"\n[sdb] Processing {data_type}: {len(type_files)} files")
                 
                 # Get first CSV to determine lingua columns
-                first_csv = type_files[0][0]
+                first_file = type_files[0][0]
                 
                 # Step 1: Create table (no PK)
                 create_fast_load_table(
@@ -638,17 +638,17 @@ def run_pipeline(config_dir: str = "/app/config"):
                     port=db_config['port'],
                     user=db_config['user'],
                     platform_config=platform_config,
-                    csv_file=first_csv,
+                    csv_file=first_file,
                     tablespace=get_tablespace(data_type),
                     password=password
                 )
                 
                 # Step 2: Blind COPY all files
-                for csv_path, file_id, dt in type_files:
+                for parsed_path, file_id, dt in type_files:
                     try:
                         states[data_type].mark_in_progress(file_id)
                         fast_ingest_csv(
-                            csv_file=csv_path,
+                            csv_file=parsed_path,
                             data_type=data_type,
                             dbname=db_config['name'],
                             schema=db_config['schema'],
@@ -662,9 +662,9 @@ def run_pipeline(config_dir: str = "/app/config"):
                         states[data_type].mark_completed(file_id)
                         local_success += 1
 
-                        if cleanup_temp and os.path.exists(csv_path):
-                            os.remove(csv_path)
-                            print(f"[sdb] Removed: {Path(csv_path).name}")
+                        if cleanup_temp and os.path.exists(parsed_path):
+                            os.remove(parsed_path)
+                            print(f"[sdb] Removed: {Path(parsed_path).name}")
                     except Exception as e:
                         print(f"[sdb] Error during COPY {file_id}: {e}")
                         states[data_type].mark_failed(file_id, f"Fast ingestion failed: {e}")
@@ -739,17 +739,17 @@ def run_pipeline(config_dir: str = "/app/config"):
             if use_parallel_ingestion:
                 print("[sdb] Parallel ingestion enabled")
                 
-                submissions_csvs = [(p, fid, dt) for p, fid, dt in standard_files if dt == 'submissions']
-                comments_csvs = [(p, fid, dt) for p, fid, dt in standard_files if dt == 'comments']
+                submissions_files = [(p, fid, dt) for p, fid, dt in standard_files if dt == 'submissions']
+                comments_files = [(p, fid, dt) for p, fid, dt in standard_files if dt == 'comments']
                 
                 def ingest_data_type_files(files_list):
                     local_success = 0
                     local_fail = 0
-                    for csv_path, file_id, data_type in files_list:
+                    for parsed_path, file_id, data_type in files_list:
                         try:
                             states[data_type].mark_in_progress(file_id)
                             ingest_csv(
-                                csv_file=csv_path,
+                                csv_file=parsed_path,
                                 data_type=data_type,
                                 dbname=db_config['name'],
                                 schema=db_config['schema'],
@@ -767,22 +767,22 @@ def run_pipeline(config_dir: str = "/app/config"):
                             states[data_type].mark_completed(file_id)
                             local_success += 1
 
-                            if cleanup_temp and os.path.exists(csv_path):
-                                os.remove(csv_path)
-                                print(f"[sdb] Removed: {Path(csv_path).name}")
+                            if cleanup_temp and os.path.exists(parsed_path):
+                                os.remove(parsed_path)
+                                print(f"[sdb] Removed: {Path(parsed_path).name}")
 
                         except Exception as e:
                             print(f"[sdb] Error ingesting {file_id}: {e}")
                             states[data_type].mark_failed(file_id, f"Ingestion failed: {e}")
                             local_fail += 1
-                            if cleanup_temp and os.path.exists(csv_path):
-                                os.remove(csv_path)
+                            if cleanup_temp and os.path.exists(parsed_path):
+                                os.remove(parsed_path)
 
                     return local_success, local_fail
 
                 with ThreadPoolExecutor(max_workers=2) as executor:
-                    future_submissions = executor.submit(ingest_data_type_files, submissions_csvs)
-                    future_comments = executor.submit(ingest_data_type_files, comments_csvs)
+                    future_submissions = executor.submit(ingest_data_type_files, submissions_files)
+                    future_comments = executor.submit(ingest_data_type_files, comments_files)
                     
                     sub_success, sub_fail = future_submissions.result()
                     com_success, com_fail = future_comments.result()
@@ -790,11 +790,11 @@ def run_pipeline(config_dir: str = "/app/config"):
                     success_count += sub_success + com_success
                     fail_count += sub_fail + com_fail
             else:
-                for csv_path, file_id, data_type in standard_files:
+                for parsed_path, file_id, data_type in standard_files:
                     try:
                         states[data_type].mark_in_progress(file_id)
                         ingest_csv(
-                            csv_file=csv_path,
+                            csv_file=parsed_path,
                             data_type=data_type,
                             dbname=db_config['name'],
                             schema=db_config['schema'],
@@ -812,15 +812,15 @@ def run_pipeline(config_dir: str = "/app/config"):
                         states[data_type].mark_completed(file_id)
                         success_count += 1
 
-                        if cleanup_temp and os.path.exists(csv_path):
-                            os.remove(csv_path)
-                            print(f"[sdb] Removed: {Path(csv_path).name}")
+                        if cleanup_temp and os.path.exists(parsed_path):
+                            os.remove(parsed_path)
+                            print(f"[sdb] Removed: {Path(parsed_path).name}")
                     except Exception as e:
                         print(f"[sdb] Error ingesting {file_id}: {e}")
                         states[data_type].mark_failed(file_id, f"Ingestion failed: {e}")
                         fail_count += 1
-                        if cleanup_temp and os.path.exists(csv_path):
-                            os.remove(csv_path)
+                        if cleanup_temp and os.path.exists(parsed_path):
+                            os.remove(parsed_path)
         
         total_timings['ingestion'] = time.time() - t_start
     

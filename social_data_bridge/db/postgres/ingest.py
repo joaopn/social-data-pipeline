@@ -14,9 +14,9 @@ from ...core.config import ConfigurationError
 def _pg_server_path(container_path: str) -> str:
     """Translate ingestion container path to PostgreSQL server-visible path.
 
-    The ingestion container mounts source-specific dirs (e.g. ./data/csv/reddit)
-    at /data/csv and /data/output.  The PostgreSQL container mounts the *parent*
-    dirs (./data/csv, ./data/output) at the same mount points.  Server-side COPY
+    The ingestion container mounts source-specific dirs (e.g. ./data/parsed/reddit)
+    at /data/parsed and /data/output.  The PostgreSQL container mounts the *parent*
+    dirs (./data/parsed, ./data/output) at the same mount points.  Server-side COPY
     reads from the PostgreSQL container's filesystem, so paths must include the
     source subdirectory.
     """
@@ -24,7 +24,7 @@ def _pg_server_path(container_path: str) -> str:
     if not source:
         return container_path
 
-    for prefix in ('/data/csv/', '/data/output/'):
+    for prefix in ('/data/parsed/', '/data/output/'):
         if container_path.startswith(prefix):
             return f"{prefix}{source}/{container_path[len(prefix):]}"
     return container_path

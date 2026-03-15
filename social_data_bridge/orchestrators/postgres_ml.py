@@ -1,7 +1,7 @@
 """
 PostgreSQL ML profile orchestrator for social_data_bridge.
 Handles ingestion of ML classifier outputs into PostgreSQL tables.
-Expects classifier output CSVs to already exist (run ml/ml_cpu profiles first).
+Expects classifier output files to already exist (run ml/lingua profiles first).
 
 Platform selection via PLATFORM env var (default: reddit).
 """
@@ -279,7 +279,7 @@ def run_pipeline(config_dir: str = "/app/config"):
         files = detect_classifier_csvs(output_dir, classifier_name, source_dir, suffix, data_types, file_format=file_format)
         
         if not files:
-            print(f"[sdb] {classifier_name}: No CSV files found")
+            print(f"[sdb] {classifier_name}: No classified files found")
             continue
         
         print(f"[sdb] {classifier_name}: Found {len(files)} files")

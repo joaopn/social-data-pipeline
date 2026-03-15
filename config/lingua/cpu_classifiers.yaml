@@ -1,5 +1,5 @@
 # CPU Classifier configuration (Lingua language detection only)
-# This config is used by the ml_cpu profile
+# This config is used by the lingua profile
 
 # Global settings applied to all classifiers
 text_columns:              # Columns to use for classification (per data type)

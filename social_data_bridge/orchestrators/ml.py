@@ -88,28 +88,28 @@ def _process_transformer_batch(args: Tuple[List[Tuple[str, str, str]], str, Dict
     return results
 
 
-def load_config(config_dir: str = "/app/config", profile: str = "ml_cpu", quiet: bool = False) -> Dict:
+def load_config(config_dir: str = "/app/config", profile: str = "lingua", quiet: bool = False) -> Dict:
     """Load ML profile configuration."""
-    if profile not in ('ml_cpu', 'ml'):
-        raise ConfigurationError(f"Invalid ML profile: {profile}. Must be 'ml_cpu' or 'ml'")
+    if profile not in ('lingua', 'ml'):
+        raise ConfigurationError(f"Invalid ML profile: {profile}. Must be 'lingua' or 'ml'")
     
     config = load_profile_config(profile, config_dir, source=SOURCE, quiet=quiet)
     validate_processing_config(config, profile)
     return config
 
 
-def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict = None, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
+def detect_parsed_files(parsed_dir: str, data_types: List[str], file_patterns: Dict = None, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
     """
-    Detect parsed CSV/Parquet files in the CSV directory.
+    Detect parsed files (Parquet or CSV) in the parsed directory.
 
     Args:
-        csv_dir: Directory containing CSV/Parquet files
+        parsed_dir: Directory containing parsed files
         data_types: List of data types to search for
         file_patterns: Optional dict of file patterns per data type.
                       If None, uses simple glob for each data type.
         file_format: File format ('csv' or 'parquet')
     """
-    csv_base = Path(csv_dir)
+    parsed_base = Path(parsed_dir)
     files = []
 
     ext = 'parquet' if file_format == 'parquet' else 'csv'
@@ -122,7 +122,7 @@ def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: 
                 patterns[data_type] = re.compile(file_patterns[data_type][file_format])
 
     for data_type in data_types:
-        type_dir = csv_base / data_type
+        type_dir = parsed_base / data_type
         if not type_dir.is_dir():
             continue
 
@@ -145,13 +145,13 @@ def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: 
     return [(f[0], f[1], f[2]) for f in files]
 
 
-def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", target_classifier: Optional[str] = None):
+def run_pipeline(profile: str = "lingua", config_dir: str = "/app/config", target_classifier: Optional[str] = None):
     """Run the ML classifier pipeline."""
     config = load_config(config_dir=config_dir, profile=profile)
     
     data_types = get_required(config, 'processing', 'data_types')
     
-    if profile == "ml_cpu":
+    if profile == "lingua":
         classifiers_to_run = get_required(config, 'cpu_classifiers')
     else:
         classifiers_to_run = get_required(config, 'gpu_classifiers')
@@ -170,7 +170,7 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
         'remove_patterns': get_required(config, 'remove_patterns'),
     }
     
-    if profile == "ml_cpu":
+    if profile == "lingua":
         try:
             postgres_config = load_profile_config('postgres_ingest', config_dir, source=SOURCE, quiet=True)
             prefer_lingua = postgres_config.get('processing', {}).get('prefer_lingua', True)
@@ -225,7 +225,7 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
     if profile == "ml":
         print(f"[sdb] GPUs: {global_config['gpu_ids']}, file_workers: {global_config['file_workers']}")
 
-    csv_dir = "/data/csv"
+    parsed_dir = "/data/parsed"
     output_dir = "/data/output"
     
     print("\n" + "="*60)
@@ -248,14 +248,14 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
                     files_with_name.append((str(filepath), file_id, data_type, filepath.name))
         type_order = {dt: i for i, dt in enumerate(data_types)}
         files_with_name.sort(key=lambda x: (type_order.get(x[2], 99), x[3]))
-        parsed_csv_files = [(f[0], f[1], f[2]) for f in files_with_name]
-        print(f"[sdb] Found {len(parsed_csv_files)} lingua files")
+        parsed_files = [(f[0], f[1], f[2]) for f in files_with_name]
+        print(f"[sdb] Found {len(parsed_files)} lingua files")
     else:
-        parsed_csv_files = detect_parsed_csv_files(csv_dir, data_types, file_format=file_format)
-        print(f"[sdb] Found {len(parsed_csv_files)} {ext.upper()} files")
-    
-    if not parsed_csv_files:
-        print("\n[sdb] No input files found. Run 'parse' profile first" + ("; use 'ml_cpu' for lingua." if use_lingua else "."))
+        parsed_files = detect_parsed_files(parsed_dir, data_types, file_format=file_format)
+        print(f"[sdb] Found {len(parsed_files)} {ext.upper()} files")
+
+    if not parsed_files:
+        print("\n[sdb] No input files found. Run 'parse' profile first" + ("; use 'lingua' for language detection." if use_lingua else "."))
         return
     
     if not enabled_classifiers:
@@ -283,22 +283,22 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
         suffix = classifier_config['suffix']
         
         if is_lingua:
-            input_files = parsed_csv_files
-            input_source = "csv/"
+            input_files = parsed_files
+            input_source = "parsed/"
         else:
             use_lingua = classifier_config.get('use_lingua', global_config['use_lingua'])
             supported_languages = classifier_config.get('supported_languages', None)
-            
+
             if not use_lingua or not supported_languages:
-                input_files = parsed_csv_files
-                input_source = "csv/"
+                input_files = parsed_files
+                input_source = "parsed/"
             else:
-                # Use lingua files - look them up based on CSV file list
+                # Use lingua files - look them up based on parsed file list
                 lingua_config = config.get('lingua', {})
                 lingua_suffix = lingua_config.get('suffix', '_lingua')
                 lingua_output_dir = Path(output_dir) / 'lingua'
                 input_files = []
-                for csv_path, file_id, data_type in parsed_csv_files:
+                for file_path, file_id, data_type in parsed_files:
                     lingua_file = lingua_output_dir / data_type / f"{file_id}{lingua_suffix}.{ext}"
                     if lingua_file.exists():
                         input_files.append((str(lingua_file), file_id, data_type))
@@ -306,12 +306,12 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
         
         files_for_classifier = []
         skipped_count = 0
-        for csv_path, file_id, data_type in input_files:
+        for file_path, file_id, data_type in input_files:
             output_path = classifier_output_dir / data_type / f"{file_id}{suffix}.{ext}"
             if output_path.exists():
                 skipped_count += 1
             else:
-                files_for_classifier.append((csv_path, file_id, data_type))
+                files_for_classifier.append((file_path, file_id, data_type))
         
         if not files_for_classifier:
             print(f"[sdb] {classifier_name}: No new files (skipped {skipped_count})")
@@ -332,9 +332,9 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
                 print(f"[sdb] Parallel: {file_workers} files × {workers_per_file} threads")
                 
                 worker_args = []
-                for csv_path, file_id, data_type in files_for_classifier:
+                for file_path, file_id, data_type in files_for_classifier:
                     output_csv = str(classifier_output_dir / data_type / f"{file_id}{suffix}.{ext}")
-                    worker_args.append((csv_path, output_csv, data_type, classifier_name, classifier_config, workers_per_file))
+                    worker_args.append((file_path, output_csv, data_type, classifier_name, classifier_config, workers_per_file))
                 
                 with ProcessPoolExecutor(max_workers=file_workers) as executor:
                     results = list(executor.map(_process_lingua_worker, worker_args))
@@ -346,11 +346,11 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
                         print(f"[sdb] Lingua ERROR {file_id}: {error_msg}")
                         fail_count += 1
             else:
-                for csv_path, file_id, data_type in files_for_classifier:
+                for file_path, file_id, data_type in files_for_classifier:
                     try:
                         output_csv = str(classifier_output_dir / data_type / f"{file_id}{suffix}.{ext}")
                         classifier_module.process_csv(
-                            input_csv=csv_path,
+                            input_csv=file_path,
                             output_csv=output_csv,
                             data_type=data_type,
                             config=classifier_config
@@ -372,10 +372,10 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
                 actual_workers = min(file_workers, len(files_for_classifier))
                 
                 worker_batches: List[List[Tuple[str, str, str]]] = [[] for _ in range(actual_workers)]
-                for idx, (csv_path, file_id, data_type) in enumerate(files_for_classifier):
+                for idx, (file_path, file_id, data_type) in enumerate(files_for_classifier):
                     output_csv = str(classifier_output_dir / data_type / f"{file_id}{suffix}.{ext}")
                     worker_idx = idx % actual_workers
-                    worker_batches[worker_idx].append((csv_path, output_csv, data_type))
+                    worker_batches[worker_idx].append((file_path, output_csv, data_type))
                 
                 worker_args = [
                     (batch, classifier_name, classifier_config, global_config, i)
@@ -400,11 +400,11 @@ def run_pipeline(profile: str = "ml_cpu", config_dir: str = "/app/config", targe
                     fail_count += len(files_for_classifier)
                     continue
                 
-                for csv_path, file_id, data_type in files_for_classifier:
+                for file_path, file_id, data_type in files_for_classifier:
                     try:
                         output_csv = str(classifier_output_dir / data_type / f"{file_id}{suffix}.{ext}")
                         classifier_instance.process_csv(
-                            input_csv=csv_path,
+                            input_csv=file_path,
                             output_csv=output_csv,
                             data_type=data_type,
                             config=classifier_config
@@ -428,9 +428,9 @@ def main():
     """Main entry point."""
     config_dir = "/app/config"
     
-    profile = os.environ.get('PROFILE', 'ml_cpu')
-    if profile not in ('ml_cpu', 'ml'):
-        print(f"[sdb] PROFILE env var must be 'ml_cpu' or 'ml', got: '{profile}'")
+    profile = os.environ.get('PROFILE', 'lingua')
+    if profile not in ('lingua', 'ml'):
+        print(f"[sdb] PROFILE env var must be 'lingua' or 'ml', got: '{profile}'")
         sys.exit(1)
     
     target_classifier = None

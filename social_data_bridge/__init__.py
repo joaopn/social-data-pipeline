@@ -5,7 +5,7 @@ Supports multiple platforms via the PLATFORM environment variable.
 
 Profiles:
 - parse: Extract and parse data dumps to CSV
-- ml_cpu: Run Lingua language detection (CPU only)
+- lingua: Run Lingua language detection (CPU only)
 - ml: Run GPU-based transformer classifiers
 - postgres: Run PostgreSQL database server
 - postgres_ingest: Ingest base data into PostgreSQL

@@ -186,8 +186,8 @@ def parse_to_csv(
 def _parse_file_worker(args: Tuple[str, str, str, Dict]) -> Tuple[str, str, str]:
     """Worker function for parallel parsing."""
     input_file, output_dir, data_type, platform_config = args
-    csv_path = parse_to_csv(input_file, output_dir, data_type, platform_config)
-    return input_file, csv_path, data_type
+    output_path = parse_to_csv(input_file, output_dir, data_type, platform_config)
+    return input_file, output_path, data_type
 
 
 def parse_files_parallel(
@@ -213,8 +213,8 @@ def parse_files_parallel(
 
         for future in futures:
             try:
-                input_file, csv_path, data_type = future.result()
-                results.append((csv_path, data_type))
+                input_file, output_path, data_type = future.result()
+                results.append((output_path, data_type))
             except Exception as e:
                 print(f"[sdb] Error in parallel parsing: {e}")
                 raise

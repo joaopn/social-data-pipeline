@@ -22,7 +22,7 @@ All environment variables are set in the `.env` file at the project root. Docker
 | `SOURCE` | Source name — selects config from `config/sources/<name>/` | (auto or set by `sdb.py run --source`) |
 | `DUMPS_PATH` | Directory containing compressed dump files | `./data/dumps` |
 | `EXTRACTED_PATH` | Storage for decompressed JSON files | `./data/extracted` |
-| `CSV_PATH` | Storage for parsed CSV files | `./data/csv` |
+| `PARSED_PATH` | Storage for parsed files | `./data/parsed` |
 | `OUTPUT_PATH` | Storage for classifier output files | `./data/output` |
 | `PGDATA_PATH` | PostgreSQL data directory | `./data/database/postgres` |
 | `DB_NAME` | PostgreSQL database name | `datasets` |
@@ -50,7 +50,7 @@ All environment variables are set in the `.env` file at the project root. Docker
 > [!NOTE]
 > - `SOURCE` controls which source config directory is loaded. When running via `sdb.py run`, it is set automatically (auto-selects if only one source configured, or via `--source`).
 > - `CLASSIFIER` is used with the `ml` profile to run only one GPU classifier instead of all enabled classifiers.
-> - `PROFILE` is set internally by docker-compose service definitions (`ml_cpu` or `ml`). Do not set this manually.
+> - `PROFILE` is set internally by docker-compose service definitions (`lingua` or `ml`). Do not set this manually.
 > - `HF_TOKEN` is optional but recommended to avoid rate limits and to access private models. Obtain one at https://huggingface.co/settings/tokens.
 > - Auth env vars (`POSTGRES_PASSWORD`, `MONGO_ADMIN_PASSWORD`) are set at runtime via `getpass` prompting — they are never stored in `.env` or on disk.
 > - MCP env vars are written to `.env` by `sdb db mcp`. MCP credentials are stored in the database data volume as `.mcp_credentials` (chmod 600).
@@ -70,7 +70,7 @@ config/
 │       ├── platform.yaml         # Platform config (fields, types, indexes, schema, file patterns)
 │       ├── parse.yaml            # Parse profile overrides
 │       ├── postgres.yaml         # Postgres ingestion overrides (optional)
-│       ├── ml_cpu.yaml           # ML CPU overrides (optional)
+│       ├── lingua.yaml           # Lingua overrides (optional)
 │       ├── ml.yaml               # ML GPU overrides (optional)
 │       ├── postgres_ml.yaml      # Postgres ML overrides (optional)
 │       └── mongo.yaml            # Mongo ingestion overrides (optional)
@@ -78,7 +78,7 @@ config/
 │   └── reddit.yaml               # Base Reddit platform config
 ├── parse/
 │   └── pipeline.yaml             # Parse profile base settings
-├── ml_cpu/
+├── lingua/
 │   ├── pipeline.yaml             # CPU classifier pipeline settings
 │   └── cpu_classifiers.yaml      # Lingua configuration
 ├── ml/
@@ -138,7 +138,7 @@ In this example, the `pipeline:` key overrides settings from `config/parse/pipel
 |------------|-----------|
 | `config/sources/<name>/platform.yaml` | Platform config (fields, types, indexes, schema, file patterns) |
 | `config/sources/<name>/parse.yaml` | `config/parse/pipeline.yaml` |
-| `config/sources/<name>/ml_cpu.yaml` | `config/ml_cpu/pipeline.yaml`, `cpu_classifiers.yaml` |
+| `config/sources/<name>/lingua.yaml` | `config/lingua/pipeline.yaml`, `cpu_classifiers.yaml` |
 | `config/sources/<name>/ml.yaml` | `config/ml/pipeline.yaml`, `gpu_classifiers.yaml` |
 | `config/sources/<name>/postgres.yaml` | `config/postgres/pipeline.yaml` |
 | `config/sources/<name>/postgres_ml.yaml` | `config/postgres_ml/pipeline.yaml`, `services.yaml` |
@@ -173,9 +173,9 @@ See also: [Parse Profile guide](profiles/parse.md)
 
 ---
 
-### ML CPU Profile
+### Lingua Profile
 
-#### Pipeline: `config/ml_cpu/pipeline.yaml`
+#### Pipeline: `config/lingua/pipeline.yaml`
 
 ```yaml
 processing:
@@ -194,7 +194,7 @@ cpu_classifiers:            # CPU classifiers to run
 | `watch_interval` | Poll interval in minutes (`0` = run once). | `0` |
 | `cpu_classifiers` | List of CPU classifiers to run (references keys in `cpu_classifiers.yaml`). | `[lingua]` |
 
-#### Classifiers: `config/ml_cpu/cpu_classifiers.yaml`
+#### Classifiers: `config/lingua/cpu_classifiers.yaml`
 
 <details>
 <summary><strong>Global settings</strong> (apply to all CPU classifiers)</summary>
@@ -362,7 +362,7 @@ indexes: {}                  # Per-data-type index fields (set via source platfo
 | **processing.parallel_index_workers** | `max_parallel_maintenance_workers` per index build. | `8` |
 | **processing.cleanup_temp** | Delete intermediate files after ingestion. | `false` |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
-| **processing.prefer_lingua** | Ingest lingua-enriched files (from `ml_cpu` output) instead of originals. Falls back to original if not found. | `true` |
+| **processing.prefer_lingua** | Ingest lingua-enriched files (from `lingua` output) instead of originals. Falls back to original if not found. | `true` |
 | **indexes** | Index fields per data type (e.g., `{submissions: [dataset, author, subreddit]}`). | `{}` |
 | **tablespaces** | Tablespace definitions: map of name to host path (e.g., `{nvme1: /mnt/nvme1/pg-tablespace}`). | `{}` |
 | **table_tablespaces** | Table-to-tablespace assignments: map of data type to tablespace name (e.g., `{submissions: nvme1}`). Use `pgdata` for the default PostgreSQL data directory. | `{}` |
@@ -599,7 +599,7 @@ data_types:
 paths:
   dumps: ./data/dumps/my_data
   extracted: ./data/extracted/my_data
-  csv: ./data/csv/my_data
+  parsed: ./data/parsed/my_data
   output: ./data/output/my_data
 
 file_patterns:

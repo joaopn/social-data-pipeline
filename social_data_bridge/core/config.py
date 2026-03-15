@@ -117,7 +117,7 @@ def load_profile_config(
     List values in overrides fully replace base values (no merging).
 
     Args:
-        profile: Profile name ('parse', 'ml_cpu', 'ml', 'postgres_ingest', 'postgres_ml')
+        profile: Profile name ('parse', 'lingua', 'ml', 'postgres_ingest', 'postgres_ml')
         config_dir: Base configuration directory
         source: Source name. If provided, loads overrides from config/sources/<source>/
         quiet: If True, suppress informational output
@@ -142,7 +142,7 @@ def load_profile_config(
     # Define base config files per profile
     profile_configs = {
         'parse': ['pipeline.yaml'],
-        'ml_cpu': ['pipeline.yaml', 'cpu_classifiers.yaml'],
+        'lingua': ['pipeline.yaml', 'cpu_classifiers.yaml'],
         'ml': ['pipeline.yaml', 'gpu_classifiers.yaml'],
         'postgres_ingest': ['pipeline.yaml'],
         'postgres_ml': ['pipeline.yaml', 'services.yaml'],
@@ -155,7 +155,7 @@ def load_profile_config(
     # Map profiles to source override filenames
     source_override_files = {
         'parse': 'parse.yaml',
-        'ml_cpu': 'ml_cpu.yaml',
+        'lingua': 'lingua.yaml',
         'ml': 'ml.yaml',
         'postgres_ingest': 'postgres.yaml',
         'postgres_ml': 'postgres_ml.yaml',
@@ -326,7 +326,7 @@ def validate_classifier_config(config: Dict, classifier_name: str, profile: str)
     Raises:
         ConfigurationError: If required config is missing
     """
-    if profile == 'ml_cpu' and classifier_name == 'lingua':
+    if profile == 'lingua' and classifier_name == 'lingua':
         required_keys = ['suffix', 'languages']
     else:
         # GPU classifiers

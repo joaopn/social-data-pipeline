@@ -66,7 +66,7 @@ The postgres_ingest profile is a full pipeline that can also extract and parse i
 
 ### prefer_lingua Behavior
 
-When `prefer_lingua: true` (default), postgres_ingest looks for Lingua-enriched files in `OUTPUT_PATH/<source>/lingua/` instead of the originals in `CSV_PATH/<source>/`. This means:
+When `prefer_lingua: true` (default), postgres_ingest looks for Lingua-enriched files in `OUTPUT_PATH/<source>/lingua/` instead of the originals in `PARSED_PATH/<source>/`. This means:
 - The main table includes language columns (`lang`, `lang_prob`, `lang2`, `lang2_prob`) directly
 - No separate lingua table is needed
 - Falls back to original parsed files if Lingua output is not found

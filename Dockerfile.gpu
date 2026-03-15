@@ -18,6 +18,6 @@ COPY social_data_bridge/ ./social_data_bridge/
 COPY config/ ./config/
 
 # Create directories
-RUN mkdir -p /data/dumps /data/extracted /data/csv /data/output
+RUN mkdir -p /data/dumps /data/extracted /data/parsed /data/output
 
 CMD ["python", "-m", "social_data_bridge.orchestrators.ml"]

@@ -18,7 +18,7 @@ processing:
   parallel_index_workers: 8  # max_parallel_maintenance_workers per index build
   cleanup_temp: false        # Delete intermediate files after ingestion
   watch_interval: 0          # check for new files every N minutes (0 = run once)
-  prefer_lingua: true        # If true: ingest lingua CSVs (from ml_cpu output) instead of original CSVs; falls back to original if not found
+  prefer_lingua: true        # If true: ingest lingua files (from lingua output) instead of original parsed files; falls back to original if not found
 
 # Index configuration (only used if create_indexes is true)
 # Override in user.yaml with platform-specific index fields

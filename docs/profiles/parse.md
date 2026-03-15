@@ -20,7 +20,7 @@ Three-phase pipeline:
 ### Phase 1: Input Detection
 - Scans `DUMPS_PATH/<source>` for compressed files matching platform file patterns
 - Scans `EXTRACTED_PATH/<source>` for already-decompressed JSON files
-- Scans `CSV_PATH/<source>` for already-parsed files (Parquet or CSV, based on `file_format` in platform config)
+- Scans `PARSED_PATH/<source>` for already-parsed files (Parquet or CSV, based on `file_format` in platform config)
 - File detection is scoped to per-data-type subdirectories
 - Reddit: detects `RS_YYYY-MM.*` (submissions) and `RC_YYYY-MM.*` (comments), including torrent directory structure (`submissions/RS_*.zst`, `comments/RC_*.zst`)
 
@@ -80,7 +80,7 @@ The parse profile delegates to a platform-specific parser based on the `PLATFORM
 ## Output Structure
 
 ```
-CSV_PATH/<source>/
+PARSED_PATH/<source>/
 ├── submissions/
 │   ├── RS_2024-01.parquet      # or .csv if file_format: csv
 │   └── RS_2024-02.parquet
@@ -96,7 +96,7 @@ Output format is controlled by `file_format` in `platform.yaml` (default: `parqu
 ## Resume Behavior
 
 - Skips compressed files that already have a corresponding JSON file in `EXTRACTED_PATH/<source>/`
-- Skips JSON files that already have a corresponding output file (`.parquet` or `.csv`) in `CSV_PATH/<source>/`
+- Skips JSON files that already have a corresponding output file (`.parquet` or `.csv`) in `PARSED_PATH/<source>/`
 - To reprocess: delete the output file (or JSON) file
 
 ## Watch Mode

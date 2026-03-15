@@ -1,12 +1,12 @@
 # Classification Profiles
 
-The `ml_cpu` and `ml` profiles run classifiers on parsed files (Parquet or CSV). The `ml_cpu` profile runs CPU-based Lingua language detection, while the `ml` profile runs GPU-based transformer classifiers. Classifiers detect file format from the extension and produce output in the same format.
+The `lingua` and `ml` profiles run classifiers on parsed files (Parquet or CSV). The `lingua` profile runs CPU-based Lingua language detection, while the `ml` profile runs GPU-based transformer classifiers. Classifiers detect file format from the extension and produce output in the same format.
 
 ## Running
 
 ```bash
 # CPU language detection
-python sdb.py run ml_cpu [--source <name>]
+python sdb.py run lingua [--source <name>]
 
 # GPU transformer classifiers (requires NVIDIA GPU)
 python sdb.py run ml [--source <name>]
@@ -17,7 +17,7 @@ CLASSIFIER=toxic_roberta docker compose --profile ml up
 
 ---
 
-## Lingua Language Detection (ml_cpu)
+## Lingua Language Detection (lingua)
 
 ### Overview
 
@@ -53,7 +53,7 @@ Lingua has two output modes controlled by `prefer_lingua` in the postgres profil
 
 ### Configuration
 
-**Config file:** `config/ml_cpu/cpu_classifiers.yaml`
+**Config file:** `config/lingua/cpu_classifiers.yaml`
 
 <details>
 <summary><strong>Global settings</strong></summary>

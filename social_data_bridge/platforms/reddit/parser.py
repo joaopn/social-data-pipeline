@@ -432,11 +432,11 @@ def _parse_file_worker(args: Tuple[str, str, str, Dict]) -> Tuple[str, str, str]
         args: Tuple of (input_file, output_dir, data_type, platform_config)
 
     Returns:
-        Tuple of (input_file, csv_path, data_type)
+        Tuple of (input_file, output_path, data_type)
     """
     input_file, output_dir, data_type, platform_config = args
-    csv_path = parse_to_csv(input_file, output_dir, data_type, platform_config)
-    return input_file, csv_path, data_type
+    output_path = parse_to_csv(input_file, output_dir, data_type, platform_config)
+    return input_file, output_path, data_type
 
 
 def parse_files_parallel(
@@ -446,16 +446,16 @@ def parse_files_parallel(
     workers: int
 ) -> List[Tuple[str, str]]:
     """
-    Parse multiple Reddit JSON files to CSV in parallel.
+    Parse multiple Reddit JSON files in parallel.
 
     Args:
         files: List of tuples (input_file, data_type)
-        output_dir: Directory for output CSV files
+        output_dir: Directory for output files
         platform_config: Loaded platform configuration dict
         workers: Number of parallel workers
 
     Returns:
-        List of tuples (csv_path, data_type) in the same order as input
+        List of tuples (output_path, data_type) in the same order as input
     """
     if not files:
         return []
@@ -476,8 +476,8 @@ def parse_files_parallel(
         # Collect results in order
         for future in futures:
             try:
-                input_file, csv_path, data_type = future.result()
-                results.append((csv_path, data_type))
+                input_file, output_path, data_type = future.result()
+                results.append((output_path, data_type))
             except Exception as e:
                 print(f"[sdb] Error in parallel parsing: {e}")
                 raise

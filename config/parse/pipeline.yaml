@@ -1,5 +1,5 @@
 # Parse profile pipeline configuration
-# Host paths (DUMPS_PATH, EXTRACTED_PATH, CSV_PATH) are configured in .env
+# Host paths (DUMPS_PATH, EXTRACTED_PATH, PARSED_PATH) are configured in .env
 #
 # Platform selection: Set PLATFORM env var (default: reddit)
 #   PLATFORM=reddit  - Reddit data dumps

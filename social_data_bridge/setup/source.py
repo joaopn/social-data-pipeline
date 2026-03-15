@@ -26,7 +26,7 @@ from social_data_bridge.setup.utils import (
 )
 from social_data_bridge.setup.classifiers import (
     run_questionnaire as run_classifier_questionnaire,
-    generate_ml_cpu_user_yaml,
+    generate_lingua_user_yaml,
     generate_ml_user_yaml,
 )
 
@@ -41,7 +41,7 @@ def compute_defaults(hw, profiles):
     d = {}
     d["parse_workers"] = min(cores, 8)
     d["pg_parallel_index_workers"] = min(max(1, cores // 2), 8)
-    d["pg_prefer_lingua"] = "ml_cpu" in profiles
+    d["pg_prefer_lingua"] = "lingua" in profiles
     return d
 
 
@@ -76,7 +76,7 @@ def run_questionnaire(hw, source_name, db_setup):
     section_header("Data Paths")
     settings["dumps_path"] = ask("Dumps directory", f"./data/dumps/{source_name}")
     settings["extracted_path"] = ask("Extracted directory", f"./data/extracted/{source_name}")
-    settings["csv_path"] = ask("CSV directory", f"./data/csv/{source_name}")
+    settings["parsed_path"] = ask("Parsed directory", f"./data/parsed/{source_name}")
     settings["output_path"] = ask("Output directory", f"./data/output/{source_name}")
 
     # ---- File format ----
@@ -93,7 +93,7 @@ def run_questionnaire(hw, source_name, db_setup):
     databases = db_setup.get("databases", ["postgres"])
     gpus = hw["gpus"]
 
-    all_profiles = ["parse", "ml_cpu", "ml"]
+    all_profiles = ["parse", "lingua", "ml"]
     if "postgres" in databases:
         all_profiles += ["postgres_ingest", "postgres_ml"]
     if "mongo" in databases:
@@ -237,7 +237,7 @@ def generate_platform_yaml(settings):
         "paths": {
             "dumps": settings["dumps_path"],
             "extracted": settings["extracted_path"],
-            "csv": settings["csv_path"],
+            "parsed": settings["parsed_path"],
             "output": settings["output_path"],
         },
         "file_patterns": settings.get("custom_file_patterns", {}),
@@ -266,7 +266,7 @@ def generate_platform_yaml(settings):
             "url": "text",
             "score": "integer",
             "count": "integer",
-            # Lingua language detection fields (added by ml_cpu profile)
+            # Lingua language detection fields (added by lingua profile)
             "lang": ["varchar", 2],
             "lang_prob": "float",
             "lang2": ["varchar", 2],
@@ -291,7 +291,7 @@ def generate_reddit_platform_yaml(settings):
     base_config["paths"] = {
         "dumps": settings["dumps_path"],
         "extracted": settings["extracted_path"],
-        "csv": settings["csv_path"],
+        "parsed": settings["parsed_path"],
         "output": settings["output_path"],
     }
     return yaml.dump(base_config, default_flow_style=False, sort_keys=False)
@@ -458,7 +458,7 @@ def main(source_name=None):
     profiles = settings["profiles"]
 
     # Run classifier configuration inline if ml profiles are selected
-    has_classifiers = "ml_cpu" in profiles or "ml" in profiles
+    has_classifiers = "lingua" in profiles or "ml" in profiles
     if has_classifiers:
         classifier_state = {
             "platform": settings["platform"],
@@ -511,10 +511,10 @@ def main(source_name=None):
         ))
 
     # Classifier config files (from inline questionnaire)
-    if "ml_cpu" in profiles and "classifier_settings" in settings:
+    if "lingua" in profiles and "classifier_settings" in settings:
         files_to_write.append((
-            source_config_dir / "ml_cpu.yaml",
-            generate_ml_cpu_user_yaml(settings["classifier_settings"]),
+            source_config_dir / "lingua.yaml",
+            generate_lingua_user_yaml(settings["classifier_settings"]),
         ))
     if "ml" in profiles and "classifier_settings" in settings:
         files_to_write.append((

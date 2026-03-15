@@ -36,7 +36,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = ROOT / "config"
 
-VALID_PROFILES = ["parse", "ml_cpu", "ml", "postgres_ingest", "postgres_ml", "mongo_ingest"]
+VALID_PROFILES = ["parse", "lingua", "ml", "postgres_ingest", "postgres_ml", "mongo_ingest"]
 
 
 # ============================================================================
@@ -1066,7 +1066,7 @@ def cmd_source_status(args):
         print(f"    Paths:")
         print(f"      Dumps:     {paths.get('dumps', f'./data/dumps/{source}')}")
         print(f"      Extracted: {paths.get('extracted', f'./data/extracted/{source}')}")
-        print(f"      CSV:       {paths.get('csv', f'./data/csv/{source}')}")
+        print(f"      Parsed:    {paths.get('parsed', f'./data/parsed/{source}')}")
         print(f"      Output:    {paths.get('output', f'./data/output/{source}')}")
 
         # Show ingestion state for this source
@@ -1176,10 +1176,17 @@ def cmd_run(args):
         "PLATFORM": platform,
         "SOURCE": source,
         "DUMPS_PATH": paths.get("dumps", f"./data/dumps/{source}"),
-        "CSV_PATH": paths.get("csv", f"./data/csv/{source}"),
+        "PARSED_PATH": paths.get("parsed", f"./data/parsed/{source}"),
         "EXTRACTED_PATH": paths.get("extracted", f"./data/extracted/{source}"),
         "OUTPUT_PATH": paths.get("output", f"./data/output/{source}"),
     }
+
+    # Pre-create data directories so Docker doesn't create them as root:root
+    for key in ("DUMPS_PATH", "PARSED_PATH", "EXTRACTED_PATH", "OUTPUT_PATH"):
+        data_dir = Path(env_overrides[key])
+        if not data_dir.is_absolute():
+            data_dir = ROOT / data_dir
+        data_dir.mkdir(parents=True, exist_ok=True)
 
     # Set env vars for docker compose
     for key, value in env_overrides.items():

@@ -50,7 +50,7 @@ data_types:
 paths:
   dumps: ./data/dumps/mydata
   extracted: ./data/extracted/mydata
-  csv: ./data/csv/mydata
+  parsed: ./data/parsed/mydata
   output: ./data/output/mydata
 file_patterns:
   posts:
@@ -106,7 +106,7 @@ fields:
 python sdb.py run parse --source mydata
 
 # Classification works the same way
-python sdb.py run ml_cpu --source mydata
+python sdb.py run lingua --source mydata
 python sdb.py run ml --source mydata
 ```
 

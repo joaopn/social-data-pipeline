@@ -149,9 +149,9 @@ def detect_json_files(extracted_dir: str, data_types: List[str], file_patterns: 
     return [(f[0], f[1], f[2]) for f in files]
 
 
-def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: Dict, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
-    """Detect parsed CSV/Parquet files in the CSV directory."""
-    csv_base = Path(csv_dir)
+def detect_parsed_files(parsed_dir: str, data_types: List[str], file_patterns: Dict, file_format: str = 'csv') -> List[Tuple[str, str, str]]:
+    """Detect parsed files (Parquet or CSV) in the parsed directory."""
+    parsed_base = Path(parsed_dir)
     files = []
 
     ext = 'parquet' if file_format == 'parquet' else 'csv'
@@ -166,7 +166,7 @@ def detect_parsed_csv_files(csv_dir: str, data_types: List[str], file_patterns: 
         if data_type not in patterns:
             continue
 
-        type_dir = csv_base / data_type
+        type_dir = parsed_base / data_type
         if not type_dir.is_dir():
             continue
 
@@ -238,7 +238,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     # Paths
     dumps_dir = "/data/dumps"
     extracted_dir = "/data/extracted"
-    csv_dir = "/data/csv"
+    parsed_dir = "/data/parsed"
 
     # Phase 1: Detect input sources
     print("\n" + "="*60)
@@ -252,25 +252,25 @@ def run_pipeline(config_dir: str = "/app/config"):
     ext = 'parquet' if file_format == 'parquet' else 'csv'
 
     json_files = detect_json_files(extracted_dir, data_types, file_patterns)
-    parsed_csv_files = detect_parsed_csv_files(csv_dir, data_types, file_patterns, file_format=file_format)
+    parsed_files = detect_parsed_files(parsed_dir, data_types, file_patterns, file_format=file_format)
 
     print(f"[sdb] Found {len(json_files)} JSON files in extracted directory")
-    print(f"[sdb] Found {len(parsed_csv_files)} {ext.upper()} files in csv directory")
+    print(f"[sdb] Found {len(parsed_files)} {ext.upper()} files in parsed directory")
 
     # Filter out compressed files that already have extracted JSON or parsed CSV
     # Use direct file existence check rather than pattern matching, so extracted
     # files are recognized even if file_patterns change across reconfigurations
-    existing_csv_ids = {fid for _, fid, _ in parsed_csv_files}
+    existing_parsed_ids = {fid for _, fid, _ in parsed_files}
     pending_dumps = []
     for p, dt in dump_files:
         file_id = get_file_identifier(p)
         extracted_path = Path(extracted_dir) / dt / file_id
-        if extracted_path.exists() or file_id in existing_csv_ids:
+        if extracted_path.exists() or file_id in existing_parsed_ids:
             continue
         pending_dumps.append((p, dt))
 
     # Filter out JSON files that already have parsed CSV
-    pending_json = [(p, fid, dt) for p, fid, dt in json_files if fid not in existing_csv_ids]
+    pending_json = [(p, fid, dt) for p, fid, dt in json_files if fid not in existing_parsed_ids]
 
     print(f"[sdb] Pending: {len(pending_dumps)} compressed, {len(pending_json)} JSON")
 
@@ -307,7 +307,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     json_files = detect_json_files(extracted_dir, data_types, file_patterns)  # Re-detect
     files_to_parse = []
     for json_path, file_id, data_type in json_files:
-        expected_output = Path(csv_dir) / data_type / f"{file_id}.{ext}"
+        expected_output = Path(parsed_dir) / data_type / f"{file_id}.{ext}"
         if not expected_output.exists():
             files_to_parse.append((json_path, file_id, data_type))
 
@@ -328,7 +328,7 @@ def run_pipeline(config_dir: str = "/app/config"):
             try:
                 parser.parse_files_parallel(
                     files=parse_input,
-                    output_dir=csv_dir,
+                    output_dir=parsed_dir,
                     platform_config=platform_config,
                     workers=workers
                 )
@@ -350,7 +350,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                 try:
                     parser.parse_to_csv(
                         input_file=json_path,
-                        output_dir=csv_dir,
+                        output_dir=parsed_dir,
                         data_type=data_type,
                         platform_config=platform_config
                     )

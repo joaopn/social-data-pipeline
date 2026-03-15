@@ -7,7 +7,7 @@ databases:
 - mongo
 profiles:
 - parse
-- ml_cpu
+- lingua
 - ml
 - postgres_ingest
 - postgres_ml

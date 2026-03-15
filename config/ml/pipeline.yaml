@@ -8,7 +8,7 @@ processing:
   watch_interval: 0          # Check for new files every N minutes (0 = run once)
 
 # GPU classifiers to run (from gpu_classifiers.yaml)
-# If use_lingua = true, you must run ml_cpu profile first to generate lingua output
+# If use_lingua = true, you must run lingua profile first to generate lingua output
 gpu_classifiers:
   - toxic_roberta
   - go_emotions

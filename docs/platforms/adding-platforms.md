@@ -47,7 +47,7 @@ def parse_to_csv(input_file, output_dir, data_type, platform_config, use_type_su
     ...
 
 def parse_files_parallel(files, output_dir, platform_config, workers):
-    """Parse multiple files in parallel. Returns list of (csv_path, data_type)."""
+    """Parse multiple files in parallel. Returns list of (output_path, data_type)."""
     ...
 ```
 

@@ -2,7 +2,7 @@
 # 
 # Profiles:
 #   parse           - Extract .zst and parse to CSV
-#   ml_cpu          - Run Lingua language detection (CPU only)
+#   lingua          - Run Lingua language detection (CPU only)
 #   ml              - Run GPU transformer classifiers
 #   postgres        - PostgreSQL database server only
 #   postgres_ingest - Base table ingestion (requires postgres running)
@@ -16,7 +16,7 @@
 #
 # Usage:
 #   docker compose --profile parse up
-#   docker compose --profile ml_cpu up
+#   docker compose --profile lingua up
 #   docker compose --profile ml up
 #   
 #   # Database workflow: start postgres first, then run ingestion pipelines
@@ -36,11 +36,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: python -m social_data_bridge.orchestrators.parse
+    command: ["bash", "-c", "umask 0000 && exec python -m social_data_bridge.orchestrators.parse"]
     volumes:
       - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
       - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
-      - ${CSV_PATH:-./data/csv}:/data/csv
+      - ${PARSED_PATH:-./data/parsed}:/data/parsed
       - ${OUTPUT_PATH:-./data/output}:/data/output
       - ./config:/app/config:ro
     environment:
@@ -49,20 +49,20 @@ services:
       - PYTHONUNBUFFERED=1
 
   # ==========================================================================
-  # Profile: ml_cpu - Language detection with Lingua (CPU)
+  # Profile: lingua - Language detection with Lingua (CPU)
   # ==========================================================================
-  ml-cpu:
-    profiles: [ml_cpu]
+  lingua:
+    profiles: [lingua]
     build:
       context: .
       dockerfile: Dockerfile
-    command: python -m social_data_bridge.orchestrators.ml
+    command: ["bash", "-c", "umask 0000 && exec python -m social_data_bridge.orchestrators.ml"]
     environment:
-      - PROFILE=ml_cpu
+      - PROFILE=lingua
       - SOURCE=${SOURCE:-}
       - PYTHONUNBUFFERED=1
     volumes:
-      - ${CSV_PATH:-./data/csv}:/data/csv:ro
+      - ${PARSED_PATH:-./data/parsed}:/data/parsed:ro
       - ${OUTPUT_PATH:-./data/output}:/data/output
       - ./config:/app/config:ro
 
@@ -74,7 +74,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.gpu
-    command: python -m social_data_bridge.orchestrators.ml
+    command: ["bash", "-c", "umask 0000 && exec python -m social_data_bridge.orchestrators.ml"]
     ipc: host  # Required for PyTorch/CUDA shared memory
     environment:
       - PROFILE=ml
@@ -83,7 +83,7 @@ services:
       - PYTHONUNBUFFERED=1
       - HF_TOKEN=${HF_TOKEN:-}
     volumes:
-      - ${CSV_PATH:-./data/csv}:/data/csv:ro
+      - ${PARSED_PATH:-./data/parsed}:/data/parsed:ro
       - ${OUTPUT_PATH:-./data/output}:/data/output
       - ./config:/app/config:ro
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
@@ -115,7 +115,7 @@ services:
       - "${POSTGRES_PORT:-5432}:${POSTGRES_PORT:-5432}"
     volumes:
       - ${PGDATA_PATH:-./data/database/postgres}/pgdata:/var/lib/postgresql
-      - ${CSV_PATH:-./data/csv}:/data/csv:ro
+      - ${PARSED_PATH:-./data/parsed}:/data/parsed:ro
       - ${OUTPUT_PATH:-./data/output}:/data/output:ro
       - ${PGDATA_PATH:-./data/database/postgres}:/data/database
       - ./config/postgres:/etc/postgresql/config:ro
@@ -135,7 +135,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: python -m social_data_bridge.orchestrators.postgres_ingest
+    command: ["bash", "-c", "umask 0000 && exec python -m social_data_bridge.orchestrators.postgres_ingest"]
     environment:
       - PYTHONUNBUFFERED=1
       - PLATFORM=${PLATFORM:-reddit}
@@ -147,7 +147,7 @@ services:
     volumes:
       - ${DUMPS_PATH:-./data/dumps}:/data/dumps:ro
       - ${EXTRACTED_PATH:-./data/extracted}:/data/extracted
-      - ${CSV_PATH:-./data/csv}:/data/csv
+      - ${PARSED_PATH:-./data/parsed}:/data/parsed
       - ${OUTPUT_PATH:-./data/output}:/data/output:ro
       - ${PGDATA_PATH:-./data/database/postgres}:/data/database
       - ./config:/app/config:ro
@@ -161,7 +161,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: python -m social_data_bridge.orchestrators.postgres_ml
+    command: ["bash", "-c", "umask 0000 && exec python -m social_data_bridge.orchestrators.postgres_ml"]
     environment:
       - PYTHONUNBUFFERED=1
       - PLATFORM=${PLATFORM:-reddit}
@@ -373,7 +373,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mongo
-    command: python -m social_data_bridge.orchestrators.mongo_ingest
+    command: ["bash", "-c", "umask 0000 && exec python -m social_data_bridge.orchestrators.mongo_ingest"]
     environment:
       - PYTHONUNBUFFERED=1
       - PLATFORM=${PLATFORM:-reddit}

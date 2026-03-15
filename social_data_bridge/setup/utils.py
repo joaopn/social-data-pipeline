@@ -280,7 +280,7 @@ def get_source_profiles(source_name):
     # Map override filenames to profile names
     file_to_profile = {
         "parse.yaml": "parse",
-        "ml_cpu.yaml": "ml_cpu",
+        "lingua.yaml": "lingua",
         "ml.yaml": "ml",
         "postgres.yaml": "postgres_ingest",
         "postgres_ml.yaml": "postgres_ml",
@@ -436,7 +436,7 @@ def write_files(files_to_write):
 
 def print_pipeline_commands(profiles, source_name=None):
     """Print sdb.py commands to run the selected profiles in order."""
-    profile_order = ["parse", "ml_cpu", "ml", "postgres_ingest", "postgres_ml", "mongo_ingest"]
+    profile_order = ["parse", "lingua", "ml", "postgres_ingest", "postgres_ml", "mongo_ingest"]
     selected = [p for p in profile_order if p in profiles]
 
     # Database servers must run before their ingestion profiles

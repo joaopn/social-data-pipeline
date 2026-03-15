@@ -25,7 +25,7 @@
 #     create_indexes: true       # Create indexes after ingestion
 #     cleanup_temp: false        # Delete intermediate files after ingestion
 #     watch_interval: 0          # Check for new files every N minutes (0 = run once)
-#     prefer_lingua: false       # If true: ingest lingua CSVs (from ml_cpu output) instead of original CSVs
+#     prefer_lingua: false       # If true: ingest lingua files (from lingua output) instead of original parsed files
 #   indexes:                     # Index fields per data type (replaces default lists)
 #     submissions:
 #       - dataset

@@ -27,7 +27,7 @@ python sdb.py run postgres_ingest           # Ingest parsed files into PostgreSQ
 python sdb.py run mongo_ingest              # Ingest raw data into MongoDB
 
 # OPTIONAL services
-python sdb.py run ml_cpu                    # Adds language detection to files
+python sdb.py run lingua                    # Adds language detection to files
 python sdb.py db mcp                        # MCP servers for AI tool access
 python sdb.py run ml                        # GPU classifiers (toxicity, emotions)
 python sdb.py run postgres_ml               # Ingest classifier outputs
@@ -61,10 +61,10 @@ python sdb.py source status                 # Ingestion source status
 - **Parsing** JSON to structured files (Parquet or CSV) with configurable field extraction
 - **Modular classification** — CPU-based (Lingua) and GPU-based (transformers) with multi-GPU parallelization and language filtering
 - **PostgreSQL ingestion** of parsed files with finetuned settings and duplicate handling
-- **MongoDB ingestion** of raw JSON/NDJSON directly after extraction, using `mongoimport` for fast bulk loading
+- **MongoDB ingestion** of raw JSON directly after extraction, for raw data inspection
 - **Optional authentication** with admin, read-only, and MCP-specific database users
 - **MCP servers** for PostgreSQL and MongoDB, exposing databases to AI tools (Claude Desktop, VS Code, Cursor)
-- **Config-based** addition of new classifiers, platforms, and database backends
+- **Config-based** addition of new platforms and classifiers
 
 ### Architecture
 
@@ -79,7 +79,7 @@ flowchart TB
         PARSED[Parsed files]
         LINGUA[+ language]
         ML_OUT[+ ML classifiers]
-        PARSED -->|ml_cpu| LINGUA
+        PARSED -->|lingua| LINGUA
         PARSED -->|ml| ML_OUT
         LINGUA -.->|lang filter| ML_OUT
     end
@@ -149,19 +149,13 @@ For manual configuration or to understand what each setting does, see the [Confi
 
 #### 3. Run
 
-Run the desired profiles. The setup prints the commands for your selection, but the full pipeline is:
-
 ```bash
-python sdb.py run parse              # Parse Reddit data to structured files
-python sdb.py run ml_cpu             # CPU language detection (Lingua)
-python sdb.py run ml                 # GPU classifiers (optional, requires NVIDIA GPU)
-python sdb.py db start               # Start configured database(s)
-python sdb.py run postgres_ingest    # Ingest parsed files into PostgreSQL
-python sdb.py run postgres_ml        # Ingest classifier outputs into PostgreSQL
-python sdb.py run mongo_ingest       # Ingest raw JSON into MongoDB
+python sdb.py db start                        # Start configured database(s)
+python sdb.py run parse --source reddit       # Decompress dumps → parse to structured files
+python sdb.py run postgres_ingest --source reddit  # Ingest parsed files into PostgreSQL
 ```
 
-Use `python sdb.py source status` to check processing and ingestion progress at any time. When multiple sources are configured, use `--source` to target a specific one (e.g., `python sdb.py run parse --source reddit`).
+The `--source` flag selects the target source (optional when only one is configured). `source add` prints the recommended run commands for your setup. See the [TL;DR](#tldr) for the full set of profiles, or `python sdb.py source status` to check progress.
 
 #### 4. Analyze
 
@@ -234,7 +228,7 @@ python sdb.py <db|source|run> [options]
 | `sdb.py run <profile> --source <name>` | Run for a specific source (auto-selects if only one configured) |
 | `sdb.py run <profile> --build` | Rebuild the Docker image before running |
 
-Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`.
+Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`.
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database.
 
@@ -244,8 +238,8 @@ Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`, `mong
 
 | Profile | Description | Input | Output |
 |---------|-------------|-------|--------|
-| `parse` | Decompress dumps, parse JSON to Parquet/CSV | Compressed dump files (`.zst`, `.gz`, `.xz`, `.tar.gz`) | `CSV_PATH/` |
-| `ml_cpu` | Lingua language detection (CPU) | Parsed files | `OUTPUT_PATH/lingua/` |
+| `parse` | Decompress dumps, parse JSON to Parquet/CSV | Compressed dump files (`.zst`, `.gz`, `.xz`, `.tar.gz`) | `PARSED_PATH/` |
+| `lingua` | Lingua language detection (CPU) | Parsed files | `OUTPUT_PATH/lingua/` |
 | `ml` | Transformer classifiers (GPU) | Parsed files + Lingua output | `OUTPUT_PATH/{classifier}/` |
 | `postgres` | PostgreSQL database server | — | — |
 | `postgres_ingest` | Ingest into PostgreSQL | Parsed files (or Lingua-enriched) | PostgreSQL tables |
@@ -258,7 +252,7 @@ Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`, `mong
 
 For detailed configuration and algorithm documentation, see the per-profile docs:
 - [Parse Profile](docs/profiles/parse.md)
-- [Classification Profiles (ml_cpu / ml)](docs/profiles/classification.md)
+- [Classification Profiles (lingua / ml)](docs/profiles/classification.md)
 - [Database Profiles (postgres / postgres_ingest / postgres_ml / mongo / mongo_ingest)](docs/profiles/database.md)
 
 ## ◾ Platform Support
@@ -298,7 +292,7 @@ See [Database Profiles](docs/profiles/database.md#storage-requirements) for deta
 <details>
 <summary><strong>Can I run classifiers without the database?</strong></summary>
 
-Yes! Use `python sdb.py run ml_cpu` or `python sdb.py run ml` independently. The database profile is optional.
+Yes! Use `python sdb.py run lingua` or `python sdb.py run ml` independently. The database profile is optional.
 
 </details>
 
@@ -324,7 +318,7 @@ Delete the relevant output directories and rerun the profile:
 ```bash
 rm -rf data/output/<source>/toxic_roberta/          # Reprocess a specific classifier
 rm -rf data/output/<source>/                        # Reprocess all classifiers
-rm -rf data/output/<source>/ data/csv/<source>/ data/extracted/<source>/  # Full reprocess
+rm -rf data/output/<source>/ data/parsed/<source>/ data/extracted/<source>/  # Full reprocess
 ```
 
 </details>
@@ -341,7 +335,7 @@ This project targets large-scale, Reddit-wide analysis. For queries not limited 
 **Pipeline fails:**
 ```bash
 docker compose logs parse
-docker compose logs ml_cpu
+docker compose logs lingua
 docker compose logs postgres-ingest
 docker compose logs postgres-ml
 ```

@@ -299,6 +299,15 @@ def cmd_db_status(args):
     auth_enabled = env.get("POSTGRES_AUTH_ENABLED") == "true" or env.get("MONGO_AUTH_ENABLED") == "true"
     print(f"\n  Authentication: {'enabled' if auth_enabled else 'disabled'}")
     if auth_enabled:
+        pg_user = env.get("POSTGRES_USER", "postgres") if "postgres" in configured else None
+        mongo_user = env.get("MONGO_ADMIN_USER") if "mongo" in configured else None
+        if pg_user or mongo_user:
+            rw_parts = []
+            if pg_user:
+                rw_parts.append(f"postgres: {pg_user}")
+            if mongo_user:
+                rw_parts.append(f"mongo: {mongo_user}")
+            print(f"    RW user:       {', '.join(rw_parts)}")
         ro_user = env.get("POSTGRES_RO_USER") or env.get("MONGO_RO_USER")
         if ro_user:
             print(f"    RO user:       {ro_user} (no password)")
@@ -336,7 +345,7 @@ def cmd_db_status(args):
         print(f"    Running:   {'yes' if 'postgres' in running_services else 'no'}")
 
         state_dir = pgdata / "state_tracking"
-        _print_ingestion_state(state_dir, "_postgres_")
+        _print_ingestion_state(state_dir, "_postgres_", "postgres")
 
     # MongoDB
     if "mongo" in configured:
@@ -351,7 +360,7 @@ def cmd_db_status(args):
         print(f"    Running:   {'yes' if 'mongo' in running_services else 'no'}")
 
         state_dir = mongo_data / "state_tracking"
-        _print_ingestion_state(state_dir, "_mongo_")
+        _print_ingestion_state(state_dir, "_mongo_", "mongo")
 
     # MCP servers
     mcp_config = _load_mcp_config()
@@ -382,8 +391,26 @@ def cmd_db_status(args):
     return 0
 
 
-def _print_ingestion_state(state_dir, label_split):
+def _load_classifier_suffixes():
+    """Load classifier name → table suffix mapping from postgres_ml services config."""
+    import yaml
+    services_path = CONFIG_DIR / "postgres_ml" / "services.yaml"
+    if not services_path.exists():
+        return {}
+    try:
+        cfg = yaml.safe_load(services_path.read_text()) or {}
+        return {
+            name: cls.get("suffix", f"_{name}")
+            for name, cls in cfg.get("classifiers", {}).items()
+        }
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
+def _print_ingestion_state(state_dir, label_split, db_type):
     """Print ingestion state from JSON files in a state directory."""
+    from social_data_bridge.setup.utils import load_source_config
+
     if not state_dir.exists():
         print(f"\n    No ingestion data yet.")
         return
@@ -393,7 +420,13 @@ def _print_ingestion_state(state_dir, label_split):
         print(f"\n    No ingestion data yet.")
         return
 
-    print(f"\n    Ingestion status:")
+    # Cache platform configs per source
+    platform_cache = {}
+    classifier_suffixes = None  # lazy-loaded
+
+    # Collect entries grouped by source
+    source_entries = {}  # {source: [(label, count, latest, in_progress, failed, last_updated), ...]}
+
     for sf in state_files:
         try:
             sdata = json.loads(sf.read_text())
@@ -408,24 +441,94 @@ def _print_ingestion_state(state_dir, label_split):
 
         parts = name.split(label_split)
         if len(parts) == 2:
-            label = parts[1].replace("_", " / ", 1)
+            source = parts[0]
+            profile_and_dt = parts[1]  # e.g., "ingest_comments" or "ml_comments"
+            profile, _, data_type = profile_and_dt.partition("_")
         else:
-            label = name
+            source = name
+            profile = ""
+            data_type = name
 
-        count = len(processed)
-        latest = processed[-1] if processed else "-"
+        # Load platform config for this source
+        if source not in platform_cache:
+            platform_cache[source] = load_source_config(source) or {}
+        pconfig = platform_cache[source]
 
-        line = f"      {label}: {count} datasets"
-        if latest != "-":
-            line += f" (latest: {latest})"
-        if in_progress:
-            line += f" [in progress: {in_progress}]"
-        if failed:
-            line += f" [{len(failed)} failed]"
-        print(line)
+        if source not in source_entries:
+            source_entries[source] = []
 
-        if last_updated:
-            print(f"        last updated: {last_updated}")
+        if profile == "ml" and db_type == "postgres":
+            # Group ML entries by classifier from processed entry prefixes
+            if classifier_suffixes is None:
+                classifier_suffixes = _load_classifier_suffixes()
+
+            # Group processed entries by classifier (prefix before '/')
+            by_classifier = {}
+            for entry in processed:
+                if "/" in entry:
+                    cls_name, dataset = entry.split("/", 1)
+                else:
+                    cls_name, dataset = "unknown", entry
+                by_classifier.setdefault(cls_name, []).append(dataset)
+
+            # Group failed entries by classifier too
+            failed_by_classifier = {}
+            for f in failed:
+                fname = f.get("filename", "") if isinstance(f, dict) else str(f)
+                if "/" in fname:
+                    cls_name = fname.split("/", 1)[0]
+                else:
+                    cls_name = "unknown"
+                failed_by_classifier.setdefault(cls_name, []).append(f)
+
+            schema = pconfig.get("db_schema", source)
+            for cls_name, datasets in sorted(by_classifier.items()):
+                suffix = classifier_suffixes.get(cls_name, f"_{cls_name}")
+                table = f"{schema}.{data_type}{suffix}"
+                count = len(datasets)
+                latest = datasets[-1] if datasets else "-"
+                cls_failed = failed_by_classifier.get(cls_name, [])
+                tag = f"classifier: {cls_name}"
+                source_entries[source].append(
+                    (tag, table, count, latest, in_progress, cls_failed, last_updated)
+                )
+        else:
+            # Main data (ingest profile)
+            if db_type == "postgres":
+                schema = pconfig.get("db_schema", source)
+                table = f"{schema}.{data_type}"
+            else:
+                if "mongo_db_name" in pconfig:
+                    table = pconfig["mongo_db_name"]
+                else:
+                    template = pconfig.get("mongo_db_name_template", "{platform}_{data_type}")
+                    platform = pconfig.get("platform", source).replace("/", "_")
+                    table = template.format(platform=platform, data_type=data_type)
+
+            count = len(processed)
+            latest = processed[-1] if processed else "-"
+            source_entries[source].append(
+                ("main data", table, count, latest, in_progress, failed, last_updated)
+            )
+
+    # Print grouped by source
+    print(f"\n    Ingestion status:")
+    for source, entries in sorted(source_entries.items()):
+        print(f"      platform: {source}")
+        for tag, table, count, latest, in_progress, failed, last_updated in entries:
+            line = f"        ({tag}) {table}: {count} datasets"
+            if in_progress:
+                line += f" [in progress: {in_progress}]"
+            if failed:
+                line += f" [{len(failed)} failed]"
+            print(line)
+            details = []
+            if latest != "-":
+                details.append(f"latest: {latest}")
+            if last_updated:
+                details.append(f"updated: {last_updated[:10]}")
+            if details:
+                print(f"          {', '.join(details)}")
 
 
 # ============================================================================

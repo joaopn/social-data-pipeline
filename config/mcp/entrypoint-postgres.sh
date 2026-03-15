@@ -27,4 +27,4 @@ if [ -n "${POSTGRES_MCP_USER:-}" ]; then
 fi
 
 # Delegate to the default image entrypoint
-exec python -m postgres_mcp "$@"
+exec /app/docker-entrypoint.sh postgres-mcp "$@"

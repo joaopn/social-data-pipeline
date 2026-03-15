@@ -39,11 +39,11 @@ def transform_json(data, dataset, data_type_config, fields_to_extract):
     ...
 
 def process_single_file(input_file, output_file, data_type, data_type_config, fields_to_extract):
-    """Process a single JSON file to CSV. Returns (input_size, output_file)."""
+    """Process a single JSON file to Parquet/CSV. Returns (input_size, output_file)."""
     ...
 
 def parse_to_csv(input_file, output_dir, data_type, platform_config, use_type_subdir=True):
-    """Main entry point. Parse a JSON file to CSV. Returns output CSV path."""
+    """Main entry point. Parse a JSON file to Parquet/CSV. Returns output path."""
     ...
 
 def parse_files_parallel(files, output_dir, platform_config, workers):

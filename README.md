@@ -9,31 +9,32 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900.svg?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
 [![ONNX](https://img.shields.io/badge/ONNX-Runtime-005CED.svg?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 
-A toolkit for large-scale processing, ML classification, and database ingestion of social media data dumps. Supports PostgreSQL (parsed CSVs) and MongoDB (raw data) as database destinations. Designed for the [Reddit data dumps](https://github.com/ArthurHeitmann/arctic_shift), with support for multiple platforms through a configurable architecture.
+A toolkit for large-scale processing, ML classification, and database ingestion of social media data dumps. Supports PostgreSQL and MongoDB as database destinations, and bundles MCP servers for AI tool access. Designed for the [Reddit data dumps](https://github.com/ArthurHeitmann/arctic_shift), with support for multiple platforms through a configurable architecture.
 
 </div>
 
 ### TL;DR
 
 ```bash
-# 1. Configure databases 
+# 1. Configure databases
 python sdb.py db setup                      # Configure PostgreSQL/MongoDB (one-time)
 python sdb.py db start                      # Start database(s)
 
 # 2. Add a source and run desired tasks
 python sdb.py source add reddit             # Add a data source (interactive setup)
-python sdb.py run parse                     # Decompress dumps → parse files → CSV
-python sdb.py run ml_cpu                    # OPTIONAL: adds language detection
-python sdb.py run postgres_ingest           # Ingest CSVs into PostgreSQL
+python sdb.py run parse                     # Decompress dumps → parse to structured files
+python sdb.py run postgres_ingest           # Ingest parsed files into PostgreSQL
 python sdb.py run mongo_ingest              # Ingest raw data into MongoDB
 
-# 3. Check status
+# OPTIONAL services
+python sdb.py run ml_cpu                    # Adds language detection to files
+python sdb.py db mcp                        # MCP servers for AI tool access
+python sdb.py run ml                        # GPU classifiers (toxicity, emotions)
+python sdb.py run postgres_ml               # Ingest classifier outputs
+
+# Check status
 python sdb.py db status                     # Database status
 python sdb.py source status                 # Ingestion source status
-
-# OPTIONAL: ML classifiers
-python sdb.py run ml                       # GPU classifiers (toxicity, emotions)
-python sdb.py run postgres_ml              # Ingest classifier outputs
 ```
 
 ---
@@ -55,33 +56,46 @@ python sdb.py run postgres_ml              # Ingest classifier outputs
 
 **Social Data Bridge** provides a complete pipeline for working with large-scale social media data dumps:
 
-- **Multi-platform support** — Reddit (with specialized features) or custom JSON/CSV platforms
+- **Multi-platform support** — Reddit (with specialized features) or custom JSON platforms
 - **Automatic detection and decompression** of `.zst`, `.gz`, `.xz`, and `.tar.gz` dump files
-- **Parsing** JSON to clean CSVs with configurable field extraction
+- **Parsing** JSON to structured files (Parquet or CSV) with configurable field extraction
 - **Modular classification** — CPU-based (Lingua) and GPU-based (transformers) with multi-GPU parallelization and language filtering
-- **PostgreSQL ingestion** of parsed CSVs with finetuned settings and duplicate handling
+- **PostgreSQL ingestion** of parsed files with finetuned settings and duplicate handling
 - **MongoDB ingestion** of raw JSON/NDJSON directly after extraction, using `mongoimport` for fast bulk loading
+- **Optional authentication** with admin, read-only, and MCP-specific database users
+- **MCP servers** for PostgreSQL and MongoDB, exposing databases to AI tools (Claude Desktop, VS Code, Cursor)
 - **Config-based** addition of new classifiers, platforms, and database backends
 
 ### Architecture
 
 ```mermaid
-flowchart TD
-    ZST["Compressed dump files\n(.zst, .gz, .xz, .tar.gz)"]
-    CSV["Parsed CSVs"]
-    LINGUA["CSVs with language"]
-    ML_OUT["ML Classifier outputs"]
-    PG[(PostgreSQL)]
-    MONGO[(MongoDB)]
+flowchart TB
+    subgraph Input
+        DUMPS[Compressed dumps]
+    end
 
-    ZST -->|"parse"| CSV
-    ZST -->|"mongo_ingest"| MONGO
-    CSV -->|"ml_cpu"| LINGUA
-    CSV -->|"ml"| ML_OUT
-    LINGUA -.->|"lang filter"| ML_OUT
-    CSV -->|"postgres_ingest"| PG
-    LINGUA -->|"postgres_ingest"| PG
-    ML_OUT -->|"postgres_ml"| PG
+    subgraph Files
+        direction LR
+        PARSED[Parsed files]
+        LINGUA[+ language]
+        ML_OUT[+ ML classifiers]
+        PARSED -->|ml_cpu| LINGUA
+        PARSED -->|ml| ML_OUT
+        LINGUA -.->|lang filter| ML_OUT
+    end
+
+    subgraph Databases
+        direction LR
+        PG[(PostgreSQL)]
+        MONGO[(MongoDB)]
+        MCP{{MCP servers}}
+        PG & MONGO -.-> MCP
+    end
+
+    DUMPS -->|parse| PARSED
+    DUMPS -->|mongo_ingest| MONGO
+    PARSED & LINGUA -->|postgres_ingest| PG
+    ML_OUT -->|postgres_ml| PG
 ```
 
 ## ◾ Requirements
@@ -138,11 +152,11 @@ For manual configuration or to understand what each setting does, see the [Confi
 Run the desired profiles. The setup prints the commands for your selection, but the full pipeline is:
 
 ```bash
-python sdb.py run parse              # Parse Reddit data to CSV
+python sdb.py run parse              # Parse Reddit data to structured files
 python sdb.py run ml_cpu             # CPU language detection (Lingua)
 python sdb.py run ml                 # GPU classifiers (optional, requires NVIDIA GPU)
 python sdb.py db start               # Start configured database(s)
-python sdb.py run postgres_ingest    # Ingest CSVs into PostgreSQL
+python sdb.py run postgres_ingest    # Ingest parsed files into PostgreSQL
 python sdb.py run postgres_ml        # Ingest classifier outputs into PostgreSQL
 python sdb.py run mongo_ingest       # Ingest raw JSON into MongoDB
 ```
@@ -154,11 +168,24 @@ Use `python sdb.py source status` to check processing and ingestion progress at 
 With an optimized PostgreSQL database running, you can send large-scale analytical queries through:
 - The terminal with [psql](https://www.postgresql.org/docs/current/app-psql.html)
 - A GUI with [pgAdmin](https://www.pgadmin.org/) or [DBeaver](https://dbeaver.io/)
-- LLMs with MCP servers such as [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)
-- Agentic LLMs using [Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
+- AI tools via the built-in MCP servers (see below)
 
-> [!IMPORTANT]
-> By default, the database accepts local, read-write, unauthenticated connections with user `postgres`. For multiple users (human or AI), it is recommended to add a password or read-only users.
+**MCP servers** (optional) expose your databases to AI tools like Claude Desktop, VS Code, and Cursor:
+
+```bash
+python sdb.py db mcp                 # Configure MCP servers (ports, read-only mode)
+python sdb.py db start               # Starts databases + MCP servers together
+```
+
+**Database authentication** (optional) adds password-protected admin access, a read-only MCP user, and an optional passwordless read-only convenience user:
+
+```bash
+# Enable during initial setup — or re-run to add auth to existing databases
+python sdb.py db setup               # Select "Enable database authentication"
+```
+
+> [!NOTE]
+> By default, databases accept local, unauthenticated connections. Authentication is optional and can be enabled at any time. See the [Database Profiles](docs/profiles/database.md#authentication) docs for details.
 
 ---
 
@@ -175,13 +202,16 @@ python sdb.py <db|source|run> [options]
 
 | Command | Description |
 |---------|-------------|
-| `sdb.py db setup` | Configure databases (PostgreSQL, MongoDB) — global, one-time |
-| `sdb.py db start [postgres\|mongo]` | Start database services (all configured if unspecified) |
-| `sdb.py db stop [postgres\|mongo]` | Stop database services (all configured if unspecified) |
-| `sdb.py db status` | Show database config and health |
+| `sdb.py db setup` | Configure databases (PostgreSQL, MongoDB, optional auth) — global, one-time |
+| `sdb.py db mcp` | Configure MCP servers for AI tool access (ports, read-only mode) |
+| `sdb.py db mcp --delete` | Remove MCP configuration |
+| `sdb.py db start [postgres\|mongo]` | Start database services + MCP servers (all configured if unspecified) |
+| `sdb.py db stop [postgres\|mongo]` | Stop database services + MCP servers (all configured if unspecified) |
+| `sdb.py db status` | Show database config, health, and MCP status |
+| `sdb.py db recover-password` | Reset database admin password (requires auth enabled) |
 | `sdb.py db unsetup` | Remove database config; data deletion behind double confirmation |
 
-`db setup` generates `.env`, `config/db/*.yaml`, and `config/postgres/postgresql.local.conf`. Database deletion in `db unsetup` requires two separate confirmations. Data files are never deleted — their locations are printed for manual cleanup.
+`db setup` generates `.env`, `config/db/*.yaml`, and `config/postgres/postgresql.local.conf`. When authentication is enabled, it also generates `pg_hba.local.conf` and MCP credential files. Database deletion in `db unsetup` requires two separate confirmations.
 
 ### Source Management (`sdb.py source`)
 
@@ -214,12 +244,12 @@ Valid profiles: `parse`, `ml_cpu`, `ml`, `postgres_ingest`, `postgres_ml`, `mong
 
 | Profile | Description | Input | Output |
 |---------|-------------|-------|--------|
-| `parse` | Decompress dumps, parse JSON to CSV | Compressed dump files (`.zst`, `.gz`, `.xz`, `.tar.gz`) | `CSV_PATH/` |
-| `ml_cpu` | Lingua language detection (CPU) | Parsed CSVs | `OUTPUT_PATH/lingua/` |
-| `ml` | Transformer classifiers (GPU) | Parsed CSVs + Lingua output | `OUTPUT_PATH/{classifier}/` |
+| `parse` | Decompress dumps, parse JSON to Parquet/CSV | Compressed dump files (`.zst`, `.gz`, `.xz`, `.tar.gz`) | `CSV_PATH/` |
+| `ml_cpu` | Lingua language detection (CPU) | Parsed files | `OUTPUT_PATH/lingua/` |
+| `ml` | Transformer classifiers (GPU) | Parsed files + Lingua output | `OUTPUT_PATH/{classifier}/` |
 | `postgres` | PostgreSQL database server | — | — |
-| `postgres_ingest` | Ingest CSVs into PostgreSQL | Parsed CSVs (or Lingua CSVs) | PostgreSQL tables |
-| `postgres_ml` | Ingest ML outputs into PostgreSQL | Classifier output CSVs | PostgreSQL tables |
+| `postgres_ingest` | Ingest into PostgreSQL | Parsed files (or Lingua-enriched) | PostgreSQL tables |
+| `postgres_ml` | Ingest ML outputs into PostgreSQL | Classifier output files | PostgreSQL tables |
 | `mongo` | MongoDB database server | — | — |
 | `mongo_ingest` | Ingest raw JSON into MongoDB | Extracted JSON/NDJSON | MongoDB collections |
 
@@ -236,7 +266,7 @@ For detailed configuration and algorithm documentation, see the per-profile docs
 | Platform | Description | Default |
 |----------|-------------|---------|
 | `reddit` | Specialized Reddit features: waterfall deletion detection, base-36 ID conversion, format compatibility | Yes |
-| `custom/<name>` | Simple JSON-to-CSV for arbitrary data: dot-notation, array indexing, type enforcement | No |
+| `custom/<name>` | JSON parsing for arbitrary data: dot-notation, array indexing, type enforcement | No |
 
 The default platform is Reddit. To process arbitrary JSON/NDJSON data, select `custom` during `sdb.py source add` and configure your platform interactively.
 

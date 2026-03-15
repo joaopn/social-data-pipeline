@@ -19,6 +19,7 @@ File patterns (from `config/sources/reddit/platform.yaml`):
 |------|---------|---------|
 | Compressed dump | `RS_(\d{4}-\d{2})\..+` | `RS_2024-01.zst`, `RS_2024-01.gz` |
 | Decompressed | `RS_(\d{4}-\d{2})` | `RS_2024-01` |
+| Parsed Parquet | `RS_(\d{4}-\d{2})\.parquet` | `RS_2024-01.parquet` |
 | Parsed CSV | `RS_(\d{4}-\d{2})\.csv` | `RS_2024-01.csv` |
 
 Supports `.zst`, `.gz`, `.xz`, and `.tar.gz` compressed formats. Supports both flat directory and torrent directory structure (`submissions/RS_*.zst`, `comments/RC_*.zst`).

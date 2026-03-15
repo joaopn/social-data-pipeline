@@ -34,12 +34,26 @@ All environment variables are set in the `.env` file at the project root. Docker
 | `HF_TOKEN` | HuggingFace authentication token | (none) |
 | `CLASSIFIER` | Run a single GPU classifier by name | (all enabled) |
 | `PROFILE` | Internal: set automatically by docker-compose | (auto) |
+| `POSTGRES_AUTH_ENABLED` | Enable PostgreSQL authentication | (unset) |
+| `MONGO_AUTH_ENABLED` | Enable MongoDB authentication | (unset) |
+| `POSTGRES_PASSWORD` | PostgreSQL admin password (set at runtime, never stored) | (unset) |
+| `MONGO_ADMIN_PASSWORD` | MongoDB admin password (set at runtime, never stored) | (unset) |
+| `POSTGRES_RO_USER` | PostgreSQL read-only convenience user name | (unset) |
+| `MONGO_RO_USER` | MongoDB read-only convenience user name | (unset) |
+| `POSTGRES_MCP_PORT` | PostgreSQL MCP server port | `8000` |
+| `POSTGRES_MCP_ACCESS_MODE` | PostgreSQL MCP access mode (`restricted` or `unrestricted`) | `restricted` |
+| `POSTGRES_MCP_USER` | PostgreSQL MCP connection user | (unset) |
+| `MONGO_MCP_PORT` | MongoDB MCP server port | `3000` |
+| `MONGO_MCP_READ_ONLY` | MongoDB MCP read-only flag | `true` |
+| `MCP_MONGODB_USER` | MongoDB MCP connection user | (unset) |
 
 > [!NOTE]
 > - `SOURCE` controls which source config directory is loaded. When running via `sdb.py run`, it is set automatically (auto-selects if only one source configured, or via `--source`).
 > - `CLASSIFIER` is used with the `ml` profile to run only one GPU classifier instead of all enabled classifiers.
 > - `PROFILE` is set internally by docker-compose service definitions (`ml_cpu` or `ml`). Do not set this manually.
 > - `HF_TOKEN` is optional but recommended to avoid rate limits and to access private models. Obtain one at https://huggingface.co/settings/tokens.
+> - Auth env vars (`POSTGRES_PASSWORD`, `MONGO_ADMIN_PASSWORD`) are set at runtime via `getpass` prompting — they are never stored in `.env` or on disk.
+> - MCP env vars are written to `.env` by `sdb db mcp`. MCP credentials are stored in the database data volume as `.mcp_credentials` (chmod 600).
 
 ---
 
@@ -48,8 +62,9 @@ All environment variables are set in the `.env` file at the project root. Docker
 ```
 config/
 ├── db/                            # Global database config (written by sdb db setup)
-│   ├── postgres.yaml             # Port, name, tablespaces
-│   └── mongo.yaml                # Port, cache size
+│   ├── postgres.yaml             # Port, name, tablespaces, auth flag
+│   ├── mongo.yaml                # Port, cache size, auth flag
+│   └── mcp.yaml                  # MCP server config (written by sdb db mcp)
 ├── sources/                       # Per-source config (written by sdb source add)
 │   └── <name>/                   # One directory per source
 │       ├── platform.yaml         # Platform config (fields, types, indexes, schema, file patterns)
@@ -72,11 +87,18 @@ config/
 ├── postgres/
 │   ├── pipeline.yaml             # Database ingestion settings
 │   ├── postgresql.conf           # PostgreSQL server tuning
-│   ├── pg_hba.conf               # PostgreSQL authentication
-│   └── postgresql.local.conf     # Generated PGTune config (written by sdb db setup)
+│   ├── pg_hba.conf               # PostgreSQL authentication (default, no-auth)
+│   ├── postgresql.local.conf     # Generated PGTune config (written by sdb db setup)
+│   ├── pg_hba.local.conf         # Generated auth config (written by sdb db setup when auth enabled)
+│   ├── entrypoint-wrapper.sh     # Container entrypoint (pg_parquet, auth migration)
+│   └── initdb.d/                 # First-init scripts (pg_parquet extension)
 ├── mongo/
 │   ├── pipeline.yaml             # MongoDB ingestion settings
-│   └── mongod.conf               # MongoDB server configuration
+│   ├── mongod.conf               # MongoDB server configuration
+│   └── entrypoint-wrapper.sh     # Container entrypoint (auth migration)
+├── mcp/
+│   ├── entrypoint-postgres.sh    # PostgreSQL MCP entrypoint
+│   └── entrypoint-mongo.sh       # MongoDB MCP entrypoint
 └── postgres_ml/
     ├── pipeline.yaml             # ML classifier ingestion settings
     └── services.yaml             # Classifier table definitions
@@ -316,7 +338,7 @@ processing:
   parallel_index_workers: 8  # Workers per index build
   cleanup_temp: false        # Delete intermediate files
   watch_interval: 0          # Run once (0) or poll every N minutes
-  prefer_lingua: true        # Ingest lingua CSVs instead of original
+  prefer_lingua: true        # Ingest lingua-enriched files instead of originals
 
 indexes: {}                  # Per-data-type index fields (set via source platform.yaml)
 ```
@@ -340,7 +362,7 @@ indexes: {}                  # Per-data-type index fields (set via source platfo
 | **processing.parallel_index_workers** | `max_parallel_maintenance_workers` per index build. | `8` |
 | **processing.cleanup_temp** | Delete intermediate files after ingestion. | `false` |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
-| **processing.prefer_lingua** | Ingest lingua CSVs (from `ml_cpu` output) instead of original CSVs. Falls back to original if not found. | `true` |
+| **processing.prefer_lingua** | Ingest lingua-enriched files (from `ml_cpu` output) instead of originals. Falls back to original if not found. | `true` |
 | **indexes** | Index fields per data type (e.g., `{submissions: [dataset, author, subreddit]}`). | `{}` |
 | **tablespaces** | Tablespace definitions: map of name to host path (e.g., `{nvme1: /mnt/nvme1/pg-tablespace}`). | `{}` |
 | **table_tablespaces** | Table-to-tablespace assignments: map of data type to tablespace name (e.g., `{submissions: nvme1}`). Use `pgdata` for the default PostgreSQL data directory. | `{}` |
@@ -404,7 +426,7 @@ classifiers:
 | Option | Description |
 |--------|-------------|
 | `enabled` | Whether to process this classifier (`true`/`false`). |
-| `source_dir` | Directory under `/data/output/` containing classifier CSV output. |
+| `source_dir` | Directory under `/data/output/` containing classifier output files. |
 | `source_dir_ingest` | Alternative source directory (lingua only, used when `prefer_lingua: false`). |
 | `suffix` | File suffix pattern and table name suffix (e.g., `_lingua` produces table `submissions_lingua`). |
 
@@ -421,9 +443,9 @@ The PostgreSQL container loads its configuration from `config/postgres/`:
 | File | Purpose |
 |------|---------|
 | `postgresql.conf` | Server tuning parameters (shared_buffers, work_mem, etc.) |
-| `pg_hba.conf` | Client authentication rules |
+| `pg_hba.conf` | Client authentication rules (default: trust/no-auth) |
 | `postgresql.local.conf` | **Local override** — if present, replaces `postgresql.conf` |
-| `pg_hba.local.conf` | **Local override** — if present, replaces `pg_hba.conf` |
+| `pg_hba.local.conf` | **Local override** — if present, replaces `pg_hba.conf` (generated by `sdb db setup` when auth enabled) |
 
 > [!TIP]
 > Run `python sdb.py db setup`, which handles PGTune integration and ZFS optimization as part of the interactive setup.
@@ -493,7 +515,8 @@ Each source has a `platform.yaml` in `config/sources/<name>/` that defines the p
 |-----|-------------|
 | `db_schema` | Database schema name for this source. |
 | `data_types` | List of data types this source supports. |
-| `file_patterns` | File detection patterns per data type (keys: `dump`, `json`, `csv`, `prefix`, and optionally `dump_glob`, `compression`). |
+| `file_format` | Output format: `parquet` (default) or `csv` (alternate, for external tool compatibility). |
+| `file_patterns` | File detection patterns per data type (keys: `dump`, `json`, `csv`, `parquet`, `prefix`, and optionally `dump_glob`, `compression`). |
 | `indexes` | Default index fields per data type (used by the postgres profile). |
 | `mongo_collection_strategy` | `per_file` or `per_data_type` (used by mongo_ingest). |
 | `mongo_db_name` | Explicit MongoDB database name (custom sources). |
@@ -513,6 +536,7 @@ For Reddit, the template `config/templates/reddit.yaml` is copied into `config/s
 
 ```yaml
 db_schema: reddit
+file_format: parquet                       # 'parquet' (default) or 'csv'
 
 data_types:
   - submissions
@@ -524,12 +548,14 @@ file_patterns:
     zst: '^RS_(\d{4}-\d{2})\.zst$'       # Legacy: .zst only
     json: '^RS_(\d{4}-\d{2})$'
     csv: '^RS_(\d{4}-\d{2})\.csv$'
+    parquet: '^RS_(\d{4}-\d{2})\.parquet$'
     prefix: 'RS_'
   comments:
     dump: '^RC_(\d{4}-\d{2})\..+$'
     zst: '^RC_(\d{4}-\d{2})\.zst$'
     json: '^RC_(\d{4}-\d{2})$'
     csv: '^RC_(\d{4}-\d{2})\.csv$'
+    parquet: '^RC_(\d{4}-\d{2})\.parquet$'
     prefix: 'RC_'
 
 indexes:
@@ -565,6 +591,7 @@ Custom platform configs are generated interactively during `sdb source add <name
 
 ```yaml
 db_schema: my_data
+file_format: parquet                       # 'parquet' (default) or 'csv'
 
 data_types:
   - posts
@@ -581,6 +608,7 @@ file_patterns:
     dump_glob: '*.json.gz'
     json: '^posts_.*$'
     csv: '^posts_.*\.csv$'
+    parquet: '^posts_.*\.parquet$'
     prefix: 'posts_'
     compression: gz
 
@@ -589,7 +617,8 @@ mongo_db_name: my_data
 mongo_collections:
   posts: posts
 
-indexes: {}
+indexes:
+  posts: [author]
 
 field_types:
   id: text

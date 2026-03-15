@@ -1,6 +1,6 @@
 # Classification Profiles
 
-The `ml_cpu` and `ml` profiles run classifiers on parsed CSV files. The `ml_cpu` profile runs CPU-based Lingua language detection, while the `ml` profile runs GPU-based transformer classifiers.
+The `ml_cpu` and `ml` profiles run classifiers on parsed files (Parquet or CSV). The `ml_cpu` profile runs CPU-based Lingua language detection, while the `ml` profile runs GPU-based transformer classifiers. Classifiers detect file format from the extension and produce output in the same format.
 
 ## Running
 
@@ -31,7 +31,7 @@ Lingua provides fast language detection using a Rust-based library (Rayon parall
 
 3. **Detection**: Texts are sorted by length (descending) for optimal Rayon parallel utilization. Detection runs in configurable batches (default 2M rows) to manage memory.
 
-4. **Output**: Appends language columns to the original CSV data.
+4. **Output**: Appends language columns to the original data (same format as input — Parquet or CSV).
 
 ### Output Columns
 
@@ -47,9 +47,9 @@ Lingua provides fast language detection using a Rust-based library (Rayon parall
 
 Lingua has two output modes controlled by `prefer_lingua` in the postgres profile:
 
-- **`prefer_lingua: true`** (default): Lingua output includes all original CSV columns + language columns. The `postgres_ingest` profile ingests these enriched CSVs directly into the main table. No separate lingua table is needed.
+- **`prefer_lingua: true`** (default): Lingua output includes all original columns + language columns. The `postgres_ingest` profile ingests these enriched files directly into the main table. No separate lingua table is needed.
 
-- **`prefer_lingua: false`**: Lingua additionally generates a minimal `lingua_ingest` CSV containing only `id, dataset, retrieved_utc` + language columns. The `postgres_ml` profile ingests this as a separate table. Original CSVs (without lingua columns) go to the main table via `postgres_ingest`.
+- **`prefer_lingua: false`**: Lingua additionally generates a minimal `lingua_ingest` file containing only `id, dataset, retrieved_utc` + language columns. The `postgres_ml` profile ingests this as a separate table. Original parsed files (without lingua columns) go to the main table via `postgres_ingest`.
 
 ### Configuration
 
@@ -63,7 +63,7 @@ Lingua has two output modes controlled by `prefer_lingua` in the postgres profil
 | `text_columns` | Columns to classify per data type | submissions: [title, selftext], comments: [body] |
 | `remove_strings` | Exact strings to remove before classification | [deleted], [removed], [unavailable] |
 | `remove_patterns` | Regex patterns to remove | URLs, r/subreddit, u/user |
-| `fields` | Extra columns in lingua_ingest CSV | `[]` (only mandatory fields) |
+| `fields` | Extra columns in lingua_ingest output | `[]` (only mandatory fields) |
 
 </details>
 
@@ -125,7 +125,7 @@ GPU-based text classification using HuggingFace models with ONNX FP16, ONNX, or 
    - `sigmoid`: Multi-label classification (each label independent, outputs probabilities 0-1)
    - `softmax`: Single-label classification (outputs sum to 1)
 
-9. **Output**: CSV with mandatory fields (id, dataset, retrieved_utc) + configured extra `fields` + classifier output columns.
+9. **Output**: File (same format as input — Parquet or CSV) with mandatory fields (id, dataset, retrieved_utc) + configured extra `fields` + classifier output columns.
 
 ### Multi-GPU Architecture
 
@@ -228,7 +228,7 @@ CLASSIFIER=toxic_roberta docker compose --profile ml up
 
 ### Watch Mode
 
-Set `watch_interval` to a value > 0 in pipeline.yaml to continuously check for new CSV files every N minutes.
+Set `watch_interval` to a value > 0 in pipeline.yaml to continuously check for new parsed files every N minutes.
 
 ### Adding Custom Classifiers
 

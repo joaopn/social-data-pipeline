@@ -1,6 +1,6 @@
 # Custom Platforms
 
-Custom platforms (`PLATFORM=custom/<name>`) provide simple JSON-to-CSV conversion for arbitrary data sources, without platform-specific logic. Each custom source gets a `platform.yaml` in `config/sources/<name>/`.
+Custom platforms (`PLATFORM=custom/<name>`) provide simple JSON parsing to structured files (Parquet or CSV) for arbitrary data sources, without platform-specific logic. Each custom source gets a `platform.yaml` in `config/sources/<name>/`.
 
 ---
 
@@ -30,11 +30,12 @@ python sdb.py source add mydata
 ```
 
 Select `custom` as the platform type. The setup will walk you through:
+- **File format** — Parquet (default, recommended) or CSV
 - **Data types** — define your data categories (e.g., posts, users)
 - **File patterns** — enter glob patterns (e.g., `data_*.json.gz`) for automatic file detection and compression auto-detection
 - **Fields** — configure which JSON fields to extract, with support for dot-notation nested access
 - **Field types** — set PostgreSQL column types for each field
-- **Indexes** — choose index fields for database ingestion
+- **Indexes** — choose index fields for PostgreSQL and MongoDB ingestion
 
 This generates `config/sources/mydata/platform.yaml` and per-profile override files.
 
@@ -42,6 +43,7 @@ To manually create the config instead, create `config/sources/<name>/platform.ya
 
 ```yaml
 db_schema: my_data
+file_format: parquet                 # 'parquet' (default) or 'csv'
 data_types:
   - posts
   - users
@@ -56,6 +58,7 @@ file_patterns:
     dump_glob: '*.json.gz'
     json: '^data_.*$'
     csv: '^data_.*\.csv$'
+    parquet: '^data_.*\.parquet$'
     prefix: 'data_'
     compression: gz
   users:
@@ -63,6 +66,7 @@ file_patterns:
     dump_glob: '*.json.gz'
     json: '^users_.*$'
     csv: '^users_.*\.csv$'
+    parquet: '^users_.*\.parquet$'
     prefix: 'users_'
     compression: gz
 mongo_collection_strategy: per_data_type
@@ -70,6 +74,10 @@ mongo_db_name: mydata
 mongo_collections:
   posts: posts
   users: users
+indexes:
+  posts:
+    - dataset
+    - author
 field_types:
   id: text
   created_at: integer
@@ -90,10 +98,6 @@ fields:
     - username
     - email
     - profile.bio        # Nested field access with dot notation
-indexes:
-  posts:
-    - dataset
-    - author
 ```
 
 ### 3. Run

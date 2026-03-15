@@ -1,6 +1,6 @@
 # Parse Profile
 
-The parse profile decompresses compressed data dumps (`.zst`, `.gz`, `.xz`, `.tar.gz`) and parses JSON to CSV files. It's the entry point of the pipeline — all other profiles depend on its output.
+The parse profile decompresses compressed data dumps (`.zst`, `.gz`, `.xz`, `.tar.gz`) and parses JSON to structured files (Parquet or CSV). It's the entry point of the pipeline — all other profiles depend on its output.
 
 ## Running
 
@@ -20,7 +20,7 @@ Three-phase pipeline:
 ### Phase 1: Input Detection
 - Scans `DUMPS_PATH/<source>` for compressed files matching platform file patterns
 - Scans `EXTRACTED_PATH/<source>` for already-decompressed JSON files
-- Scans `CSV_PATH/<source>` for already-parsed CSV files
+- Scans `CSV_PATH/<source>` for already-parsed files (Parquet or CSV, based on `file_format` in platform config)
 - File detection is scoped to per-data-type subdirectories
 - Reddit: detects `RS_YYYY-MM.*` (submissions) and `RC_YYYY-MM.*` (comments), including torrent directory structure (`submissions/RS_*.zst`, `comments/RC_*.zst`)
 
@@ -35,10 +35,11 @@ Three-phase pipeline:
 - Output: decompressed NDJSON files in `EXTRACTED_PATH/<source>/{data_type}/`
 
 ### Phase 3: Parsing
-- Platform-specific JSON-to-CSV conversion
+- Platform-specific JSON parsing to Parquet or CSV (controlled by `file_format` in `platform.yaml`)
 - Reddit: applies waterfall deletion detection, base-36 ID conversion, format compatibility (see [Reddit Platform](../platforms/reddit.md))
 - Custom: simple field extraction with dot-notation and type enforcement (see [Custom Platforms](../platforms/custom.md))
-- Writes CSV with headers
+- **Parquet** (default for new sources): typed columns via Polars/PyArrow, null-byte stripping only (no CSV escaping)
+- **CSV** (alternate, for external tool compatibility): writes CSV with headers, full escape handling
 - Uses temp files for atomic writes
 
 ---
@@ -81,22 +82,22 @@ The parse profile delegates to a platform-specific parser based on the `PLATFORM
 ```
 CSV_PATH/<source>/
 ├── submissions/
-│   ├── RS_2024-01.csv
-│   └── RS_2024-02.csv
+│   ├── RS_2024-01.parquet      # or .csv if file_format: csv
+│   └── RS_2024-02.parquet
 └── comments/
-    ├── RC_2024-01.csv
-    └── RC_2024-02.csv
+    ├── RC_2024-01.parquet
+    └── RC_2024-02.parquet
 ```
 
-CSV files include headers. Column order: `dataset, id, retrieved_utc, ...fields from platform config...`
+Output format is controlled by `file_format` in `platform.yaml` (default: `parquet`, alternate: `csv`). Column order: `dataset, id, retrieved_utc, ...fields from platform config...`
 
 ---
 
 ## Resume Behavior
 
 - Skips compressed files that already have a corresponding JSON file in `EXTRACTED_PATH/<source>/`
-- Skips JSON files that already have a corresponding CSV file in `CSV_PATH/<source>/`
-- To reprocess: delete the output CSV (or JSON) file
+- Skips JSON files that already have a corresponding output file (`.parquet` or `.csv`) in `CSV_PATH/<source>/`
+- To reprocess: delete the output file (or JSON) file
 
 ## Watch Mode
 

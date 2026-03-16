@@ -60,6 +60,13 @@ def run_questionnaire(hw):
     print(f"  RAM:       {ram or 'unknown'} GB")
     print()
 
+    # ---- Data base path ----
+    section_header("Data Path")
+    print("  Base directory for all data (dumps, parsed, output, databases).")
+    print()
+    data_path = ask("Data base path", "./data")
+    settings["data_path"] = data_path
+
     # ---- Database selection ----
     section_header("Database Selection")
 
@@ -73,9 +80,9 @@ def run_questionnaire(hw):
     # ---- Paths (database data dirs) ----
     section_header("Database Paths")
     if has_postgres:
-        settings["pgdata_path"] = ask("PostgreSQL data path", "./data/database/postgres")
+        settings["pgdata_path"] = ask("PostgreSQL data path", f"{data_path}/database/postgres")
     if has_mongo:
-        settings["mongo_data_path"] = ask("MongoDB data path", "./data/database/mongo")
+        settings["mongo_data_path"] = ask("MongoDB data path", f"{data_path}/database/mongo")
 
     # ---- PostgreSQL ----
     if has_postgres:
@@ -177,6 +184,9 @@ def run_questionnaire(hw):
 def generate_env(settings):
     """Generate .env file content with database and global settings."""
     lines = [
+        "# ===== DATA PATH =====",
+        f"DATA_PATH={settings.get('data_path', './data')}",
+        "",
         "# ===== HUGGINGFACE CONFIGURATION (ml profile) =====",
         "# Set HF_HOME to specify a custom cache directory for Hugging Face models and datasets.",
         "# HF_HOME=",
@@ -369,6 +379,9 @@ def generate_pg_hba_local_conf(settings):
 def print_summary(settings, files_to_write):
     """Print a summary of database settings and files to be written."""
     section_header("Database Configuration Summary")
+
+    data_path = settings.get("data_path", "./data")
+    print(f"  Data path:   {data_path}")
 
     databases = settings["databases"]
     print(f"  Databases:   {', '.join(databases)}")

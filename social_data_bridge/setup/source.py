@@ -20,7 +20,7 @@ from social_data_bridge.setup.utils import (
     ROOT, CONFIG_DIR,
     detect_hardware,
     ask, ask_int, ask_bool, ask_choice, ask_list, ask_multi_select,
-    section_header, write_files, list_sources, load_db_setup,
+    section_header, write_files, list_sources, load_db_setup, load_env,
     print_pipeline_commands, update_env_file,
     detect_compression_from_glob, derive_file_patterns,
 )
@@ -74,10 +74,11 @@ def run_questionnaire(hw, source_name, db_setup):
 
     # ---- Data paths ----
     section_header("Data Paths")
-    settings["dumps_path"] = ask("Dumps directory", f"./data/dumps/{source_name}")
-    settings["extracted_path"] = ask("Extracted directory", f"./data/extracted/{source_name}")
-    settings["parsed_path"] = ask("Parsed directory", f"./data/parsed/{source_name}")
-    settings["output_path"] = ask("Output directory", f"./data/output/{source_name}")
+    data_path = load_env().get("DATA_PATH", "./data")
+    settings["dumps_path"] = ask("Dumps directory", f"{data_path}/dumps/{source_name}")
+    settings["extracted_path"] = ask("Extracted directory", f"{data_path}/extracted/{source_name}")
+    settings["parsed_path"] = ask("Parsed directory", f"{data_path}/parsed/{source_name}")
+    settings["output_path"] = ask("Output directory", f"{data_path}/output/{source_name}")
 
     # ---- File format ----
     section_header("File Format")

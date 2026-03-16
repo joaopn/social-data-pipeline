@@ -368,6 +368,22 @@ def resolve_source(source_name=None):
 # .env file helpers
 # ============================================================================
 
+def load_env():
+    """Load .env file into a dict."""
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return {}
+    env = {}
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip()
+    return env
+
+
 def update_env_file(updates):
     """Read existing .env, merge key=value updates, write back.
 

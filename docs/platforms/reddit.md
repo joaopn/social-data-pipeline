@@ -141,7 +141,7 @@ The `removed_by_category` field (Priority 3) maps to canonical values:
 **Content:**
 `body`
 
-Edit the `fields` section in `config/sources/reddit/platform.yaml` to customize which fields are extracted, or use `python sdb.py source configure reddit` to reconfigure interactively.
+Edit the `fields` section in `config/sources/reddit/platform.yaml` to customize which fields are extracted, or use `python sdp.py source configure reddit` to reconfigure interactively.
 
 ---
 
@@ -169,4 +169,4 @@ Default indexes (from `platform.yaml`):
 
 **Comments:** `dataset`, `author`, `subreddit`, `link_id`
 
-Override via the source's `platform.yaml` or `postgres.yaml`, or use `python sdb.py source configure reddit`.
+Override via the source's `platform.yaml` or `postgres.yaml`, or use `python sdp.py source configure reddit`.

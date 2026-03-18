@@ -1,6 +1,6 @@
 <div align="center">
 
-# Social Data Bridge
+# Social Data Pipeline
 
 [![Docker](https://img.shields.io/badge/Docker-Compose_v2-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
@@ -9,7 +9,7 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900.svg?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
 [![ONNX](https://img.shields.io/badge/ONNX-Runtime-005CED.svg?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 
-A researcher-focused pipeline for processing, classifying, and ingesting large-scale JSON and CSV data dumps into analysis-ready databases. Interactive CLI setup, step-by-step execution with automatic resume and recovery. Built for [Reddit Arctic Shift dumps](https://github.com/ArthurHeitmann/arctic_shift) and configurable to any high-volume record-based dataset.
+A researcher-focused pipeline for processing, classifying, and ingesting large-scale JSON and CSV data dumps into analysis-ready databases. Interactive CLI setup, step-by-step execution with extensive configuration options. Built for the [Reddit Arctic Shift dumps](https://github.com/ArthurHeitmann/arctic_shift) and configurable to any high-volume record-based dataset.
 
 
 </div>
@@ -18,24 +18,24 @@ A researcher-focused pipeline for processing, classifying, and ingesting large-s
 
 ```bash
 # Configure databases
-python sdb.py db setup                      # Configure PostgreSQL/MongoDB (one-time)
-python sdb.py db start                      # Start database(s)
+python sdp.py db setup                      # Configure PostgreSQL/MongoDB (one-time)
+python sdp.py db start                      # Start database(s)
 
 # Process and ingest data
-python sdb.py source add reddit             # Add a data source (interactive setup)
-python sdb.py run parse                     # Decompress dumps → parse to cleaned, structured files
-python sdb.py run postgres_ingest           # Ingest parsed files into PostgreSQL
-python sdb.py run mongo_ingest              # Ingest raw data into MongoDB
+python sdp.py source add reddit             # Add a data source (interactive setup)
+python sdp.py run parse                     # Decompress dumps → parse to cleaned, structured files
+python sdp.py run postgres_ingest           # Ingest parsed files into PostgreSQL
+python sdp.py run mongo_ingest              # Ingest raw data into MongoDB
 
 # Optional data-enrichment
-python sdb.py run lingua                    # Adds language detection to parsed files
-python sdb.py db mcp                        # MCP servers for AI tool access
-python sdb.py run ml                        # GPU classifiers (toxicity, emotions)
-python sdb.py run postgres_ml               # Ingest classifier outputs
+python sdp.py run lingua                    # Adds language detection to parsed files
+python sdp.py db mcp                        # MCP servers for AI tool access
+python sdp.py run ml                        # GPU classifiers (toxicity, emotions)
+python sdp.py run postgres_ml               # Ingest classifier outputs
 
 # Check status
-python sdb.py db status                     # Database status
-python sdb.py source status                 # Ingestion source status
+python sdp.py db status                     # Database status
+python sdp.py source status                 # Ingestion source status
 ```
 
 ---
@@ -55,7 +55,7 @@ python sdb.py source status                 # Ingestion source status
 
 ## ◾ Overview
 
-**Social Data Bridge** provides a complete pipeline for working with large-scale social media data dumps:
+**Social Data Pipeline** provides a complete pipeline for working with large-scale social media data dumps:
 
 - **Multi-platform support** — Reddit (with specialized features) or custom JSON/CSV platforms
 - **Automatic detection and decompression** of `.zst`, `.gz`, `.xz`, and `.tar.gz` dump files
@@ -101,7 +101,7 @@ flowchart TB
 
 ## ◾ Requirements
 
-- [Python](https://www.python.org/) 3.10+ (for `sdb.py` CLI and setup scripts)
+- [Python](https://www.python.org/) 3.10+ (for `sdp.py` CLI and setup scripts)
 - [Docker Compose](https://docs.docker.com/compose/) v2
 - Sufficient storage (see [Storage Requirements](#-storage-requirements))
 
@@ -140,8 +140,8 @@ data/dumps/reddit/
 Set up databases and add Reddit as a data source:
 
 ```bash
-python sdb.py db setup              # Configure databases (PostgreSQL, MongoDB)
-python sdb.py source add reddit     # Add Reddit source (interactive setup)
+python sdp.py db setup              # Configure databases (PostgreSQL, MongoDB)
+python sdp.py source add reddit     # Add Reddit source (interactive setup)
 ```
 
 `db setup` configures database connections, generates `.env`, `config/db/*.yaml`, and `postgresql.local.conf` (with optional [PGTune](https://pgtune.leopard.in.ua/) integration). `source add` walks you through platform selection, file patterns, fields, indexes, and classifier configuration — generating per-source config in `config/sources/reddit/`.
@@ -151,12 +151,12 @@ For manual configuration or to understand what each setting does, see the [Confi
 #### 3. Run
 
 ```bash
-python sdb.py db start                        # Start configured database(s)
-python sdb.py run parse --source reddit       # Decompress dumps → parse to structured files
-python sdb.py run postgres_ingest --source reddit  # Ingest parsed files into PostgreSQL
+python sdp.py db start                        # Start configured database(s)
+python sdp.py run parse --source reddit       # Decompress dumps → parse to structured files
+python sdp.py run postgres_ingest --source reddit  # Ingest parsed files into PostgreSQL
 ```
 
-The `--source` flag selects the target source (optional when only one is configured). `source add` prints the recommended run commands for your setup. See the [TL;DR](#tldr) for the full set of profiles, or `python sdb.py source status` to check progress.
+The `--source` flag selects the target source (optional when only one is configured). `source add` prints the recommended run commands for your setup. See the [TL;DR](#tldr) for the full set of profiles, or `python sdp.py source status` to check progress.
 
 #### 4. Analyze
 
@@ -168,15 +168,15 @@ With an optimized PostgreSQL database running, you can send large-scale analytic
 **MCP servers** (optional) expose your databases to AI tools like Claude Desktop, VS Code, and Cursor:
 
 ```bash
-python sdb.py db mcp                 # Configure MCP servers (ports, read-only mode)
-python sdb.py db start               # Starts databases + MCP servers together
+python sdp.py db mcp                 # Configure MCP servers (ports, read-only mode)
+python sdp.py db start               # Starts databases + MCP servers together
 ```
 
 **Database authentication** (optional) adds password-protected admin access, a read-only MCP user, and an optional passwordless read-only convenience user:
 
 ```bash
 # Enable during initial setup — or re-run to add auth to existing databases
-python sdb.py db setup               # Select "Enable database authentication"
+python sdp.py db setup               # Select "Enable database authentication"
 ```
 
 > [!NOTE]
@@ -187,47 +187,47 @@ python sdb.py db setup               # Select "Enable database authentication"
 <details>
 <summary><h2>◾ CLI Reference</h2></summary>
 
-All operations go through `sdb.py` with three command groups:
+All operations go through `sdp.py` with three command groups:
 
 ```
-python sdb.py <db|source|run> [options]
+python sdp.py <db|source|run> [options]
 ```
 
-### Database Management (`sdb.py db`)
+### Database Management (`sdp.py db`)
 
 | Command | Description |
 |---------|-------------|
-| `sdb.py db setup` | Configure databases (PostgreSQL, MongoDB, optional auth) — global, one-time |
-| `sdb.py db mcp` | Configure MCP servers for AI tool access (ports, read-only mode) |
-| `sdb.py db mcp --delete` | Remove MCP configuration |
-| `sdb.py db start [postgres\|mongo]` | Start database services + MCP servers (all configured if unspecified) |
-| `sdb.py db stop [postgres\|mongo]` | Stop database services + MCP servers (all configured if unspecified) |
-| `sdb.py db status` | Show database config, health, and MCP status |
-| `sdb.py db recover-password` | Reset database admin password (requires auth enabled) |
-| `sdb.py db unsetup` | Remove database config; data deletion behind double confirmation |
+| `sdp.py db setup` | Configure databases (PostgreSQL, MongoDB, optional auth) — global, one-time |
+| `sdp.py db mcp` | Configure MCP servers for AI tool access (ports, read-only mode) |
+| `sdp.py db mcp --delete` | Remove MCP configuration |
+| `sdp.py db start [postgres\|mongo]` | Start database services + MCP servers (all configured if unspecified) |
+| `sdp.py db stop [postgres\|mongo]` | Stop database services + MCP servers (all configured if unspecified) |
+| `sdp.py db status` | Show database config, health, and MCP status |
+| `sdp.py db recover-password` | Reset database admin password (requires auth enabled) |
+| `sdp.py db unsetup` | Remove database config; data deletion behind double confirmation |
 
 `db setup` generates `.env`, `config/db/*.yaml`, and `config/postgres/postgresql.local.conf`. When authentication is enabled, it also generates `pg_hba.local.conf` and MCP credential files. Database deletion in `db unsetup` requires two separate confirmations.
 
-### Source Management (`sdb.py source`)
+### Source Management (`sdp.py source`)
 
 | Command | Description |
 |---------|-------------|
-| `sdb.py source add <name>` | Add a new data source (interactive setup) |
-| `sdb.py source configure <name>` | Reconfigure existing source (platform-specific) |
-| `sdb.py source add-classifiers <name>` | Add ML classifiers for a source |
-| `sdb.py source remove <name>` | Remove source configuration |
-| `sdb.py source list` | List configured sources |
-| `sdb.py source status [name]` | Show source processing/ingestion status |
+| `sdp.py source add <name>` | Add a new data source (interactive setup) |
+| `sdp.py source configure <name>` | Reconfigure existing source (platform-specific) |
+| `sdp.py source add-classifiers <name>` | Add ML classifiers for a source |
+| `sdp.py source remove <name>` | Remove source configuration |
+| `sdp.py source list` | List configured sources |
+| `sdp.py source status [name]` | Show source processing/ingestion status |
 
 `source add` walks you through platform selection, file patterns, fields, indexes, and optional classifier configuration. All per-source config is written to `config/sources/<name>/`.
 
-### Pipeline (`sdb.py run`)
+### Pipeline (`sdp.py run`)
 
 | Command | Description |
 |---------|-------------|
-| `sdb.py run <profile>` | Run a pipeline profile |
-| `sdb.py run <profile> --source <name>` | Run for a specific source (auto-selects if only one configured) |
-| `sdb.py run <profile> --build` | Rebuild the Docker image before running |
+| `sdp.py run <profile>` | Run a pipeline profile |
+| `sdp.py run <profile> --source <name>` | Run for a specific source (auto-selects if only one configured) |
+| `sdp.py run <profile> --build` | Rebuild the Docker image before running |
 
 Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`.
 
@@ -263,7 +263,7 @@ For detailed configuration and algorithm documentation, see the per-profile docs
 | `reddit` | Specialized Reddit features: waterfall deletion detection, base-36 ID conversion, format compatibility | Yes |
 | `custom/<name>` | JSON and CSV parsing for arbitrary data: dot-notation, array indexing, type enforcement | No |
 
-The default platform is Reddit. To process arbitrary JSON/NDJSON or CSV data, select `custom` during `sdb.py source add` and configure your platform interactively.
+The default platform is Reddit. To process arbitrary JSON/NDJSON or CSV data, select `custom` during `sdp.py source add` and configure your platform interactively.
 
 - [Reddit Platform Reference](docs/platforms/reddit.md)
 - [Custom Platform Setup](docs/platforms/custom.md)
@@ -286,21 +286,21 @@ Storage needs depend on pipeline mode and selected fields (estimates for full Re
 
 See [Database Profiles](docs/profiles/database.md#storage-requirements) for details on pipeline modes.
 
-**Multi-disk setups:** If your database doesn't fit on a single drive, use [PostgreSQL tablespaces](docs/profiles/database.md#tablespaces) to spread tables across multiple disks. Run `python sdb.py db setup` to configure tablespaces interactively.
+**Multi-disk setups:** If your database doesn't fit on a single drive, use [PostgreSQL tablespaces](docs/profiles/database.md#tablespaces) to spread tables across multiple disks. Run `python sdp.py db setup` to configure tablespaces interactively.
 
 ## ◾ FAQ and Troubleshooting
 
 <details>
 <summary><strong>Can I run classifiers without the database?</strong></summary>
 
-Yes! Use `python sdb.py run lingua` or `python sdb.py run ml` independently. The database profile is optional.
+Yes! Use `python sdp.py run lingua` or `python sdp.py run ml` independently. The database profile is optional.
 
 </details>
 
 <details>
 <summary><strong>Can I use this for non-Reddit data?</strong></summary>
 
-Yes! Select `custom` during `python sdb.py source add <name>` to process arbitrary JSON/NDJSON or CSV data. See the [Custom Platform](docs/platforms/custom.md) setup guide.
+Yes! Select `custom` during `python sdp.py source add <name>` to process arbitrary JSON/NDJSON or CSV data. See the [Custom Platform](docs/platforms/custom.md) setup guide.
 
 </details>
 

@@ -1,4 +1,4 @@
-# Social Data Bridge - CPU Base Image
+# Social Data Pipeline - CPU Base Image
 # Used for: parse, lingua, postgres_ingest, postgres_ml profiles
 FROM python:3.13-slim
 
@@ -19,11 +19,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY social_data_bridge/ ./social_data_bridge/
+COPY social_data_pipeline/ ./social_data_pipeline/
 COPY config/ ./config/
 
 # Create directories
 RUN mkdir -p /data/dumps /data/extracted /data/parsed /data/output /data/database
 
 # Default command (override per service)
-CMD ["python", "-m", "social_data_bridge.orchestrators.parse"]
+CMD ["python", "-m", "social_data_pipeline.orchestrators.parse"]

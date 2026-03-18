@@ -1,4 +1,4 @@
-# Social Data Bridge - MongoDB Ingestion Image
+# Social Data Pipeline - MongoDB Ingestion Image
 # Used for: mongo_ingest profile
 # Includes mongoimport (mongodb-database-tools) and pymongo
 FROM python:3.13-slim
@@ -29,11 +29,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements-mongo.txt
 
 # Copy application code
-COPY social_data_bridge/ ./social_data_bridge/
+COPY social_data_pipeline/ ./social_data_pipeline/
 COPY config/ ./config/
 
 # Create directories
 RUN mkdir -p /data/dumps /data/extracted /data/parsed /data/output /data/database /data/mongo
 
 # Default command
-CMD ["python", "-m", "social_data_bridge.orchestrators.mongo_ingest"]
+CMD ["python", "-m", "social_data_pipeline.orchestrators.mongo_ingest"]

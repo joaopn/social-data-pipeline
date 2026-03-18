@@ -1,6 +1,6 @@
 # Adding Custom Classifiers
 
-Social Data Bridge supports two approaches for adding custom classifiers: config-only (for HuggingFace transformer models) and custom Python (for any classification logic).
+Social Data Pipeline supports two approaches for adding custom classifiers: config-only (for HuggingFace transformer models) and custom Python (for any classification logic).
 
 ---
 
@@ -43,7 +43,7 @@ gpu_classifiers:
 
 ```bash
 # Run all classifiers
-python sdb.py run ml
+python sdp.py run ml
 
 # Run only your classifier
 CLASSIFIER=my_classifier docker compose --profile ml up
@@ -80,7 +80,7 @@ For classifiers that need custom logic (non-HuggingFace models, special preproce
 
 ### 1. Create Classifier Module
 
-Create `social_data_bridge/classifiers/my_classifier.py`:
+Create `social_data_pipeline/classifiers/my_classifier.py`:
 
 ```python
 from .base import register_classifier

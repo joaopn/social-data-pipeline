@@ -1,4 +1,4 @@
-# Social Data Bridge - CPU Dependencies
+# Social Data Pipeline - CPU Dependencies
 # Used by: parse, lingua, postgres_ingest, postgres_ml profiles
 
 # Core

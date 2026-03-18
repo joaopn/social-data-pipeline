@@ -27,7 +27,7 @@ Supported compression: `.zst`, `.gz`, `.json.gz`, `.xz`, `.tar.gz`.
 Run the interactive setup:
 
 ```bash
-python sdb.py source add mydata
+python sdp.py source add mydata
 ```
 
 Select `custom` as the platform type. The setup will walk you through:
@@ -107,11 +107,11 @@ fields:
 ### 3. Run
 
 ```bash
-python sdb.py run parse --source mydata
+python sdp.py run parse --source mydata
 
 # Classification works the same way
-python sdb.py run lingua --source mydata
-python sdb.py run ml --source mydata
+python sdp.py run lingua --source mydata
+python sdp.py run ml --source mydata
 ```
 
 > [!TIP]

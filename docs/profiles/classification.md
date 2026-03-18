@@ -6,10 +6,10 @@ The `lingua` and `ml` profiles run classifiers on parsed files (Parquet or CSV).
 
 ```bash
 # CPU language detection
-python sdb.py run lingua [--source <name>]
+python sdp.py run lingua [--source <name>]
 
 # GPU transformer classifiers (requires NVIDIA GPU)
-python sdb.py run ml [--source <name>]
+python sdp.py run ml [--source <name>]
 
 # Run a single GPU classifier
 CLASSIFIER=toxic_roberta docker compose --profile ml up
@@ -224,7 +224,7 @@ CLASSIFIER=toxic_roberta docker compose --profile ml up
 ```
 
 > [!NOTE]
-> This is a per-run override. For standard usage, configure classifiers during `python sdb.py source add-classifiers <name>` and run with `python sdb.py run ml`.
+> This is a per-run override. For standard usage, configure classifiers during `python sdp.py source add-classifiers <name>` and run with `python sdp.py run ml`.
 
 ### Watch Mode
 

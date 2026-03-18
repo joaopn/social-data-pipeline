@@ -1,8 +1,8 @@
 # Adding New Platforms
 
-Social Data Bridge supports two ways to add new platforms:
+Social Data Pipeline supports two ways to add new platforms:
 
-1. **Custom platform** (config-only) — Run `sdb source add <name>` and select `custom`. No code required.
+1. **Custom platform** (config-only) — Run `sdp source add <name>` and select `custom`. No code required.
 2. **Built-in platform** (with custom parser) — For platforms needing specialized logic (computed fields, format handling, etc.).
 
 ---
@@ -12,7 +12,7 @@ Social Data Bridge supports two ways to add new platforms:
 If your data is standard JSON/NDJSON or CSV, use the custom platform system. No code changes needed.
 
 ```bash
-python sdb.py source add <name>
+python sdp.py source add <name>
 ```
 
 Select `custom` as the platform type. The interactive setup generates `config/sources/<name>/platform.yaml` with file patterns, fields, types, and indexes.
@@ -27,11 +27,11 @@ For platforms needing specialized parsing logic (like Reddit's deletion detectio
 
 ### 1. Create Platform Template
 
-Create `config/templates/{platform}.yaml` with all sections (`db_schema`, `data_types`, `file_patterns`, `indexes`, `field_types`, `fields`). This template is copied to `config/sources/<name>/platform.yaml` when a source is added with `sdb source add`.
+Create `config/templates/{platform}.yaml` with all sections (`db_schema`, `data_types`, `file_patterns`, `indexes`, `field_types`, `fields`). This template is copied to `config/sources/<name>/platform.yaml` when a source is added with `sdp source add`.
 
 ### 2. Create Parser Module
 
-Create `social_data_bridge/platforms/{platform}/parser.py` with these functions:
+Create `social_data_pipeline/platforms/{platform}/parser.py` with these functions:
 
 ```python
 def transform_json(data, dataset, data_type_config, fields_to_extract):
@@ -53,7 +53,7 @@ def parse_files_parallel(files, output_dir, platform_config, workers):
 
 ### 3. Register the Platform
 
-Update `social_data_bridge/orchestrators/parse.py` to handle your platform in the `get_platform_parser()` function:
+Update `social_data_pipeline/orchestrators/parse.py` to handle your platform in the `get_platform_parser()` function:
 
 ```python
 def get_platform_parser(platform):
@@ -73,6 +73,6 @@ def get_platform_parser(platform):
 ### 4. Run
 
 ```bash
-python sdb.py source add <name>     # Select your platform during setup
-python sdb.py run parse --source <name>
+python sdp.py source add <name>     # Select your platform during setup
+python sdp.py run parse --source <name>
 ```

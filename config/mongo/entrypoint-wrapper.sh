@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# MongoDB entrypoint wrapper for Social Data Bridge.
+# MongoDB entrypoint wrapper for Social Data Pipeline.
 # Delegates to the official docker-entrypoint.sh for user creation on fresh DBs.
 # Handles auth migration for existing databases.
 # Falls back to standard mongod when auth is not enabled.
@@ -86,7 +86,7 @@ EOJS
         # Write a post-init script to create RO user and set our marker
         mkdir -p /docker-entrypoint-initdb.d
         if [ -n "${MONGO_RO_USER:-}" ]; then
-            cat > /docker-entrypoint-initdb.d/01-sdb-ro-user.js <<EOJS
+            cat > /docker-entrypoint-initdb.d/01-sdp-ro-user.js <<EOJS
 db = db.getSiblingDB('admin');
 try {
     db.createUser({
@@ -100,12 +100,12 @@ try {
 }
 EOJS
         fi
-        cat > /docker-entrypoint-initdb.d/99-sdb-marker.sh <<'EOSH'
+        cat > /docker-entrypoint-initdb.d/99-sdp-marker.sh <<'EOSH'
 #!/bin/bash
 touch /data/db/.sdb_auth_initialized
 echo '[CONFIG] Auth initialization complete'
 EOSH
-        chmod +x /docker-entrypoint-initdb.d/99-sdb-marker.sh
+        chmod +x /docker-entrypoint-initdb.d/99-sdp-marker.sh
     fi
 
     # Delegate to official docker-entrypoint.sh

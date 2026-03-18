@@ -1,4 +1,4 @@
-# Social Data Bridge - MongoDB Dependencies
+# Social Data Pipeline - MongoDB Dependencies
 # Used by: mongo_ingest profile
 
 pyyaml>=6.0

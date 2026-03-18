@@ -1,9 +1,9 @@
 # Configuration Reference
 
-This document is the master configuration reference for Social Data Bridge. It covers every environment variable, configuration file, and tunable setting across all profiles.
+This document is the master configuration reference for Social Data Pipeline. It covers every environment variable, configuration file, and tunable setting across all profiles.
 
 > [!TIP]
-> Run `python sdb.py db setup` to configure databases, then `python sdb.py source add <name>` to add sources. The scripts auto-detect your hardware, walk you through every setting with sensible defaults, and generate `.env`, `config/db/*.yaml`, per-source config in `config/sources/<name>/`, and `postgresql.local.conf`. The reference below documents what each setting does.
+> Run `python sdp.py db setup` to configure databases, then `python sdp.py source add <name>` to add sources. The scripts auto-detect your hardware, walk you through every setting with sensible defaults, and generate `.env`, `config/db/*.yaml`, per-source config in `config/sources/<name>/`, and `postgresql.local.conf`. The reference below documents what each setting does.
 
 For profile-specific usage and workflows, see:
 - [Parse Profile](profiles/parse.md)
@@ -19,7 +19,7 @@ All environment variables are set in the `.env` file at the project root. Docker
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PLATFORM` | Platform to use for parsing (`reddit` or `custom/<name>`) | `reddit` |
-| `SOURCE` | Source name — selects config from `config/sources/<name>/` | (auto or set by `sdb.py run --source`) |
+| `SOURCE` | Source name — selects config from `config/sources/<name>/` | (auto or set by `sdp.py run --source`) |
 | `DUMPS_PATH` | Directory containing compressed dump files | `./data/dumps` |
 | `EXTRACTED_PATH` | Storage for decompressed JSON files | `./data/extracted` |
 | `PARSED_PATH` | Storage for parsed files | `./data/parsed` |
@@ -48,12 +48,12 @@ All environment variables are set in the `.env` file at the project root. Docker
 | `MCP_MONGODB_USER` | MongoDB MCP connection user | (unset) |
 
 > [!NOTE]
-> - `SOURCE` controls which source config directory is loaded. When running via `sdb.py run`, it is set automatically (auto-selects if only one source configured, or via `--source`).
+> - `SOURCE` controls which source config directory is loaded. When running via `sdp.py run`, it is set automatically (auto-selects if only one source configured, or via `--source`).
 > - `CLASSIFIER` is used with the `ml` profile to run only one GPU classifier instead of all enabled classifiers.
 > - `PROFILE` is set internally by docker-compose service definitions (`lingua` or `ml`). Do not set this manually.
 > - `HF_TOKEN` is optional but recommended to avoid rate limits and to access private models. Obtain one at https://huggingface.co/settings/tokens.
 > - Auth env vars (`POSTGRES_PASSWORD`, `MONGO_ADMIN_PASSWORD`) are set at runtime via `getpass` prompting — they are never stored in `.env` or on disk.
-> - MCP env vars are written to `.env` by `sdb db mcp`. MCP credentials are stored in the database data volume as `.mcp_credentials` (chmod 600).
+> - MCP env vars are written to `.env` by `sdp db mcp`. MCP credentials are stored in the database data volume as `.mcp_credentials` (chmod 600).
 
 ---
 
@@ -61,11 +61,11 @@ All environment variables are set in the `.env` file at the project root. Docker
 
 ```
 config/
-├── db/                            # Global database config (written by sdb db setup)
+├── db/                            # Global database config (written by sdp db setup)
 │   ├── postgres.yaml             # Port, name, tablespaces, auth flag
 │   ├── mongo.yaml                # Port, cache size, auth flag
-│   └── mcp.yaml                  # MCP server config (written by sdb db mcp)
-├── sources/                       # Per-source config (written by sdb source add)
+│   └── mcp.yaml                  # MCP server config (written by sdp db mcp)
+├── sources/                       # Per-source config (written by sdp source add)
 │   └── <name>/                   # One directory per source
 │       ├── platform.yaml         # Platform config (fields, types, indexes, schema, file patterns)
 │       ├── parse.yaml            # Parse profile overrides
@@ -88,8 +88,8 @@ config/
 │   ├── pipeline.yaml             # Database ingestion settings
 │   ├── postgresql.conf           # PostgreSQL server tuning
 │   ├── pg_hba.conf               # PostgreSQL authentication (default, no-auth)
-│   ├── postgresql.local.conf     # Generated PGTune config (written by sdb db setup)
-│   ├── pg_hba.local.conf         # Generated auth config (written by sdb db setup when auth enabled)
+│   ├── postgresql.local.conf     # Generated PGTune config (written by sdp db setup)
+│   ├── pg_hba.local.conf         # Generated auth config (written by sdp db setup when auth enabled)
 │   ├── entrypoint-wrapper.sh     # Container entrypoint (pg_parquet, auth migration)
 │   └── initdb.d/                 # First-init scripts (pg_parquet extension)
 ├── mongo/
@@ -108,7 +108,7 @@ config/
 
 ## 3. Source Configuration Overrides
 
-Each source has per-profile override files in `config/sources/<name>/` that are deep-merged over the base profile configs. These are generated by `python sdb.py source add <name>` but can also be created manually.
+Each source has per-profile override files in `config/sources/<name>/` that are deep-merged over the base profile configs. These are generated by `python sdp.py source add <name>` but can also be created manually.
 
 ### How it works
 
@@ -445,10 +445,10 @@ The PostgreSQL container loads its configuration from `config/postgres/`:
 | `postgresql.conf` | Server tuning parameters (shared_buffers, work_mem, etc.) |
 | `pg_hba.conf` | Client authentication rules (default: trust/no-auth) |
 | `postgresql.local.conf` | **Local override** — if present, replaces `postgresql.conf` |
-| `pg_hba.local.conf` | **Local override** — if present, replaces `pg_hba.conf` (generated by `sdb db setup` when auth enabled) |
+| `pg_hba.local.conf` | **Local override** — if present, replaces `pg_hba.conf` (generated by `sdp db setup` when auth enabled) |
 
 > [!TIP]
-> Run `python sdb.py db setup`, which handles PGTune integration and ZFS optimization as part of the interactive setup.
+> Run `python sdp.py db setup`, which handles PGTune integration and ZFS optimization as part of the interactive setup.
 
 **Manual approach:**
 
@@ -509,7 +509,7 @@ Cache size is controlled via `MONGO_CACHE_SIZE_GB` env var (default: 2 GB), not 
 
 ### Overview
 
-Each source has a `platform.yaml` in `config/sources/<name>/` that defines the platform-specific settings. For built-in platforms (like Reddit), this is copied from a template in `config/templates/` during `sdb source add`. For custom platforms, it is generated interactively.
+Each source has a `platform.yaml` in `config/sources/<name>/` that defines the platform-specific settings. For built-in platforms (like Reddit), this is copied from a template in `config/templates/` during `sdp source add`. For custom platforms, it is generated interactively.
 
 | Key | Description |
 |-----|-------------|
@@ -531,7 +531,7 @@ Each source has a `platform.yaml` in `config/sources/<name>/` that defines the p
 
 ### Reddit Platform: `config/sources/reddit/platform.yaml`
 
-For Reddit, the template `config/templates/reddit.yaml` is copied into `config/sources/reddit/platform.yaml` during `sdb source add reddit`, then customized interactively.
+For Reddit, the template `config/templates/reddit.yaml` is copied into `config/sources/reddit/platform.yaml` during `sdp source add reddit`, then customized interactively.
 
 <details>
 <summary><strong>Full config</strong></summary>
@@ -586,7 +586,7 @@ fields:
 
 ### Custom Platforms: `config/sources/<name>/platform.yaml`
 
-Custom platform configs are generated interactively during `sdb source add <name>`. Users choose an input format (NDJSON or CSV) and enter glob patterns for file matching (e.g., `tweets_*.json.gz`, `data_*.csv.zst`) which are converted to regex patterns with auto-detected compression.
+Custom platform configs are generated interactively during `sdp source add <name>`. Users choose an input format (NDJSON or CSV) and enter glob patterns for file matching (e.g., `tweets_*.json.gz`, `data_*.csv.zst`) which are converted to regex patterns with auto-detected compression.
 
 <details>
 <summary><strong>Example config</strong></summary>
@@ -640,6 +640,6 @@ fields:
 
 </details>
 
-Run `python sdb.py source add <name>` to generate the config interactively.
+Run `python sdp.py source add <name>` to generate the config interactively.
 
 See [Custom Platforms](platforms/custom.md) for a complete setup guide.

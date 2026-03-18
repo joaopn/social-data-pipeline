@@ -1,4 +1,4 @@
-# Social Data Bridge - GPU Image
+# Social Data Pipeline - GPU Image
 # Used for: ml profile (transformer classifiers with ONNX Runtime)
 #
 # Uses NVIDIA PyTorch image for pre-built CUDA environment with numpy/scipy/transformers.
@@ -14,10 +14,10 @@ COPY requirements-gpu.txt .
 RUN pip install --no-cache-dir -r requirements-gpu.txt
 
 # Copy application code
-COPY social_data_bridge/ ./social_data_bridge/
+COPY social_data_pipeline/ ./social_data_pipeline/
 COPY config/ ./config/
 
 # Create directories
 RUN mkdir -p /data/dumps /data/extracted /data/parsed /data/output
 
-CMD ["python", "-m", "social_data_bridge.orchestrators.ml"]
+CMD ["python", "-m", "social_data_pipeline.orchestrators.ml"]

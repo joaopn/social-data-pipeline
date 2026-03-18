@@ -5,11 +5,11 @@ The parse profile decompresses compressed data dumps (`.zst`, `.gz`, `.xz`, `.ta
 ## Running
 
 ```bash
-python sdb.py run parse [--source <name>]
+python sdp.py run parse [--source <name>]
 ```
 
 > [!NOTE]
-> The platform and source are configured during `python sdb.py source add <name>`. When only one source is configured, `--source` is auto-selected.
+> The platform and source are configured during `python sdp.py source add <name>`. When only one source is configured, `--source` is auto-selected.
 
 ---
 

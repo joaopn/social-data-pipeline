@@ -1,4 +1,4 @@
-# Social Data Bridge - GPU Dependencies
+# Social Data Pipeline - GPU Dependencies
 # Used by: ml profile (transformer classifiers)
 #
 # Base image (nvcr.io/nvidia/pytorch) already includes:

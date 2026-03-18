@@ -1,4 +1,4 @@
-# Social Data Bridge - MongoDB MCP Server
+# Social Data Pipeline - MongoDB MCP Server
 # Used for: mongo_mcp profile
 # Based on kiliczsh/mcp-mongo-server (built from source, no published image)
 # Pinned to commit 65c57d4 with multi-database patch (listDatabases + database param)

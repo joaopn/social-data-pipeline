@@ -27,7 +27,7 @@ from ..core.config import (
     ConfigurationError,
 )
 from ..db.postgres.ingest import (
-    ingest_csv, create_index, table_exists, analyze_table,
+    ingest_csv, create_index, table_exists, table_has_pk, analyze_table,
     ensure_database_exists, ensure_schema_exists, ensure_tablespaces, resolve_tablespace,
     ensure_pg_parquet,
     # Fast initial load functions
@@ -347,10 +347,22 @@ def run_pipeline(config_dir: str = "/app/config"):
         print("\n[sdp] No files to process. Exiting.")
         return
     
-    # Check which tables exist before processing
-    tables_existed_before = {}
+    # Decide load strategy per data type.
+    #
+    # Standard ON CONFLICT requires the table to exist AND carry the PK that
+    # ON CONFLICT references. A table without PK is a recovery case: a prior
+    # fast-load was interrupted between blind COPY and ADD PRIMARY KEY, leaving
+    # the table half-built. The fast-load path is idempotent for this case
+    # (CREATE TABLE IF NOT EXISTS, append, dedup, ADD PRIMARY KEY), so we route
+    # there. Probing PK existence (not just table existence) is what catches
+    # this — `table_exists` alone would route to ON CONFLICT and crash with
+    # "no unique or exclusion constraint matching the ON CONFLICT specification".
+    tables_ready_for_upsert = {}
     for data_type in data_types:
-        tables_existed_before[data_type] = table_exists(
+        if not pk_column:
+            tables_ready_for_upsert[data_type] = False
+            continue
+        tables_ready_for_upsert[data_type] = table_has_pk(
             table=data_type,
             schema=db_config['schema'],
             dbname=db_config['name'],
@@ -524,18 +536,19 @@ def run_pipeline(config_dir: str = "/app/config"):
             )
 
         data_types_with_files = set(dt for _, _, dt in files_to_ingest)
-        
-        # Determine load strategy per data type:
-        # New tables use fast load (deferred PK, blind COPY, post-load dedup)
-        # Existing tables use standard ON CONFLICT upsert
+
+        # Tables that are "ready" (exist with PK) take the standard ON CONFLICT
+        # path. Everything else — missing tables and orphaned no-PK tables from
+        # an interrupted prior run — goes through fast-load, which finalizes
+        # the PK at the end.
         fast_load_types = set()
         standard_load_types = set()
 
         for dt in data_types_with_files:
-            if not tables_existed_before.get(dt, True):
-                fast_load_types.add(dt)
-            else:
+            if tables_ready_for_upsert.get(dt, False):
                 standard_load_types.add(dt)
+            else:
+                fast_load_types.add(dt)
 
         if fast_load_types:
             print(f"[sdp] Fast initial load for: {', '.join(sorted(fast_load_types))}")

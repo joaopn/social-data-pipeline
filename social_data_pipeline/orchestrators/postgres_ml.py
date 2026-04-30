@@ -26,7 +26,7 @@ from ..core.config import (
 from ..db.postgres.ingest import (
     ensure_database_exists, ensure_schema_exists, ensure_tablespaces, resolve_tablespace,
     ensure_pg_parquet,
-    ingest_classifier_csv, table_exists, infer_classifier_schema,
+    ingest_classifier_csv, table_exists, table_has_pk, infer_classifier_schema,
     # Fast initial load functions
     create_fast_load_classifier_table, fast_ingest_classifier_csv,
     delete_duplicates, finalize_fast_load_table,
@@ -322,11 +322,18 @@ def run_pipeline(config_dir: str = "/app/config"):
                 files_by_type[data_type] = []
             files_by_type[data_type].append((filepath, file_id))
         
-        # Check which tables exist for this classifier
-        tables_existed = {}
+        # Probe each classifier table for PK presence. A table that exists
+        # without PK is a recovery case (prior fast-load interrupted between
+        # blind COPY and ADD PRIMARY KEY) — route to fast-load so the PK gets
+        # finalized. Without PK we'd hit "no unique or exclusion constraint
+        # matching the ON CONFLICT specification" on the standard path.
+        tables_ready_for_upsert = {}
         for dt in files_by_type.keys():
             table_name = f"{dt}{suffix}"
-            tables_existed[dt] = table_exists(
+            if not pk_column:
+                tables_ready_for_upsert[dt] = False
+                continue
+            tables_ready_for_upsert[dt] = table_has_pk(
                 table=table_name,
                 schema=db_config['schema'],
                 dbname=db_config['name'],
@@ -335,18 +342,15 @@ def run_pipeline(config_dir: str = "/app/config"):
                 user=db_config['user'],
                 password=password
             )
-        
-        # Determine load strategy per data type:
-        # New tables use fast load (deferred PK, blind COPY, post-load dedup)
-        # Existing tables use standard ON CONFLICT upsert
+
         fast_load_types = set()
         standard_load_types = set()
 
         for dt in files_by_type.keys():
-            if not tables_existed[dt]:
-                fast_load_types.add(dt)
-            else:
+            if tables_ready_for_upsert[dt]:
                 standard_load_types.add(dt)
+            else:
+                fast_load_types.add(dt)
 
         if fast_load_types:
             print(f"[sdp] Fast initial load for: {', '.join(sorted(fast_load_types))}")

@@ -492,6 +492,38 @@ def table_exists(
         return False
 
 
+def table_has_pk(
+    table: str,
+    schema: str,
+    dbname: str,
+    host: str = '127.0.0.1',
+    port: int = 5432,
+    user: str = 'postgres',
+    password: str = None
+) -> bool:
+    """Check if a table has a PRIMARY KEY constraint.
+
+    Returns False when the table is missing or has no PK. Used by orchestrators
+    to detect tables left over from an interrupted fast-load (table created
+    without PK, ALTER TABLE ADD PRIMARY KEY never executed). Such a table
+    cannot be used with ON CONFLICT and must be re-finalized via fast-load.
+    """
+    query = """
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE c.contype = 'p' AND n.nspname = %s AND t.relname = %s
+    """
+    try:
+        with _connect(dbname, user, host, port, password) as conn:
+            with conn.cursor() as curr:
+                curr.execute(query, (schema, table))
+                return curr.fetchone() is not None
+    except Exception:
+        return False
+
+
 def analyze_table(
     table: str,
     schema: str,

@@ -59,6 +59,40 @@ def pg_index_count(conn, schema):
     )
 
 
+def pg_table_has_pk(conn, schema, table):
+    """Return True if a table has a PRIMARY KEY constraint."""
+    return pg_query_scalar(
+        conn,
+        "SELECT EXISTS("
+        " SELECT 1 FROM pg_constraint c"
+        " JOIN pg_class t ON t.oid = c.conrelid"
+        " JOIN pg_namespace n ON n.oid = t.relnamespace"
+        " WHERE c.contype = 'p' AND n.nspname = %s AND t.relname = %s)",
+        (schema, table),
+    )
+
+
+def pg_drop_pk(conn, schema, table):
+    """Drop the PRIMARY KEY constraint on a table.
+
+    Used by E2E tests to simulate a half-finalized fast-load (the table
+    exists with data but the PK was never added because the prior run
+    crashed between blind COPY and ALTER TABLE ADD PRIMARY KEY).
+    """
+    pk_name = pg_query_scalar(
+        conn,
+        "SELECT c.conname FROM pg_constraint c"
+        " JOIN pg_class t ON t.oid = c.conrelid"
+        " JOIN pg_namespace n ON n.oid = t.relnamespace"
+        " WHERE c.contype = 'p' AND n.nspname = %s AND t.relname = %s",
+        (schema, table),
+    )
+    if pk_name is None:
+        return
+    conn.execute(f'ALTER TABLE "{schema}"."{table}" DROP CONSTRAINT "{pk_name}"')
+    conn.commit()
+
+
 def mongo_connect(port=27017, username=None, password=None):
     """Create a pymongo MongoClient.
 

@@ -26,6 +26,7 @@ ENABLED_TESTS=(
     tests/e2e/tests/test_filter.py
     tests/e2e/tests/test_recovery_postgres.py
     tests/e2e/tests/test_postgres_dedup_null_safe.py
+    tests/e2e/tests/test_unsetup_gating.py
     # tests/e2e/tests/test_mcp_lifecycle.py   # disabled: hangs inside sysbox during MCP image build
     # tests/e2e/tests/test_parse_custom.py    # deferred: custom parser fields config
 )

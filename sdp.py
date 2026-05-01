@@ -53,6 +53,40 @@ PROFILE_SERVICE_MAP = {
     "sr_ml": "sr-ml",
 }
 
+# Per-source override files that belong to each DB. Used by `db unsetup` to
+# clean up source dirs and by `cmd_run` for source-override gating.
+_DB_TO_SOURCE_FILES = {
+    "postgres":  ["postgres.yaml", "postgres_ml.yaml"],
+    "mongo":     ["mongo.yaml"],
+    "starrocks": ["starrocks.yaml", "sr_ml.yaml"],
+}
+
+# Profile → required DB (or None for profiles with no DB dependency).
+_PROFILE_DB = {
+    "parse":           None,
+    "lingua":          None,
+    "ml":              None,
+    "postgres_ingest": "postgres",
+    "postgres_ml":     "postgres",
+    "mongo_ingest":    "mongo",
+    "sr_ingest":       "starrocks",
+    "sr_ml":           "starrocks",
+}
+
+# Profile → expected source override filename (sans .yaml). Note the deliberate
+# name collisions (postgres_ingest writes postgres.yaml, sr_ingest writes
+# starrocks.yaml) — see social_data_pipeline/setup/source.py.
+_PROFILE_SOURCE_FILE = {
+    "parse":           "parse",
+    "lingua":          "lingua",
+    "ml":              "ml",
+    "postgres_ingest": "postgres",
+    "postgres_ml":     "postgres_ml",
+    "mongo_ingest":    "mongo",
+    "sr_ingest":       "starrocks",
+    "sr_ml":           "sr_ml",
+}
+
 
 # ============================================================================
 # Helpers
@@ -86,6 +120,37 @@ def docker_compose(*args):
     cmd = ["docker", "compose"] + list(args)
     print(f"  $ {' '.join(cmd)}")
     return subprocess.run(cmd, cwd=ROOT)
+
+
+def _delete_source_db_overrides(db_names):
+    """Delete per-source DB override files for the given DBs.
+
+    For each `config/sources/<name>/` directory, unlink the override files
+    associated with the named DB(s) (e.g. postgres.yaml, postgres_ml.yaml).
+    Prints each path removed under a single header. Returns the count.
+    """
+    sources_dir = CONFIG_DIR / "sources"
+    if not sources_dir.is_dir():
+        return 0
+    targets = []
+    for db in db_names:
+        targets.extend(_DB_TO_SOURCE_FILES.get(db, []))
+    if not targets:
+        return 0
+    removed_paths = []
+    for src_dir in sorted(sources_dir.iterdir()):
+        if not src_dir.is_dir():
+            continue
+        for fname in targets:
+            f = src_dir / fname
+            if f.exists():
+                f.unlink()
+                removed_paths.append(f.relative_to(ROOT))
+    if removed_paths:
+        print("  Removed source overrides:")
+        for p in removed_paths:
+            print(f"    {p}")
+    return len(removed_paths)
 
 
 def _get_configured_db_services():
@@ -1175,6 +1240,9 @@ def _unsetup_single_db(db_name, env):
     if existing_configs or existing_baks:
         print(f"  Removed {len(existing_configs) + len(existing_baks)} config file(s).")
 
+    # --- Remove per-source DB overrides ---
+    _delete_source_db_overrides([db_name])
+
     # --- Strip DB keys from .env ---
     env_path = ROOT / ".env"
     if env_path.exists():
@@ -1239,6 +1307,10 @@ def cmd_db_unsetup(args):
 
     if getattr(args, "db", None):
         return _unsetup_single_db(args.db, env)
+
+    # Capture which DBs are configured BEFORE we delete their config files,
+    # so we know which per-source overrides to clean up at the end.
+    configured_dbs = _get_configured_db_services()
 
     print()
     print("  Social Data Pipeline - Database Unsetup")
@@ -1462,6 +1534,10 @@ def cmd_db_unsetup(args):
         print(f"  Removed {len(removed) + len(backups)} config file(s).")
     else:
         print("  Nothing to remove.")
+
+    # --- Remove per-source DB overrides for the DBs we just unsetup ---
+    if configured_dbs:
+        _delete_source_db_overrides(configured_dbs)
 
     # --- Print remaining data paths ---
     data_paths = {}
@@ -2966,6 +3042,30 @@ def cmd_run(args):
         platform = "reddit"
     else:
         platform = f"custom/{source}"
+
+    # --- Gate on configured DB / source overrides ---
+    # Without these checks, `sdp run postgres_ingest` after `db unsetup` would
+    # silently fall through to the global pipeline.yaml defaults; for sources
+    # missing the per-profile override file, the run would proceed with no
+    # source-specific config at all.
+    required_db = _PROFILE_DB.get(profile)
+    if required_db is not None:
+        db_config = CONFIG_DIR / "db" / f"{required_db}.yaml"
+        if not db_config.exists():
+            print(f"  Error: profile '{profile}' requires {required_db}, "
+                  f"but no {required_db} database is configured.")
+            print(f"  Run 'sdp db setup' (or 'sdp db setup --add {required_db}') first.")
+            return 1
+
+    source_file = _PROFILE_SOURCE_FILE.get(profile)
+    if source_file is not None:
+        source_override = CONFIG_DIR / "sources" / source / f"{source_file}.yaml"
+        if not source_override.exists():
+            print(f"  Error: source '{source}' has no '{profile}' configuration.")
+            print(f"  Expected: config/sources/{source}/{source_file}.yaml")
+            print(f"  Run 'sdp source configure {source}' to add it, "
+                  f"or 'sdp source add {source}' to reconfigure profiles.")
+            return 1
 
     # Prompt for admin password if auth enabled for the target database
     _profile_auth = {

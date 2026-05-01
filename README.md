@@ -10,30 +10,30 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900.svg?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
 [![ONNX](https://img.shields.io/badge/ONNX-Runtime-005CED.svg?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 
-A researcher-focused pipeline for processing, classifying, and ingesting large-scale JSON, CSV, and Parquet data dumps into analysis-ready databases. Interactive CLI setup, step-by-step execution with extensive configuration options. Built for the [Reddit data dumps](https://github.com/ArthurHeitmann/arctic_shift) and configurable to any high-volume record-based dataset — including [Hugging Face datasets](https://huggingface.co/datasets).
-
+A researcher-focused, end-to-end CLI pipeline for processing, classifying, ingesting, and querying large-scale data dumps using performant databases. Interactive CLI setup and execution with extensive configuration options. Built for the [Reddit data dumps](https://github.com/ArthurHeitmann/arctic_shift) and supporting any high-volume record-based dataset (including [Hugging Face](https://huggingface.co/datasets)), with first-class agentic AI access.
 
 </div>
 
 ### TL;DR
 
 ```bash
-# Configure databases
-python sdp.py db setup                      # Configure databases (one-time)
-python sdp.py db start                      # Start database(s)
+# 1. Configure databases (one-time)
+python sdp.py db setup                      # Configure databases (interactive setup)
+python sdp.py db setup-mcp                  # MCP servers for agentic AI data access (optional)
+python sdp.py db setup-jobs                 # Job scheduler for agentic AI query submission (optional)
+python sdp.py db start                      # Start databases and optional services
 
-# Process and ingest data
+# 2. Add a source and process data
 python sdp.py source add reddit             # Add a data source (interactive setup)
 python sdp.py run parse                     # Decompress dumps → parse to cleaned, structured files
-python sdp.py run postgres_ingest           # Ingest parsed files into PostgreSQL
-python sdp.py run mongo_ingest              # Ingest raw data into MongoDB
-python sdp.py run sr_ingest                 # Ingest parsed files into StarRocks
+python sdp.py run lingua                    # Adds language detection to parsed files (optional, if configured)
 
-# Optional data-enrichment
-python sdp.py run lingua                    # Adds language detection to parsed files
-python sdp.py db setup-mcp                  # MCP servers for AI tool access
-python sdp.py run ml                        # GPU classifiers (toxicity, emotions)
-python sdp.py run postgres_ml               # Ingest classifier outputs
+# 3. Ingest parsed files into PostgreSQL/MongoDB/StarRocks
+python sdp.py run {postgres_ingest | mongo_ingest | sr_ingest}
+
+# Runs & ingests ML data (optional, if configured)
+python sdp.py run ml                        # Run ML GPU classifiers
+python sdp.py run {postgres_ml | sr_ml}     # Ingest classifier outputs into PostgreSQL/StarRocks
 
 # Check status
 python sdp.py db status                     # Database status
@@ -63,11 +63,12 @@ python sdp.py source error-logs             # Show error details for failed data
 - **Automatic detection and decompression** of `.zst`, `.gz`, `.xz`, and `.tar.gz` dump files
 - **Parsing** JSON, CSV, and Parquet input to structured files (Parquet or CSV) with configurable field extraction
 - **Modular classification** — CPU-based (Lingua) and GPU-based (transformers) with multi-GPU parallelization and language filtering
+- **StarRocks ingestion** via the StarRocks OLAP engine for high-performance analytical queries
 - **PostgreSQL ingestion** of parsed files with finetuned settings and duplicate handling
 - **MongoDB ingestion** of raw JSON, CSV, and Parquet directly after extraction, for raw data inspection
-- **StarRocks ingestion** via the StarRocks OLAP engine for high-performance analytical queries
 - **Optional authentication** with admin and read-only database users
-- **MCP servers** for PostgreSQL, MongoDB, and StarRocks, exposing read-only databases to AI tools (Claude Desktop, VS Code, Cursor)
+- **MCP servers** for PostgreSQL, MongoDB, and StarRocks, exposing read-only databases to agentic clients (Claude Code, Codex, etc.)
+- **WebUI Job Scheduler** to approve and manage agent-created queries, with its own MCP for query submission
 
 ### Architecture
 
@@ -91,14 +92,20 @@ flowchart TB
         direction LR
         PGSR[("PostgreSQL / StarRocks")]
         MONGO[(MongoDB)]
-        MCP{{MCP servers}}
-        PGSR & MONGO -.-> MCP
+    end
+
+    subgraph Agentic[Agentic access]
+        direction LR
+        MCP{{MCP servers<br/>read-only}}
+        JOBS{{Jobs Scheduler<br/>WebUI + MCP}}
     end
 
     RAW -->|parse| PARSED
     RAW -->|mongo_ingest| MONGO
     PARSED & LINGUA -->|"{postgres|sr}_ingest"| PGSR
     ML_OUT -->|"{postgres|sr}_ml"| PGSR
+    PGSR & MONGO -.->|read| MCP
+    PGSR & MONGO -.->|approved queries| JOBS
 ```
 
 ## ◾ Requirements
@@ -183,14 +190,16 @@ python sdp.py <db|source|run> [options]
 | `sdp.py db setup` | Configure databases (PostgreSQL, MongoDB, StarRocks, optional auth) — global, one-time |
 | `sdp.py db setup --add <db>` | Add or reconfigure a single database (`postgres\|mongo\|starrocks`) without touching others |
 | `sdp.py db setup-mcp` | Configure MCP servers for AI tool access (ports, read-only mode) |
-| `sdp.py db start [service]` | Start services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp` (all if unspecified) |
-| `sdp.py db stop [service]` | Stop services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp` (all if unspecified) |
-| `sdp.py db status` | Show database config, health, and MCP status |
+| `sdp.py db setup-jobs` | Configure the query scheduler (jobs profile) — WebUI + MCP for agent query submission |
+| `sdp.py db start [service]` | Start services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp\|jobs` (all if unspecified) |
+| `sdp.py db stop [service]` | Stop services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp\|jobs` (all if unspecified) |
+| `sdp.py db status` | Show database config, health, MCP, and jobs scheduler status |
 | `sdp.py db recover-password` | Reset database admin password (requires auth enabled) |
 | `sdp.py db create-indexes [--source <name>]` | Interactively create database indexes |
 | `sdp.py db unsetup` | Remove database config; data deletion behind double confirmation |
 | `sdp.py db unsetup --db <postgres\|mongo\|starrocks>` | Fully remove one database (config, containers, and data) without touching the others |
 | `sdp.py db unsetup-mcp` | Remove MCP configuration and stop MCP containers |
+| `sdp.py db unsetup-jobs` | Remove jobs scheduler configuration and stop the jobs container |
 
 `db setup` generates `.env`, `config/db/*.yaml`, `config/postgres/postgresql.local.conf`, and `config/starrocks/{fe,be}.conf`. When authentication is enabled, it also generates `pg_hba.local.conf` and `.ro_credentials` files in each database data volume. `db setup --add <db>` adds or reconfigures a single database — it asks only that database's questions and merges into the existing `.env` without touching other databases' configuration. Database deletion in `db unsetup` requires two separate confirmations. `db unsetup --db <db>` is the inverse of `db setup --add` — it deletes exactly one database (containers, config files, data directory, and the DB's entries in `.env`, `docker-compose.override.yml`, and `config/db/mcp.yaml`) while leaving the other databases running. Data deletion is always included; to reconfigure a database in place without losing data, re-run `db setup --add <db>`.
 
@@ -219,7 +228,7 @@ python sdp.py <db|source|run> [options]
 | `sdp.py run <profile> --build` | Rebuild the Docker image before running |
 | `sdp.py run <profile> --filter <pattern>` | Only process files matching pattern (fnmatch glob on file ID) |
 
-Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`. `--build` rebuilds the Docker image before running (needed after code or dependency changes). `--filter` (`-f`) restricts processing to files whose ID matches the given pattern (e.g. `--filter "*2024*"` for all 2024 months, `--filter "RS_2024-*"` for 2024 submissions only). The global `--tag` flag (e.g. `python sdp.py --tag db setup`) prefixes each interactive prompt with a `[tag_id]` for automation tools like pexpect.
+Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`. (The `jobs` profile is started via `sdp.py db start jobs`, not `sdp.py run`.) `--build` rebuilds the Docker image before running (needed after code or dependency changes). `--filter` (`-f`) restricts processing to files whose ID matches the given pattern (e.g. `--filter "*2024*"` for all 2024 months, `--filter "RS_2024-*"` for 2024 submissions only). The global `--tag` flag (e.g. `python sdp.py --tag db setup`) prefixes each interactive prompt with a `[tag_id]` for automation tools like pexpect.
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 
@@ -240,6 +249,7 @@ Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mong
 | `starrocks` | StarRocks OLAP database server | — | — |
 | `sr_ingest` | Ingest parsed files into StarRocks | Parsed files (or Lingua-enriched) | StarRocks tables |
 | `sr_ml` | Ingest ML outputs into StarRocks | Classifier output files | StarRocks tables |
+| `jobs` | Query scheduler — WebUI + MCP for human-approved agent queries against PG/Mongo/StarRocks | SQL/aggregation submissions | `JOBS_RESULT_ROOT/<job_id>/` |
 
 > [!NOTE]
 > GPU profile requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html). All profiles track progress and resume automatically — rerun any profile safely without reprocessing completed files.
@@ -248,15 +258,16 @@ For detailed configuration and algorithm documentation, see the per-profile docs
 - [Parse Profile](docs/profiles/parse.md)
 - [Classification Profiles (lingua / ml)](docs/profiles/classification.md)
 - [Database Profiles (postgres / postgres_ingest / postgres_ml / mongo / mongo_ingest / starrocks / sr_ingest / sr_ml)](docs/profiles/database.md)
+- [Jobs Scheduler (jobs)](docs/profiles/jobs.md)
 
 ## ◾ Platform Support
 
 | Platform | Description |
 |----------|-------------|
-| `reddit` | Specialized Reddit features: waterfall deletion detection, base-36 ID conversion, format compatibility |
-| `custom/<name>` | JSON, CSV, and Parquet parsing for arbitrary data: dot-notation, array indexing, type enforcement |
+| `reddit` | Specialized Reddit features: waterfall deletion detection, id deduplication, base-36 ID conversion, [schema conversion](docs/platforms/reddit.md) (handles dump format drift across years — field renames, missing fields, lowercasing) |
+| `<name>` | JSON, CSV, and Parquet parsing for arbitrary data: dot-notation, array indexing, type enforcement |
 
-Platform is determined by source name: `sdp.py source add reddit` uses the Reddit platform, any other name uses `custom/<name>`. To process arbitrary JSON/NDJSON, CSV, or Parquet data, use any name other than `reddit` and configure your platform interactively.
+Platform is determined by source name: `sdp.py source add reddit` uses the Reddit platform, any other name uses the generic `<name>`. To process arbitrary JSON/NDJSON, CSV, or Parquet data, use any name other than `reddit` and configure your platform interactively.
 
 ### Hugging Face Datasets
 
@@ -283,6 +294,24 @@ The `--hf` flag fetches dataset metadata (configs, fields, types) from the HF AP
 ## ◾ FAQ and Troubleshooting
 
 <details>
+<summary><strong>Should I use PostgreSQL or StarRocks?</strong></summary>
+
+Both ingest the same parsed files and support the same pipeline features (classifiers, lingua, MCP servers, authentication). The choice depends on your workload:
+
+| | PostgreSQL | StarRocks |
+|---|---|---|
+| **Best for** | General-purpose queries, joins with external data, extensions (PostGIS, pg_parquet, pgvector) | Large-scale analytical queries (aggregations, scans, GROUP BY over billions of rows) |
+| **Query speed** | Good with proper indexing; row-oriented storage | Much faster for analytics; columnar storage with vectorized execution |
+| **Ecosystem** | Mature, widely supported, connects to nearly everything | MySQL wire protocol — works with any MySQL client, but smaller ecosystem |
+| **Extensibility** | Rich extension system (custom types, FDWs, procedural languages) | Limited — focused on analytics |
+| **Storage model** | Row-oriented, B-tree indexes, tablespaces for multi-disk | Columnar, BITMAP indexes, built-in multi-disk via `storage_root_path` |
+| **Ingestion** | Fast initial load (deferred PK), ON CONFLICT upsert | Single code path — Primary Key tables handle dedup natively |
+
+**Use PostgreSQL** if you need a general-purpose database that integrates with other tools and workflows. **Use StarRocks** if your primary goal is fast analytical queries over large datasets. You can use both — they ingest independently from the same parsed files.
+
+</details>
+
+<details>
 <summary><strong>Can I run classifiers without the database?</strong></summary>
 
 Yes! Use `python sdp.py run lingua` or `python sdp.py run ml` independently. The database profile is optional.
@@ -292,7 +321,7 @@ Yes! Use `python sdp.py run lingua` or `python sdp.py run ml` independently. The
 <details>
 <summary><strong>Can I use this for non-Reddit data?</strong></summary>
 
-Yes! Select `custom` during `python sdp.py source add <name>` to process arbitrary JSON/NDJSON, CSV, or Parquet data. For Hugging Face datasets, use `python sdp.py source add <name> --hf <dataset_id>` to fetch metadata and pre-populate setup defaults. See the [Custom Platform](docs/platforms/custom.md) setup guide.
+Yes! Use a not-reserved (not `reddit`) name during `python sdp.py source add <name>` to process arbitrary NDJSON, CSV, or Parquet data. For Hugging Face datasets, use `python sdp.py source add <name> --hf <dataset_id>` to fetch metadata and pre-populate setup defaults. See the [Custom Platform](docs/platforms/custom.md) setup guide.
 
 </details>
 
@@ -316,30 +345,7 @@ rm -rf data/output/<source>/ data/parsed/<source>/ data/extracted/<source>/  # F
 
 </details>
 
-<details>
-<summary><strong>Should I use PostgreSQL or StarRocks?</strong></summary>
 
-Both ingest the same parsed files and support the same pipeline features (classifiers, lingua, MCP servers, authentication). The choice depends on your workload:
-
-| | PostgreSQL | StarRocks |
-|---|---|---|
-| **Best for** | General-purpose queries, joins with external data, extensions (PostGIS, pg_parquet, pgvector) | Large-scale analytical queries (aggregations, scans, GROUP BY over billions of rows) |
-| **Query speed** | Good with proper indexing; row-oriented storage | Much faster for analytics; columnar storage with vectorized execution |
-| **Ecosystem** | Mature, widely supported, connects to nearly everything | MySQL wire protocol — works with any MySQL client, but smaller ecosystem |
-| **Extensibility** | Rich extension system (custom types, FDWs, procedural languages) | Limited — focused on analytics |
-| **Storage model** | Row-oriented, B-tree indexes, tablespaces for multi-disk | Columnar, BITMAP indexes, built-in multi-disk via `storage_root_path` |
-| **Ingestion** | Fast initial load (deferred PK), ON CONFLICT upsert | Single code path — Primary Key tables handle dedup natively |
-
-**Use PostgreSQL** if you need a general-purpose database that integrates with other tools and workflows. **Use StarRocks** if your primary goal is fast analytical queries over large datasets. You can use both — they ingest independently from the same parsed files.
-
-</details>
-
-<details>
-<summary><strong>Why no table partitioning?</strong></summary>
-
-This project targets large-scale, Reddit-wide analysis. For queries not limited to a few months, partitioning would split indexes into 200+ partitions, hurting query performance. It would also interfere with ID deduplication during ingestion.
-
-</details>
 
 ### Troubleshooting
 
@@ -375,7 +381,7 @@ docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
 
 ## AI disclaimer
 
-Most of the orchestration and dockerization glue code was written by LLMs, under human planning and code review. The algorithms and ingestion structure are a merge of a number of private repos developed over a period of almost 4 years.
+Most of the orchestration and dockerization glue code was written by LLMs, under human planning, code review, and [extensive testing](docs/guides/testing.md). The algorithms and ingestion structure are a merge of a number of private repos developed over a period of almost 4 years.
 
 ## License
 

@@ -113,6 +113,9 @@ When a table does not exist yet — or exists without a primary key (e.g., from 
 > [!NOTE]
 > Faster than ON CONFLICT for initial loads with billions of rows. The speedup comes from deferring index maintenance until after all data is loaded. Once the table has a primary key, subsequent ingestions use ON CONFLICT. Tables left without a PK by an interrupted run are auto-detected and re-routed back through the fast-load path on the next ingest.
 
+> [!NOTE]
+> **No table partitioning.** Reddit-wide queries that aren't bounded to a few months would hit 200+ partitions, splitting indexes and hurting performance; partitioning would also interfere with the deferred-PK dedup path. If your workload is dominated by analytical scans over the full dataset, [StarRocks](#starrocks-profile-server) is the better fit.
+
 ### Indexing
 
 After ingestion, indexes are created on configured fields:

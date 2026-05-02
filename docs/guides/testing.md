@@ -171,7 +171,7 @@ First run builds Docker images inside the sysbox container (~3-5 min). Subsequen
 
 ## Adding a test
 
-The bar for adding a unit test is high — see the rule in `.claude/CLAUDE.md` ("Be Critical About Test Value"). Good unit tests target silent failure (auto-derivation, dispatch, dedup conditions, config merge). Skip:
+The bar for adding a unit test is high. Before writing one, ask what bug class it catches — pure-logic tests for silent-failure code (auto-derivation, dispatch, dedup conditions, config merge that preserves siblings) are gold, because nothing else catches those bugs. Skip:
 
 - Tests of trivial one-liners (`fnmatch`, list comprehensions) — they end up testing the standard library.
 - Mock-heavy tests of polling loops or driver dispatch — they end up testing the mock. Use E2E.

@@ -22,7 +22,14 @@
       <td>{{ duration(now - job.started_at) if job.started_at else '—' }}</td>
       <td><code>{{ job.job_id }}</code></td>
       <td>{{ job.target }}<br><span class="muted">{{ job.backend }}{% if job.database %} / {{ job.database }}{% endif %}{% if job.collection %} / {{ job.collection }}{% endif %}</span></td>
-      <td><code>{{ job.output_filename }}</code></td>
+      <td>
+        <span class="copy-cell">
+          <code class="copyable">{{ job.output_filename }}</code>
+          <button type="button" class="copy-icon" title="Copy filename" aria-label="Copy filename">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.2"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/></svg>
+          </button>
+        </span>
+      </td>
       <td class="row-actions">
         <form method="post" action="/actions/kill/{{ job.job_id }}" onsubmit="return confirm('Kill job {{ job.job_id }}?');">
           <button type="submit" class="contrast outline">Kill</button>
@@ -40,7 +47,14 @@
       <td colspan="2"><span class="muted">queued (approved)</span></td>
       <td><code>{{ job.job_id }}</code></td>
       <td>{{ job.target }}<br><span class="muted">{{ job.backend }}{% if job.database %} / {{ job.database }}{% endif %}{% if job.collection %} / {{ job.collection }}{% endif %}</span></td>
-      <td><code>{{ job.output_filename }}</code></td>
+      <td>
+        <span class="copy-cell">
+          <code class="copyable">{{ job.output_filename }}</code>
+          <button type="button" class="copy-icon" title="Copy filename" aria-label="Copy filename">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.2"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/></svg>
+          </button>
+        </span>
+      </td>
       <td></td>
       <td class="description">{{ job.description }}</td>
     </tr>

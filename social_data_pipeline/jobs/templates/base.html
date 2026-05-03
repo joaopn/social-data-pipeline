@@ -39,6 +39,11 @@
     code.copyable { cursor: pointer; border-radius: 3px; padding: 0.05rem 0.3rem; transition: background 0.15s; }
     code.copyable:hover { background: var(--pico-primary-focus); }
     code.copyable.copied { background: var(--pico-color-jade-200); color: var(--pico-color-jade-800); }
+    .copy-cell { display: inline-flex; gap: 0.25rem; align-items: center; }
+    button.copy-icon { background: transparent; border: 0; padding: 0.1rem 0.25rem; margin: 0; line-height: 1; color: var(--pico-muted-color); cursor: pointer; border-radius: 3px; }
+    button.copy-icon:hover { color: var(--pico-primary); background: var(--pico-primary-focus); }
+    button.copy-icon.copied { color: var(--pico-color-jade-700); background: var(--pico-color-jade-200); }
+    button.copy-icon svg { display: block; }
     tr.row-expandable { cursor: pointer; }
     tr.row-expandable:hover { background: var(--pico-code-background-color); }
     tr.row-expandable.expanded { background: var(--pico-code-background-color); }
@@ -123,6 +128,38 @@
             if (prev) el.setAttribute('title', prev);
           }, 900);
         });
+      });
+
+      // Copy-icon button: copy the text of the nearest preceding <code> in
+      // the same .copy-cell wrapper.
+      document.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('button.copy-icon');
+        if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        var cell = btn.closest('.copy-cell') || btn.parentElement;
+        var code = cell ? cell.querySelector('code') : null;
+        if (!code) return;
+        copyText(code.textContent).then(function () {
+          btn.classList.add('copied');
+          setTimeout(function () { btn.classList.remove('copied'); }, 900);
+        });
+      });
+
+      // Reject form: prompt for an optional reason on submit, store it in
+      // the hidden `reason` input, then re-submit. Cancelling the prompt
+      // aborts the rejection entirely.
+      document.addEventListener('submit', function (ev) {
+        var form = ev.target.closest('form[data-reject-form]');
+        if (!form) return;
+        if (form.dataset.confirmed === '1') return;
+        ev.preventDefault();
+        var reason = window.prompt('Reject reason (optional):', '');
+        if (reason === null) return;
+        var input = form.querySelector('input[name="reason"]');
+        if (input) input.value = reason;
+        form.dataset.confirmed = '1';
+        form.submit();
       });
 
       // Re-run Prism highlighting after htmx swaps in new content

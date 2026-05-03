@@ -168,6 +168,8 @@ Three ways to read data back, ordered by ceremony:
 
 **Agentic execution (jobs scheduler)** — human-approved queries that produce result files. Agents call `submit_postgres_query` / `submit_starrocks_query` / `submit_mongo_query` over the jobs MCP at `http://localhost:8050/mcp`; you approve / reject / kill them in the WebUI at `http://localhost:8050/`. Long-running aggregations don't pollute the agent's context, and result files (Parquet / CSV / NDJSON) land in `JOBS_RESULT_ROOT/<job_id>/`. Configured via `db setup-jobs`; see the [Jobs Scheduler doc](docs/profiles/jobs.md).
 
+![Jobs scheduler WebUI — pending queue with agent-submitted queries awaiting approval](docs/jobs-scheduler.png)
+
 ---
 
 <details>

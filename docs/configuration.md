@@ -9,6 +9,7 @@ For profile-specific usage and workflows, see:
 - [Parse Profile](profiles/parse.md)
 - [Classification Profiles](profiles/classification.md)
 - [Database Profiles](profiles/database.md)
+- [Jobs Scheduler](profiles/jobs.md)
 
 ---
 
@@ -58,6 +59,8 @@ All environment variables are set in the `.env` file at the project root. Docker
 | `MCP_MONGODB_USER` | MongoDB MCP connection user | (unset) |
 | `STARROCKS_MCP_PORT` | StarRocks MCP server port | `9000` |
 | `STARROCKS_MCP_USER` | StarRocks MCP connection user | (unset) |
+| `JOBS_PORT` | Jobs scheduler UI + MCP port | `8050` |
+| `JOBS_RESULT_ROOT` | Host directory for job result files (bind-mounted into PG/SR as `/jobs_export`) | `./data/jobs/results` |
 
 > [!NOTE]
 > - `SOURCE` controls which source config directory is loaded. When running via `sdp.py run`, it is set automatically (auto-selects if only one source configured, or via `--source`).
@@ -89,7 +92,9 @@ config/
 │       ├── lingua.yaml           # Lingua overrides (optional)
 │       ├── ml.yaml               # ML GPU overrides (optional)
 │       ├── postgres_ml.yaml      # Postgres ML overrides (optional)
-│       └── mongo.yaml            # Mongo ingestion overrides (optional)
+│       ├── mongo.yaml            # Mongo ingestion overrides (optional)
+│       ├── starrocks.yaml        # StarRocks ingestion overrides (optional)
+│       └── sr_ml.yaml            # StarRocks ML overrides (optional)
 ├── templates/                     # Platform templates (copied on source add)
 │   └── reddit.yaml               # Base Reddit platform config
 ├── parse/
@@ -125,9 +130,12 @@ config/
 │   ├── entrypoint-postgres.sh    # PostgreSQL MCP entrypoint
 │   ├── entrypoint-mongo.sh       # MongoDB MCP entrypoint
 │   └── entrypoint-starrocks.sh   # StarRocks MCP entrypoint
-└── postgres_ml/
-    ├── pipeline.yaml             # ML classifier ingestion settings
-    └── services.yaml             # Classifier table definitions
+├── postgres_ml/
+│   ├── pipeline.yaml             # ML classifier ingestion settings
+│   └── services.yaml             # Classifier table definitions
+└── jobs/
+    ├── config.yaml               # Jobs scheduler default template (committed)
+    └── config.local.yaml         # Local override (written by sdp db setup-jobs, gitignored)
 ```
 
 ---
@@ -605,6 +613,12 @@ processing:
 Classifier tables (e.g., `submissions_lingua`, `comments_toxicity_en`) are created in the same database as base tables. Schema is auto-inferred from Parquet metadata or CSV sampling. `prefer_lingua` is read from the `sr_ingest` profile config.
 
 `sr_ml` resolves classifier runs (name, suffix, `data_types` scope) from the source's ml/lingua profile config, the same way `postgres_ml` does. `config/sr_ml/services.yaml` (and the per-source `config/sources/<name>/sr_ml.yaml`) holds optional ingestion-only overrides — see *Ingestion Overrides* under PostgreSQL ML above for the schema.
+
+---
+
+### Jobs Scheduler
+
+Configured via `sdp db setup-jobs`. Reference is in [profiles/jobs.md](profiles/jobs.md) — covers `config/jobs/config.yaml` (committed defaults) merged with `config/jobs/config.local.yaml` (gitignored override): targets, port, per-backend timeouts, history retention, and the optional UI auth toggle.
 
 ---
 

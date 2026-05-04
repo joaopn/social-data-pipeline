@@ -26,7 +26,7 @@ python sdp.py db start                      # Start databases and optional servi
 # 2. Add a source and process data
 python sdp.py source add reddit             # Add a data source (interactive setup)
 python sdp.py run parse                     # Decompress dumps → parse to cleaned, structured files
-python sdp.py run lingua                    # Adds language detection to parsed files (optional, if configured)
+python sdp.py run lingua                    # Adds language detection to parsed files (if configured)
 
 # 3. Ingest parsed files into PostgreSQL/MongoDB/StarRocks
 python sdp.py run {postgres_ingest | mongo_ingest | sr_ingest}
@@ -157,12 +157,12 @@ python sdp.py run sr_ml --source reddit         # Optional: ingest classifier ou
 
 #### 3. Query
 
-Three ways to read data back, ordered by ceremony:
+Three ways to use the data::
 
 **Direct** — connect with any standard client:
 - **PostgreSQL**: [psql](https://www.postgresql.org/docs/current/app-psql.html), [pgAdmin](https://www.pgadmin.org/), or [DBeaver](https://dbeaver.io/)
-- **StarRocks**: any MySQL client (`mysql -h 127.0.0.1 -P 9030 -u root`), DBeaver, or [StarRocks Manager](https://docs.starrocks.io/)
-- **MongoDB**: `mongosh`, Compass, or DBeaver
+- **StarRocks**: any MySQL client (`mysql -h 127.0.0.1 -P 9030 -u root`), or from a growing list of [IDEs with official support](https://docs.starrocks.io/docs/cover_pages/ide_tools/)
+- **MongoDB**: `mongosh`, [MongoDB Compass](https://www.mongodb.com/products/tools/compass)
 
 **Agentic discovery (read-only MCP)** — short, ad-hoc Q&A from an AI agent. The per-DB MCP servers (started automatically alongside their database) expose read-only access to agentic clients like Claude Code, Codex, and Cursor. Best for quick queries to explore the dataset and schema and help the AI agent craft complex data analysis queries. Configured via `db setup-mcp`; see [Database Profiles → MCP Servers](docs/profiles/database.md#mcp-servers).
 
@@ -300,7 +300,7 @@ Both ingest the same parsed files and support the same pipeline features (classi
 | | PostgreSQL | StarRocks |
 |---|---|---|
 | **Best for** | General-purpose queries, joins with external data, extensions (PostGIS, pg_parquet, pgvector) | Large-scale analytical queries (aggregations, scans, GROUP BY over billions of rows) |
-| **Query speed** | Good with proper indexing; row-oriented storage | Much faster for analytics; columnar storage with vectorized execution |
+| **Query speed** | Good with proper indexing; row-oriented storage | Much faster (~10X) for analytics; columnar storage with vectorized execution |
 | **Ecosystem** | Mature, widely supported, connects to nearly everything | MySQL wire protocol — works with any MySQL client, but smaller ecosystem |
 | **Extensibility** | Rich extension system (custom types, FDWs, procedural languages) | Limited — focused on analytics |
 | **Storage model** | Row-oriented, B-tree indexes, tablespaces for multi-disk | Columnar, BITMAP indexes, built-in multi-disk via `storage_root_path` |
@@ -313,7 +313,7 @@ Both ingest the same parsed files and support the same pipeline features (classi
 <details>
 <summary><strong>Can I run classifiers without the database?</strong></summary>
 
-Yes! Use `python sdp.py run lingua` or `python sdp.py run ml` independently. The database profile is optional.
+Yes! Use `python sdp.py run lingua` or `python sdp.py run ml` independently. The database profiles are optional.
 
 </details>
 
@@ -325,7 +325,7 @@ Yes! Use a not-reserved (not `reddit`) name during `python sdp.py source add <na
 </details>
 
 <details>
-<summary><strong>How do I add support for a new platform?</strong></summary>
+<summary><strong>How do I add custom support for a new platform?</strong></summary>
 
 See [Adding New Platforms](docs/platforms/adding-platforms.md). Create a platform template in `config/templates/` and optionally a custom parser.
 

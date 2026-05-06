@@ -182,16 +182,22 @@ def _container_findings(db, container_state, env):
     return findings
 
 
-def _mount_findings(db, override_data, sources_info):
+def _mount_findings(db, override_data, sources_info, parent_paths=None):
     """Per-source mount coherence between override.yml and the source set.
 
     Mongo has no server-side mounts (mongoimport reads files in the
-    ingest container), so this is a no-op for it.
+    ingest container), so this is a no-op for it. ``parent_paths`` (when
+    given) tells the drift helper which sources are already covered by
+    the docker-compose.yml parent mount — those are skipped on both sides
+    of the comparison so they don't surface as drift.
     """
     if db not in ("postgres", "starrocks"):
         return []
     from social_data_pipeline.setup.mount_sync import compute_mount_drift
-    drift = compute_mount_drift(override_data, sources_info, services=(db,))
+    drift = compute_mount_drift(
+        override_data, sources_info,
+        services=(db,), parent_paths=parent_paths,
+    )
     findings = []
     d = drift.get(db)
     if not d:
@@ -336,6 +342,7 @@ def compute_drift(ctx):
     mcp_config = ctx.get("mcp_config") or {}
     jobs_config = ctx.get("jobs_config") or {}
     container_states = ctx.get("container_states") or {}
+    parent_paths = ctx.get("parent_paths")
 
     for db in configured:
         findings = []
@@ -346,7 +353,9 @@ def compute_drift(ctx):
         findings.extend(_container_findings(
             db, container_states.get(db), env,
         ))
-        findings.extend(_mount_findings(db, override_data, sources_info))
+        findings.extend(_mount_findings(
+            db, override_data, sources_info, parent_paths=parent_paths,
+        ))
         out[db] = findings
 
     cred_present = {

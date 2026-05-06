@@ -556,6 +556,31 @@ def _read_override_yaml():
         return {}
 
 
+def _get_parent_paths(env=None):
+    """Return PARSED_PATH / OUTPUT_PATH in the same form .env carries them.
+
+    The postgres + starrocks server blocks in docker-compose.yml bind
+    ``${PARSED_PATH:-./data/parsed}`` and ``${OUTPUT_PATH:-./data/output}``
+    unconditionally — so any source whose ``paths.parsed`` /
+    ``paths.output`` falls under those parents is already visible to a
+    running DB without a per-source override entry. The mount-sync
+    containment helpers (``is_path_under`` etc.) compare strings after a
+    cosmetic ``./`` / trailing-slash normalization, so we deliberately do
+    NOT resolve to absolute here: both sides of the compare end up in
+    the same "raw .env-style" shape, and containment falls out cleanly
+    whether the user kept the relative defaults or pinned absolute paths.
+    """
+    from social_data_pipeline.setup.mount_sync import (
+        PARSED_PATH_COMPOSE_DEFAULT, OUTPUT_PATH_COMPOSE_DEFAULT,
+    )
+    if env is None:
+        env = load_env()
+    return {
+        "parsed": env.get("PARSED_PATH") or PARSED_PATH_COMPOSE_DEFAULT,
+        "output": env.get("OUTPUT_PATH") or OUTPUT_PATH_COMPOSE_DEFAULT,
+    }
+
+
 def _running_services():
     """Set of compose service names currently in `running` state."""
     result = subprocess.run(
@@ -609,7 +634,12 @@ def _warn_mount_drift_after_source_change():
 
     override = _read_override_yaml()
     sources_info = _collect_source_info()
-    drift = compute_mount_drift(override, sources_info, services=tuple(sorted(relevant)))
+    parent_paths = _get_parent_paths()
+    drift = compute_mount_drift(
+        override, sources_info,
+        services=tuple(sorted(relevant)),
+        parent_paths=parent_paths,
+    )
     if not drift:
         return
 
@@ -687,7 +717,31 @@ def _validate_run_mounts(profile, source_name, source_paths):
     if actual is None:
         return 0
 
-    missing = runtime_mount_drift(actual, source_name, source_paths or {})
+    # Resolve both sides through os.path.realpath so the comparison in
+    # ``runtime_mount_drift`` (string-based) doesn't fail on symlinked
+    # workspaces — e.g. ``/home/user/repo`` symlinked to ``/data/.../repo``,
+    # where ROOT canonicalizes to one form and ``docker inspect``'s
+    # ``Source`` reports the other. Without this canonicalization, the
+    # parent-mount ancestor check produces a non-matching offset and the
+    # validator falsely flags drift.
+    resolved_paths = {}
+    for key, value in (source_paths or {}).items():
+        if not value:
+            continue
+        p = Path(value)
+        if not p.is_absolute():
+            p = ROOT / p
+        resolved_paths[key] = os.path.realpath(p)
+
+    canonical_actual = []
+    for m in actual:
+        entry = dict(m)
+        src = m.get("Source")
+        if src:
+            entry["Source"] = os.path.realpath(src)
+        canonical_actual.append(entry)
+
+    missing = runtime_mount_drift(canonical_actual, source_name, resolved_paths)
     if not missing:
         return 0
 
@@ -724,14 +778,16 @@ def _resolve_server_data_mounts(services):
 
     # Build the per-source mount set for every service we're starting. Shared
     # helper so source-add/remove drift detection and override regeneration
-    # stay in lock-step.
+    # stay in lock-step. Pass parent_paths so sources whose paths fall under
+    # ${PARSED_PATH}/${OUTPUT_PATH} (the default-disk case) are skipped here —
+    # the docker-compose.yml parent mount on the server already exposes them,
+    # and writing redundant per-source entries would force a needless restart
+    # whenever the user adds an in-parent source.
+    parent_paths = _get_parent_paths()
     service_mounts = {
-        svc: sorted(expected_source_mounts(sources_info, svc))
+        svc: sorted(expected_source_mounts(sources_info, svc, parent_paths=parent_paths))
         for svc in services
     }
-
-    if not any(service_mounts.values()):
-        return
 
     # Read existing override, preserve setup-generated mounts (tablespaces, SR storage, jobs export)
     override_path = ROOT / "docker-compose.override.yml"
@@ -750,10 +806,25 @@ def _resolve_server_data_mounts(services):
             ):
                 preserved[svc_name].append(vol)
 
+    # Always write override if there's anything to write (preserved entries or
+    # out-of-parent per-source mounts). Even when service_mounts is empty for
+    # an in-parent-only source set, we still want to drop any redundant per-
+    # source entries left over from a previous regen — so the rewrite proceeds
+    # with the filtered (possibly-empty) data block.
+    if not any(service_mounts.values()) and not any(preserved.values()):
+        # Nothing to keep, nothing to add — strip a stale override file
+        # entirely so docker compose doesn't read leftover mounts.
+        if override_path.exists():
+            override_path.unlink()
+        return
+
     # Build override content
     content = (
         "# Auto-generated by sdp — volume mounts for database servers.\n"
-        "# Setup mounts (tablespaces, SR storage) + per-source data mounts from sdp db start.\n"
+        "# Setup mounts (tablespaces, SR storage, jobs export) + per-source\n"
+        "# data mounts for sources whose paths fall outside ${PARSED_PATH} /\n"
+        "# ${OUTPUT_PATH}; in-parent sources are covered by the parent mount\n"
+        "# in docker-compose.yml.\n"
         "\n"
         "services:\n"
     )
@@ -912,6 +983,15 @@ def cmd_db_start(args):
     # Resolve per-source data mounts for database servers that read files directly
     mount_services = [s for s in ("postgres", "starrocks") if s in targets]
     if mount_services:
+        # Pre-create the parent dirs the postgres/starrocks server blocks bind
+        # unconditionally (${PARSED_PATH} / ${OUTPUT_PATH}). Docker creates
+        # missing bind-mount source dirs as root:root, which would block the
+        # user from later 'sdp run' mkdir-ing per-source subdirs under them.
+        for host_path in _get_parent_paths().values():
+            p = Path(host_path)
+            if not p.is_absolute():
+                p = ROOT / p
+            p.mkdir(parents=True, exist_ok=True)
         _resolve_server_data_mounts(mount_services)
 
     # Start databases first (without MCP), wait for healthchecks
@@ -1343,6 +1423,10 @@ def _build_verify_context(*, env, probe_containers):
         "mcp_config": mcp_config,
         "jobs_config": jobs_config,
         "container_states": container_states,
+        # Threaded into the mount-coherence sub-check so in-parent sources
+        # don't show up as drift just because they lack per-source override
+        # entries (the docker-compose.yml parent mount covers them).
+        "parent_paths": _get_parent_paths(env),
     }
 
 

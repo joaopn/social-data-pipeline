@@ -32,6 +32,7 @@ from social_data_pipeline.setup.mount_sync import (
     compute_mount_drift,
     expected_runtime_mounts_for_source,
     expected_source_mounts,
+    is_path_under,
     parse_override_source_mounts,
     runtime_mount_drift,
 )
@@ -511,3 +512,401 @@ class TestCmdRunMountValidation:
         )
         assert rc == 0
         assert seen_services == ["starrocks"]
+
+    def test_symlinked_workspace_canonicalized_through_realpath(self, tmp_path, monkeypatch):
+        """ROOT and docker-inspect Sources canonicalize via realpath.
+
+        The bug: a symlinked workspace (``/home/user/repo`` → ``/data/.../repo``)
+        produces a string mismatch — ROOT resolves to one form,
+        ``docker inspect`` reports the other for the parent mount Source.
+        Without canonicalization, the parent-mount ancestor check rejects
+        the offset and the validator false-positives a missing mount.
+
+        This test stages a real symlink in tmp_path: ``link/data/parsed``
+        points at ``real/data/parsed``. ROOT is set to ``link/`` (the
+        ``__file__`` form), and the inspect Source is reported as the
+        ``real/`` form (what docker stores). Realpath on both sides should
+        canonicalize them and the validator should accept the parent mount.
+        """
+        real = tmp_path / "real"
+        link = tmp_path / "link"
+        (real / "data" / "parsed" / "reddit").mkdir(parents=True)
+        link.symlink_to(real)
+
+        monkeypatch.setattr(sdp, "ROOT", link)
+        monkeypatch.setattr(sdp, "_running_services", lambda: {"postgres"})
+        monkeypatch.setattr(
+            sdp, "_container_mounts",
+            lambda service: [
+                # docker inspect reports the resolved-real path here even
+                # though compose was invoked from the symlinked workspace.
+                {"Destination": "/data/parsed", "Source": str(real / "data" / "parsed")},
+            ],
+        )
+
+        # Source path is relative — gets resolved against ROOT (the symlink)
+        # via Path operations; realpath then canonicalizes through the
+        # symlink to match the inspect Source.
+        rc = sdp._validate_run_mounts(
+            "postgres_ingest", "reddit",
+            {"parsed": "./data/parsed/reddit"},
+        )
+        assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Parent-mount coverage — the dual-mount design where docker-compose.yml
+# binds ${PARSED_PATH} / ${OUTPUT_PATH} on the DB server. In-parent sources
+# don't need per-source override entries; out-of-parent sources still do.
+# ---------------------------------------------------------------------------
+
+
+class TestIsPathUnder:
+    def test_relative_default_path_match(self):
+        # The compose-file default ./data/parsed contains ./data/parsed/reddit.
+        # './' prefix on either side normalizes away.
+        assert is_path_under("./data/parsed/reddit", "./data/parsed") is True
+        assert is_path_under("data/parsed/reddit", "./data/parsed") is True
+        assert is_path_under("./data/parsed/reddit", "data/parsed") is True
+
+    def test_absolute_path_match(self):
+        assert is_path_under("/mnt/ssd/parsed/twitter", "/mnt/ssd/parsed") is True
+        # Trailing slash on parent doesn't break it.
+        assert is_path_under("/mnt/ssd/parsed/twitter", "/mnt/ssd/parsed/") is True
+
+    def test_equality_counts_as_under(self):
+        # The parent itself is "under" (== same path) — degenerate but
+        # well-defined; matters when a source's path is exactly the parent.
+        assert is_path_under("./data/parsed", "./data/parsed") is True
+
+    def test_different_filesystems_not_under(self):
+        # Default parent doesn't cover a multi-disk source.
+        assert is_path_under("/mnt/ssd/parsed/twitter", "./data/parsed") is False
+        assert is_path_under("./data/parsed/reddit", "/mnt/ssd/parsed") is False
+
+    def test_partial_prefix_not_under(self):
+        # `./data/parsed_v2` must not be treated as under `./data/parsed` —
+        # the helper requires a `/` boundary between parent and child.
+        assert is_path_under("./data/parsed_v2/reddit", "./data/parsed") is False
+
+    def test_empty_inputs_return_false(self):
+        # Defensive — a missing parent_paths entry shouldn't accidentally
+        # claim every source is covered.
+        assert is_path_under("", "./data/parsed") is False
+        assert is_path_under("./data/parsed/reddit", "") is False
+        assert is_path_under("", "") is False
+
+
+class TestExpectedSourceMountsWithParents:
+    def test_in_parent_source_skipped(self):
+        # Default-path source (parsed under ./data/parsed): the parent mount
+        # in docker-compose.yml already exposes it, so per-source override
+        # entry would be redundant. Filter drops it.
+        sources = [{
+            "name": "reddit",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "./data/parsed/reddit",
+                "output": "./data/output/reddit",
+            },
+        }]
+        out = expected_source_mounts(
+            sources, "postgres",
+            parent_paths={"parsed": "./data/parsed", "output": "./data/output"},
+        )
+        assert out == set()
+
+    def test_out_of_parent_source_retained(self):
+        # Multi-disk source: paths live outside ${PARSED_PATH}/${OUTPUT_PATH}.
+        # Filter keeps them — they need explicit override entries.
+        sources = [{
+            "name": "twitter",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "/mnt/ssd/parsed/twitter",
+                "output": "/mnt/ssd/output/twitter",
+            },
+        }]
+        out = expected_source_mounts(
+            sources, "postgres",
+            parent_paths={"parsed": "./data/parsed", "output": "./data/output"},
+        )
+        assert out == {
+            "/mnt/ssd/parsed/twitter:/data/parsed/twitter:ro",
+            "/mnt/ssd/output/twitter:/data/output/twitter:ro",
+        }
+
+    def test_mixed_in_out_parent(self):
+        # parsed in-parent, output out-of-parent → only the output mount.
+        sources = [{
+            "name": "reddit",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "./data/parsed/reddit",        # under parent
+                "output": "/mnt/big/output/reddit",      # outside parent
+            },
+        }]
+        out = expected_source_mounts(
+            sources, "postgres",
+            parent_paths={"parsed": "./data/parsed", "output": "./data/output"},
+        )
+        assert out == {"/mnt/big/output/reddit:/data/output/reddit:ro"}
+
+    def test_no_parent_paths_legacy_behavior(self):
+        # parent_paths=None preserves the C6 behavior — emit every per-source
+        # mount unconditionally. Lets older callers (and the legacy override
+        # regen path) still get full mount sets.
+        sources = [{
+            "name": "reddit",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "./data/parsed/reddit",
+                "output": "./data/output/reddit",
+            },
+        }]
+        out = expected_source_mounts(sources, "postgres", parent_paths=None)
+        assert out == {
+            "./data/parsed/reddit:/data/parsed/reddit:ro",
+            "./data/output/reddit:/data/output/reddit:ro",
+        }
+
+
+class TestParseOverrideWithParents:
+    def test_in_parent_override_entries_filtered(self):
+        # An override file from a previous (pre-fix) regen still has per-
+        # source entries for in-parent sources. Drift detection treats them
+        # as redundant rather than "extra," because the new regen will drop
+        # them on next db start.
+        override = {
+            "services": {
+                "postgres": {
+                    "volumes": [
+                        "./data/parsed/reddit:/data/parsed/reddit:ro",
+                        "./data/output/reddit:/data/output/reddit:ro",
+                    ],
+                },
+            },
+        }
+        out = parse_override_source_mounts(
+            override, "postgres",
+            parent_paths={"parsed": "./data/parsed", "output": "./data/output"},
+        )
+        assert out == set()
+
+    def test_out_of_parent_override_entries_retained(self):
+        override = {
+            "services": {
+                "postgres": {
+                    "volumes": [
+                        "/mnt/ssd/parsed/twitter:/data/parsed/twitter:ro",
+                    ],
+                },
+            },
+        }
+        out = parse_override_source_mounts(
+            override, "postgres",
+            parent_paths={"parsed": "./data/parsed", "output": "./data/output"},
+        )
+        assert out == {"/mnt/ssd/parsed/twitter:/data/parsed/twitter:ro"}
+
+
+class TestComputeMountDriftWithParents:
+    def test_in_parent_source_no_drift_even_without_override(self):
+        # The bug we're closing: with the C6-only behavior, this combination
+        # would produce a "missing source mount" finding. With parent_paths,
+        # the parent mount in docker-compose.yml covers it and drift is empty.
+        sources = [{
+            "name": "reddit",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "./data/parsed/reddit",
+                "output": "./data/output/reddit",
+            },
+        }]
+        drift = compute_mount_drift(
+            override_data={},  # nothing in override
+            sources_info=sources,
+            parent_paths={"parsed": "./data/parsed", "output": "./data/output"},
+        )
+        assert drift == {}
+
+    def test_out_of_parent_source_still_drifts_when_override_empty(self):
+        # The case we still want to flag: a source on a different filesystem
+        # NEEDS an override entry — parent mount can't cover it.
+        sources = [{
+            "name": "twitter",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "/mnt/ssd/parsed/twitter",
+                "output": "/mnt/ssd/output/twitter",
+            },
+        }]
+        drift = compute_mount_drift(
+            override_data={},
+            sources_info=sources,
+            parent_paths={"parsed": "./data/parsed", "output": "./data/output"},
+        )
+        assert "postgres" in drift
+        assert drift["postgres"]["missing"] == [
+            "/mnt/ssd/output/twitter:/data/output/twitter:ro",
+            "/mnt/ssd/parsed/twitter:/data/parsed/twitter:ro",
+        ]
+
+
+class TestRuntimeMountDriftWithParent:
+    def test_parent_mount_covers_in_parent_source(self):
+        # Container has only the parent mount (default-disk source set);
+        # reading /data/parsed/reddit resolves to /abs/data/parsed/reddit
+        # on host, which equals the source's host path. No drift.
+        actual = [
+            {"Destination": "/data/parsed", "Source": "/abs/data/parsed"},
+            {"Destination": "/data/output", "Source": "/abs/data/output"},
+        ]
+        missing = runtime_mount_drift(
+            actual, "reddit",
+            {
+                "parsed": "/abs/data/parsed/reddit",
+                "output": "/abs/data/output/reddit",
+            },
+        )
+        assert missing == []
+
+    def test_parent_mount_does_not_cover_out_of_parent_source(self):
+        # Parent maps /abs/data/parsed → /data/parsed. A source whose host
+        # path is /mnt/ssd/parsed/twitter cannot be reached via the parent —
+        # the offset doesn't produce the right host path. Per-source mount
+        # is required, and absence is drift.
+        actual = [
+            {"Destination": "/data/parsed", "Source": "/abs/data/parsed"},
+        ]
+        missing = runtime_mount_drift(
+            actual, "twitter",
+            {"parsed": "/mnt/ssd/parsed/twitter"},
+        )
+        assert missing == ["/data/parsed/twitter"]
+
+    def test_explicit_per_source_mount_still_works(self):
+        # Out-of-parent source covered by an explicit override entry —
+        # the same code path that pre-fix runtime_mount_drift handled.
+        actual = [
+            {"Destination": "/data/parsed/twitter", "Source": "/mnt/ssd/parsed/twitter"},
+        ]
+        missing = runtime_mount_drift(
+            actual, "twitter",
+            {"parsed": "/mnt/ssd/parsed/twitter"},
+        )
+        assert missing == []
+
+    def test_parent_mount_with_wrong_host_source_does_not_cover(self):
+        # Parent destination is right but the host source maps to a different
+        # filesystem — the offset rule rejects this. Defensive: catches the
+        # case where the user's PARSED_PATH was changed and DB hasn't been
+        # restarted (the running container has stale parent host source).
+        actual = [
+            {"Destination": "/data/parsed", "Source": "/old/path/parsed"},
+        ]
+        missing = runtime_mount_drift(
+            actual, "reddit",
+            {"parsed": "/abs/data/parsed/reddit"},
+        )
+        # /old/path/parsed + /reddit = /old/path/parsed/reddit ≠ /abs/data/parsed/reddit
+        assert missing == ["/data/parsed/reddit"]
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring — _resolve_server_data_mounts skips in-parent sources.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveServerDataMountsParentAware:
+    def test_in_parent_source_only_writes_no_data_block(self, tmp_path, monkeypatch):
+        """One in-parent source + nothing preserved → override file stripped.
+
+        Confirms the override regen no longer writes redundant per-source
+        mounts when the source's paths fall under ${PARSED_PATH}.
+        """
+        monkeypatch.setattr(sdp, "ROOT", tmp_path)
+        # Empty .env → parent paths default to ./data/parsed and ./data/output.
+        monkeypatch.setattr(sdp, "load_env", lambda: {})
+        monkeypatch.setattr(sdp, "_collect_source_info", lambda: [{
+            "name": "reddit",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "./data/parsed/reddit",
+                "output": "./data/output/reddit",
+            },
+        }])
+
+        sdp._resolve_server_data_mounts(["postgres"])
+
+        override_path = tmp_path / "docker-compose.override.yml"
+        # No preserved entries, all sources in-parent → file shouldn't exist.
+        assert not override_path.exists()
+
+    def test_out_of_parent_source_still_writes_per_source_mount(self, tmp_path, monkeypatch):
+        """Multi-disk source needs an explicit override entry."""
+        monkeypatch.setattr(sdp, "ROOT", tmp_path)
+        monkeypatch.setattr(sdp, "load_env", lambda: {})
+        monkeypatch.setattr(sdp, "_collect_source_info", lambda: [{
+            "name": "twitter",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "/mnt/ssd/parsed/twitter",
+                "output": "/mnt/ssd/output/twitter",
+            },
+        }])
+
+        sdp._resolve_server_data_mounts(["postgres"])
+
+        override_path = tmp_path / "docker-compose.override.yml"
+        assert override_path.exists()
+        content = override_path.read_text()
+        assert "/mnt/ssd/parsed/twitter:/data/parsed/twitter:ro" in content
+        assert "/mnt/ssd/output/twitter:/data/output/twitter:ro" in content
+
+    def test_preserved_entries_kept_even_when_no_per_source_data(self, tmp_path, monkeypatch):
+        """A preexisting tablespace mount survives even with all-in-parent sources."""
+        override_path = tmp_path / "docker-compose.override.yml"
+        override_path.write_text(
+            "services:\n"
+            "  postgres:\n"
+            "    volumes:\n"
+            "      - /host/ts/fast:/data/tablespace/fast\n"
+        )
+        monkeypatch.setattr(sdp, "ROOT", tmp_path)
+        monkeypatch.setattr(sdp, "load_env", lambda: {})
+        monkeypatch.setattr(sdp, "_collect_source_info", lambda: [{
+            "name": "reddit",
+            "profiles": ["postgres_ingest"],
+            "paths": {
+                "parsed": "./data/parsed/reddit",
+                "output": "./data/output/reddit",
+            },
+        }])
+
+        sdp._resolve_server_data_mounts(["postgres"])
+
+        # Tablespace mount must survive — unrelated to source mount filtering.
+        content = override_path.read_text()
+        assert "/host/ts/fast:/data/tablespace/fast" in content
+        # And no redundant per-source reddit mount got written back.
+        assert "/data/parsed/reddit" not in content
+
+
+class TestGetParentPaths:
+    def test_uses_compose_defaults_when_env_unset(self, monkeypatch):
+        # No PARSED_PATH/OUTPUT_PATH in .env → falls back to the same
+        # defaults docker-compose.yml uses.
+        monkeypatch.setattr(sdp, "load_env", lambda: {})
+        out = sdp._get_parent_paths()
+        assert out == {"parsed": "./data/parsed", "output": "./data/output"}
+
+    def test_reads_env_overrides(self, monkeypatch):
+        env = {"PARSED_PATH": "/mnt/ssd/parsed", "OUTPUT_PATH": "/mnt/ssd/output"}
+        out = sdp._get_parent_paths(env)
+        assert out == {"parsed": "/mnt/ssd/parsed", "output": "/mnt/ssd/output"}
+
+    def test_partial_override(self, monkeypatch):
+        # Only PARSED_PATH overridden — OUTPUT_PATH still defaults.
+        out = sdp._get_parent_paths({"PARSED_PATH": "/mnt/ssd/parsed"})
+        assert out == {"parsed": "/mnt/ssd/parsed", "output": "./data/output"}

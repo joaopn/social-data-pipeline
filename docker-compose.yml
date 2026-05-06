@@ -124,8 +124,14 @@ services:
       - "${POSTGRES_PORT:-5432}:${POSTGRES_PORT:-5432}"
     volumes:
       - ${PGDATA_PATH:-./data/database/postgres}/pgdata:/var/lib/postgresql
-      # Per-source parsed/output mounts are auto-generated in docker-compose.override.yml
-      # by sdp db start (scans config/sources/*/platform.yaml)
+      # Parent mounts cover sources whose parsed/output paths live under
+      # ${PARSED_PATH}/${OUTPUT_PATH} (the default-disk case) — no restart
+      # needed when adding a source under these. Sources on a different
+      # filesystem still get per-source mounts in docker-compose.override.yml
+      # via 'sdp db start' (and the C6 drift warning fires if the user adds
+      # one of those out-of-parent sources to a running DB).
+      - ${PARSED_PATH:-./data/parsed}:/data/parsed:ro
+      - ${OUTPUT_PATH:-./data/output}:/data/output:ro
       - ${PGDATA_PATH:-./data/database/postgres}:/data/database
       - ${DB_EXPORT_PATH:-./data/export}:/export
       - ./config/postgres:/etc/postgresql/config:ro
@@ -255,8 +261,12 @@ services:
       - ${STARROCKS_DATA_PATH:-./data/database/starrocks}:/data/starrocks
       - ${STARROCKS_DATA_PATH:-./data/database/starrocks}/fe/meta:/data/deploy/starrocks/fe/meta
       - ${STARROCKS_DATA_PATH:-./data/database/starrocks}/be/storage:/data/deploy/starrocks/be/storage
-      # Per-source data mounts (parsed, output) are added by sdp db start
-      # in docker-compose.override.yml — same pattern as PostgreSQL.
+      # Parent mounts cover sources whose parsed/output paths live under
+      # ${PARSED_PATH}/${OUTPUT_PATH}; same dual-mount pattern as postgres.
+      # Out-of-parent sources still get per-source mounts in
+      # docker-compose.override.yml via 'sdp db start'.
+      - ${PARSED_PATH:-./data/parsed}:/data/parsed:ro
+      - ${OUTPUT_PATH:-./data/output}:/data/output:ro
       - ./config/starrocks/fe.local.conf:/etc/starrocks/config/fe.local.conf:ro
       - ./config/starrocks/be.local.conf:/etc/starrocks/config/be.local.conf:ro
       - ./config/starrocks/entrypoint-wrapper.sh:/etc/starrocks/config/entrypoint-wrapper.sh:ro

@@ -17,14 +17,14 @@ A researcher-focused, end-to-end CLI pipeline for processing, classifying, inges
 ### TL;DR
 
 ```bash
-# 1. Configure databases (one-time)
+# 1. Configure databases and sources (one-time)
 python sdp.py db setup                      # Configure databases (interactive setup)
 python sdp.py db setup-mcp                  # MCP servers for agentic AI data access (optional)
 python sdp.py db setup-jobs                 # Job scheduler for agentic AI query submission (optional)
-python sdp.py db start                      # Start databases and optional services
-
-# 2. Add a source and process data
 python sdp.py source add reddit             # Add a data source (interactive setup)
+
+# 2. Start databases and process data
+python sdp.py db start                      # Start databases and optional services
 python sdp.py run parse                     # Decompress dumps → parse to cleaned, structured files
 python sdp.py run lingua                    # Adds language detection to parsed files (if configured)
 
@@ -39,6 +39,7 @@ python sdp.py run {postgres_ml | sr_ml}     # Ingest classifier outputs into Pos
 python sdp.py db status                     # Database status
 python sdp.py source status                 # Ingestion source status
 python sdp.py source error-logs             # Show error details for failed datasets
+python sdp.py db verify                     # Verifies file structure consistency
 ```
 
 ---

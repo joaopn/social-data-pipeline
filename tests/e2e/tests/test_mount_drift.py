@@ -1,20 +1,27 @@
-"""E2E: per-source mount drift between PG and the running container.
+"""E2E: source-add ↔ DB-server mount lifecycle.
 
-The bug class:
+Two contracts are pinned here:
 
-    sdp db setup postgres
-    sdp db start postgres        # override.yml regenerated; no per-source mounts
-    sdp source add reddit        # adds source files, override is now stale
-    sdp run postgres_ingest -s reddit
-        → before C6: dies deep in pg_parquet COPY with an opaque "no such file"
-        → after C6: exits 1 at the CLI with a recovery hint
+1. **In-parent source add doesn't need restart.** With the dual-mount
+   design (docker-compose.yml binds ``${PARSED_PATH}`` / ``${OUTPUT_PATH}``
+   on the postgres + starrocks server blocks), a source whose paths fall
+   under those parents is visible to a running DB the moment its
+   directories appear on disk. ``source add`` on a default-path source
+   does not warn, and ``run postgres_ingest`` succeeds without a
+   restart.
+2. **Drift detection still backstops the multi-disk case.** Sources
+   whose host paths live outside ``${PARSED_PATH}`` / ``${OUTPUT_PATH}``
+   need explicit per-source override entries; that path is exercised by
+   the unit tests in ``tests/setup/test_mount_sync.py`` (live ``docker
+   inspect`` mocking + filtering helpers). Pinning the multi-disk path
+   in E2E would require staging an out-of-parent directory inside the
+   sysbox workspace and is not worth the complexity for what unit tests
+   already cover deterministically.
 
-This test pins the new behavior: the failure surface is the CLI's mount
-validator, the error names the exact `db stop && db start` recovery line,
-and after running that line ingest succeeds normally.
+This test exercises the postgres path. The starrocks path is structurally
+identical (same dual-mount pattern in docker-compose.yml) and is covered
+indirectly through the existing ``test_sr_flow.py`` E2E.
 """
-
-import pytest
 
 from tests.e2e.helpers.sdp import SDPSession, run_sdp, wait_for_healthy
 from tests.e2e.helpers.fixtures import place_reddit_fixtures
@@ -25,6 +32,7 @@ PG_DB_SETUP = {
     "db_data_path": "",
     "db_databases": "1",         # postgres only
     "db_pgdata_path": "",
+    "db_export_path": "",
     "db_name": "",
     "db_pg_port": "",
     "db_tablespaces": "",
@@ -39,8 +47,8 @@ PG_SOURCE_ADD = {
     "src_data_types": "",
     "src_dumps_path": "",
     "src_extracted_path": "",
-    "src_parsed_path": "",
-    "src_output_path": "",
+    "src_parsed_path": "",        # default → ./data/parsed/reddit (in-parent)
+    "src_output_path": "",        # default → ./data/output/reddit (in-parent)
     "src_file_format": "1",       # parquet
     "src_parquet_rg_size": "",
     "src_profiles": "1,4",        # parse + postgres_ingest
@@ -51,76 +59,59 @@ PG_SOURCE_ADD = {
 }
 
 
-def test_mount_drift_blocks_run_then_recovery_succeeds(workspace):
-    """Postgres started before `source add` → `run postgres_ingest` fails fast."""
+def test_in_parent_source_add_does_not_need_restart(workspace):
+    """db start (no sources) → source add (default paths) → run ingest, no restart.
+
+    Default-path source's parsed/output dirs live under ``${PARSED_PATH}`` /
+    ``${OUTPUT_PATH}``, which the postgres compose block already binds. The
+    running container can see the new source's files immediately; the source-
+    add warning stays silent and the ingest validator green-lights the run.
+    """
     # 1. db setup, no sources yet.
     rc, output = SDPSession(PG_DB_SETUP).run_interactive("db setup")
     assert rc == 0, f"db setup failed:\n{output}"
 
-    # 2. Start postgres BEFORE adding the source. override.yml is regenerated
-    #    with an empty per-source mount set.
+    # 2. Start postgres BEFORE adding any source.
     result = run_sdp("db start postgres")
     assert result.returncode == 0, (
         f"db start failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     wait_for_healthy("postgres")
 
-    # 3. Add the source AFTER PG is running. override.yml is now stale: it
-    #    has no /data/parsed/reddit mount, but the container is already up
-    #    with that stale mount set.
+    # 3. Add the source AFTER PG is running. With default paths (in-parent),
+    #    no override regen is required, and source add MUST NOT warn.
     rc, output = SDPSession(PG_SOURCE_ADD).run_interactive("source add reddit")
     assert rc == 0, f"source add failed:\n{output}"
-
-    # `source add` itself should warn about the drift (PG is running and
-    # override no longer matches the configured sources).
-    assert "[WARN] Mount drift" in output or "missing source mount" in output, (
-        f"source add did not warn about mount drift:\n{output}"
+    assert "[WARN] Mount drift" not in output, (
+        f"source add unexpectedly warned for in-parent source:\n{output}"
     )
 
-    # 4. Place fixtures and parse — parse runs in a fresh container with
-    #    source-scoped mounts, so it must not be affected by PG's drift.
+    # 4. db verify reports clean — no mount-related findings.
+    result = run_sdp("db verify")
+    assert result.returncode == 0, (
+        f"db verify reported drift after in-parent source add:\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+    # 5. Place fixtures and run parse → ingest, all in one go (no db restart).
     place_reddit_fixtures("reddit", data_types=["comments"])
+
     result = run_sdp("run parse --source reddit --build")
     assert result.returncode == 0, f"run parse failed:\n{result.stderr}"
 
-    # 5. The mount-drift bug surfaces here. The validator must:
-    #    - exit 1 at the CLI (not deep inside docker compose run)
-    #    - name the missing destination
-    #    - print the exact recovery command
-    result = run_sdp("run postgres_ingest --source reddit")
-    assert result.returncode == 1, (
-        f"expected exit 1 from mount-drift guard, got {result.returncode}\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    combined = result.stdout + result.stderr
-    assert "/data/parsed/reddit" in combined, (
-        f"missing-mount destination not surfaced:\n{combined}"
-    )
-    assert (
-        "db stop postgres" in combined and "db start postgres" in combined
-    ), f"recovery hint missing:\n{combined}"
-
-    # 6. Run the recovery — the existing two-step regenerates the override
-    #    and restarts PG with the per-source mount in place.
-    result = run_sdp("db stop postgres")
-    assert result.returncode == 0, f"db stop failed:\n{result.stderr}"
-    result = run_sdp("db start postgres")
-    assert result.returncode == 0, f"db start (recovery) failed:\n{result.stderr}"
-    wait_for_healthy("postgres")
-
-    # 7. Ingest now succeeds.
-    result = run_sdp("run postgres_ingest --source reddit")
+    result = run_sdp("run postgres_ingest --source reddit --build")
     assert result.returncode == 0, (
-        f"ingest after recovery still failing:\n"
+        f"postgres_ingest failed without an intervening db restart "
+        f"(this is the parent-mount fix's whole point):\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
 
-    # 8. Sanity-check the data landed.
+    # 6. Sanity-check the data landed via the live (un-restarted) container.
     conn = pg_connect()
     try:
         assert pg_table_exists(conn, "reddit", "comments")
         count = pg_row_count(conn, "reddit", "comments")
-        assert count == 10, f"Expected 10 rows after recovery, got {count}"
+        assert count == 10, f"Expected 10 rows, got {count}"
     finally:
         conn.close()
 

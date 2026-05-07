@@ -29,6 +29,7 @@ ENABLED_TESTS=(
     tests/e2e/tests/test_unsetup_gating.py
     tests/e2e/tests/test_mount_drift.py
     tests/e2e/tests/test_unsetup_symmetry.py
+    tests/e2e/tests/test_auth_full_cycle.py
     # tests/e2e/tests/test_mcp_lifecycle.py   # disabled: hangs inside sysbox during MCP image build
     # tests/e2e/tests/test_parse_custom.py    # deferred: custom parser fields config
 )

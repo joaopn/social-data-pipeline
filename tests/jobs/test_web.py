@@ -10,7 +10,11 @@ caught here.
 
 from __future__ import annotations
 
-from social_data_pipeline.jobs.web import _parse_auto_accept_form
+import zipfile
+
+import pytest
+
+from social_data_pipeline.jobs.web import _build_result_zip, _parse_auto_accept_form
 
 
 class TestParseAutoAcceptForm:
@@ -57,3 +61,46 @@ class TestParseAutoAcceptForm:
         enabled, limit = _parse_auto_accept_form({})
         assert enabled is None
         assert limit is None
+
+
+class TestBuildResultZip:
+    def test_zips_all_files_flat(self, tmp_path):
+        # Multi-part parquet shardset is the common case; the zip must
+        # contain every part at the archive root (arcname = basename),
+        # not nested under the folder name.
+        (tmp_path / "part-0.parquet").write_bytes(b"alpha-bytes")
+        (tmp_path / "part-1.parquet").write_bytes(b"beta-bytes")
+        buf = _build_result_zip(tmp_path)
+        try:
+            with zipfile.ZipFile(buf) as zf:
+                names = sorted(zf.namelist())
+                assert names == ["part-0.parquet", "part-1.parquet"]
+                assert zf.read("part-0.parquet") == b"alpha-bytes"
+                assert zf.read("part-1.parquet") == b"beta-bytes"
+        finally:
+            buf.close()
+
+    def test_skips_subdirectories(self, tmp_path):
+        # Result folders are flat by contract; if something nests a
+        # subdir in there (debug dump, stray index file), don't recurse
+        # — the zip mirrors what Preview sees.
+        (tmp_path / "part-0.parquet").write_bytes(b"x")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "nested.parquet").write_bytes(b"y")
+        buf = _build_result_zip(tmp_path)
+        try:
+            with zipfile.ZipFile(buf) as zf:
+                assert zf.namelist() == ["part-0.parquet"]
+        finally:
+            buf.close()
+
+    def test_missing_folder_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            _build_result_zip(tmp_path / "does-not-exist")
+
+    def test_empty_folder_raises(self, tmp_path):
+        # An empty result folder is a programming error (status=done
+        # implies parts exist); the route surfaces it as 404 rather
+        # than handing the user a 22-byte empty zip.
+        with pytest.raises(RuntimeError):
+            _build_result_zip(tmp_path)

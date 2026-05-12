@@ -56,6 +56,9 @@
                         hx-target="#preview-{{ job.job_id }}"
                         hx-swap="innerHTML"
                         hx-indicator="#preview-{{ job.job_id }}">Preview</button>
+                <form action="/actions/download/{{ job.job_id }}" method="get" style="display: inline; margin: 0;">
+                  <button type="submit" class="outline secondary">Download</button>
+                </form>
               </div>
               <div id="preview-{{ job.job_id }}" class="panel-content">
                 <span class="muted">Click Preview to show the first 20 rows of the result.</span>

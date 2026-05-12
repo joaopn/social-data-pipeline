@@ -12,7 +12,7 @@ import threading
 
 import sqlparse
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from . import auth
@@ -201,6 +201,38 @@ def build_router(
                 name="_explain_result.html",
                 context={"plan": None, "error": f"{type(e).__name__}: {e}"},
             )
+
+    @protected.get("/actions/download/{job_id}")
+    async def download(job_id: str):
+        located = store.find(job_id)
+        if not located:
+            raise HTTPException(status_code=404, detail="job not found")
+        _phase, job = located
+        if job.status != "done" or not job.result_path:
+            raise HTTPException(status_code=404, detail="no result available")
+        try:
+            buf = _build_result_zip(Path(job.result_path))
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+        def _iter():
+            try:
+                while True:
+                    chunk = buf.read(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                buf.close()
+
+        filename = f"{job_id}.zip"
+        return StreamingResponse(
+            _iter(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @protected.get("/actions/preview/{job_id}", response_class=HTMLResponse)
     async def preview(request: Request, job_id: str):
@@ -471,6 +503,33 @@ def _read_preview(result_path: str | None, limit: int = 20) -> tuple[list[str], 
             return list(header), rows
 
     raise RuntimeError(f"no .parquet / .csv / .ndjson parts found in {folder}")
+
+
+def _build_result_zip(folder: Path):
+    """Zip every regular file directly under ``folder`` (non-recursive) into a
+    SpooledTemporaryFile and return it positioned at offset 0.
+
+    ZIP_STORED: parquet is already compressed and deflate would burn CPU for
+    almost no win. CSV/NDJSON pay a small size cost in exchange for streaming
+    being I/O-bound. Spools to disk past 10 MiB so result folders larger than
+    RAM still work.
+
+    Caller owns the returned file and must close it.
+    """
+    import tempfile
+    import zipfile
+
+    if not folder.exists():
+        raise FileNotFoundError(f"result folder missing: {folder}")
+    parts = sorted(p for p in folder.iterdir() if p.is_file())
+    if not parts:
+        raise RuntimeError(f"no result parts in {folder}")
+    buf = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_STORED) as zf:
+        for p in parts:
+            zf.write(p, arcname=p.name)
+    buf.seek(0)
+    return buf
 
 
 _DISK_CACHE_TTL_SECONDS = 10.0

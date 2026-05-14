@@ -27,8 +27,6 @@ e2e-exercises its chown + rmtree shape (storage_paths cleanup), and the
 unit tests in test_db_reset.py pin the fe/be wipe contract.
 """
 
-import pytest
-
 from tests.e2e.helpers.sdp import SDPSession, run_sdp, wait_for_healthy, WORKSPACE
 from tests.e2e.helpers.fixtures import place_reddit_fixtures, place_reddit_extracted
 from tests.e2e.helpers.db import (

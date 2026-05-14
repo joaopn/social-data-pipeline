@@ -3623,9 +3623,9 @@ def cmd_source_download(args):
 
     config_map = source_config.get('hf_config_map', {})
     if not config_map:
-        # Fallback: each data_type maps to a config with the same name
-        data_types = source_config.get('data_types', [])
-        config_map = {dt: [dt] for dt in data_types}
+        print(f"\n  Error: Source '{source_name}' has no hf_config_map in platform.yaml.")
+        print(f"  Re-run 'sdp source add {source_name} --hf {hf_dataset}' to regenerate it.\n")
+        return 1
 
     # Filter by --data-type if specified
     if args.data_type:
@@ -3645,6 +3645,21 @@ def cmd_source_download(args):
         # Phase 1: Download 1-to-1 mirror to dumps/
         print("\n  --- Downloading from HF Hub ---\n")
         parquet_urls = fetch_parquet_urls(hf_dataset, token=token)
+
+        # Fail loud if the saved hf_config_map references configs that no
+        # longer exist upstream (e.g. dataset owner renamed or removed a
+        # config). Without this check organize_hf_downloads would silently
+        # skip the missing configs and report "0 files organized".
+        live_configs = set(parquet_urls.keys())
+        saved_configs = {c for configs in config_map.values() for c in configs}
+        missing = sorted(saved_configs - live_configs)
+        if missing:
+            print(f"\n  Error: saved hf_config_map references configs that no longer exist on HF.")
+            print(f"  Missing configs: {', '.join(missing)}")
+            print(f"  Available on HF: {', '.join(sorted(live_configs))}")
+            print(f"  Re-run 'sdp source add {source_name} --hf {hf_dataset}' to regenerate the mapping.\n")
+            return 1
+
         download_hf_files(parquet_urls, dumps_dir, dataset_id=hf_dataset, token=token)
 
         # Phase 2: Organize into extracted/<data_type>/ using config_map

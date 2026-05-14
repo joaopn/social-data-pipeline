@@ -231,10 +231,18 @@ def _load_existing_source_config(source_name):
             existing["file_patterns"] = pc["file_patterns"]
         if pc.get("fields"):
             existing["custom_fields"] = pc["fields"]
+        if pc.get("field_types"):
+            existing["custom_field_types"] = pc["field_types"]
         if pc.get("primary_key"):
             existing["primary_key"] = pc["primary_key"]
         if pc.get("sr_buckets") is not None:
             existing["sr_buckets"] = pc["sr_buckets"]
+        if pc.get("hf_dataset"):
+            existing["hf_dataset"] = pc["hf_dataset"]
+        if pc.get("hf_config_map"):
+            existing["hf_config_map"] = pc["hf_config_map"]
+        if pc.get("mongo_exclude_fields"):
+            existing["mongo_exclude_fields"] = pc["mongo_exclude_fields"]
 
     # Load parse.yaml
     parse_path = source_dir / "parse.yaml"
@@ -290,19 +298,32 @@ def run_questionnaire(hw, source_name, db_setup, hf_defaults=None):
         platform = f"custom/{source_name}"
     settings["platform"] = platform
 
-    is_hf = hf_defaults is not None
+    is_hf = hf_defaults is not None or bool(existing.get("hf_dataset"))
 
     # ---- HF config grouping (replaces data types question) ----
     if is_hf:
-        data_types, hf_config_map, hf_fields, hf_field_types, hf_excluded = (
-            _run_hf_config_grouping(hf_defaults)
-        )
-        settings["data_types"] = data_types
-        settings["hf_config_map"] = hf_config_map
-        settings["custom_fields"] = hf_fields
-        settings["custom_field_types"] = hf_field_types
-        if hf_excluded:
-            settings["mongo_exclude_fields"] = hf_excluded
+        if hf_defaults is not None:
+            # Fresh `--hf` add: run the interactive grouping.
+            data_types, hf_config_map, hf_fields, hf_field_types, hf_excluded = (
+                _run_hf_config_grouping(hf_defaults)
+            )
+            settings["data_types"] = data_types
+            settings["hf_config_map"] = hf_config_map
+            settings["custom_fields"] = hf_fields
+            settings["custom_field_types"] = hf_field_types
+            if hf_excluded:
+                settings["mongo_exclude_fields"] = hf_excluded
+        else:
+            # Reconfigure of an HF source — reuse the saved grouping/fields/types.
+            data_types = existing.get("data_types", [])
+            settings["data_types"] = data_types
+            settings["hf_config_map"] = existing.get("hf_config_map", {})
+            settings["custom_fields"] = existing.get("custom_fields", {})
+            settings["custom_field_types"] = existing.get("custom_field_types", {})
+            if existing.get("mongo_exclude_fields"):
+                settings["mongo_exclude_fields"] = existing["mongo_exclude_fields"]
+            if existing.get("hf_dataset"):
+                settings["hf_dataset"] = existing["hf_dataset"]
 
     # ---- Data types (non-HF) ----
     elif platform == "reddit":
@@ -961,6 +982,7 @@ def main(source_name=None, hf_dataset_id=None):
             "data_types": settings["data_types"],
             "profiles": profiles,
             "source": source_name,
+            "primary_key": settings.get("primary_key"),
         }
         classifier_settings = run_classifier_questionnaire(hw, classifier_state)
         settings["classifier_settings"] = classifier_settings

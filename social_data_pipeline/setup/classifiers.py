@@ -168,7 +168,7 @@ def _load_existing_classifier_config(source_name):
 # Platform-aware text_columns
 # ============================================================================
 
-def ask_text_columns(platform, data_types, existing=None):
+def ask_text_columns(platform, data_types, existing=None, primary_key=None):
     """Get text_columns configuration based on platform.
 
     For Reddit, uses known defaults. For other platforms, asks the user.
@@ -211,11 +211,16 @@ def ask_text_columns(platform, data_types, existing=None):
     )
     remove_patterns = [p.strip() for p in remove_patterns_str.split(",") if p.strip()]
 
-    fields = ask_list(
-        "Extra fields to keep in GPU classifier output (besides id, dataset, retrieved_utc)",
-        existing.get("gpu_fields"),
+    pk_hint = f" ({primary_key} is included automatically)" if primary_key else ""
+    existing_extras = [f for f in (existing.get("gpu_fields") or []) if f != primary_key]
+    extras = ask_list(
+        f"Extra fields to keep in GPU classifier output{pk_hint}",
+        existing_extras or None,
         tag="cl_extra_fields",
     )
+    # Auto-prepend the PK so the classifier output retains the join column on
+    # custom platforms (where platform.mandatory_fields is empty, see transformer.py).
+    fields = ([primary_key] if primary_key else []) + [f for f in extras if f != primary_key]
 
     return text_columns, remove_strings, remove_patterns, fields
 
@@ -253,7 +258,9 @@ def run_questionnaire(hw, state):
     defaults = compute_classifier_defaults(hw, profiles)
 
     # Get platform-aware text columns
-    text_columns, remove_strings, remove_patterns, gpu_fields = ask_text_columns(platform, data_types, existing=existing)
+    text_columns, remove_strings, remove_patterns, gpu_fields = ask_text_columns(
+        platform, data_types, existing=existing, primary_key=state.get("primary_key")
+    )
     settings["text_columns"] = text_columns
     settings["remove_strings"] = remove_strings
     settings["remove_patterns"] = remove_patterns

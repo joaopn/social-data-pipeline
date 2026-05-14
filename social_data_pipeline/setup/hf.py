@@ -418,13 +418,17 @@ def organize_hf_downloads(dumps_dir, extracted_dir, config_map):
                 print(f"  Warning: config '{config_name}' not found in {dumps_dir}")
                 continue
 
-            # Collect all parquet files across splits
+            # Collect all parquet files across splits. Preserve the source
+            # filename (and split sub-dir, if any) so that re-runs are
+            # idempotent when HF adds shards upstream — index-based naming
+            # would renumber existing files and re-copy everything.
             parquet_files = sorted(config_dir.rglob("*.parquet"))
-            for i, src_path in enumerate(parquet_files):
+            for src_path in parquet_files:
+                rel = src_path.relative_to(config_dir).as_posix().replace("/", "_")
                 if multi_config:
-                    dest_name = f"{config_name}_{i}.parquet"
+                    dest_name = f"{config_name}_{rel}"
                 else:
-                    dest_name = f"{i}.parquet"
+                    dest_name = rel
 
                 dest_path = dt_dir / dest_name
 

@@ -18,6 +18,8 @@
 
 You're operating a working SDP install. PostgreSQL, MongoDB, and StarRocks are all pre-configured (along with their read-only MCP servers and the jobs scheduler). Nothing is running yet — pick a backend and start it.
 
+> The codespace pipx-installs the CLI for you, so `sdp <command>` works directly. The main [README](../../README.md) uses `python sdp.py <command>` instead — they are identical.
+
 ## 1. Pick a database and start it
 
 PostgreSQL is the recommended default for the free-tier Codespace (2 cores / 8 GB).

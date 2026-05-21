@@ -219,6 +219,19 @@ services:
       - ${DB_EXPORT_PATH:-./data/export}:/export
       - ./config/mongo:/etc/mongo/config:ro
     environment:
+      # WORKAROUND: MongoDB 8.x crashes deterministically with exit 139 ~30s
+      # after start on Linux kernel 6.19+ (e.g. Ubuntu 26.04 / kernel 7.0).
+      # Root cause: mongo's vendored tcmalloc relied on an undocumented RSEQ
+      # kernel behavior that was changed in commit 39a167560a61 ("rseq:
+      # Optimize event setting"); tcmalloc now segfaults during the first
+      # WiredTiger background allocation. The fix is to force GLIBC to claim
+      # RSEQ first, starving tcmalloc into its safe per-thread cache fallback.
+      # Counterintuitively, rseq=1 (NOT =0) is the working value: =0 lets
+      # tcmalloc grab RSEQ and crash, =1 makes glibc grab it instead. Remove
+      # this line once mongo upstream merges the vendored tcmalloc fix.
+      # Refs: MongoDB 8.0/8.2 release notes; stoatchat/self-hosted#268;
+      # arch-linux GitLab#185; docker-library/mongo#747.
+      GLIBC_TUNABLES: "glibc.pthread.rseq=1"
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMIN_USER:-}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMIN_PASSWORD:-}
       MONGO_ADMIN_USER: ${MONGO_ADMIN_USER:-admin}

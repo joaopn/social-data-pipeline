@@ -4270,6 +4270,10 @@ def cmd_run(args):
         print(f"  Error: --skip-lingua-files only applies to the 'parse' profile (got '{profile}').")
         return 1
 
+    if getattr(args, "classifier", None) and profile not in ("ml", "lingua"):
+        print(f"  Error: --classifier only applies to the 'ml' and 'lingua' profiles (got '{profile}').")
+        return 1
+
     # Resolve source (auto-selects if only one exists)
     source = resolve_source(args.source)
     source_config = load_source_config(source)
@@ -4351,6 +4355,9 @@ def cmd_run(args):
     if getattr(args, "skip_lingua_files", False):
         env_overrides["SKIP_LINGUA_FILES"] = "1"
 
+    if getattr(args, "classifier", None):
+        env_overrides["CLASSIFIER"] = args.classifier
+
     # Set env vars for docker compose
     for key, value in env_overrides.items():
         os.environ[key] = value
@@ -4366,6 +4373,8 @@ def cmd_run(args):
         print(f"  Filter: {args.filter}")
     if getattr(args, "skip_lingua_files", False):
         print("  Skip-lingua-files: enabled")
+    if getattr(args, "classifier", None):
+        print(f"  Classifier: {args.classifier} (single)")
     result = docker_compose(*compose_args)
     return result.returncode
 
@@ -4538,6 +4547,9 @@ def build_parser():
                             help="Parse only: also skip files that already have a lingua output "
                                  "(<OUTPUT_PATH>/lingua/<data_type>/<id>_lingua.{csv,parquet}). "
                                  "Lets you delete old extracted/parsed files after lingua has consumed them.")
+    run_parser.add_argument("--classifier", "-c", dest="classifier",
+                            help="ml/lingua only: run a single classifier from the configured list "
+                                 "(e.g. 'toxic_roberta') instead of all of them.")
     run_parser.set_defaults(func=cmd_run)
 
     return parser

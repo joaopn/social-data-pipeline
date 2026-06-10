@@ -65,6 +65,7 @@ services:
       - PROFILE=lingua
       - SOURCE=${SOURCE:-}
       - FILE_FILTER=${FILE_FILTER:-}
+      - CLASSIFIER=${CLASSIFIER:-}
       - PYTHONUNBUFFERED=1
     volumes:
       - ${PARSED_PATH:-./data/parsed}:/data/parsed:ro

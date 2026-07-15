@@ -257,7 +257,8 @@ class BatchedParquetWriter:
         table = df.to_arrow()
 
         if self._pq_writer is None:
-            self._pq_writer = pq.ParquetWriter(str(self._temp_path), table.schema)
+            self._pq_writer = pq.ParquetWriter(str(self._temp_path), table.schema,
+                                               compression='zstd')
         self._pq_writer.write_table(table)
 
         self._total_rows += len(self._buffer)
@@ -313,7 +314,7 @@ def write_parquet_file(
 
     try:
         df = pl.DataFrame(rows, schema=schema, orient='row')
-        df.write_parquet(temp_path)
+        df.write_parquet(temp_path, compression='zstd')
         temp_path.rename(output_path)
     except Exception:
         if temp_path.exists():

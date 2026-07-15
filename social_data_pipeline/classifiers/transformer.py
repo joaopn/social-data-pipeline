@@ -599,9 +599,19 @@ class TransformerClassifier:
 
         # Get model config for id2label (needed for output columns)
         from transformers import AutoConfig
+        from .base import normalize_score_name
         model_config = AutoConfig.from_pretrained(self.model_id)
         num_labels = model_config.num_labels if hasattr(model_config, 'num_labels') else 2
-        id2label = model_config.id2label if hasattr(model_config, 'id2label') else {i: f'label_{i}' for i in range(num_labels)}
+        raw_id2label = model_config.id2label if hasattr(model_config, 'id2label') else {i: f'label_{i}' for i in range(num_labels)}
+        # Normalize label names to the canonical snake_case output-column
+        # convention (shared with the CSV->parquet converter) so freshly
+        # produced files match historical converted ones exactly. All output
+        # column naming flows from id2label, so normalizing here is sufficient.
+        id2label = {k: normalize_score_name(v) for k, v in raw_id2label.items()}
+        if len(set(id2label.values())) != len(id2label):
+            raise ValueError(
+                f"{self.name}: model labels collide after normalization: "
+                f"{sorted(raw_id2label.values())} -> {sorted(id2label.values())}")
 
         # Build text expression once (reused per batch)
         text_columns = self._get_text_columns(data_type)
@@ -667,7 +677,7 @@ class TransformerClassifier:
             candidate_batch_indices = df.with_row_index("_idx").filter(candidate_mask)["_idx"].to_list()
             
             # Initialize output columns with empty values
-            output_col_values = {id2label[lid]: [""] * batch_rows for lid in sorted(id2label.keys())}
+            output_col_values = {id2label[lid]: [None] * batch_rows for lid in sorted(id2label.keys())}
             
             # Initialize valid_indices for cases where candidate_texts is empty
             valid_indices = []
@@ -776,7 +786,7 @@ class TransformerClassifier:
                             label_name = id2label[label_id]
                             label_idx = list(sorted(id2label.keys())).index(label_id)
                             if label_idx < len(probs):
-                                output_col_values[label_name][batch_idx] = f"{probs[label_idx]:.4f}"
+                                output_col_values[label_name][batch_idx] = round(float(probs[label_idx]), 4)
                 
                 total_classified += len(valid_candidate_indices) - len(skip_indices)
             
@@ -789,7 +799,7 @@ class TransformerClassifier:
                 # Add result columns (filtered to valid rows only)
                 for label_name, col_values in output_col_values.items():
                     filtered_values = [col_values[i] for i in valid_indices]
-                    df_out = df_out.with_columns(pl.Series(label_name, filtered_values))
+                    df_out = df_out.with_columns(pl.Series(label_name, filtered_values, dtype=pl.Float32))
                 
                 # Drop temporary columns
                 df_out = df_out.drop(["_text", "_lang_ok", "_text_ok", "_idx"])
@@ -797,7 +807,7 @@ class TransformerClassifier:
                 # No valid texts - create empty output with proper columns
                 df_out = df.filter(pl.lit(False))
                 for label_name in output_col_values.keys():
-                    df_out = df_out.with_columns(pl.Series(label_name, []))
+                    df_out = df_out.with_columns(pl.Series(label_name, [], dtype=pl.Float32))
                 df_out = df_out.drop(["_text", "_lang_ok", "_text_ok"])
             
             # Filter to specified fields if configured

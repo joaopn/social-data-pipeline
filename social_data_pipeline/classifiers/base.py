@@ -7,10 +7,30 @@ Provides:
 - get_classifier: Factory function to get classifier instances
 """
 
+import re
 from typing import Dict, Optional, Any
 
 # Registry for custom classifier classes
 CLASSIFIER_REGISTRY: Dict[str, type] = {}
+
+
+def normalize_score_name(name: str) -> str:
+    """Canonical form of a classifier output (score) column name.
+
+    Model id2label labels vary in style ("Very Negative", "LABEL_0",
+    "toxic"); this maps them to a single snake_case convention so every
+    classifier's output columns are consistent and need no quoting in SQL:
+    non-alphanumeric runs collapse to a single underscore, edges are
+    trimmed, everything is lowercased. Already-snake names are unchanged
+    ("toxic" -> "toxic", "not_toxic" -> "not_toxic").
+
+    This is the single source of truth for output-column naming. The
+    transformer classifier applies it when writing, and the offline
+    CSV->parquet converter applies it when reformatting historical outputs,
+    so converted files and freshly-produced files carry identical columns.
+    """
+    s = re.sub(r"[^0-9A-Za-z]+", "_", name.strip())
+    return re.sub(r"_+", "_", s).strip("_").lower()
 
 
 def register_classifier(name: str):

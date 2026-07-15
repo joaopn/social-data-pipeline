@@ -181,7 +181,8 @@ class _OutputWriter:
             import pyarrow.parquet as pq
             table = df.to_arrow()
             if self._pq_writer is None:
-                self._pq_writer = pq.ParquetWriter(str(self.temp_path), table.schema)
+                self._pq_writer = pq.ParquetWriter(str(self.temp_path), table.schema,
+                                                   compression='zstd')
             self._pq_writer.write_table(table)
         else:
             if self._first_batch:
@@ -292,8 +293,8 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
             df_with_text = df_with_text.with_columns([
                 valid_expr.alias("_valid"),
                 pl.when(valid_expr)
-                .then(pl.col("_len").cast(pl.Utf8))
-                .otherwise(pl.lit(None) if file_format == 'parquet' else pl.lit(""))
+                .then(pl.col("_len").cast(pl.Int64))
+                .otherwise(pl.lit(None, dtype=pl.Int64))
                 .alias("_lang_chars"),
             ])
 
@@ -301,11 +302,10 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
             valid_df = df_with_text.filter(valid_mask)
             valid_texts = valid_df["_text"].to_list()
 
-            empty = None if file_format == 'parquet' else ""
-            lang1_col = [empty] * n_rows
-            prob1_col = [empty] * n_rows
-            lang2_col = [empty] * n_rows
-            prob2_col = [empty] * n_rows
+            lang1_col = [None] * n_rows
+            prob1_col = [None] * n_rows
+            lang2_col = [None] * n_rows
+            prob2_col = [None] * n_rows
 
             if valid_texts:
                 valid_indices = valid_mask.arg_true().to_list()
@@ -325,20 +325,20 @@ def process_csv(input_csv: str, output_csv: str, data_type: str, config: Dict) -
                         r0 = res[0]
                         lang1 = r0.language.iso_code_639_1.name.lower()
                         lang1_col[idx] = lang1
-                        prob1_col[idx] = f"{r0.value:.4f}"
+                        prob1_col[idx] = round(float(r0.value), 4)
 
                         if len(res) > 1:
                             r1 = res[1]
                             lang2_col[idx] = r1.language.iso_code_639_1.name.lower()
-                            prob2_col[idx] = f"{r1.value:.4f}"
+                            prob2_col[idx] = round(float(r1.value), 4)
 
                 total_detected += len(valid_texts)
 
             df_out = df.with_columns([
-                pl.Series("lang", lang1_col),
-                pl.Series("lang_prob", prob1_col),
-                pl.Series("lang2", lang2_col),
-                pl.Series("lang2_prob", prob2_col),
+                pl.Series("lang", lang1_col, dtype=pl.String),
+                pl.Series("lang_prob", prob1_col, dtype=pl.Float32),
+                pl.Series("lang2", lang2_col, dtype=pl.String),
+                pl.Series("lang2_prob", prob2_col, dtype=pl.Float32),
                 df_with_text["_lang_chars"].alias("lang_chars"),
             ])
 

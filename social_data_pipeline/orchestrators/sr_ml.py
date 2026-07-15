@@ -32,6 +32,7 @@ from ..db.starrocks.ingest import (
     execute_query,
     infer_classifier_schema,
     get_classifier_create_table_query,
+    yaml_type_to_sr_sql,
 )
 
 
@@ -141,6 +142,16 @@ def run_pipeline(config_dir: str = "/app/config"):
     # Primary key and upsert ordering from platform config
     pk_column = platform_config.get('primary_key')
     order_field = platform_config.get('upsert_order_field')
+
+    # Enforce the platform's declared field_types on passthrough columns so
+    # classifier tables match the main tables (e.g. retrieved_utc INT, not the
+    # BIGINT that raw parquet inference produces; id varchar(7) not
+    # varchar(65533)). Score columns are absent from field_types, so they stay
+    # inferred from the file (FLOAT). Per-classifier column_overrides still win.
+    field_type_overrides = {
+        col: yaml_type_to_sr_sql(t)
+        for col, t in platform_config.get('field_types', {}).items()
+    }
 
     # Database name = source name (database-per-source, like sr_ingest)
     database = SOURCE
@@ -254,7 +265,8 @@ def run_pipeline(config_dir: str = "/app/config"):
             first_file = type_files[0][0]
             print(f"[sdp] Inferring schema from {Path(first_file).name}...")
             column_list, column_types, _ = infer_classifier_schema(
-                first_file, type_inference_rows, column_overrides
+                first_file, type_inference_rows,
+                {**field_type_overrides, **column_overrides},
             )
             print(f"[sdp] Inferred {len(column_list)} columns")
 

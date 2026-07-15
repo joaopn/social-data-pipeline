@@ -966,13 +966,19 @@ def _resolve_server_data_mounts(services):
     override_path.write_text(content)
 
 
-def _exited_services_after_up(profile_args):
+def _exited_services_after_up(profile_args, expected_services):
     """Return list of service names in `Exited` state after a `compose up -d`.
 
     Belt-and-suspenders for the failure shape where `up -d --wait`
     returns 0 on a container that immediately crashed. `--wait` should
     already catch it, but docker compose has been racy historically —
     this ps probe runs immediately after and catches what `--wait` missed.
+
+    Only services in `expected_services` (the ones this `up` started) are
+    considered. `ps --all` lists every container in the project regardless
+    of the active profiles, so without this filter a pre-existing stopped
+    container from another profile — e.g. a `jobs` container left Exited by
+    an earlier crash — would be misreported as a failure of this start.
 
     Returns a list of (service_name, exit_code) tuples; empty list when
     everything is running. Internal `docker compose ps` failure is treated
@@ -1008,10 +1014,19 @@ def _exited_services_after_up(profile_args):
 
     exited = []
     for row in rows:
+        svc = row.get("Service")
+        # Scope to services this `up` started. A row with an explicit Service
+        # that isn't ours — e.g. a stale `jobs` container left Exited by an
+        # earlier crash and surfaced by `ps --all` — is ignored. A row with
+        # only a container Name (older docker, no Service field) can't be
+        # scoped, so it falls through to inclusive detection rather than being
+        # silently dropped and masking a real crash.
+        if svc is not None and svc not in expected_services:
+            continue
         state = (row.get("State") or "").lower()
         if state != "exited":
             continue
-        name = row.get("Service") or row.get("Name") or "<unknown>"
+        name = svc or row.get("Name") or "<unknown>"
         exited.append((name, row.get("ExitCode")))
     return exited
 
@@ -1060,7 +1075,9 @@ def cmd_db_start(args):
         profile_flags = ["--profile", parent_db, "--profile", mcp_profile]
         mcp_args = profile_flags + ["up", "-d", "--wait"]
         result = docker_compose(*mcp_args)
-        exited = _exited_services_after_up(profile_flags)
+        # MCP profile "x_mcp" maps to compose service "x-mcp".
+        expected = {parent_db, mcp_profile.replace("_", "-")}
+        exited = _exited_services_after_up(profile_flags, expected)
         if exited:
             _print_exited_services(exited)
             return 1
@@ -1117,6 +1134,27 @@ def cmd_db_start(args):
             p.mkdir(parents=True, exist_ok=True)
         _resolve_server_data_mounts(mount_services)
 
+    # Pre-create each target DB's data directory as the host user, so Docker
+    # doesn't auto-create the bind-mount source as root:root on first start.
+    # A root-owned data dir makes host-side `.ro_credentials` writes fall back
+    # to a root-writing container, which is the source of the credential-
+    # ownership drift that `sdp db verify` flags. Mongo's real mount source is
+    # the `db` subdir (compose mounts `${MONGO_DATA_PATH}/db`), so create that
+    # too. postgres/starrocks were already spared this because their file
+    # mounts above are pre-created; mongo was the gap.
+    db_env = load_env()
+    for svc in targets:
+        env_key = _DB_DATA_PATH_ENV.get(svc)
+        data_path = db_env.get(env_key) if env_key else None
+        if not data_path:
+            continue
+        p = Path(data_path)
+        if not p.is_absolute():
+            p = ROOT / p
+        p.mkdir(parents=True, exist_ok=True)
+        if svc == "mongo":
+            (p / "db").mkdir(parents=True, exist_ok=True)
+
     # Start databases first (without MCP), wait for healthchecks
     db_args = []
     for svc in targets:
@@ -1138,7 +1176,9 @@ def cmd_db_start(args):
             profile_flags += ["--profile", mp]
         mcp_args = profile_flags + ["up", "-d", "--wait"]
         result = docker_compose(*mcp_args)
-        exited = _exited_services_after_up(profile_flags)
+        # MCP profiles "x_mcp" map to compose services "x-mcp".
+        expected = set(targets) | {mp.replace("_", "-") for mp in mcp_targets}
+        exited = _exited_services_after_up(profile_flags, expected)
         if exited:
             _print_exited_services(exited)
             return 1

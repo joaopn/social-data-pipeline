@@ -38,7 +38,10 @@ def test_no_exited_when_all_running(monkeypatch):
         lambda *a, **kw: _fake_run(stdout=out),
     )
 
-    exited = _exited_services_after_up(["--profile", "postgres", "--profile", "postgres_mcp"])
+    exited = _exited_services_after_up(
+        ["--profile", "postgres", "--profile", "postgres_mcp"],
+        {"postgres", "postgres-mcp"},
+    )
 
     assert exited == []
 
@@ -54,9 +57,41 @@ def test_one_exited_service_returned(monkeypatch):
         lambda *a, **kw: _fake_run(stdout=out),
     )
 
-    exited = _exited_services_after_up(["--profile", "postgres", "--profile", "postgres_mcp"])
+    exited = _exited_services_after_up(
+        ["--profile", "postgres", "--profile", "postgres_mcp"],
+        {"postgres", "postgres-mcp"},
+    )
 
     assert exited == [("postgres-mcp", 1)]
+
+
+def test_out_of_profile_exited_service_ignored(monkeypatch):
+    """A stale Exited container from a profile we did NOT start is ignored.
+
+    Regression: `ps --all` lists every project container regardless of the
+    active profiles. A `jobs` container left Exited (255) by an earlier
+    crash must not be reported as a failure of a `mongo`+`starrocks` start,
+    and (in cmd_db_start) must not abort the run before jobs itself starts.
+    """
+    out = "\n".join([
+        json.dumps({"Service": "jobs", "State": "exited", "ExitCode": 255}),
+        json.dumps({"Service": "mongo", "State": "running"}),
+        json.dumps({"Service": "mongo-mcp", "State": "running"}),
+        json.dumps({"Service": "starrocks", "State": "running"}),
+        json.dumps({"Service": "starrocks-mcp", "State": "running"}),
+    ])
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **kw: _fake_run(stdout=out),
+    )
+
+    exited = _exited_services_after_up(
+        ["--profile", "mongo", "--profile", "starrocks",
+         "--profile", "mongo_mcp", "--profile", "starrocks_mcp"],
+        {"mongo", "starrocks", "mongo-mcp", "starrocks-mcp"},
+    )
+
+    assert exited == []
 
 
 def test_multiple_exited_services(monkeypatch):
@@ -71,7 +106,10 @@ def test_multiple_exited_services(monkeypatch):
         lambda *a, **kw: _fake_run(stdout=out),
     )
 
-    exited = _exited_services_after_up(["--profile", "starrocks_mcp", "--profile", "mongo_mcp"])
+    exited = _exited_services_after_up(
+        ["--profile", "starrocks_mcp", "--profile", "mongo_mcp"],
+        {"mongo-mcp", "starrocks-mcp"},
+    )
 
     assert exited == [("mongo-mcp", 137), ("starrocks-mcp", 1)]
 
@@ -87,7 +125,9 @@ def test_handles_json_array_format(monkeypatch):
         lambda *a, **kw: _fake_run(stdout=out),
     )
 
-    exited = _exited_services_after_up(["--profile", "postgres_mcp"])
+    exited = _exited_services_after_up(
+        ["--profile", "postgres_mcp"], {"postgres", "postgres-mcp"},
+    )
 
     assert exited == [("postgres-mcp", 2)]
 
@@ -99,7 +139,7 @@ def test_empty_stdout_returns_empty_list(monkeypatch):
         lambda *a, **kw: _fake_run(stdout=""),
     )
 
-    assert _exited_services_after_up(["--profile", "postgres_mcp"]) == []
+    assert _exited_services_after_up(["--profile", "postgres_mcp"], {"postgres-mcp"}) == []
 
 
 def test_malformed_json_lines_skipped(monkeypatch):
@@ -119,7 +159,9 @@ def test_malformed_json_lines_skipped(monkeypatch):
         lambda *a, **kw: _fake_run(stdout=out),
     )
 
-    exited = _exited_services_after_up(["--profile", "postgres_mcp"])
+    exited = _exited_services_after_up(
+        ["--profile", "postgres_mcp"], {"postgres", "postgres-mcp"},
+    )
 
     assert exited == [("postgres-mcp", 1)]
 
@@ -136,18 +178,23 @@ def test_ps_failure_returns_empty_list(monkeypatch):
         lambda *a, **kw: _fake_run(returncode=1),
     )
 
-    assert _exited_services_after_up(["--profile", "postgres"]) == []
+    assert _exited_services_after_up(["--profile", "postgres"], {"postgres"}) == []
 
 
 def test_falls_back_to_name_when_service_missing(monkeypatch):
-    """Older docker output may use `Name` instead of `Service`; helper accepts both."""
+    """Older docker output may use `Name` instead of `Service`; helper accepts both.
+
+    A `Name`-only row can't be scoped to `expected_services`, so it falls
+    through to inclusive detection rather than being dropped — better to
+    over-report on old docker than to miss a real crash.
+    """
     out = json.dumps({"Name": "sdp-postgres-mcp-1", "State": "exited", "ExitCode": 1})
     monkeypatch.setattr(
         subprocess, "run",
         lambda *a, **kw: _fake_run(stdout=out),
     )
 
-    exited = _exited_services_after_up(["--profile", "postgres_mcp"])
+    exited = _exited_services_after_up(["--profile", "postgres_mcp"], {"postgres-mcp"})
 
     assert exited == [("sdp-postgres-mcp-1", 1)]
 

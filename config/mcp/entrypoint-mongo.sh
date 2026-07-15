@@ -23,7 +23,14 @@ if [ -n "${MCP_MONGODB_USER:-}" ]; then
     fi
 
     if [ -n "${MCP_MONGODB_PASSWORD:-}" ]; then
-        URI="mongodb://${MCP_MONGODB_USER}:${MCP_MONGODB_PASSWORD}@mongo:27017/?authSource=admin"
+        # Percent-encode credentials for the connection-string userinfo: the
+        # RO password can contain reserved chars (e.g. ':') that make the
+        # Mongo driver reject a raw URI. Encode via env (not argv) so the
+        # password never appears in the process table; node is always present
+        # in this image. Nothing here logs the password.
+        ENC_USER=$(_ENC="${MCP_MONGODB_USER}" node -e 'process.stdout.write(encodeURIComponent(process.env._ENC))')
+        ENC_PASS=$(_ENC="${MCP_MONGODB_PASSWORD}" node -e 'process.stdout.write(encodeURIComponent(process.env._ENC))')
+        URI="mongodb://${ENC_USER}:${ENC_PASS}@mongo:27017/?authSource=admin"
     else
         echo "[ERROR] MCP_MONGODB_USER set but no password found (checked $CRED_FILE)"
         exit 1

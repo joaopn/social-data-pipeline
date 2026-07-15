@@ -21,7 +21,19 @@ if [ -n "${POSTGRES_MCP_USER:-}" ]; then
     fi
 
     if [ -n "${MCP_PASSWORD:-}" ]; then
-        export DATABASE_URI="postgresql://${POSTGRES_MCP_USER}:${MCP_PASSWORD}@postgres:${POSTGRES_PORT:-5432}/${DB_NAME:-datasets}"
+        # Percent-encode credentials for the connection-string userinfo: the
+        # RO password can contain reserved chars (e.g. ':') that make the URI
+        # invalid. Encode via env (not argv) so the password never appears in
+        # the process table; this is a Python MCP image so python is present.
+        # Nothing here logs the password.
+        PY=$(command -v python3 || command -v python)
+        if [ -z "$PY" ]; then
+            echo "[ERROR] no python interpreter found to encode the connection URI"
+            exit 1
+        fi
+        ENC_USER=$(_ENC="${POSTGRES_MCP_USER}" "$PY" -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["_ENC"],safe=""),end="")')
+        ENC_PASS=$(_ENC="${MCP_PASSWORD}" "$PY" -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["_ENC"],safe=""),end="")')
+        export DATABASE_URI="postgresql://${ENC_USER}:${ENC_PASS}@postgres:${POSTGRES_PORT:-5432}/${DB_NAME:-datasets}"
     else
         echo "[ERROR] POSTGRES_MCP_USER set but no password found (checked $CRED_FILE)"
         exit 1

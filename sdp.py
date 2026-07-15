@@ -3812,7 +3812,7 @@ def cmd_source_configure(args):
             if "mongo" in databases:
                 available += ["mongo_ingest"]
             if "starrocks" in databases:
-                available += ["sr_ingest"]
+                available += ["sr_ingest", "sr_ml"]
             missing = [p for p in available if p not in existing]
             if missing:
                 print(f"\n  Profiles not yet configured: {', '.join(missing)}")
@@ -4270,8 +4270,8 @@ def cmd_run(args):
         print(f"  Error: --skip-lingua-files only applies to the 'parse' profile (got '{profile}').")
         return 1
 
-    if getattr(args, "classifier", None) and profile not in ("ml", "lingua"):
-        print(f"  Error: --classifier only applies to the 'ml' and 'lingua' profiles (got '{profile}').")
+    if getattr(args, "classifier", None) and profile not in ("ml", "lingua", "sr_ml"):
+        print(f"  Error: --classifier only applies to the 'ml', 'lingua' and 'sr_ml' profiles (got '{profile}').")
         return 1
 
     # Resolve source (auto-selects if only one exists)
@@ -4548,7 +4548,7 @@ def build_parser():
                                  "(<OUTPUT_PATH>/lingua/<data_type>/<id>_lingua.{csv,parquet}). "
                                  "Lets you delete old extracted/parsed files after lingua has consumed them.")
     run_parser.add_argument("--classifier", "-c", dest="classifier",
-                            help="ml/lingua only: run a single classifier from the configured list "
+                            help="ml/lingua/sr_ml only: run a single classifier from the configured list "
                                  "(e.g. 'toxic_roberta') instead of all of them.")
     run_parser.set_defaults(func=cmd_run)
 

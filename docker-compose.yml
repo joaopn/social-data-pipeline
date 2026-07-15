@@ -336,6 +336,7 @@ services:
       - SOURCE=${SOURCE:-}
       - STARROCKS_PORT=${STARROCKS_PORT:-9030}
       - STARROCKS_ROOT_PASSWORD=${STARROCKS_ROOT_PASSWORD:-}
+      - CLASSIFIER=${CLASSIFIER:-}
     volumes:
       - ${OUTPUT_PATH:-./data/output}:/data/output:ro
       - ${STARROCKS_DATA_PATH:-./data/database/starrocks}:/data/database

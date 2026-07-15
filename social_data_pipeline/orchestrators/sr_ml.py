@@ -8,6 +8,7 @@ Platform selection via PLATFORM env var (default: reddit).
 
 import os
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -151,6 +152,15 @@ def run_pipeline(config_dir: str = "/app/config"):
         ingestion_overrides=ingestion_overrides,
         prefer_lingua=prefer_lingua,
     )
+
+    single_classifier = os.environ.get('CLASSIFIER', '')
+    if single_classifier:
+        names = [run['name'] for run in classifier_runs]
+        if single_classifier not in names:
+            print(f"[sdp] CLASSIFIER='{single_classifier}' not in classifiers list: {names}")
+            sys.exit(1)
+        classifier_runs = [run for run in classifier_runs if run['name'] == single_classifier]
+        print(f"[sdp] Running single classifier: {single_classifier}")
 
     print(f"[sdp] Database: {database}")
     print(f"[sdp] Output dir: {output_dir}")

@@ -270,6 +270,22 @@ class TestGetCreateTableQuery:
         query = get_create_table_query('tbl', 'db', cols, platform, 'id')
         assert '`mystery_field` VARCHAR(1048576)' in query
 
+    def test_compression_property_when_set(self):
+        query = get_create_table_query('submissions', 'reddit', self.COLUMNS,
+                                       self.PLATFORM, 'id', compression='ZSTD')
+        assert '"compression" = "ZSTD"' in query
+        # Appended after the existing PK properties, none of which are lost.
+        assert '"enable_persistent_index" = "true"' in query
+        assert '"replication_num" = "1"' in query
+
+    def test_compression_omitted_when_none(self):
+        query = get_create_table_query('submissions', 'reddit', self.COLUMNS,
+                                       self.PLATFORM, 'id')
+        assert 'compression' not in query
+        # PK PROPERTIES stay byte-identical to the pre-compression output.
+        assert ('PROPERTIES("enable_persistent_index" = "true", '
+                '"replication_num" = "1")') in query
+
 
 class TestGetCreateTableQueryNoPK:
     """Custom platforms that opted out of a source PK use the Duplicate Key
@@ -312,6 +328,19 @@ class TestGetCreateTableQueryNoPK:
     def test_create_if_not_exists(self):
         query = get_create_table_query('tweets', 'hf', self.COLUMNS, self.PLATFORM, None)
         assert 'CREATE TABLE IF NOT EXISTS `hf`.`tweets`' in query
+
+    def test_compression_property_when_set(self):
+        query = get_create_table_query('tweets', 'hf', self.COLUMNS, self.PLATFORM,
+                                       None, compression='ZSTD')
+        assert '"compression" = "ZSTD"' in query
+        # Compression is appended after replication_num, which is preserved.
+        assert '"replication_num" = "1"' in query
+
+    def test_compression_omitted_when_none(self):
+        query = get_create_table_query('tweets', 'hf', self.COLUMNS, self.PLATFORM, None)
+        assert 'compression' not in query
+        # No-PK PROPERTIES stay byte-identical to the pre-compression output.
+        assert 'PROPERTIES("replication_num" = "1")' in query
 
 
 # ── get_ingest_query ──────────────────────────────────────────────────────────
@@ -433,6 +462,39 @@ class TestGetClassifierCreateTableQuery:
         types = {'id': 'CHAR(7)', 'score': 'FLOAT'}
         query = get_classifier_create_table_query('toxic', 'reddit', cols, types, pk_column='id')
         assert 'CREATE TABLE IF NOT EXISTS `reddit`.`toxic`' in query
+
+    def test_compression_property_with_pk(self):
+        cols = ['id', 'score']
+        types = {'id': 'CHAR(7)', 'score': 'FLOAT'}
+        query = get_classifier_create_table_query('toxic', 'reddit', cols, types,
+                                                  pk_column='id', compression='ZSTD')
+        assert '"compression" = "ZSTD"' in query
+        assert '"enable_persistent_index" = "true"' in query
+
+    def test_compression_property_without_pk(self):
+        cols = ['toxic_score', 'label']
+        types = {'toxic_score': 'FLOAT', 'label': 'STRING'}
+        query = get_classifier_create_table_query('toxic', 'reddit', cols, types,
+                                                  compression='ZSTD')
+        # Duplicate Key table carries replication_num, plus compression appended.
+        assert 'PROPERTIES("replication_num" = "1", "compression" = "ZSTD")' in query
+
+    def test_no_pk_sets_replication_num_when_compression_none(self):
+        cols = ['toxic_score', 'label']
+        types = {'toxic_score': 'FLOAT', 'label': 'STRING'}
+        query = get_classifier_create_table_query('toxic', 'reddit', cols, types)
+        # replication_num=1 is always present (CREATE fails on single-BE
+        # clusters without it); no compression property when unset.
+        assert 'PROPERTIES("replication_num" = "1")' in query
+        assert 'compression' not in query
+
+    def test_pk_no_compression_properties_unchanged(self):
+        cols = ['id', 'score']
+        types = {'id': 'CHAR(7)', 'score': 'FLOAT'}
+        query = get_classifier_create_table_query('toxic', 'reddit', cols, types, pk_column='id')
+        assert 'compression' not in query
+        assert ('PROPERTIES("enable_persistent_index" = "true", '
+                '"replication_num" = "1")') in query
 
 
 # ── infer_classifier_schema ───────────────────────────────────────────────────

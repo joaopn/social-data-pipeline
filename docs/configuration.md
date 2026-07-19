@@ -82,7 +82,7 @@ config/
 ├── db/                            # Global database config (written by sdp db setup)
 │   ├── postgres.yaml             # Port, name, tablespaces, auth flag
 │   ├── mongo.yaml                # Port, cache size, auth flag
-│   ├── starrocks.yaml            # Port, FE/BE memory, storage paths, auth flag
+│   ├── starrocks.yaml            # Port, FE/BE memory, table compression, storage paths, auth flag
 │   └── mcp.yaml                  # MCP server config (written by sdp db setup-mcp)
 ├── sources/                       # Per-source config (written by sdp source add)
 │   └── <name>/                   # One directory per source
@@ -580,6 +580,8 @@ sr_indexes: {}             # Per-data-type index fields (set via platform config
 | **sr_indexes** | BITMAP index fields per data type. Falls back to `indexes` from platform config. | `{}` |
 
 StarRocks uses database-per-source (database name = source name). Tables are Primary Key tables with `DISTRIBUTED BY HASH(pk)` and `enable_persistent_index = true` when the platform defines a `primary_key`. Custom platforms (e.g. HF datasets) can leave `primary_key` unset; tables then use the Duplicate Key model with `DISTRIBUTED BY RANDOM`, re-runs append rows, and `check_duplicates` is forced off so no `merge_condition` is emitted.
+
+**Table compression.** New tables are created with the global `compression` codec from `config/db/starrocks.yaml` (default `ZSTD`; see [starrocks Profile → Table Compression](profiles/database.md#table-compression)). Override per source under `pipeline.database.compression` in the source's `starrocks.yaml` / `sr_ml.yaml`.
 
 **BITMAP index builds.** `sr_ingest` and `sdp db create-indexes` submit `CREATE INDEX` and then poll `SHOW ALTER TABLE COLUMN` until each alter job reaches `FINISHED`, so progress reporting reflects the actual build (not just the submission). Different tables run in parallel, because StarRocks' "one schema change per table" constraint is per-table — but fields within a single table run serially. BE-side parallelism is capped by `alter_tablet_worker_count` in `config/starrocks/be.conf` (set at `sdp db setup` based on hardware). Each worker buffers bitmaps while it runs, so raising the count speeds up builds at the cost of BE memory — high-cardinality columns (e.g. `author`) can push the BE past its memory limit if the pool is too large.
 

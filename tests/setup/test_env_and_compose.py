@@ -20,7 +20,7 @@ from __future__ import annotations
 import yaml
 
 from social_data_pipeline.setup.utils import update_env_file
-from social_data_pipeline.setup.db import _update_override_volumes
+from social_data_pipeline.setup.db import _update_override_volumes, generate_db_starrocks_yaml
 
 
 # ── update_env_file ─────────────────────────────────────────────────────────
@@ -188,3 +188,13 @@ class TestUpdateOverrideVolumes:
         _update_override_volumes("postgres", ["./pg:/var/lib/postgresql/data"])
         text = (tmp_path / "docker-compose.override.yml").read_text()
         assert text.startswith("# Auto-generated")
+
+
+class TestGenerateDbStarrocksYaml:
+    def test_writes_chosen_compression(self):
+        data = yaml.safe_load(generate_db_starrocks_yaml({"sr_compression": "LZ4"}))
+        assert data["compression"] == "LZ4"
+
+    def test_defaults_to_zstd(self):
+        data = yaml.safe_load(generate_db_starrocks_yaml({}))
+        assert data["compression"] == "ZSTD"

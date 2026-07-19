@@ -115,7 +115,33 @@ def get_column_list(data_type: str, platform_config: Dict, file: str = None) -> 
     return columns
 
 
-def get_create_table_query(table, database, columns_list, platform_config, pk_column, buckets=None):
+def _compression_property(compression):
+    """Render the `"compression" = "<codec>"` PROPERTIES fragment, or None.
+
+    Returns None when no codec is configured, so callers omit the property
+    entirely and StarRocks applies its own default (LZ4) — existing installs
+    without a configured codec stay unchanged.
+    """
+    if not compression:
+        return None
+    return f'"compression" = "{compression}"'
+
+
+def _properties_clause(*fragments):
+    """Assemble a PROPERTIES(...) clause from `"key" = "value"` fragments.
+
+    None fragments are dropped (used for the conditional compression property).
+    Returns an empty string when nothing remains, so a table that had no
+    PROPERTIES stays without one.
+    """
+    kept = [f for f in fragments if f]
+    if not kept:
+        return ""
+    return f"PROPERTIES({', '.join(kept)})"
+
+
+def get_create_table_query(table, database, columns_list, platform_config, pk_column,
+                           buckets=None, compression=None):
     """Build StarRocks CREATE TABLE statement.
 
     With a primary key: PRIMARY KEY (pk) table + DISTRIBUTED BY HASH(pk) —
@@ -131,6 +157,8 @@ def get_create_table_query(table, database, columns_list, platform_config, pk_co
         buckets: Explicit bucket count. If None, SR's auto-bucketing default
             is used (typically too low for single-BE clusters at TB scale —
             callers should pass an explicit value).
+        compression: Table compression codec (e.g. 'ZSTD', 'LZ4'). None omits
+            the property, leaving StarRocks' own default (LZ4).
     """
     field_types = platform_config.get('field_types', {})
 
@@ -143,11 +171,15 @@ def get_create_table_query(table, database, columns_list, platform_config, pk_co
         distribute_clause = "DISTRIBUTED BY RANDOM"
         if buckets is not None:
             distribute_clause += f" BUCKETS {int(buckets)}"
+        properties = _properties_clause(
+            '"replication_num" = "1"',
+            _compression_property(compression),
+        )
         query = (
             f"CREATE TABLE IF NOT EXISTS `{database}`.`{table}` (\n"
             f"{columns_sql}\n"
             f") {distribute_clause}\n"
-            f"PROPERTIES(\"replication_num\" = \"1\")"
+            f"{properties}"
         )
         return query
 
@@ -166,12 +198,17 @@ def get_create_table_query(table, database, columns_list, platform_config, pk_co
     if buckets is not None:
         distribute_clause += f" BUCKETS {int(buckets)}"
 
+    properties = _properties_clause(
+        '"enable_persistent_index" = "true"',
+        '"replication_num" = "1"',
+        _compression_property(compression),
+    )
     query = (
         f"CREATE TABLE IF NOT EXISTS `{database}`.`{table}` (\n"
         f"{columns_sql}\n"
         f") PRIMARY KEY (`{pk_column}`)\n"
         f"{distribute_clause}\n"
-        f"PROPERTIES(\"enable_persistent_index\" = \"true\", \"replication_num\" = \"1\")"
+        f"{properties}"
     )
     return query
 
@@ -511,7 +548,8 @@ def infer_classifier_schema(file_path, n_rows=1000, column_overrides=None):
     return all_cols, column_types, nullable_cols
 
 
-def get_classifier_create_table_query(table, database, column_list, column_types, pk_column=None, buckets=None):
+def get_classifier_create_table_query(table, database, column_list, column_types, pk_column=None,
+                                      buckets=None, compression=None):
     """Build CREATE TABLE for a classifier output table.
 
     Uses pre-inferred column types (from infer_classifier_schema) rather than
@@ -521,6 +559,8 @@ def get_classifier_create_table_query(table, database, column_list, column_types
     Args:
         buckets: Explicit bucket count. If None, falls back to SR's
             auto-bucketing (same caveat as get_create_table_query).
+        compression: Table compression codec (e.g. 'ZSTD', 'LZ4'). None omits
+            the property, leaving StarRocks' own default (LZ4).
     """
     if pk_column:
         ordered_cols = [pk_column] + [c for c in column_list if c != pk_column]
@@ -539,20 +579,35 @@ def get_classifier_create_table_query(table, database, column_list, column_types
         distribute_clause = f"DISTRIBUTED BY HASH(`{pk_column}`)"
         if buckets is not None:
             distribute_clause += f" BUCKETS {int(buckets)}"
+        properties = _properties_clause(
+            '"enable_persistent_index" = "true"',
+            '"replication_num" = "1"',
+            _compression_property(compression),
+        )
         query = (
             f"CREATE TABLE IF NOT EXISTS `{database}`.`{table}` (\n"
             f"{columns_sql}\n"
             f") PRIMARY KEY (`{pk_column}`)\n"
             f"{distribute_clause}\n"
-            f"PROPERTIES(\"enable_persistent_index\" = \"true\", \"replication_num\" = \"1\")"
+            f"{properties}"
         )
     else:
         distribute_clause = "DISTRIBUTED BY RANDOM"
         if buckets is not None:
             distribute_clause += f" BUCKETS {int(buckets)}"
+        # replication_num=1 to match every other table shape (base PK, base
+        # no-PK, classifier PK all set it). Without it StarRocks falls back to
+        # default_replication_num=3, and CREATE fails on single-BE clusters —
+        # which is every deployment this project targets. The base no-PK table
+        # already sets it; this branch historically omitted PROPERTIES entirely.
+        properties = _properties_clause(
+            '"replication_num" = "1"',
+            _compression_property(compression),
+        )
         query = (
             f"CREATE TABLE IF NOT EXISTS `{database}`.`{table}` (\n"
             f"{columns_sql}\n"
-            f") {distribute_clause}"
+            f") {distribute_clause}\n"
+            f"{properties}"
         )
     return query

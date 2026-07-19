@@ -175,6 +175,8 @@ def _load_existing_db_config():
                 existing.setdefault("sr_be_mem_limit", sr["be_mem_limit"])
             if sr.get("alter_tablet_workers") is not None:
                 existing.setdefault("sr_alter_tablet_workers", sr["alter_tablet_workers"])
+            if sr.get("compression"):
+                existing.setdefault("sr_compression", sr["compression"])
             if sr.get("storage_paths"):
                 existing["starrocks_storage_paths"] = sr["storage_paths"]
             if sr.get("auth"):
@@ -445,6 +447,21 @@ def run_questionnaire(hw):
             tag="db_sr_alter_workers",
         )
 
+        # Table compression codec, applied to newly created tables only.
+        # ZSTD default: ~33% smaller than LZ4 on text-heavy data, faster
+        # queries and lower CPU in benchmarks. Existing tables keep their codec.
+        print()
+        print("  Compression codec for new tables. ZSTD compresses text far")
+        print("  better than LZ4 (~33% smaller) with faster scans; LZ4 is")
+        print("  StarRocks' own default. Only affects tables created from now on.")
+        print()
+        settings["sr_compression"] = ask_choice(
+            "Table compression",
+            ["ZSTD", "LZ4"],
+            default=existing.get("sr_compression", "ZSTD"),
+            tag="db_sr_compression",
+        )
+
         # Multi-disk storage — the primary data path above is always used as
         # storage; these are additional disks on top of it.
         print()
@@ -671,6 +688,7 @@ def generate_db_starrocks_yaml(settings):
         "fe_jvm_heap": settings.get("sr_fe_jvm_heap", 4),
         "be_mem_limit": settings.get("sr_be_mem_limit", 8),
         "alter_tablet_workers": settings.get("sr_alter_tablet_workers", 3),
+        "compression": settings.get("sr_compression", "ZSTD"),
     }
     if settings.get("starrocks_storage_paths"):
         config["storage_paths"] = settings["starrocks_storage_paths"]
@@ -886,6 +904,7 @@ def print_summary(settings, files_to_write):
         print(f"    FE JVM heap:         {settings.get('sr_fe_jvm_heap', 4)} GB")
         print(f"    BE memory limit:     {settings.get('sr_be_mem_limit', 8)} GB")
         print(f"    Alter workers:       {settings.get('sr_alter_tablet_workers', 3)}")
+        print(f"    Compression:         {settings.get('sr_compression', 'ZSTD')}")
         print(f"    Data path:           {settings.get('starrocks_data_path', './data/database/starrocks')}")
         if settings.get("starrocks_storage_paths"):
             print("    Extra storage paths:")
@@ -1338,6 +1357,19 @@ def add_database(db_name):
             "BE alter/schema-change worker count",
             existing.get("sr_alter_tablet_workers", default_alter_workers),
             tag="db_sr_alter_workers",
+        )
+
+        # Table compression codec, applied to newly created tables only.
+        print()
+        print("  Compression codec for new tables. ZSTD compresses text far")
+        print("  better than LZ4 (~33% smaller) with faster scans; LZ4 is")
+        print("  StarRocks' own default. Only affects tables created from now on.")
+        print()
+        settings["sr_compression"] = ask_choice(
+            "Table compression",
+            ["ZSTD", "LZ4"],
+            default=existing.get("sr_compression", "ZSTD"),
+            tag="db_sr_compression",
         )
 
         existing_sr_paths = existing.get("starrocks_storage_paths", [])

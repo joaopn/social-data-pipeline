@@ -196,6 +196,22 @@ class TestValidateStarrocksConfig:
         with pytest.raises(ConfigurationError):
             validate_starrocks_config({})
 
+    def test_absent_compression_is_valid(self):
+        # Backward compatible: no compression key → no-op.
+        validate_starrocks_config({"database": {"host": "h", "port": 9030, "user": "root"}})
+
+    @pytest.mark.parametrize("codec", ["LZ4", "ZSTD", "ZLIB", "SNAPPY"])
+    def test_valid_compression(self, codec):
+        validate_starrocks_config(
+            {"database": {"host": "h", "port": 9030, "user": "root", "compression": codec}}
+        )
+
+    def test_invalid_compression_raises(self):
+        with pytest.raises(ConfigurationError, match="compression"):
+            validate_starrocks_config(
+                {"database": {"host": "h", "port": 9030, "user": "root", "compression": "GZIP"}}
+            )
+
 
 # ── validate_classifier_config ──────────────────────────────────────────────
 

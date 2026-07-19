@@ -320,6 +320,11 @@ def validate_mongo_config(config: Dict) -> None:
             )
 
 
+# StarRocks-supported table compression codecs (used by CREATE TABLE
+# PROPERTIES). LZ4 is StarRocks' own default when no codec is specified.
+VALID_STARROCKS_COMPRESSION = {'LZ4', 'ZSTD', 'ZLIB', 'SNAPPY'}
+
+
 def validate_starrocks_config(config: Dict) -> None:
     """
     Validate that required StarRocks config exists for sr_ingest profile.
@@ -328,7 +333,7 @@ def validate_starrocks_config(config: Dict) -> None:
         config: Configuration dictionary
 
     Raises:
-        ConfigurationError: If required config is missing
+        ConfigurationError: If required config is missing or invalid
     """
     required_keys = ['host', 'port', 'user']
 
@@ -337,6 +342,13 @@ def validate_starrocks_config(config: Dict) -> None:
             raise ConfigurationError(
                 f"[starrocks] Required config missing: database.{key}"
             )
+
+    compression = config['database'].get('compression')
+    if compression is not None and compression not in VALID_STARROCKS_COMPRESSION:
+        raise ConfigurationError(
+            f"[starrocks] Invalid compression '{compression}'. "
+            f"Allowed: {', '.join(sorted(VALID_STARROCKS_COMPRESSION))}"
+        )
 
 
 def normalize_classifier_entries(entries: List, data_types: List[str], profile: str) -> List[Dict]:

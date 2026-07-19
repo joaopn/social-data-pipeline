@@ -18,6 +18,7 @@ from ..core.state import PipelineState
 from ..core.config import (
     load_profile_config,
     load_platform_config as _load_platform_config,
+    load_db_config,
     resolve_classifier_runs,
     apply_env_overrides,
     validate_processing_config,
@@ -95,6 +96,13 @@ def load_config(config_dir: str = "/app/config", quiet: bool = False) -> Dict:
     config = load_profile_config('sr_ml', config_dir, source=SOURCE, quiet=quiet)
     config = apply_env_overrides(config, 'sr_ml')
     validate_processing_config(config, 'sr_ml')
+    # Global table compression codec (config/db/starrocks.yaml). A per-source
+    # profile override (already deep-merged into config['database']) wins; the
+    # global value is only the fallback.
+    config.setdefault('database', {})
+    compression = (load_db_config('starrocks', config_dir) or {}).get('compression')
+    if compression is not None:
+        config['database'].setdefault('compression', compression)
     validate_starrocks_config(config)
     return config
 
@@ -114,6 +122,7 @@ def run_pipeline(config_dir: str = "/app/config"):
 
     db_config = config['database']
     password = db_config.get('password')
+    compression = db_config.get('compression')
     proc_config = config.get('processing', {})
     # Optional ingestion-only overrides keyed by classifier name.
     # Supported: enabled (bool), source_dir (str), source_dir_ingest (lingua),
@@ -289,6 +298,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                     column_types=column_types,
                     pk_column=pk_column,
                     buckets=buckets,
+                    compression=compression,
                 )
                 execute_query(
                     create_query,

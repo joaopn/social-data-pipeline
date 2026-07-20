@@ -23,6 +23,7 @@ from tests.e2e.helpers.db import (
     sr_row_count,
     sr_query_scalar,
     sr_index_columns,
+    sr_show_create_table,
 )
 
 
@@ -119,6 +120,17 @@ def test_starrocks_full_flow(workspace):
         expected = {"dataset", "author", "subreddit", "link_id"}
         missing = expected - idx_cols
         assert not missing, f"Missing BITMAP indexes: {missing} (have: {idx_cols})"
+
+        # Table compression: `db setup` defaults to ZSTD and writes it to
+        # config/db/starrocks.yaml; sr_ingest must carry it into CREATE TABLE.
+        # Only the DDL can prove this — a missing config key or an image
+        # predating the feature both silently fall back to StarRocks' LZ4,
+        # which no unit test can observe.
+        ddl = sr_show_create_table(conn, "reddit", "comments")
+        assert ddl is not None, "SHOW CREATE TABLE returned no rows"
+        assert '"compression" = "ZSTD"' in ddl, (
+            f"base table should be created with ZSTD compression. Got:\n{ddl}"
+        )
     finally:
         conn.close()
 

@@ -192,6 +192,22 @@ def sr_row_count(conn, database, table):
     return sr_query_scalar(conn, f"SELECT COUNT(*) FROM `{database}`.`{table}`")
 
 
+def sr_show_create_table(conn, database, table):
+    """Return the full DDL string from SHOW CREATE TABLE.
+
+    `sr_query_scalar` returns only column 0 (the table name); the DDL is in
+    column 1. Use this to assert on table properties (compression codec, key
+    model, distribution) that are only observable in the DDL.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SHOW CREATE TABLE `{database}`.`{table}`")
+        row = cur.fetchone()
+        return row[1] if row else None
+    finally:
+        cur.close()
+
+
 def wait_mcp_alive(url, timeout=60):
     """Poll an MCP HTTP endpoint until it returns a non-5xx response.
 

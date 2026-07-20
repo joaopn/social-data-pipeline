@@ -26,5 +26,7 @@ jobs:
           python-version: '3.13'
       - name: Install dependencies
         run: pip install -r requirements-test.txt
+      # tests/e2e needs sysbox + Docker-in-Docker; tests/benchmark needs a
+      # populated database and takes minutes to hours. Both are run by hand.
       - name: Run tests
-        run: pytest --override-ini="pythonpath=." --ignore=tests/e2e -v
+        run: pytest --override-ini="pythonpath=." --ignore=tests/e2e --ignore=tests/benchmark -v

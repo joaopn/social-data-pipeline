@@ -36,6 +36,7 @@ from tests.e2e.helpers.db import (
     sr_connect,
     sr_table_exists,
     sr_row_count,
+    sr_show_create_table,
 )
 
 
@@ -150,6 +151,16 @@ def test_starrocks_ml_full_flow(workspace):
             assert ml_rows >= 1, (
                 f"reddit.comments_lingua: expected rows, got {ml_rows}. "
                 f"sr_ml output:\n{sr_ml_output}"
+            )
+
+            # Classifier tables take the same global codec as base tables.
+            # Asserted separately because sr_ml builds its DDL through
+            # get_classifier_create_table_query — a distinct code path from
+            # sr_ingest, and a separate image that can go stale on its own.
+            ddl = sr_show_create_table(conn, "reddit", "comments_lingua")
+            assert ddl is not None, "SHOW CREATE TABLE returned no rows"
+            assert '"compression" = "ZSTD"' in ddl, (
+                f"classifier table should be created with ZSTD compression. Got:\n{ddl}"
             )
         finally:
             conn.close()

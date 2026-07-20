@@ -18,16 +18,18 @@ Two GitHub Actions workflows run on every push and PR (path-filtered):
 
 A third workflow runs `ruff check` against an explicit rule baseline (F, E9, W6) — see `.github/workflows/ruff.yml`. All actions are pinned to full commit SHAs for supply-chain hardening.
 
-CI installs only `requirements-test.txt`, which is self-contained (project deps `pyyaml`, `polars`, `pyarrow` plus test deps `pytest`, `pyzstd` — no `lingua`, `psycopg`, `torch`). Pytest output goes to the Actions step log directly; no artifact upload. E2E tests are excluded (`--ignore=tests/e2e`) because they require sysbox.
+CI installs only `requirements-test.txt`, which is self-contained (project deps `pyyaml`, `polars`, `pyarrow` plus test deps `pytest`, `pyzstd` — no `lingua`, `psycopg`, `torch`). Pytest output goes to the Actions step log directly; no artifact upload. Two directories are excluded: `--ignore=tests/e2e` (requires sysbox) and `--ignore=tests/benchmark` (requires a populated database, runs for minutes to hours).
 
 ## Running unit tests locally
 
 ```bash
 pip install -r requirements-test.txt
-pytest --override-ini="pythonpath=." --ignore=tests/e2e --ignore=data -v
+pytest --override-ini="pythonpath=." --ignore=tests/e2e --ignore=tests/benchmark --ignore=data -v
 ```
 
 `--override-ini="pythonpath=."` lets pytest import the project package without installing it. `--ignore=data` skips the runtime DB volumes (owned by container UIDs when containers are running, unreadable by pytest's auto-collection). CI doesn't have `data/` so the flag is a no-op there. Skip slow decompression tests with `-m "not slow"`.
+
+Benchmarks under `tests/benchmark/` are measurement tools with no assertions — they are always excluded and run by hand. See `tests/benchmark/README.md`.
 
 ## Test layout
 
@@ -49,6 +51,9 @@ tests/
         conftest.py                    # Per-test workspace lifecycle
         helpers/                       # pexpect wrapper, fixtures, DB assertion helpers
         tests/                         # Test scenarios
+    benchmark/                         # Performance measurement tools (no assertions, CI-excluded)
+        README.md                      # What lives here and why it is excluded
+        sr_compression.sh              # StarRocks LZ4 vs ZSTD: size, query time, CPU
 ```
 
 ## Unit tests

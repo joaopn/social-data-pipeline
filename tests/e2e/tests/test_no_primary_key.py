@@ -35,6 +35,7 @@ from tests.e2e.helpers.db import (
     sr_connect,
     sr_table_exists,
     sr_row_count,
+    sr_show_create_table,
 )
 
 
@@ -225,21 +226,6 @@ SR_SOURCE_ADD = {
 }
 
 
-def _sr_show_create_table(conn, database, table):
-    """Return the second column of SHOW CREATE TABLE — the full DDL string.
-
-    `sr_query_scalar` returns only column 0 (the table name), which is not
-    what we want here.
-    """
-    cur = conn.cursor()
-    try:
-        cur.execute(f"SHOW CREATE TABLE `{database}`.`{table}`")
-        row = cur.fetchone()
-        return row[1] if row else None
-    finally:
-        cur.close()
-
-
 def test_custom_no_pk_starrocks(workspace):
     """Custom platform with blank PK ingests into SR with Duplicate Key model."""
     rc, output = SDPSession(SR_DB_SETUP).run_interactive("db setup")
@@ -288,7 +274,7 @@ def test_custom_no_pk_starrocks(workspace):
             # Core SR assertion: Duplicate Key model with RANDOM distribution.
             # PRIMARY KEY clause MUST be absent; UNIQUE KEY / AGGREGATE KEY
             # would also be wrong — only the bare default model is acceptable.
-            ddl = _sr_show_create_table(conn, "mydata", "events")
+            ddl = sr_show_create_table(conn, "mydata", "events")
             assert ddl is not None, "SHOW CREATE TABLE returned no rows"
             assert "PRIMARY KEY" not in ddl, (
                 f"SR DDL should not declare PRIMARY KEY for no-PK source. Got:\n{ddl}"

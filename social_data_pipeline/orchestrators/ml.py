@@ -415,15 +415,19 @@ def run_pipeline(profile: str = "lingua", config_dir: str = "/app/config", targe
             from ..classifiers import lingua as classifier_module
             
             if file_workers > 1 and len(files_for_classifier) > 1:
-                workers_per_file = max(1, workers // file_workers)
-                print(f"[sdp] Parallel: {file_workers} files × {workers_per_file} threads")
-                
+                # Divide threads among the processes we will ACTUALLY spawn, not the
+                # configured file_workers — with fewer files than file_workers the pool
+                # starts fewer processes and the machine sits idle.
+                actual_file_workers = min(file_workers, len(files_for_classifier))
+                workers_per_file = max(1, workers // actual_file_workers)
+                print(f"[sdp] Parallel: {actual_file_workers} files × {workers_per_file} threads")
+
                 worker_args = []
                 for file_path, file_id, data_type in files_for_classifier:
                     output_csv = str(classifier_output_dir / data_type / f"{file_id}{suffix}.{ext}")
                     worker_args.append((file_path, output_csv, data_type, classifier_name, classifier_config, workers_per_file))
-                
-                with ProcessPoolExecutor(max_workers=file_workers) as executor:
+
+                with ProcessPoolExecutor(max_workers=actual_file_workers) as executor:
                     results = list(executor.map(_process_lingua_worker, worker_args))
                 
                 for file_id, success, error_msg in results:

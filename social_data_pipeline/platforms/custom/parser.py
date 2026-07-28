@@ -45,8 +45,8 @@ def _process_csv_input(
 ) -> tuple:
     """Process a CSV input file and write to CSV or Parquet using Polars.
 
-    Uses Polars read_csv_batched() for robust, memory-bounded CSV reading
-    that handles messy CSVs (ragged rows, encoding issues, bad quoting).
+    Uses a lazy Polars scan streamed in batches for robust, memory-bounded CSV
+    reading that handles messy CSVs (ragged rows, encoding issues, bad quoting).
     """
     import polars as pl
     import pyarrow.parquet as pq
@@ -64,16 +64,16 @@ def _process_csv_input(
     line_count = 0
 
     try:
-        reader = pl.read_csv_batched(
+        # Column selection is a projection on the lazy frame (scan_csv has no
+        # `columns=`); projection pushdown keeps the unread columns unparsed.
+        lazy_frame = pl.scan_csv(
             input_file,
             separator=input_csv_delimiter,
-            columns=fields_to_extract,
             truncate_ragged_lines=True,
             ignore_errors=True,
             null_values=['', 'NA', 'NULL', 'null', 'None'],
             encoding='utf8-lossy',
-            batch_size=batch_size,
-        )
+        ).select(fields_to_extract)
 
         # Build Polars schema for type casting
         schema = build_parquet_schema(columns, data_type_config)
@@ -81,11 +81,7 @@ def _process_csv_input(
         if file_format == 'parquet':
             pq_writer = None
             try:
-                while True:
-                    batches = reader.next_batches(1)
-                    if not batches:
-                        break
-                    batch = batches[0]
+                for batch in lazy_frame.collect_batches(chunk_size=batch_size):
                     line_count += len(batch)
 
                     # Add dataset column and reorder
@@ -117,11 +113,7 @@ def _process_csv_input(
             first_batch = True
             try:
                 with open(temp_path, 'wb') as outfile:
-                    while True:
-                        batches = reader.next_batches(1)
-                        if not batches:
-                            break
-                        batch = batches[0]
+                    for batch in lazy_frame.collect_batches(chunk_size=batch_size):
                         line_count += len(batch)
 
                         batch = batch.with_columns(pl.lit(dataset).alias('dataset'))

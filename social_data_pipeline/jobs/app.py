@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth
 from .auto_accept import AutoAcceptStore
 from .config import JobsConfig, load_config
-from .mcp_tools import build_mcp
+from .mcp_tools import build_mcp, build_streamable_app
 from .runner import Runner
 from .store import Store
 from .web import build_router
@@ -39,6 +39,9 @@ def build_app(cfg: JobsConfig | None = None) -> FastAPI:
     )
     runner = Runner(cfg, store, auto_accept)
     mcp = build_mcp(cfg, store, runner)
+    # Build the ASGI app up front: it is what creates the MCP session manager,
+    # which `lifespan` below runs. Mounting happens after `app` exists.
+    mcp_app = build_streamable_app(mcp)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -56,7 +59,7 @@ def build_app(cfg: JobsConfig | None = None) -> FastAPI:
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    app.mount("/mcp", mcp.streamable_http_app())
+    app.mount("/mcp", mcp_app)
 
     app.include_router(build_router(cfg, store, runner, auto_accept))
 

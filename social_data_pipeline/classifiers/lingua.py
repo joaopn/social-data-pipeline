@@ -156,15 +156,9 @@ def _create_batched_reader(input_path: str, file_format: str, batch_size: int):
                 yield pl.from_arrow(batch)
         return _iter()
     else:
-        # CSV: use Polars batched reader, wrapped as a simple iterator
-        reader = pl.read_csv_batched(input_path, batch_size=batch_size)
-        def _iter():
-            while True:
-                batches = reader.next_batches(1)
-                if not batches:
-                    break
-                yield batches[0]
-        return _iter()
+        # CSV: stream batches off a lazy scan, which already yields an iterator
+        # of DataFrames.
+        return pl.scan_csv(input_path).collect_batches(chunk_size=batch_size)
 
 
 class _OutputWriter:

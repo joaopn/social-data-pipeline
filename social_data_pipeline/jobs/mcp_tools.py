@@ -8,12 +8,8 @@ import logging
 import time
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
-
-try:
-    from mcp.server.transport_security import TransportSecuritySettings
-except ImportError:  # older mcp SDK
-    TransportSecuritySettings = None  # type: ignore[assignment]
+from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .backends import BackendError, validate_submission
 from .config import JobsConfig
@@ -24,51 +20,19 @@ from .store import Job, Store
 log = logging.getLogger(__name__)
 
 
-def build_mcp(cfg: JobsConfig, store: Store, runner: Runner) -> FastMCP:
-    """Assemble the FastMCP app for this process.
+def build_mcp(cfg: JobsConfig, store: Store, runner: Runner) -> MCPServer:
+    """Assemble the MCP server for this process.
 
     Submit tools are only registered for backends with at least one configured
     target. The target name is validated against the live config, not baked
     into the tool schema — tool docstrings enumerate the configured names so
     agents see them during discovery.
-    """
-    # streamable_http_path="/" makes FastMCP's Starlette app serve the
-    # streamable-HTTP endpoint at its root; combined with FastAPI mounting
-    # the app at /mcp, the client-visible URL is exactly /mcp.
-    #
-    # transport_security: disable DNS-rebinding protection so remote hosts
-    # can connect. The jobs scheduler binds 0.0.0.0 by design (local-network
-    # MCP access); the SDK's default "only localhost" policy would reject
-    # them with 421 Misdirected Request.
-    mcp_kwargs: dict = {"name": "sdp-jobs", "streamable_http_path": "/"}
-    if TransportSecuritySettings is not None:
-        mcp_kwargs["transport_security"] = TransportSecuritySettings(
-            enable_dns_rebinding_protection=False,
-        )
 
-    try:
-        mcp = FastMCP(**mcp_kwargs)
-    except TypeError:
-        # Older mcp SDK that doesn't accept one of these kwargs — fall back
-        # and set them on the settings object where possible.
-        mcp = FastMCP(name="sdp-jobs")
-        try:
-            mcp.settings.streamable_http_path = "/"
-        except AttributeError:
-            log.warning(
-                "mcp SDK version does not expose streamable_http_path; "
-                "MCP endpoint may be served at /mcp/mcp instead of /mcp"
-            )
-        if TransportSecuritySettings is not None:
-            try:
-                mcp.settings.transport_security = TransportSecuritySettings(
-                    enable_dns_rebinding_protection=False,
-                )
-            except AttributeError:
-                log.warning(
-                    "mcp SDK does not expose transport_security settings; "
-                    "remote clients may be rejected with 421 Misdirected Request"
-                )
+    Transport options (endpoint path, DNS-rebinding policy) are not set here:
+    in the mcp 2.x SDK they are arguments to ``streamable_http_app()``, which
+    ``app.py`` calls when it mounts this server. See ``build_streamable_app()``.
+    """
+    mcp = MCPServer(name="sdp-jobs")
 
     pg_targets = [t.name for t in cfg.targets_for("postgres")]
     sr_targets = [t.name for t in cfg.targets_for("starrocks")]
@@ -89,11 +53,36 @@ def build_mcp(cfg: JobsConfig, store: Store, runner: Runner) -> FastMCP:
     return mcp
 
 
+def build_streamable_app(mcp: MCPServer):
+    """Return the streamable-HTTP ASGI app for `mcp`, ready to mount at /mcp.
+
+    streamable_http_path="/" makes the returned Starlette app serve the
+    streamable-HTTP endpoint at its own root; combined with FastAPI mounting it
+    at /mcp, the client-visible URL is exactly /mcp.
+
+    transport_security disables DNS-rebinding protection so remote hosts can
+    connect. The jobs scheduler binds 0.0.0.0 by design (local-network MCP
+    access), and the SDK enables a localhost-only policy by default whenever
+    `transport_security` is left unset, which would reject those clients with
+    421 Misdirected Request.
+
+    Calling this also creates the server's StreamableHTTPSessionManager, so it
+    must run before `mcp.session_manager` is touched (the 2.x SDK builds the
+    manager here rather than in the MCPServer constructor).
+    """
+    return mcp.streamable_http_app(
+        streamable_http_path="/",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        ),
+    )
+
+
 # ----------------------------------------------------------------------------
 # submit_postgres_query
 
 def _register_submit_postgres(
-    mcp: FastMCP, cfg: JobsConfig, store: Store, targets: list[str]
+    mcp: MCPServer, cfg: JobsConfig, store: Store, targets: list[str]
 ) -> None:
     targets_csv = ", ".join(repr(t) for t in targets)
 
@@ -142,7 +131,7 @@ def _register_submit_postgres(
 # submit_starrocks_query
 
 def _register_submit_starrocks(
-    mcp: FastMCP, cfg: JobsConfig, store: Store, targets: list[str]
+    mcp: MCPServer, cfg: JobsConfig, store: Store, targets: list[str]
 ) -> None:
     targets_csv = ", ".join(repr(t) for t in targets)
 
@@ -194,7 +183,7 @@ def _register_submit_starrocks(
 # submit_mongo_query
 
 def _register_submit_mongo(
-    mcp: FastMCP, cfg: JobsConfig, store: Store, targets: list[str]
+    mcp: MCPServer, cfg: JobsConfig, store: Store, targets: list[str]
 ) -> None:
     targets_csv = ", ".join(repr(t) for t in targets)
 
@@ -255,7 +244,7 @@ def _register_submit_mongo(
 # list_mongo_databases
 
 def _register_list_mongo_databases(
-    mcp: FastMCP, cfg: JobsConfig, runner: Runner, targets: list[str]
+    mcp: MCPServer, cfg: JobsConfig, runner: Runner, targets: list[str]
 ) -> None:
     targets_csv = ", ".join(repr(t) for t in targets)
 
@@ -287,7 +276,7 @@ def _register_list_mongo_databases(
 # ----------------------------------------------------------------------------
 # query_status
 
-def _register_status_tool(mcp: FastMCP, store: Store) -> None:
+def _register_status_tool(mcp: MCPServer, store: Store) -> None:
     @mcp.tool(
         name="query_status",
         description=(
@@ -308,7 +297,7 @@ def _register_status_tool(mcp: FastMCP, store: Store) -> None:
 # ----------------------------------------------------------------------------
 # query_cancel
 
-def _register_cancel_tool(mcp: FastMCP, store: Store) -> None:
+def _register_cancel_tool(mcp: MCPServer, store: Store) -> None:
     @mcp.tool(
         name="query_cancel",
         description=(
@@ -339,7 +328,7 @@ def _register_cancel_tool(mcp: FastMCP, store: Store) -> None:
 # ----------------------------------------------------------------------------
 # list_targets
 
-def _register_list_targets(mcp: FastMCP, cfg: JobsConfig) -> None:
+def _register_list_targets(mcp: MCPServer, cfg: JobsConfig) -> None:
     @mcp.tool(
         name="list_targets",
         description=(

@@ -19,13 +19,14 @@ from ..core.config import (
     load_profile_config,
     load_platform_config as _load_platform_config,
     resolve_classifier_runs,
+    build_ml_index_plan,
     apply_env_overrides,
     validate_database_config,
     ConfigurationError,
 )
 from ..db.postgres.ingest import (
     ensure_database_exists, ensure_schema_exists, ensure_tablespaces, resolve_tablespace,
-    ensure_pg_parquet,
+    ensure_pg_parquet, create_index,
     ingest_classifier_csv, table_has_pk, infer_classifier_schema,
     # Fast initial load functions
     create_fast_load_classifier_table, fast_ingest_classifier_csv,
@@ -273,7 +274,10 @@ def run_pipeline(config_dir: str = "/app/config"):
     total_success = 0
     total_fail = 0
     total_skipped = 0
-    
+    # Classifier table -> data type, for tables that ingested at least one file
+    # this run. Indexes are created once, after every classifier is processed.
+    indexed_tables = {}
+
     start_time = time.time()
     
     # Process each classifier
@@ -477,6 +481,12 @@ def run_pipeline(config_dir: str = "/app/config"):
                         com_success, com_fail = future_comments.result()
                         success_count += sub_success + com_success
                         fail_count += sub_fail + com_fail
+                        # Record only the branches that actually ran: this path
+                        # is hardcoded to submissions + comments.
+                        if sub_success > 0:
+                            indexed_tables[f"submissions{suffix}"] = 'submissions'
+                        if com_success > 0:
+                            indexed_tables[f"comments{suffix}"] = 'comments'
                     except Exception as e:
                         print(f"[sdp] CRITICAL ERROR: {e}")
                         print("[sdp] Tables may be in inconsistent state. Manual recovery required.")
@@ -487,6 +497,8 @@ def run_pipeline(config_dir: str = "/app/config"):
                         local_success, local_fail = fast_load_classifier_type(dt)
                         success_count += local_success
                         fail_count += local_fail
+                        if local_success > 0:
+                            indexed_tables[f"{dt}{suffix}"] = dt
                     except Exception as e:
                         print(f"[sdp] CRITICAL ERROR for {dt}{suffix}: {e}")
                         print("[sdp] Table may be in inconsistent state. Manual recovery required.")
@@ -552,11 +564,18 @@ def run_pipeline(config_dir: str = "/app/config"):
                     com_success, com_fail = future_comments.result()
                     success_count += sub_success + com_success
                     fail_count += sub_fail + com_fail
+                    # Hardcoded to submissions + comments, same as fast load.
+                    if sub_success > 0:
+                        indexed_tables[f"submissions{suffix}"] = 'submissions'
+                    if com_success > 0:
+                        indexed_tables[f"comments{suffix}"] = 'comments'
             else:
                 for dt in sorted(standard_load_types):
                     local_success, local_fail = ingest_classifier_type_files(dt)
                     success_count += local_success
                     fail_count += local_fail
+                    if local_success > 0:
+                        indexed_tables[f"{dt}{suffix}"] = dt
         
         print(f"[sdp] {classifier_name}: {success_count} success, {skip_count} skipped, {fail_count} failed")
         
@@ -564,6 +583,49 @@ def run_pipeline(config_dir: str = "/app/config"):
         total_fail += fail_count
         total_skipped += skip_count
     
+    # Create indexes on the classifier tables written this run. Index fields come
+    # from ml_indexes (profile config, then platform config), keyed by classifier
+    # table name. No fallback to `indexes`: that names base-table columns the
+    # classifier tables do not have.
+    indexing_time = 0.0
+    if proc_config.get('create_indexes', True) and indexed_tables:
+        print("\n" + "="*60)
+        print("CREATING INDEXES")
+        print("="*60)
+
+        plan = build_ml_index_plan(indexed_tables, config, platform_config, 'ml_indexes')
+        parallel_index_workers = proc_config.get('parallel_index_workers', 8)
+
+        t_start = time.time()
+        for table in sorted(indexed_tables):
+            index_fields = plan.get(table, [])
+            if not index_fields:
+                print(f"[sdp] No indexes configured for {table}, skipping")
+                continue
+
+            data_type = indexed_tables[table]
+            print(f"[sdp] Creating {len(index_fields)} indexes on {db_config['schema']}.{table} "
+                  f"(workers_per_build={parallel_index_workers})")
+            for i, field in enumerate(index_fields):
+                try:
+                    create_index(
+                        field=field,
+                        table=table,
+                        schema=db_config['schema'],
+                        dbname=db_config['name'],
+                        host=db_config['host'],
+                        port=db_config['port'],
+                        user=db_config['user'],
+                        quiet=(i > 0),  # Only log session config for first index
+                        parallel_workers=parallel_index_workers,
+                        # Same tablespace as the classifier table itself.
+                        tablespace=get_tablespace(data_type),
+                        password=password
+                    )
+                except Exception as e:
+                    print(f"[sdp] Warning: Failed to create index on {field}: {e}")
+        indexing_time = (time.time() - t_start) / 60
+
     # Final summary
     elapsed = (time.time() - start_time) / 60
     print("\n" + "="*60)
@@ -572,6 +634,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     print(f"Successful: {total_success}")
     print(f"Skipped:    {total_skipped}")
     print(f"Failed:     {total_fail}")
+    print(f"Indexing:   {indexing_time:.2f} minutes")
     print(f"Time:       {elapsed:.2f} minutes")
 
 

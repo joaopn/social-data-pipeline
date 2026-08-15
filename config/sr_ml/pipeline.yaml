@@ -11,4 +11,17 @@ processing:
   check_duplicates: true   # Use merge_condition for conditional upsert
   parallel_ingestion: true # Ingest submissions and comments concurrently
   type_inference_rows: 1000  # Rows to sample for CSV column type inference
+  create_indexes: true     # Create BITMAP indexes on classifier tables after ingestion
+  index_poll_interval: 10  # Seconds between SHOW ALTER TABLE COLUMN polls
   watch_interval: 0        # Check for new files every N minutes (0 = run once)
+
+# Index configuration for classifier tables (only used if create_indexes is true)
+# Keyed by classifier table name: data type + classifier suffix (e.g. comments_lingua).
+# Separate set from sr_indexes — there is no fallback to sr_indexes/indexes, which
+# name base-table columns the classifier tables do not have.
+#
+# A plain list means BITMAP. Use the mapping form for per-type control:
+#   sr_ml_indexes:
+#     comments_lingua: [lang]                                   # bitmap
+#     comments_emotions_en: {bloomfilter: [author], bitmap: [subreddit]}
+sr_ml_indexes: {}

@@ -17,6 +17,7 @@ from ..core.config import (
     load_platform_config as _load_platform_config,
     load_db_config,
     get_optional,
+    build_sr_index_plan,
     validate_processing_config,
     validate_starrocks_config,
     apply_env_overrides,
@@ -30,7 +31,7 @@ from ..db.starrocks.ingest import (
     get_create_table_query,
     ingest_file,
     analyze_table,
-    create_indexes,
+    apply_sr_index_plan,
     execute_query,
 )
 from .ml import detect_parsed_files, get_lingua_config, detect_lingua_files
@@ -315,26 +316,23 @@ def run_pipeline(config_dir: str = "/app/config"):
         print("CREATING INDEXES")
         print("=" * 60)
 
-        # Get indexes: sr_indexes from profile, fall back to platform config sr_indexes, then indexes
-        index_config = config.get('sr_indexes', {})
-        if not index_config:
-            index_config = platform_config.get('sr_indexes', {})
-        if not index_config:
-            index_config = platform_config.get('indexes', {})
-
+        # Index fields: sr_indexes from profile, then platform sr_indexes, then
+        # the platform's `indexes` (shared with PostgreSQL, so read list-only).
+        #
         # Collect per-table plans up front so we can parallelize across tables.
-        # Each table runs its own serial drain-submit-poll loop in create_indexes();
-        # running multiple tables concurrently is safe because StarRocks' "one
-        # schema change at a time" constraint is per-table, and BE-side memory
-        # is bounded by alter_tablet_worker_count (set at sdp db setup).
-        plan = {}
-        for data_type in data_types_with_files:
-            index_fields = index_config.get(data_type, [])
-            if not index_fields:
+        # Each table runs its own serial drain-submit-poll loop; running multiple
+        # tables concurrently is safe because StarRocks' "one schema change at a
+        # time" constraint is per-table, and BE-side memory is bounded by
+        # alter_tablet_worker_count (set at sdp db setup).
+        plan = build_sr_index_plan(
+            data_types_with_files, config, platform_config, ('sr_indexes', 'indexes'))
+        for data_type in sorted(data_types_with_files):
+            if data_type not in plan:
                 print(f"[sdp] No indexes configured for {data_type}, skipping")
                 continue
-            plan[data_type] = index_fields
-            print(f"[sdp] Queued {len(index_fields)} BITMAP indexes on {database}.{data_type}")
+            spec = plan[data_type]
+            parts = [f"{len(spec[t])} {t}" for t in ('bitmap', 'bloomfilter') if spec[t]]
+            print(f"[sdp] Queued {' + '.join(parts)} indexes on {database}.{data_type}")
 
         t_idx = time.time()
         if plan:
@@ -349,11 +347,11 @@ def run_pipeline(config_dir: str = "/app/config"):
 
             poll_interval = get_optional(config, 'processing', 'index_poll_interval', default=10)
 
-            def _run(data_type, fields):
-                return create_indexes(
+            def _run(data_type, spec):
+                return apply_sr_index_plan(
                     table=data_type,
                     database=database,
-                    fields=fields,
+                    spec=spec,
                     host=db_config['host'],
                     port=db_config['port'],
                     user=db_config['user'],
@@ -364,7 +362,7 @@ def run_pipeline(config_dir: str = "/app/config"):
                 )
 
             with ThreadPoolExecutor(max_workers=len(plan)) as pool:
-                futures = {pool.submit(_run, dt, fs): dt for dt, fs in plan.items()}
+                futures = {pool.submit(_run, dt, spec): dt for dt, spec in plan.items()}
                 for fut in as_completed(futures):
                     data_type = futures[fut]
                     try:
@@ -372,8 +370,10 @@ def run_pipeline(config_dir: str = "/app/config"):
                     except Exception as e:
                         print(f"[sdp] Warning: Failed to create indexes on {data_type}: {e}")
                         continue
-                    if created:
-                        print(f"[sdp] Created indexes on {data_type}: {', '.join(created)}")
+                    for index_type in ('bitmap', 'bloomfilter'):
+                        if created.get(index_type):
+                            print(f"[sdp] Created {index_type} indexes on {data_type}: "
+                                  f"{', '.join(created[index_type])}")
         indexing_time = time.time() - t_idx
 
     # Final summary

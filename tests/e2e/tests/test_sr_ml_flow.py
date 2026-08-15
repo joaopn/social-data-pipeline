@@ -6,6 +6,8 @@ Bug class:
     PK-upsert idempotency are all silent if broken.
   - resolve_classifier_runs + detect_classifier_csvs path-name munging is
     fragile (suffix injection into the platform regex) and only runs end-to-end.
+  - sr_ml index creation is fire-and-poll against a live BE: a wrong table key
+    or a lost alter job leaves the table unindexed with a clean exit code.
 
 Runs with `prefer_lingua=false` so the per-classifier table path is
 actually exercised: lingua writes a second `/data/output/lingua_ingest/`
@@ -23,17 +25,21 @@ Flow:
   sdp run parse
   sdp run lingua            (writes both lingua/ and lingua_ingest/)
   sdp run sr_ingest         (reads /data/parsed → reddit.comments)
+  [write sr_ml_indexes: {comments_lingua: [lang]} into platform.yaml]
   sdp run sr_ml             (reads /data/output/lingua_ingest → reddit.comments_lingua)
-  → verify both tables exist with rows
+  → verify both tables exist with rows, and the BITMAP index on comments_lingua
   re-run sdp run sr_ml
   → verify row counts unchanged (PK upsert idempotency)
   sdp db stop starrocks
 """
 
+import yaml
+
 from tests.e2e.helpers.sdp import SDPSession, run_sdp, wait_for_healthy
 from tests.e2e.helpers.fixtures import place_reddit_fixtures
 from tests.e2e.helpers.db import (
     sr_connect,
+    sr_index_columns,
     sr_table_exists,
     sr_row_count,
     sr_show_create_table,
@@ -132,6 +138,17 @@ def test_starrocks_ml_full_flow(workspace):
         result = run_sdp("run sr_ingest --source reddit --build")
         assert result.returncode == 0, f"run sr_ingest failed:\n{result.stderr}"
 
+        # Configure a BITMAP index on the classifier table before sr_ml runs.
+        # `sr_ml_indexes` is keyed by classifier table name and has no fallback
+        # to sr_indexes, so this is the only way to reach sr_ml's index phase.
+        # First E2E to mutate platform.yaml mid-run: there is no prompt for these
+        # keys (the tables don't exist at `source add` time), so a hand edit is
+        # exactly what a user would do.
+        platform_path = workspace / "config" / "sources" / "reddit" / "platform.yaml"
+        platform_config = yaml.safe_load(platform_path.read_text())
+        platform_config["sr_ml_indexes"] = {"comments_lingua": ["lang"]}
+        platform_path.write_text(yaml.safe_dump(platform_config, sort_keys=False))
+
         # sr_ml → reddit.comments_lingua (per-classifier table; suffix "_lingua").
         result = run_sdp("run sr_ml --source reddit --build")
         assert result.returncode == 0, f"run sr_ml failed:\n{result.stderr}"
@@ -161,6 +178,14 @@ def test_starrocks_ml_full_flow(workspace):
             assert ddl is not None, "SHOW CREATE TABLE returned no rows"
             assert '"compression" = "ZSTD"' in ddl, (
                 f"classifier table should be created with ZSTD compression. Got:\n{ddl}"
+            )
+
+            # BITMAP index from sr_ml_indexes. sr_ml polls the alter job to
+            # FINISHED before returning, so this is visible immediately.
+            idx_cols = sr_index_columns(conn, "reddit", "comments_lingua")
+            assert "lang" in {c.lower() for c in idx_cols}, (
+                f"expected a BITMAP index on lang from sr_ml_indexes, have: {idx_cols}. "
+                f"sr_ml output:\n{sr_ml_output}"
             )
         finally:
             conn.close()

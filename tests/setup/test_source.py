@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from social_data_pipeline.setup.source import (
+    carry_over_unprompted,
     generate_platform_yaml,
     generate_postgres_yaml,
     generate_postgres_ml_yaml,
@@ -591,6 +592,24 @@ class TestGeneratePlatformYamlConditionalWrites:
         ))
         assert with_val["sr_indexes"] == {"events": ["author"]}
 
+    def test_custom_ml_indexes_written_only_when_set(self):
+        without = yaml.safe_load(generate_platform_yaml(self._custom()))
+        assert "ml_indexes" not in without
+
+        with_val = yaml.safe_load(generate_platform_yaml(
+            self._custom(custom_ml_indexes={"events_lingua": ["lang"]})
+        ))
+        assert with_val["ml_indexes"] == {"events_lingua": ["lang"]}
+
+    def test_custom_sr_ml_indexes_written_only_when_set(self):
+        without = yaml.safe_load(generate_platform_yaml(self._custom()))
+        assert "sr_ml_indexes" not in without
+
+        with_val = yaml.safe_load(generate_platform_yaml(
+            self._custom(custom_sr_ml_indexes={"events_lingua": ["lang"]})
+        ))
+        assert with_val["sr_ml_indexes"] == {"events_lingua": ["lang"]}
+
     def test_custom_mongo_indexes_written_only_when_set(self):
         without = yaml.safe_load(generate_platform_yaml(self._custom()))
         assert "mongo_indexes" not in without
@@ -613,3 +632,41 @@ class TestGeneratePlatformYamlConditionalWrites:
         # `is not None` check, not truthiness — explicit 0 should land.
         config = yaml.safe_load(generate_platform_yaml(self._custom(sr_buckets=0)))
         assert config["sr_buckets"] == 0
+
+
+class TestUnpromptedCarryOver:
+    """Classifier-table indexes have no prompt, so `source configure` can only
+    preserve them via carry_over_unprompted(). generate_platform_yaml() rebuilds
+    platform.yaml from scratch — anything missing from `settings` is deleted."""
+
+    def test_carries_ml_index_keys(self):
+        existing = {
+            "custom_ml_indexes": {"events_lingua": ["lang"]},
+            "custom_sr_ml_indexes": {"events_lingua": ["lang", "lang2"]},
+        }
+        settings = carry_over_unprompted(existing, {})
+        assert settings["custom_ml_indexes"] == {"events_lingua": ["lang"]}
+        assert settings["custom_sr_ml_indexes"] == {"events_lingua": ["lang", "lang2"]}
+
+    def test_absent_and_empty_keys_are_not_invented(self):
+        settings = carry_over_unprompted({"custom_ml_indexes": {}}, {})
+        assert settings == {}
+
+    def test_does_not_clobber_existing_settings(self):
+        settings = carry_over_unprompted({}, {"source_name": "mydata"})
+        assert settings == {"source_name": "mydata"}
+
+    def test_survives_round_trip_when_source_has_no_sr_ingest(self):
+        # The interactive index block is gated on
+        # `has_postgres or has_mongo or has_starrocks`, and
+        # has_starrocks == ("sr_ingest" in profiles). A source running sr_ml
+        # without sr_ingest never reaches it — the carry-over is the only thing
+        # keeping sr_ml_indexes alive across `source configure`.
+        existing = {
+            "custom_ml_indexes": {"events_lingua": ["lang"]},
+            "custom_sr_ml_indexes": {"events_lingua": ["lang"]},
+        }
+        settings = carry_over_unprompted(existing, _base_settings(custom_fields={"events": ["a"]}))
+        config = yaml.safe_load(generate_platform_yaml(settings))
+        assert config["ml_indexes"] == {"events_lingua": ["lang"]}
+        assert config["sr_ml_indexes"] == {"events_lingua": ["lang"]}

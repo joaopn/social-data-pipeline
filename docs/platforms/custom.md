@@ -90,6 +90,9 @@ indexes:
   posts:
     - dataset
     - author
+ml_indexes:            # Classifier tables: data type + classifier suffix
+  posts_lingua:
+    - lang
 field_types:
   id: text
   created_at: integer

@@ -3231,8 +3231,12 @@ def _sr_poll_alter_job(port, database, job_id, password, poll_interval=10.0,
 
 
 def _interactive_sr_indexes(source, platform_config, password):
-    """Interactive StarRocks BITMAP index creation. Returns {table: [new_fields]} for config persistence."""
+    """Interactive StarRocks index creation (bloom filter by default, BITMAP on request).
+
+    Returns {table: {'bitmap': [...], 'bloomfilter': [...]}} for config persistence.
+    """
     from social_data_pipeline.setup.utils import ask_multi_select, ask_list, section_header
+    import re
     import time
 
     section_header("StarRocks Index Creation")
@@ -3262,16 +3266,20 @@ def _interactive_sr_indexes(source, platform_config, password):
 
     # --- Collect phase: gather field lists per table interactively ---
     plan = {}  # table -> list of fields
+    column_types = {}  # (table, field) -> lowercase StarRocks type
     for table in selected_tables:
         print(f"\n  --- {table} ---")
 
         try:
             rows = _sr_query(port, database,
-                f"SELECT column_name FROM information_schema.columns "
+                f"SELECT column_name, data_type FROM information_schema.columns "
                 f"WHERE table_schema = '{database}' AND table_name = '{table}' "
                 f"ORDER BY ordinal_position",
                 password)
             columns = [r[0] for r in rows]
+            for r in rows:
+                if len(r) >= 2:
+                    column_types[(table, r[0])] = r[1].strip().lower()
             if columns:
                 print(f"  Columns: {', '.join(columns)}")
         except Exception:
@@ -3289,12 +3297,71 @@ def _interactive_sr_indexes(source, platform_config, password):
         except Exception:
             print("  Existing indexes: (could not query)")
 
-        fields = ask_list("New BITMAP indexes (comma-separated field names, empty to skip)", default=[])
+        fields = ask_list("New indexes (comma-separated field names, empty to skip)", default=[])
         if fields:
             plan[table] = fields
 
     if not plan:
         return {}
+
+    # --- Index type phase: one question for every field collected above ---
+    # Everything defaults to a bloom filter; the user opts specific columns into
+    # BITMAP. Column types decide what is even possible: FLOAT/DOUBLE support
+    # neither mechanism (dropped), TINYINT/BOOLEAN/DECIMAL support only bitmap.
+    # From core.config, not db.starrocks.ingest: that module imports
+    # mysql-connector at module level, which is a container-only dependency.
+    from social_data_pipeline.core.config import sr_index_types_for_column
+
+    pairs = [(t, f) for t in sorted(plan) for f in plan[t]]
+    supported = {(t, f): sr_index_types_for_column(column_types.get((t, f), ''))
+                 for t, f in pairs}
+
+    unindexable = [p for p in pairs if not any(supported[p].values())]
+    forced_bitmap = [p for p in pairs
+                     if p not in unindexable and not supported[p]['bloomfilter']]
+    choosable = [p for p in pairs
+                 if p not in unindexable and p not in forced_bitmap]
+
+    section_header("Index Type")
+    print("  Indexes default to BLOOM FILTER: small on disk, accelerates = and IN.")
+    print("  Choose BITMAP for columns you filter with ranges (>, <, >=, <=) or")
+    print("  IS NULL. BITMAP is adaptive — StarRocks skips it at query time when")
+    print("  it cannot filter out ~999/1000 of rows, so it is wasted on very")
+    print("  low-cardinality columns. Neither type accelerates LIKE.")
+    if unindexable:
+        print()
+        for t, f in unindexable:
+            print(f"  Skipping {t}.{f}: StarRocks cannot index "
+                  f"{column_types.get((t, f), '?').upper()} columns with either mechanism.")
+    if forced_bitmap:
+        print()
+        for t, f in forced_bitmap:
+            print(f"  {t}.{f} is {column_types.get((t, f), '?').upper()} — "
+                  f"not bloom-filterable, using BITMAP.")
+    print()
+
+    for t, f in unindexable:
+        plan[t].remove(f)
+    pairs = [p for p in pairs if p not in unindexable]
+    if not pairs:
+        print("  Nothing left to index.\n")
+        return {}
+
+    bitmap_pairs = set(forced_bitmap)
+    if choosable:
+        labels = [f"{t}.{f}" for t, f in choosable]
+        selected = ask_multi_select(
+            "Select BITMAP indexes (press Enter for all bloom filter)",
+            labels, defaults=[], tag="sdp_idx_sr_bitmap")
+        chosen = set(selected)
+        bitmap_pairs |= {(t, f) for t, f in choosable if f"{t}.{f}" in chosen}
+
+    # table -> {'bitmap': [...], 'bloomfilter': [...]}
+    typed_plan = {}
+    for t, f in pairs:
+        spec = typed_plan.setdefault(t, {"bitmap": [], "bloomfilter": []})
+        spec["bitmap" if (t, f) in bitmap_pairs else "bloomfilter"].append(f)
+    plan = typed_plan
 
     # --- Execute phase: parallel across tables; serial within each table ---
     import threading
@@ -3306,10 +3373,76 @@ def _interactive_sr_indexes(source, platform_config, password):
         with print_lock:
             print(msg, flush=True)
 
-    def _build_for_table(table, fields):
+    def _read_bloom_columns(table):
+        """Current bloom_filter_columns for a table, parsed from SHOW CREATE TABLE.
+
+        Raises on an unreadable result: the ALTER replaces the whole list, so a
+        false "nothing set" would silently drop every existing bloom column.
+        """
+        rows = _sr_query(port, database, f"SHOW CREATE TABLE `{database}`.`{table}`", password)
+        if not rows or len(rows[0]) < 2:
+            raise RuntimeError(f"could not read SHOW CREATE TABLE for {table}")
+        match = re.search(r'"bloom_filter_columns"\s*=\s*"([^"]*)"', rows[0][1], re.IGNORECASE)
+        if not match:
+            return set()
+        return {c.strip() for c in match.group(1).split(",") if c.strip()}
+
+    def _build_bloom_for_table(table, fields, prefix):
+        """Add bloom filter columns in one ALTER. Returns the columns added."""
+        existing = _read_bloom_columns(table)
+        new_columns = [f for f in fields if f not in existing]
+        if not new_columns:
+            emit(f"    {prefix}bloom filter already covers {', '.join(fields)}")
+            return []
+
+        target = sorted(existing | set(new_columns))
+        emit(f"  {prefix}Setting bloom filter columns: {', '.join(target)}")
+        t_start = time.time()
+
+        _sr_wait_for_active_alter(port, database, table, password,
+                                  line_prefix=prefix, print_fn=emit)
+
+        statement = (f'ALTER TABLE `{database}`.`{table}` '
+                     f'SET ("bloom_filter_columns" = "{",".join(target)}")')
+        success, stderr = _sr_exec(port, database, statement, password)
+        if not success:
+            emit(f"    {prefix}failed to submit bloom filter change: {stderr}")
+            return []
+
+        # Progress polling is best-effort: it is unverified which SHOW ALTER
+        # view reports a bloom filter change, so an absent job means "no
+        # information", never "done". The property re-read below decides.
+        rows = _sr_alter_column_rows(port, database, password)
+        job_ids = [int(r[0]) for r in rows if len(r) >= 12 and r[1] == table]
+        if job_ids:
+            _sr_poll_alter_job(port, database, max(job_ids), password,
+                               line_prefix=prefix, print_fn=emit)
+        else:
+            _sr_wait_for_active_alter(port, database, table, password,
+                                      line_prefix=prefix, print_fn=emit)
+
+        actual = _read_bloom_columns(table)
+        missing = set(target) - actual
+        if missing:
+            emit(f"    {prefix}bloom filter did NOT take effect for {sorted(missing)}; "
+                 f"table now has {sorted(actual)}")
+            return []
+        emit(f"    {prefix}bloom filter set on {', '.join(new_columns)} "
+             f"({_format_duration(time.time() - t_start)})")
+        return new_columns
+
+    def _build_for_table(table, spec):
         prefix = f"[{table}] "
-        table_created = []
-        for field in fields:
+        table_created = {"bitmap": [], "bloomfilter": []}
+
+        if spec.get("bloomfilter"):
+            try:
+                table_created["bloomfilter"] = _build_bloom_for_table(
+                    table, spec["bloomfilter"], prefix)
+            except Exception as e:
+                emit(f"    {prefix}bloom filter step failed: {e}")
+
+        for field in spec.get("bitmap", []):
             index_name = f"idx_{table}_{field}"
             emit(f"  {prefix}Building {index_name}")
             t_start = time.time()
@@ -3324,10 +3457,10 @@ def _interactive_sr_indexes(source, platform_config, password):
                 continue
 
             rows = _sr_alter_column_rows(port, database, password)
-            job_ids = [int(r[0]) for r in rows if r and r[1] == table]
+            job_ids = [int(r[0]) for r in rows if len(r) >= 12 and r[1] == table]
             if not job_ids:
                 emit(f"    {prefix}submitted but no alter job visible; skipping wait")
-                table_created.append(field)
+                table_created["bitmap"].append(field)
                 continue
             job_id = max(job_ids)
 
@@ -3336,20 +3469,22 @@ def _interactive_sr_indexes(source, platform_config, password):
             duration = time.time() - t_start
             if state == "FINISHED":
                 emit(f"    {prefix}built {index_name} ({_format_duration(duration)})")
-                table_created.append(field)
+                table_created["bitmap"].append(field)
             else:
                 emit(f"    {prefix}alter job {job_id} ended in state {state}: {msg}")
         return table_created
 
-    total_indexes = sum(len(v) for v in plan.values())
+    total_indexes = sum(len(v["bitmap"]) + len(v["bloomfilter"]) for v in plan.values())
+    n_bitmap = sum(len(v["bitmap"]) for v in plan.values())
     print()
-    print(f"  Building {total_indexes} index(es) across {len(plan)} table(s) — "
-          f"tables run in parallel, fields within a table serially.")
+    print(f"  Building {total_indexes} index(es) across {len(plan)} table(s) "
+          f"({n_bitmap} bitmap, {total_indexes - n_bitmap} bloom filter) — "
+          f"tables run in parallel, indexes within a table serially.")
     print()
 
     created = {}
     with ThreadPoolExecutor(max_workers=len(plan)) as pool:
-        futures = {pool.submit(_build_for_table, t, f): t for t, f in plan.items()}
+        futures = {pool.submit(_build_for_table, t, spec): t for t, spec in plan.items()}
         for fut in as_completed(futures):
             table = futures[fut]
             try:
@@ -3357,7 +3492,7 @@ def _interactive_sr_indexes(source, platform_config, password):
             except Exception as e:
                 emit(f"  [{table}] worker failed: {e}")
                 continue
-            if result:
+            if result["bitmap"] or result["bloomfilter"]:
                 created[table] = result
 
     return created
@@ -3608,29 +3743,61 @@ def _persist_indexes_to_config(source, pg_created, mongo_created, sr_created=Non
     platform_path = CONFIG_DIR / "sources" / source / "platform.yaml"
     config = yaml.safe_load(platform_path.read_text()) or {}
 
+    # Base tables are named after data types; anything else is a classifier
+    # table (data type + classifier suffix) and belongs in the ML key, which is
+    # what postgres_ml / sr_ml read.
+    data_types = set(config.get("data_types", []) or [])
+
+    def _merge(dest_key, table, fields):
+        """Merge a flat field list (PostgreSQL / MongoDB: one index mechanism)."""
+        existing = config.setdefault(dest_key, {}).setdefault(table, [])
+        for f in fields:
+            if f not in existing:
+                existing.append(f)
+
+    def _merge_sr(dest_key, table, spec):
+        """Merge a StarRocks spec, accepting either a flat list or per-type dict.
+
+        A stored plain list means bitmap, so adding bloom filter columns to it
+        promotes the entry to the per-type shape with the old list preserved as
+        bitmap. Without the promotion this raises AttributeError *after* a
+        multi-hour build, losing the config write.
+        """
+        if isinstance(spec, list):
+            spec = {"bitmap": list(spec), "bloomfilter": []}
+
+        stored = config.setdefault(dest_key, {}).get(table)
+        if stored is None:
+            stored = []
+        if isinstance(stored, list):
+            stored = {"bitmap": list(stored), "bloomfilter": []}
+        else:
+            stored = {t: list(stored.get(t) or []) for t in ("bitmap", "bloomfilter")}
+
+        for index_type in ("bitmap", "bloomfilter"):
+            for f in spec.get(index_type) or []:
+                if f not in stored[index_type]:
+                    stored[index_type].append(f)
+
+        # Keep the legacy flat shape when nothing needs the per-type form, so
+        # existing configs are not churned into a new shape for no reason.
+        if stored["bloomfilter"]:
+            config[dest_key][table] = stored
+        else:
+            config[dest_key][table] = stored["bitmap"]
+
     if pg_created:
-        indexes = config.setdefault("indexes", {})
         for table, fields in pg_created.items():
-            existing = indexes.setdefault(table, [])
-            for f in fields:
-                if f not in existing:
-                    existing.append(f)
+            _merge("indexes" if table in data_types else "ml_indexes", table, fields)
 
     if mongo_created:
-        mongo_indexes = config.setdefault("mongo_indexes", {})
+        # Mongo has no ML ingestion profile; keys are data types already.
         for dt, fields in mongo_created.items():
-            existing = mongo_indexes.setdefault(dt, [])
-            for f in fields:
-                if f not in existing:
-                    existing.append(f)
+            _merge("mongo_indexes", dt, fields)
 
     if sr_created:
-        sr_indexes = config.setdefault("sr_indexes", {})
-        for table, fields in sr_created.items():
-            existing = sr_indexes.setdefault(table, [])
-            for f in fields:
-                if f not in existing:
-                    existing.append(f)
+        for table, spec in sr_created.items():
+            _merge_sr("sr_indexes" if table in data_types else "sr_ml_indexes", table, spec)
 
     platform_path.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False))
     print(f"  Updated: {platform_path}")
@@ -3705,9 +3872,14 @@ def cmd_db_create_indexes(args):
         sr_created = _interactive_sr_indexes(source, platform_config, password)
 
     # Summary
-    total = (sum(len(v) for v in pg_created.values())
-             + sum(len(v) for v in mongo_created.values())
-             + sum(len(v) for v in sr_created.values()))
+    def _count(created):
+        """Count index fields, whether the value is a flat list or a per-type dict."""
+        n = 0
+        for v in created.values():
+            n += sum(len(x) for x in v.values()) if isinstance(v, dict) else len(v)
+        return n
+
+    total = _count(pg_created) + _count(mongo_created) + _count(sr_created)
     if total == 0:
         print("\n  No new indexes created.\n")
         return 0

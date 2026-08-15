@@ -505,6 +505,211 @@ def resolve_classifier_runs(
     return runs
 
 
+#: StarRocks index mechanisms. A plain YAML list means BITMAP — the historical
+#: meaning, and configs in the wild rely on it.
+SR_INDEX_TYPES = ('bitmap', 'bloomfilter')
+
+#: Column types StarRocks accepts for bloom filter indexes. FLOAT, DOUBLE,
+#: TINYINT, BOOLEAN and DECIMAL are NOT supported — notably `lang_prob` (FLOAT)
+#: in every lingua classifier table.
+#:
+#: Lives here rather than in db/starrocks/ingest.py because sdp.py runs on the
+#: host, where mysql-connector is not installed; importing the driver module
+#: just to read a constant would break `sdp db create-indexes`.
+BLOOM_FILTER_TYPES = frozenset({
+    'smallint', 'int', 'bigint', 'largeint',
+    'char', 'varchar', 'string',
+    'date', 'datetime',
+})
+
+#: Column types StarRocks accepts for BITMAP indexes. Wider than the bloom
+#: filter set (TINYINT, BOOLEAN and DECIMAL are allowed here) but it also
+#: excludes FLOAT and DOUBLE — so a float column can carry NEITHER index type
+#: and must be dropped from an index plan rather than rerouted.
+BITMAP_INDEX_TYPES = frozenset({
+    'tinyint', 'smallint', 'int', 'bigint', 'largeint', 'decimal', 'boolean',
+    'char', 'varchar', 'string',
+    'date', 'datetime', 'hll',
+})
+
+
+def normalize_sr_column_type(data_type: str) -> str:
+    """Reduce an information_schema data_type to its bare type name.
+
+    Handles parameterized spellings (`varchar(65533)`) and the decimal variants
+    StarRocks reports (`decimal64`, `decimal128`).
+    """
+    base = (data_type or '').strip().lower().split('(')[0].strip()
+    if base.startswith('decimal'):
+        return 'decimal'
+    return base
+
+
+def sr_index_types_for_column(data_type: str) -> Dict[str, bool]:
+    """Which StarRocks index mechanisms a column type supports.
+
+    An unknown/empty type is treated as supporting both: the type list is a
+    guard against known-bad builds, not an allowlist, and StarRocks itself
+    rejects anything genuinely unsupported.
+    """
+    base = normalize_sr_column_type(data_type)
+    if not base:
+        return {'bitmap': True, 'bloomfilter': True}
+    known = base in BITMAP_INDEX_TYPES or base in BLOOM_FILTER_TYPES
+    if not known and base not in ('float', 'double'):
+        return {'bitmap': True, 'bloomfilter': True}
+    return {
+        'bitmap': base in BITMAP_INDEX_TYPES,
+        'bloomfilter': base in BLOOM_FILTER_TYPES,
+    }
+
+
+def normalize_index_spec(spec, where: str = 'index spec') -> Dict[str, List[str]]:
+    """
+    Normalize one table's StarRocks index spec to {'bitmap': [...], 'bloomfilter': [...]}.
+
+    Accepts either shape:
+        [a, b]                              -> all BITMAP (legacy; never reinterpreted)
+        {bitmap: [a], bloomfilter: [b]}     -> explicit, either sub-key optional
+
+    Args:
+        spec: List, dict, or None
+        where: Context for error messages (e.g. "sr_ml_indexes['comments_lingua']")
+
+    Raises:
+        ConfigurationError: On an unknown sub-key (catches `bloom_filter` /
+            `bloomFilter` typos that would otherwise silently index nothing) or
+            a non-list value for a known sub-key.
+    """
+    out = {t: [] for t in SR_INDEX_TYPES}
+
+    if spec is None:
+        return out
+
+    if isinstance(spec, list):
+        out['bitmap'] = list(spec)
+        return out
+
+    if isinstance(spec, dict):
+        unknown = [k for k in spec if k not in SR_INDEX_TYPES]
+        if unknown:
+            raise ConfigurationError(
+                f"{where}: unknown index type(s) {unknown}. "
+                f"Valid types: {list(SR_INDEX_TYPES)}. A plain list means bitmap."
+            )
+        for index_type in SR_INDEX_TYPES:
+            fields = spec.get(index_type) or []
+            if not isinstance(fields, list):
+                raise ConfigurationError(
+                    f"{where}: '{index_type}' must be a list of column names, "
+                    f"got {type(fields).__name__}."
+                )
+            # Dedupe within a type; a column may legitimately appear under both
+            # types, since bitmap and bloom filter are independent mechanisms.
+            seen = set()
+            out[index_type] = [f for f in fields if not (f in seen or seen.add(f))]
+        return out
+
+    raise ConfigurationError(
+        f"{where}: expected a list of column names or a "
+        f"{{bitmap: [...], bloomfilter: [...]}} mapping, got {type(spec).__name__}."
+    )
+
+
+def build_sr_index_plan(
+    indexed_tables,
+    profile_config: Dict,
+    platform_config: Dict,
+    fallback_keys,
+) -> Dict[str, Dict[str, List[str]]]:
+    """
+    Build the {table: {'bitmap': [...], 'bloomfilter': [...]}} plan for StarRocks.
+
+    Args:
+        indexed_tables: Iterable of table names (sr_ingest passes data types,
+            sr_ml passes classifier table names — this is name-agnostic)
+        profile_config: Merged profile config (sr_ingest / sr_ml)
+        platform_config: Source platform config
+        fallback_keys: Config keys to try in order. sr_ingest passes
+            ('sr_indexes', 'indexes') to preserve its historical fallback;
+            sr_ml passes ('sr_ml_indexes',) — no fallback, since base index
+            fields name columns classifier tables do not have.
+
+    Returns:
+        Tables in sorted order, excluding those with no fields of either type.
+
+    The `indexes` key is read list-only: it is PostgreSQL's, and postgres_ingest
+    would silently try to index columns named 'bitmap'/'bloomfilter' if a nested
+    dict were written there. A nested value under `indexes` raises instead.
+    """
+    index_config = {}
+    source_key = None
+    for key in fallback_keys:
+        index_config = profile_config.get(key) or platform_config.get(key) or {}
+        if index_config:
+            source_key = key
+            break
+
+    plan = {}
+    for table in sorted(indexed_tables):
+        spec = index_config.get(table)
+        if spec is None:
+            continue
+        if source_key == 'indexes' and not isinstance(spec, list):
+            raise ConfigurationError(
+                f"indexes['{table}'] must be a plain list — it is also read by "
+                f"postgres_ingest. Put per-type StarRocks indexes in sr_indexes."
+            )
+        normalized = normalize_index_spec(spec, where=f"{source_key}['{table}']")
+        if any(normalized[t] for t in SR_INDEX_TYPES):
+            plan[table] = normalized
+    return plan
+
+
+def build_ml_index_plan(
+    indexed_tables,
+    profile_config: Dict,
+    platform_config: Dict,
+    key: str,
+) -> Dict[str, List[str]]:
+    """
+    Build the {table: [fields]} index plan for classifier tables.
+
+    Args:
+        indexed_tables: Iterable of classifier table names (postgres_ml passes a
+            table -> data_type dict, sr_ml passes a set; only the names are used)
+        profile_config: Merged profile config (postgres_ml / sr_ml)
+        platform_config: Source platform config
+        key: 'ml_indexes' (postgres_ml) or 'sr_ml_indexes' (sr_ml)
+
+    Returns:
+        Tables in sorted order, excluding any with no configured fields.
+
+    The profile-level map wins over the platform one. There is deliberately no
+    fallback to the base `indexes` / `sr_indexes` maps: those name base-table
+    columns (author, subreddit, domain) that classifier tables do not have.
+    """
+    index_config = profile_config.get(key) or platform_config.get(key, {}) or {}
+
+    plan = {}
+    for table in sorted(indexed_tables):
+        fields = index_config.get(table, [])
+        if not fields:
+            continue
+        if not isinstance(fields, list):
+            # PostgreSQL has one index mechanism, so the per-type StarRocks
+            # shape is meaningless here. Without this guard list(dict) yields
+            # ['bitmap', 'bloomfilter'] and postgres_ml indexes columns by
+            # those literal names, with no error.
+            raise ConfigurationError(
+                f"{key}['{table}'] must be a plain list of column names for "
+                f"PostgreSQL, got {type(fields).__name__}. Per-type index specs "
+                f"are StarRocks-only (sr_indexes / sr_ml_indexes)."
+            )
+        plan[table] = list(fields)
+    return plan
+
+
 def validate_classifier_config(config: Dict, classifier_name: str, profile: str) -> None:
     """
     Validate that required classifier config exists.

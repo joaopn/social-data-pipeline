@@ -329,7 +329,7 @@ Both ingest the same parsed files and support the same pipeline features (classi
 | **Query speed** | Good with proper indexing; row-oriented storage | Much faster (~10X) for analytics; columnar storage with vectorized execution |
 | **Ecosystem** | Mature, widely supported, connects to nearly everything | MySQL wire protocol — works with any MySQL client, but smaller ecosystem |
 | **Extensibility** | Rich extension system (custom types, FDWs, procedural languages) | Limited — focused on analytics |
-| **Storage model** | Row-oriented, B-tree indexes, tablespaces for multi-disk | Columnar, BITMAP indexes, built-in multi-disk via `storage_root_path` |
+| **Storage model** | Row-oriented, B-tree indexes, tablespaces for multi-disk | Columnar, bitmap + bloom filter indexes, built-in multi-disk via `storage_root_path` |
 | **Ingestion** | Fast initial load (deferred PK), ON CONFLICT upsert | Single code path — Primary Key tables handle dedup natively |
 
 **Use PostgreSQL** if you need a general-purpose database that integrates with other tools and workflows. **Use StarRocks** if your primary goal is fast analytical queries over large datasets. Both can be used in parallel.

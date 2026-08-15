@@ -227,6 +227,10 @@ def _load_existing_source_config(source_name):
             existing["custom_mongo_indexes"] = pc["mongo_indexes"]
         if pc.get("sr_indexes"):
             existing["custom_sr_indexes"] = pc["sr_indexes"]
+        if pc.get("ml_indexes"):
+            existing["custom_ml_indexes"] = pc["ml_indexes"]
+        if pc.get("sr_ml_indexes"):
+            existing["custom_sr_ml_indexes"] = pc["sr_ml_indexes"]
         if pc.get("file_patterns"):
             existing["file_patterns"] = pc["file_patterns"]
         if pc.get("fields"):
@@ -285,11 +289,32 @@ def _load_existing_source_config(source_name):
     return existing
 
 
+# Settings with no questionnaire prompt. generate_platform_yaml() rebuilds
+# platform.yaml from scratch, so anything not carried into `settings` is dropped
+# on `source configure`. Classifier-table indexes have no prompt because the
+# tables don't exist yet at source-add time — they are written by
+# `sdp db create-indexes` or by hand.
+UNPROMPTED_CARRY_OVER_KEYS = ("custom_ml_indexes", "custom_sr_ml_indexes")
+
+
+def carry_over_unprompted(existing, settings):
+    """Copy unprompted config from an existing source into `settings` verbatim.
+
+    Must run outside every has_postgres/has_mongo/has_starrocks gate: a source
+    running sr_ml without sr_ingest never reaches the index prompt block.
+    """
+    for key in UNPROMPTED_CARRY_OVER_KEYS:
+        if existing.get(key):
+            settings[key] = existing[key]
+    return settings
+
+
 def run_questionnaire(hw, source_name, db_setup, hf_defaults=None):
     """Run the source configuration questionnaire. Returns settings dict."""
     existing = _load_existing_source_config(source_name)
     settings = {}
     settings["source_name"] = source_name
+    carry_over_unprompted(existing, settings)
 
     # Determine platform type from source name
     if source_name == "reddit":
@@ -670,6 +695,13 @@ def generate_platform_yaml(settings):
 
     if settings.get("custom_sr_indexes"):
         config["sr_indexes"] = settings["custom_sr_indexes"]
+
+    # Classifier-table indexes: preserved from an existing config, never prompted.
+    if settings.get("custom_ml_indexes"):
+        config["ml_indexes"] = settings["custom_ml_indexes"]
+
+    if settings.get("custom_sr_ml_indexes"):
+        config["sr_ml_indexes"] = settings["custom_sr_ml_indexes"]
 
     if settings.get("primary_key"):
         config["primary_key"] = settings["primary_key"]

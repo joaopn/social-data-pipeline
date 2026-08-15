@@ -6,6 +6,7 @@ StarRocks Primary Key tables handle upsert/dedup natively.
 
 import os
 import logging
+import re
 from typing import List, Dict
 
 import mysql.connector
@@ -325,6 +326,118 @@ def _show_alter_column_jobs(database, host, port, user, password):
     return rows if isinstance(rows, list) else []
 
 
+_BLOOM_PROPERTY_RE = re.compile(
+    r'"bloom_filter_columns"\s*=\s*"([^"]*)"', re.IGNORECASE
+)
+
+
+def get_bloom_filter_columns(table, database, host, port, user, password=None):
+    """Return the set of columns currently carrying a bloom filter index.
+
+    Read from SHOW CREATE TABLE, which the StarRocks docs nominate as the way to
+    display bloom filter indexes.
+
+    Raises on anything it cannot read or parse. It must never return an empty
+    set on failure: `ALTER TABLE ... SET ("bloom_filter_columns" = ...)` replaces
+    the whole list, so a false "nothing set" would silently drop every existing
+    bloom filter column on the table.
+    """
+    rows = execute_query(f"SHOW CREATE TABLE `{database}`.`{table}`",
+                         host, port, user, password, database)
+    if not isinstance(rows, list) or not rows or len(rows[0]) < 2:
+        raise RuntimeError(
+            f"Could not read SHOW CREATE TABLE for {database}.{table}; "
+            f"refusing to modify bloom_filter_columns without knowing the current value."
+        )
+    ddl = rows[0][1]
+    match = _BLOOM_PROPERTY_RE.search(ddl)
+    if not match:
+        # Property absent means no bloom filter columns — a parseable result,
+        # not a read failure.
+        return set()
+    return {c.strip() for c in match.group(1).split(',') if c.strip()}
+
+
+def set_bloom_filter_columns(table, database, add_columns, host, port, user, password=None,
+                             poll_interval=10.0, line_prefix='', print_fn=None):
+    """Add columns to a table's bloom filter set. Returns the columns actually added.
+
+    Additive only — never removes an existing bloom filter column. The ALTER
+    replaces the whole list, so the current value is read first and merged.
+
+    Correctness comes from re-reading the property afterwards and comparing it
+    against the intended set, not from the alter-job poll: it is unverified
+    which `SHOW ALTER TABLE` view (COLUMN / ROLLUP / OPTIMIZE) reports a bloom
+    filter change, so polling is best-effort progress reporting only.
+    """
+    emit = print_fn or (lambda m: print(m, flush=True))
+
+    existing = get_bloom_filter_columns(table, database, host, port, user, password)
+    new_columns = [c for c in add_columns if c not in existing]
+    if not new_columns:
+        return []
+
+    target = sorted(existing | set(new_columns))
+
+    _wait_for_active_alter_job(database, table, host, port, user, password, poll_interval,
+                               line_prefix=line_prefix, print_fn=emit)
+
+    emit(f"[sdp]   {line_prefix}Setting bloom filter columns: {', '.join(target)}")
+    execute_query(
+        f"ALTER TABLE `{database}`.`{table}` "
+        f"SET (\"bloom_filter_columns\" = \"{','.join(target)}\")",
+        host, port, user, password, database)
+
+    # Best-effort progress reporting. An absent job means "no information here",
+    # never "done" — the verify below is what decides success.
+    rows = _show_alter_column_jobs(database, host, port, user, password)
+    matching = [int(r[0]) for r in rows if len(r) > 1 and r[1] == table]
+    if matching:
+        _poll_alter_job(database, max(matching), host, port, user, password, poll_interval,
+                        line_prefix=line_prefix, print_fn=emit)
+    else:
+        _wait_for_active_alter_job(database, table, host, port, user, password, poll_interval,
+                                   line_prefix=line_prefix, print_fn=emit)
+
+    actual = get_bloom_filter_columns(table, database, host, port, user, password)
+    missing = set(target) - actual
+    if missing:
+        raise RuntimeError(
+            f"Bloom filter update on {database}.{table} did not take effect for "
+            f"{sorted(missing)}; table now has {sorted(actual)}."
+        )
+    return new_columns
+
+
+def apply_sr_index_plan(table, database, spec, host, port, user, password=None,
+                        poll_interval=10.0, line_prefix='', print_fn=None):
+    """Apply one table's {'bitmap': [...], 'bloomfilter': [...]} spec.
+
+    Bloom filters go first as a single ALTER for the whole set, then bitmaps
+    serially — StarRocks allows one schema change per table at a time, and each
+    step drains any in-flight job before submitting.
+
+    Returns {'bitmap': [built], 'bloomfilter': [added]}.
+    """
+    emit = print_fn or (lambda m: print(m, flush=True))
+    result = {'bitmap': [], 'bloomfilter': []}
+
+    bloom = spec.get('bloomfilter') or []
+    if bloom:
+        result['bloomfilter'] = set_bloom_filter_columns(
+            table, database, bloom, host, port, user, password,
+            poll_interval=poll_interval, line_prefix=line_prefix, print_fn=emit)
+
+    bitmap = spec.get('bitmap') or []
+    if bitmap:
+        result['bitmap'] = create_indexes(
+            table=table, database=database, fields=bitmap,
+            host=host, port=port, user=user, password=password,
+            poll_interval=poll_interval, line_prefix=line_prefix, print_fn=emit)
+
+    return result
+
+
 def _wait_for_active_alter_job(database, table, host, port, user, password, poll_interval,
                                line_prefix='', print_fn=None):
     """Block until no non-terminal alter job exists for `table`.
@@ -338,7 +451,8 @@ def _wait_for_active_alter_job(database, table, host, port, user, password, poll
     last_progress = None
     while True:
         rows = _show_alter_column_jobs(database, host, port, user, password)
-        active = [r for r in rows if r[1] == table and r[9] not in _ALTER_TERMINAL_STATES]
+        active = [r for r in rows
+                  if len(r) >= 12 and r[1] == table and r[9] not in _ALTER_TERMINAL_STATES]
         if not active:
             return
         row = max(active, key=lambda r: int(r[0]))
@@ -406,9 +520,9 @@ def create_indexes(table, database, fields, host, port, user, password=None,
             host, port, user, password, database)
 
         rows = _show_alter_column_jobs(database, host, port, user, password)
-        matching = [int(r[0]) for r in rows if r[1] == table]
+        matching = [int(r[0]) for r in rows if len(r) > 1 and r[1] == table]
         if not matching:
-            logging.warning("Submitted %s but no alter job found on %s.%s",
+            logging.warning("Submitted BITMAP index %s but no alter job found on %s.%s",
                             index_name, database, table)
             continue
         job_id = max(matching)

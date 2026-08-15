@@ -70,6 +70,8 @@ Unit tests target **silent-failure code** — config merge, dispatch, dedup SQL,
 | `test_decompress.py` | `.zst`, `.gz`, `.xz`, `.tar.gz` round-trips. Marked `@pytest.mark.slow` |
 | `test_classifier_scope.py` | `normalize_classifier_entries` — per-classifier `data_types` scope. Pins the breaking change in commit `b1bbeb2` |
 | `test_resolve_classifier_runs.py` | `resolve_classifier_runs` — shared by `postgres_ml` and `sr_ml`. Composes ordered classifier-ingestion runs from `ml.yaml` + `lingua.yaml` + per-source overrides |
+| `test_ml_index_plan.py` | `build_ml_index_plan` — `postgres_ml`'s flat `ml_indexes` lookup: profile-over-platform, the no-fallback-to-`indexes` rule, and the guard rejecting the StarRocks per-type shape |
+| `test_sr_index_spec.py` | `normalize_index_spec` / `build_sr_index_plan` — plain list always means bitmap, per-type `{bitmap, bloomfilter}` shape, sr_ingest's `sr_indexes` → `indexes` fallback vs sr_ml's no-fallback |
 
 ### `db/` — database ingestion logic
 
@@ -81,6 +83,7 @@ Focused on the SQL shape of dedup / upsert paths and contract checks that span p
 | `test_mongo_validate.py` | Pre-import file validation for `mongoimport` |
 | `test_reddit_column_contract.py` | Parser CSV columns ↔ `COPY` column list match. Pins a bug where `retrieved_utc` was listed both as a real column and a mandatory column, producing a duplicate-column COPY |
 | `test_starrocks_ingest.py` | StarRocks ingestion pure-logic helpers (table DDL, schema inference, `INSERT ... SELECT FROM FILES()` SQL shape, BITMAP index DDL) |
+| `test_bloom_filter_columns.py` | Parsing existing `bloom_filter_columns` out of `SHOW CREATE TABLE`, and the merge-not-replace / abort-on-unreadable rules that keep an `ALTER … SET` from dropping existing bloom columns |
 
 ### `jobs/` — query scheduler
 
@@ -117,6 +120,7 @@ Focused on the SQL shape of dedup / upsert paths and contract checks that span p
 | `test_hf.py` | `organize_hf_downloads` — copies HF parquet files from `dumps/` into `extracted/<data_type>/` according to `hf_config_map` |
 | `test_env_and_compose.py` | `.env` updates (preserves siblings on partial writes), `docker-compose.override.yml` generation (tablespaces, SR multi-disk, jobs `/jobs_export` mount) |
 | `test_profile_gating.py` | Profile-gating tables in `sdp.py` — every pipeline profile is mapped to its required DB / source / classifier prerequisites; `cmd_run` blocks on missing config |
+| `test_index_persistence.py` | `sdp db create-indexes` persistence routing — base tables to `indexes` / `sr_indexes`, classifier tables to `ml_indexes` / `sr_ml_indexes`; StarRocks entries merge per index type and a stored plain list is promoted, not overwritten |
 
 ### Top-level
 
@@ -144,7 +148,7 @@ Every interactive prompt in `sdp.py` setup flows has a stable `tag=` identifier 
 
 ### Running E2E tests
 
-Requires [sysbox](https://github.com/nestybox/sysbox) installed on the host.
+Requires [sysbox](https://github.com/nestybox/sysbox) **>= 0.7.0** on the host — `run.sh` checks the version and exits before building if it is older. The E2E image installs current `docker-ce`, which ships runc >= 1.3.3; its procfs safety check (CVE-2025-52881) only works inside sysbox 0.7.0+, which traps `openat2` for sysbox-fs mounts under `/proc` and `/sys`. Check with `sysbox-runc --version`.
 
 ```bash
 ./tests/e2e/run.sh                  # All E2E tests
@@ -164,8 +168,8 @@ First run builds Docker images inside the sysbox container (~3-5 min). Subsequen
 | `test_postgres_dedup_null_safe` | Pins null-safe + deterministic dedup behavior across the full case table (NULL vs. real `retrieved_utc`, same-NULL re-ingests, cross-dataset tiebreakers) |
 | `test_recovery_postgres` | `postgres_ingest` recovers from an interrupted prior fast-load (orphaned no-PK table is auto-detected and re-routed) |
 | `test_mongo_flow` | Full Mongo lifecycle: setup → add → `db start` → `run mongo_ingest` → verify databases, collections, document counts, `_sdp_metadata` state |
-| `test_sr_flow` | Full StarRocks lifecycle: parse → `sr_ingest` → verify Primary Key tables, BITMAP indexes, row counts |
-| `test_sr_ml_flow` | StarRocks ML flow: parse → lingua → `sr_ingest` → `sr_ml` → verify classifier tables and merge_condition upsert |
+| `test_sr_flow` | Full StarRocks lifecycle: parse → `sr_ingest` → verify Primary Key tables, BITMAP indexes (plain-list config), row counts |
+| `test_sr_ml_flow` | StarRocks ML flow: parse → lingua → `sr_ingest` → `sr_ml` → verify classifier tables, merge_condition upsert, and the BITMAP index built from `sr_ml_indexes` |
 | `test_auth_postgres` | PG auth: fresh install + migration path (existing trust-auth DB → scram-sha-256), RO user + `.ro_credentials` propagation |
 | `test_auth_mongo` | Mongo auth: fresh DB delegation via `docker-entrypoint.sh`, existing-DB migration via localhost exception |
 | `test_auth_starrocks` | SR auth: root password rotation, RO user role sync (`sdp_readonly`), recovery via `enable_auth_check = false` |

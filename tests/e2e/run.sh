@@ -42,6 +42,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The image installs current docker-ce, which pulls runc >= 1.3.3. Its procfs
+# safety check (CVE-2025-52881) only works inside sysbox >= 0.7.0, which traps
+# openat2 for sysbox-fs mounts under /proc and /sys. On older sysbox the inner
+# dockerd starts but containers fail with opaque procfs errors, so fail early.
+SYSBOX_MIN="0.7.0"
+if ! command -v sysbox-runc >/dev/null 2>&1; then
+    echo "Error: sysbox-runc not found. E2E tests need sysbox >= $SYSBOX_MIN:" >&2
+    echo "  https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-package.md" >&2
+    exit 1
+fi
+SYSBOX_VERSION="$(sysbox-runc --version | awk '/version:/ {print $2; exit}')"
+if [ "$(printf '%s\n%s\n' "$SYSBOX_MIN" "$SYSBOX_VERSION" | sort -V | head -n1)" != "$SYSBOX_MIN" ]; then
+    echo "Error: sysbox $SYSBOX_VERSION found, but >= $SYSBOX_MIN is required." >&2
+    echo "  Older sysbox cannot run runc >= 1.3.3 (shipped with current docker-ce)." >&2
+    exit 1
+fi
+echo "sysbox $SYSBOX_VERSION OK (>= $SYSBOX_MIN)"
+
 # Build the E2E image (cached after first run)
 echo "Building E2E image..."
 docker build -t "$IMAGE_NAME" -f "$REPO_ROOT/tests/e2e/Dockerfile.e2e" "$REPO_ROOT"

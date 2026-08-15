@@ -20,12 +20,14 @@ from ..core.config import (
     load_platform_config as _load_platform_config,
     load_db_config,
     resolve_classifier_runs,
+    build_sr_index_plan,
     apply_env_overrides,
     validate_processing_config,
     validate_starrocks_config,
 )
 from ..db.starrocks.ingest import (
     compute_bucket_count,
+    apply_sr_index_plan,
     ensure_database_exists,
     table_exists,
     ingest_file,
@@ -213,6 +215,9 @@ def run_pipeline(config_dir: str = "/app/config"):
     total_success = 0
     total_fail = 0
     total_skipped = 0
+    # Classifier tables that ingested at least one file this run. Indexes are
+    # created once, after every classifier has been processed.
+    indexed_tables = set()
 
     start_time = time.time()
 
@@ -371,17 +376,91 @@ def run_pipeline(config_dir: str = "/app/config"):
                 com_success, com_fail = future_comments.result()
                 success_count += sub_success + com_success
                 fail_count += sub_fail + com_fail
+                # Record only the branches that actually ran: this path is
+                # hardcoded to submissions + comments.
+                if sub_success > 0:
+                    indexed_tables.add(f"submissions{suffix}")
+                if com_success > 0:
+                    indexed_tables.add(f"comments{suffix}")
         else:
             for dt in sorted(files_by_type.keys()):
                 local_success, local_fail = ingest_classifier_type(dt)
                 success_count += local_success
                 fail_count += local_fail
+                if local_success > 0:
+                    indexed_tables.add(f"{dt}{suffix}")
 
         print(f"[sdp] {classifier_name}: {success_count} success, {skip_count} skipped, {fail_count} failed")
 
         total_success += success_count
         total_fail += fail_count
         total_skipped += skip_count
+
+    # Create indexes on the classifier tables written this run. Fields come from
+    # sr_ml_indexes (profile config, then platform config), keyed by classifier
+    # table name. No fallback to sr_indexes/indexes: those name base-table
+    # columns the classifier tables do not have.
+    indexing_time = 0.0
+    should_create_indexes = proc_config.get('create_indexes', True)
+
+    if should_create_indexes and indexed_tables:
+        print("\n" + "=" * 60)
+        print("CREATING INDEXES")
+        print("=" * 60)
+
+        plan = build_sr_index_plan(indexed_tables, config, platform_config, ('sr_ml_indexes',))
+        for table in sorted(indexed_tables):
+            if table not in plan:
+                print(f"[sdp] No indexes configured for {table}, skipping")
+            else:
+                spec = plan[table]
+                parts = [f"{len(spec[t])} {t}" for t in ('bitmap', 'bloomfilter') if spec[t]]
+                print(f"[sdp] Queued {' + '.join(parts)} indexes on {database}.{table}")
+
+        t_idx = time.time()
+        if plan:
+            import threading
+            from concurrent.futures import as_completed
+
+            print_lock = threading.Lock()
+
+            def emit(msg):
+                with print_lock:
+                    print(msg, flush=True)
+
+            poll_interval = proc_config.get('index_poll_interval', 10)
+
+            def _run(table, spec):
+                return apply_sr_index_plan(
+                    table=table,
+                    database=database,
+                    spec=spec,
+                    host=db_config['host'],
+                    port=db_config['port'],
+                    user=db_config['user'],
+                    password=password,
+                    poll_interval=poll_interval,
+                    line_prefix=f"[{table}] ",
+                    print_fn=emit,
+                )
+
+            # Fields within a table build serially (StarRocks allows one schema
+            # change per table); tables build in parallel. Capped because the
+            # fan-out here is data_types x classifiers, not just data_types.
+            with ThreadPoolExecutor(max_workers=min(len(plan), 8)) as pool:
+                futures = {pool.submit(_run, t, f): t for t, f in plan.items()}
+                for fut in as_completed(futures):
+                    table = futures[fut]
+                    try:
+                        created = fut.result()
+                    except Exception as e:
+                        print(f"[sdp] Warning: Failed to create indexes on {table}: {e}")
+                        continue
+                    for index_type in ('bitmap', 'bloomfilter'):
+                        if created.get(index_type):
+                            print(f"[sdp] Created {index_type} indexes on {table}: "
+                                  f"{', '.join(created[index_type])}")
+        indexing_time = (time.time() - t_idx) / 60
 
     # Final summary
     elapsed = (time.time() - start_time) / 60
@@ -391,6 +470,7 @@ def run_pipeline(config_dir: str = "/app/config"):
     print(f"Successful: {total_success}")
     print(f"Skipped:    {total_skipped}")
     print(f"Failed:     {total_fail}")
+    print(f"Indexing:   {indexing_time:.2f} minutes")
     print(f"Time:       {elapsed:.2f} minutes")
 
 

@@ -176,3 +176,16 @@ Default indexes (from `platform.yaml`):
 **Comments:** `dataset`, `author`, `subreddit`, `link_id`
 
 Override via the source's `platform.yaml` or `postgres.yaml`, or use `python sdp.py source configure reddit`.
+
+**Classifier tables** (`comments_lingua`, `submissions_toxicity_en`, …) are not covered by these defaults. They have their own sets — `ml_indexes` (postgres_ml) and `sr_ml_indexes` (sr_ml) — keyed by table name and shipped empty in the template:
+
+```yaml
+ml_indexes:
+  comments_lingua: [lang]
+sr_ml_indexes:
+  comments_lingua: [lang]
+```
+
+There is no fallback from these to `indexes`, because the base fields name columns the classifier tables do not have. `python sdp.py db create-indexes` writes to the right set automatically.
+
+For StarRocks, a plain list means a bitmap index; use `{bitmap: [...], bloomfilter: [...]}` to pick per column. See [Choosing a StarRocks Index Type](../profiles/database.md#choosing-a-starrocks-index-type).

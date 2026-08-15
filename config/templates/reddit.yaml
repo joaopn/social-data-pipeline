@@ -41,6 +41,16 @@ indexes:
     - subreddit
     - link_id
 
+# Index fields for ML classifier tables (used by postgres_ml / sr_ml).
+# Keyed by classifier table name: data type + classifier suffix. Separate from
+# `indexes` above, with no fallback to it. Example:
+#   ml_indexes:
+#     comments_lingua: [lang]
+#   sr_ml_indexes:
+#     comments_lingua: [lang]
+ml_indexes: {}
+sr_ml_indexes: {}
+
 # MongoDB settings (used by mongo_ingest profile)
 mongo_collection_strategy: per_file   # per_file: one collection per input file (monthly dumps)
                                       # per_data_type: all files of a type merge into one collection

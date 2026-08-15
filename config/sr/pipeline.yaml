@@ -16,6 +16,11 @@ processing:
   prefer_lingua: true      # If true: ingest lingua-enriched files only (from lingua output dir). If false: ingest the original parsed files. Strict either/or — no automatic fallback; if true and no lingua output exists, ingest finds zero files.
 
 # StarRocks index configuration (only used if create_indexes is true)
-# Override in source config with platform-specific index fields
-# Default: use same fields as postgres indexes
+# Override in source config with platform-specific index fields.
+# Default: use same fields as postgres indexes (read list-only = BITMAP).
+#
+# A plain list means BITMAP. Use the mapping form for per-type control:
+#   sr_indexes:
+#     comments: [dataset, author]                          # bitmap
+#     submissions: {bloomfilter: [author], bitmap: [subreddit]}
 sr_indexes: {}

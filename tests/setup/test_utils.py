@@ -149,6 +149,26 @@ class TestAskMultiSelect:
         result = ask_multi_select("Select", ["a", "b"], defaults=["b"])
         assert result == ["b"]
 
+    def test_empty_defaults_selects_nothing(self, monkeypatch):
+        """defaults=[] must survive the None check and mean 'nothing selected'.
+
+        `sdp db create-indexes` relies on this for its BITMAP question: every
+        index defaults to a bloom filter and the user opts specific columns in.
+        Passing None (or omitting the argument) would silently make EVERY column
+        a BITMAP — an expensive, hard-to-notice inversion on billion-row tables.
+        """
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        assert ask_multi_select("Select", ["a", "b", "c"], defaults=[]) == []
+
+    def test_empty_defaults_still_accepts_explicit_selection(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "2")
+        assert ask_multi_select("Select", ["a", "b", "c"], defaults=[]) == ["b"]
+
+    def test_empty_defaults_with_unparseable_input_selects_nothing(self, monkeypatch):
+        """Fails safe toward the cheaper index type rather than toward BITMAP."""
+        monkeypatch.setattr("builtins.input", lambda _: "nope")
+        assert ask_multi_select("Select", ["a", "b"], defaults=[]) == []
+
 
 # ============================================================================
 # ask_list

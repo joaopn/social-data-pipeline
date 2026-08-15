@@ -132,11 +132,11 @@ When a table does not exist yet — or exists without a primary key (e.g., from 
 ### Indexing
 
 After ingestion, indexes are created on configured fields:
-- Index fields come from the source's `platform.yaml` (e.g., Reddit: `[dataset, author, subreddit, domain]` for submissions)
+- Index fields come from `indexes` in the source's `platform.yaml` (e.g., Reddit: `[dataset, author, subreddit, domain]` for submissions), keyed by data type. Classifier tables use a separate set — see [postgres_ml → Indexing](#indexing-1)
 - `parallel_index_workers` controls `max_parallel_maintenance_workers` per index build
 - Indexes are B-tree by default
 
-To add indexes after ingestion, use `sdp db create-indexes`. This interactive command connects to running databases, shows existing tables/columns/indexes, and lets you choose which fields to index. Optionally persists new indexes to `platform.yaml`.
+To add indexes after ingestion, use `sdp db create-indexes`. This interactive command connects to running databases, shows existing tables/columns/indexes, and lets you choose which fields to index. Optionally persists new indexes to `platform.yaml` — base tables to `indexes` / `sr_indexes`, classifier tables to `ml_indexes` / `sr_ml_indexes`, so the owning profile rebuilds them on the next run.
 
 ### Configuration
 
@@ -234,6 +234,7 @@ Ingests ML classifier outputs into separate PostgreSQL tables.
 5. **Table Creation**: Creates tables named `{data_type}{suffix}` (e.g., `submissions_toxicity_en`).
 6. **Ingestion**: Loads CSV data with duplicate handling.
 7. **Foreign Keys**: Optionally adds FK constraint to main table via `(dataset, id)`.
+8. **Indexing**: Creates indexes on classifier tables from `ml_indexes` (see [Indexing](#indexing-1)).
 
 ### prefer_lingua Interaction
 
@@ -265,6 +266,23 @@ What runs and the per-classifier `suffix` come from the source's ml/lingua profi
 
 `suffix` is **not** an ingestion override; it lives in the ml/lingua profile so file naming is consistent between the run and the ingest.
 
+### Indexing
+
+Classifier tables have their own index set, `ml_indexes`, keyed by **classifier table name** (data type + classifier suffix):
+
+```yaml
+# config/sources/reddit/platform.yaml
+ml_indexes:
+  comments_lingua: [lang]
+  comments_toxic_roberta: [toxic]
+```
+
+- **No fallback to `indexes`.** The base index list names columns (`author`, `subreddit`, `domain`) that classifier tables do not have, so the two sets are independent. A classifier table with no `ml_indexes` entry gets no indexes.
+- Only tables that ingested at least one file **in the current run** are indexed. To add an index after everything is ingested, use `sdp db create-indexes`.
+- Each index is placed in the same tablespace as its table (the data type's `table_tablespaces` entry).
+- A failed index build logs a warning and the run continues — an unknown tablespace does not abort ingestion.
+- `parallel_index_workers` controls `max_parallel_maintenance_workers` per index build, as in postgres_ingest.
+
 ### Configuration
 
 **Config file:** `config/postgres_ml/pipeline.yaml`
@@ -276,6 +294,9 @@ What runs and the per-classifier `suffix` come from the source's ml/lingua profi
 | `processing.parallel_ingestion` | Ingest data types concurrently | `true` |
 | `processing.type_inference_rows` | Rows to sample for column type inference | `1000` |
 | `processing.use_foreign_key` | Add FK constraint to main table | `true` |
+| `processing.create_indexes` | Create indexes on classifier tables after ingestion | `true` |
+| `processing.parallel_index_workers` | Maintenance workers per index build | `8` |
+| `ml_indexes` | Index fields per classifier table. No fallback to `indexes`. | `{}` (from platform config) |
 | `processing.watch_interval` | Poll for new files (0 = once) | `0` |
 
 ---
@@ -427,6 +448,8 @@ mysql -h 127.0.0.1 -P 9030 -u root -e "DROP TABLE reddit.comments_toxicity_en;"
 rm data/database/starrocks/state_tracking/reddit_sr_ml_toxic_roberta_comments.json
 ```
 
+Indexes are rebuilt with the table: the next run recreates them from `indexes` / `sr_indexes` for base tables and `ml_indexes` / `sr_ml_indexes` for classifier tables. This is also the way to apply an index that was configured after everything had already been ingested — a plain re-run skips files that are already processed and therefore indexes nothing.
+
 ---
 
 ## mongo Profile (Server)
@@ -525,7 +548,7 @@ mongo_indexes:
 
 Each field gets a single ascending index per collection.
 
-To add indexes after ingestion, use `sdp db create-indexes`. This interactive command discovers collections via metadata, shows existing indexes, and creates new ones across all collections for a data type. Optionally persists new indexes to `platform.yaml`.
+To add indexes after ingestion, use `sdp db create-indexes`. This interactive command discovers collections via metadata, shows existing indexes, and creates new ones across all collections for a data type. Optionally persists new indexes to `platform.yaml` under `mongo_indexes` (MongoDB has no ML ingestion profile, so there is no separate classifier-table set).
 
 ---
 
@@ -640,7 +663,7 @@ Ingests parsed Parquet or CSV files into StarRocks. Feature parity with `postgre
 2. **Creates tables** — columns and types derived from `platform.yaml` field definitions. With a `primary_key`: Primary Key table with `DISTRIBUTED BY HASH(pk)`, auto-deduplicates on insert. Without one: Duplicate Key model with `DISTRIBUTED BY RANDOM`, append-only
 3. **Ingests files** — `INSERT INTO ... SELECT FROM FILES()` reads Parquet/CSV directly from the StarRocks BE filesystem mount. The ingestion container sends SQL; StarRocks BE reads the files itself
 4. **Conditional upsert** — when `check_duplicates: true`, uses `merge_condition` to keep rows with higher `upsert_order_field` (e.g., `retrieved_utc`)
-5. **Creates BITMAP indexes** — for configured columns (e.g., `dataset`, `subreddit`, `author`). Tables are built in parallel with each other; fields within a table are built serially (StarRocks allows only one schema change per table at a time). `CREATE INDEX` is async on the BE, so the pipeline polls `SHOW ALTER TABLE COLUMN` every `processing.index_poll_interval` seconds (default: 10) until each alter job reaches `FINISHED`. Per-BE concurrency for schema changes is capped by `alter_tablet_worker_count` in `config/starrocks/be.conf` — configured at `sdp db setup`.
+5. **Creates indexes** — bitmap and/or bloom filter, for columns configured in `sr_indexes`, keyed by data type (classifier tables use `sr_ml_indexes` in the sr_ml profile; see [Choosing a StarRocks Index Type](#choosing-a-starrocks-index-type)). Bloom filter columns are applied first as a single `ALTER TABLE … SET ("bloom_filter_columns" = …)` per table, then bitmaps one at a time. Tables are built in parallel with each other; fields within a table are built serially (StarRocks allows only one schema change per table at a time). `CREATE INDEX` is async on the BE, so the pipeline polls `SHOW ALTER TABLE COLUMN` every `processing.index_poll_interval` seconds (default: 10) until each alter job reaches `FINISHED`. Per-BE concurrency for schema changes is capped by `alter_tablet_worker_count` in `config/starrocks/be.conf` — configured at `sdp db setup`.
 6. **Runs ANALYZE** — collects statistics for the query optimizer
 
 State tracking via JSON files in the StarRocks data directory enables resume after interruption.
@@ -657,11 +680,11 @@ Source override: `config/sources/<name>/starrocks.yaml`
 | User | `database.user` | `root` | |
 | Data types | `processing.data_types` | `[]` | Falls back to platform config |
 | Check duplicates | `processing.check_duplicates` | `true` | Use merge_condition for conditional upsert |
-| Create indexes | `processing.create_indexes` | `true` | Create BITMAP indexes after ingestion |
+| Create indexes | `processing.create_indexes` | `true` | Create indexes after ingestion |
 | Index poll interval | `processing.index_poll_interval` | `10` | Seconds between alter-job status polls during BITMAP index build |
 | Prefer lingua | `processing.prefer_lingua` | `true` | Ingest lingua-enriched files (includes lang columns) |
 | Watch interval | `processing.watch_interval` | `0` | Minutes between checks (0 = run once) |
-| BITMAP indexes | `sr_indexes` | `{}` | Per data type index fields; falls back to `indexes` |
+| Index fields | `sr_indexes` | `{}` | Per data type. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. Falls back to `indexes`, which is read list-only (bitmap) since postgres_ingest shares it |
 
 ### Differences from postgres_ingest
 
@@ -669,7 +692,34 @@ Source override: `config/sources/<name>/starrocks.yaml`
 - **No schema** — uses `database.table` (not `schema.table`). Database name = source name
 - **No tablespaces** — multi-disk handled by BE `storage_root_path` config
 - **No deferred PK** — primary key always defined at table creation
-- **BITMAP indexes** — instead of B-tree. Best for low-cardinality columns
+- **Two index mechanisms** — bitmap and bloom filter instead of B-tree (see below)
+
+## Choosing a StarRocks Index Type
+
+`sr_indexes` and `sr_ml_indexes` accept either a plain list — which always means **bitmap** — or a per-type mapping:
+
+```yaml
+sr_indexes:
+  comments: {bitmap: [subreddit], bloomfilter: [author]}
+  submissions: [dataset, author]      # plain list = bitmap
+```
+
+| | Bitmap | Bloom filter |
+|---|---|---|
+| Predicates | `=`, `IN`, `>`, `>=`, `<`, `<=`, `IS NULL` | `=`, `IN` only |
+| Accuracy | Exact | May false-positive (never false-negative) |
+| Mechanism | `CREATE INDEX … USING BITMAP` | `bloom_filter_columns` table property |
+| Column types | Not `FLOAT` / `DOUBLE` | Not `FLOAT` / `DOUBLE` / `TINYINT` / `BOOLEAN` / `DECIMAL` / `HLL` |
+| Cost | Larger; built per column | Smaller |
+
+Neither accelerates `LIKE` — that needs an N-gram bloom filter, which this pipeline does not manage.
+
+Bitmap indexes are **adaptive**: StarRocks skips one at query time when it cannot filter out roughly 999/1000 of rows, so a column with very few distinct values gets the build cost without the benefit. Reference points from a real 3.1B-row classifier table: `dataset` has 255 distinct values (1 in 255 — below the useful threshold), `subreddit` 23.8M, `author` 164M. High-cardinality columns queried only with `=` / `IN` are the bloom filter's case; columns needing range or null predicates are bitmap's.
+
+`sdp db create-indexes` defaults every index it creates to a bloom filter and asks once, at the end, which should be bitmap instead. Column types are checked first: `FLOAT` and `DOUBLE` support **neither** mechanism and are dropped from the plan with a message — which covers every classifier score column, including `lang_prob` — while `TINYINT` / `BOOLEAN` / `DECIMAL` support only bitmap and are switched automatically.
+
+> [!NOTE]
+> Whether adding a bloom filter column rebuilds existing data or applies only to newly written data is not documented upstream and has not been verified here. Treat bloom filters as reliable for data written after the change; if you need coverage of existing rows and cannot confirm the behaviour, use a bitmap index.
 
 ## sr_ml Profile
 
@@ -685,8 +735,26 @@ Ingests ML classifier outputs (lingua, toxic_roberta, go_emotions) into separate
 4. **Creates classifier tables** as Primary Key tables (e.g., `submissions_lingua`, `comments_toxicity_en`)
 5. **Ingests files** via `INSERT INTO ... SELECT FROM FILES()` with optional `merge_condition`
 6. **Runs ANALYZE** per classifier table after ingestion
+7. **Creates indexes** on classifier tables from `sr_ml_indexes` — bitmap and/or bloom filter (see [Indexing](#indexing-2))
 
 Lingua handling follows the `prefer_lingua` pattern: when `true` (default, read from sr_ingest profile), lingua classifier outputs are already embedded in base tables via sr_ingest, so the lingua classifier is skipped. When `false`, lingua data is ingested from `lingua_ingest/` into separate tables.
+
+### Indexing
+
+Classifier tables have their own index set, `sr_ml_indexes`, keyed by **classifier table name** (data type + classifier suffix):
+
+```yaml
+# config/sources/reddit/platform.yaml
+sr_ml_indexes:
+  comments_lingua: [lang]                                  # plain list = bitmap
+  comments_emotions_en: {bloomfilter: [author], bitmap: [subreddit]}
+```
+
+- **No fallback.** Unlike `sr_indexes` (which falls back to `indexes`), `sr_ml_indexes` has no fallback at all — base index fields name columns the classifier tables do not have. A classifier table with no entry gets no indexes.
+- Index type selection is described in [Choosing a StarRocks Index Type](#choosing-a-starrocks-index-type).
+- Only tables that ingested at least one file **in the current run** are indexed. Use `sdp db create-indexes` to add indexes afterwards.
+- Per table: bloom filter columns go first as one `ALTER TABLE`, then bitmaps serially (StarRocks allows one schema change per table). Tables build in parallel, capped at 8 concurrent — the fan-out here is data types × classifiers, not just data types. Each concurrent table costs one connection and one alter-job poll per `index_poll_interval`.
+- `CREATE INDEX` is async on the BE, so the pipeline polls until each alter job reaches `FINISHED`. A job that ends in any other state logs a warning and the run continues. For bloom filters, polling is best-effort progress reporting only — success is decided by re-reading `bloom_filter_columns` from `SHOW CREATE TABLE` and comparing it against the intended set.
 
 ### Configuration
 
@@ -702,6 +770,9 @@ Source override: `config/sources/<name>/sr_ml.yaml`
 | Check duplicates | `processing.check_duplicates` | `true` | Use merge_condition for conditional upsert |
 | Parallel ingestion | `processing.parallel_ingestion` | `true` | Process data types concurrently |
 | Type inference rows | `processing.type_inference_rows` | `1000` | CSV rows to sample for type inference |
+| Create indexes | `processing.create_indexes` | `true` | Create indexes on classifier tables after ingestion |
+| Index poll interval | `processing.index_poll_interval` | `10` | Seconds between alter-job status polls |
+| Index fields | `sr_ml_indexes` | `{}` | Per classifier table. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. **No fallback** to `sr_indexes` / `indexes` |
 | Watch interval | `processing.watch_interval` | `0` | Minutes between checks (0 = run once) |
 
 ### Differences from postgres_ml

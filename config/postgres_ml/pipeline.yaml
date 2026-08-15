@@ -15,7 +15,15 @@ processing:
   type_inference_rows: 1000  # Rows to sample for column type inference
   use_foreign_key: true      # Add foreign key constraint to main table
                              # Requires main table to exist. Set false for independent ingestion.
+  create_indexes: true       # Create indexes on classifier tables after ingestion
+  parallel_index_workers: 8  # max_parallel_maintenance_workers per index build
   watch_interval: 0          # Check for new files every N minutes (0 = run once)
   # Note: prefer_lingua is read from postgres profile (config/postgres/pipeline.yaml)
   # If true: skip lingua classifier (data already in main table)
   # If false: ingest lingua from lingua_ingest folder
+
+# Index configuration for classifier tables (only used if create_indexes is true)
+# Keyed by classifier table name: data type + classifier suffix (e.g. comments_lingua).
+# Separate set from `indexes` — there is no fallback to it, since base index fields
+# name columns (author, subreddit, domain) the classifier tables do not have.
+ml_indexes: {}             # Example: {comments_lingua: [lang]}

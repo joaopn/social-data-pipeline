@@ -910,6 +910,37 @@ def _read_log_piece(run_fd, offset, limit, ended):
     return data[:end].decode("utf-8", "replace"), offset + end
 
 
+def read_run_log_bytes(root, run_id, offset, count):
+    """The bytes of a recorded run's log file as they are, for a caller that must look at the bytes themselves (the broker overwrites secrets in a stretch around a piece and then cuts the piece with `log_piece_end`): (at most `count` bytes from `offset`, fewer at the file's end; the size of the file when it was read). A missing file is an empty log. The file is opened by the store's rules: never through a link, never waiting, a regular file only. Raises ValueError for an offset or count that is not a whole number of at least 0; RunIdNotValid; RunNotFound; StoreError when a link or anything but a regular file is in the log's place."""
+    if not _is_whole_number(offset) or not _is_whole_number(count) or offset < 0 or count < 0:
+        raise ValueError("the offset and the count are whole numbers, at least 0")
+    with _os_errors_refused(), _run_folder(root, run_id) as run_fd:
+        try:
+            fd = os.open(_LOG_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=run_fd)
+        except FileNotFoundError:
+            return b"", 0
+        except OSError:
+            raise StoreError(LOG_NOT_A_FILE) from None
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise StoreError(LOG_NOT_A_FILE)
+            data = bytearray()
+            while len(data) < count:
+                chunk = os.pread(fd, count - len(data), offset + len(data))
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            os.close(fd)
+    return bytes(data), info.st_size
+
+
+def log_piece_end(data, limit, ended):
+    """How many bytes of `data` (read from a log `limit` bytes plus three ahead) make the piece that `read_run_log` would give: at most `limit`, less where the piece would end inside a character, and the bytes of a character the file ends inside only once the run has `ended`. The cut of `read_run_log`, for a caller that reads the bytes itself."""
+    return _piece_end(data, limit, ended)
+
+
 def read_run_log(root, service_profiles, run_id, offset, limit):
     """A piece of a run's output: `{"id", "kind", "state", "text", "next_offset", "complete"}`.
 

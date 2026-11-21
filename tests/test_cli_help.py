@@ -56,6 +56,13 @@ SUBCOMMANDS = [
     ["runs", "list", "--help"],
     ["runs", "logs", "--help"],
     ["runs", "cancel", "--help"],
+    # broker group
+    ["broker", "--help"],
+    ["broker", "start", "--help"],
+    ["broker", "stop", "--help"],
+    ["broker", "status", "--help"],
+    ["broker", "passwd", "--help"],
+    ["broker", "audit", "--help"],
 ]
 
 

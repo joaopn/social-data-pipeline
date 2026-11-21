@@ -36,6 +36,7 @@ CLASSIFICATION = {
     "source.error_logs": ("read", True),
     "run.list": ("read", True),
     "run.logs": ("read", True),
+    "audit.list": ("read", True),
     "run.start": ("write", True),
     "run.cancel": ("write", True),
     "db.stop": ("write", True),

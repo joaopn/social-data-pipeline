@@ -6,7 +6,7 @@ One object, `Sessions`, holds all of it behind one lock, so that a decision and 
 - **Sessions.** A login that verified returns a random token once. The table is keyed by the SHA-256 of the token and the token itself is not kept, so nothing read out of this object is a usable token. A session has a public number (a counter, unrelated to the token), its start time, the digest of the password file its login was verified against, an optional database password (wrapped, never shown by repr) and its count of failed second checks. At most 64 sessions live at a time: a login beyond that ends the expired ones and then, when there is still no room, the oldest (reason `superseded`).
 - **Every authenticated request** goes through `session_for(token, current_file_digest)`, and the three calls about a session's database password make the same checks: an unknown token is refused; a session eight hours old is ended; and when the digest of the password file as it is now differs from the session's (the password was changed, or the file is gone), every session with another digest is ended. A login that verified against the old file while it was being replaced therefore ends at its first request.
 - **Step-up.** `step_up` verifies the management password again for one session. It does not draw on the login budget, and a success changes nothing: the fifth failure in the session's life ends it.
-- **Secrets for redaction.** `known_secrets()` returns the database passwords the live sessions hold and the newest 64 that sessions held before (ended, cleared or replaced), so that what a run printed with one is still overwritten after its session is gone, until the broker stops.
+- **Secrets for redaction.** `known_secrets()` returns the database passwords the live sessions hold, the newest 64 that sessions held before (ended, cleared or replaced), so that what a run printed with one is still overwritten after its session is gone, until the broker stops, and the newest 64 that `remember_secret` was given (a database password a request carried in its fields). The two lists are kept apart: a request that carries a password needs no second check of the management password, so whoever could send many could push only other such passwords out, never a session's.
 
 A refusal is a `SessionRefused` with a `code`, one constant message, the number of the session it is about (when there is one) and the sessions the call ended, as (number, reason), for the audit log. No message, result or repr holds a token, a password or any input value. A traceback's frames do hold them: never log a traceback that passes through this module.
 
@@ -30,6 +30,9 @@ SESSION_SECONDS = 8 * 60 * 60
 STEP_UP_FAILURES = 5
 SESSIONS_MAX = 64
 RETIRED_SECRETS_MAX = 64
+REMEMBERED_SECRETS_MAX = 64
+# The shortest password `remember_secret` keeps: a shorter one would overwrite common words in every later reply.
+REMEMBERED_SECRET_MIN_CHARS = 8
 
 UNAUTHORIZED = "unauthorized"
 THROTTLED = "throttled"
@@ -145,6 +148,8 @@ class Sessions:
         self._refill_from = None
         # The database passwords sessions held before, oldest first, each once.
         self._retired = []
+        # The database passwords requests carried in their fields, oldest first, each once.
+        self._remembered = []
 
     # ── the budget ──────────────────────────────────────────────────────────
 
@@ -338,11 +343,32 @@ class Sessions:
         with self._lock:
             return self._current(token, current_file_digest, self._now()).db_password
 
-    def known_secrets(self):
-        """Every database password that a live session holds and the newest 64 that sessions held before, each once, as `SecretValue` objects: what has to be overwritten in text that leaves the broker."""
+    def remember_secret(self, value):
+        """Keep a database password that a request carried in its fields (text or a `SecretValue`), for redaction only, among the newest 64 such passwords. A password of fewer than 8 characters is not kept: it is covered in the reply of the request that carried it, and in no later one. Raises TypeError for a value that is not text."""
+        secret = value.reveal() if isinstance(value, SecretValue) else value
+        if not isinstance(secret, str) or not secret:
+            raise TypeError("a database password is text")
+        if len(secret) < REMEMBERED_SECRET_MIN_CHARS:
+            return
+        with self._lock:
+            self._remembered = [kept for kept in self._remembered if kept.reveal() != secret]
+            self._remembered.append(SecretValue(secret))
+            del self._remembered[:-REMEMBERED_SECRETS_MAX]
+
+    def session_secrets(self):
+        """The database passwords that live sessions hold and the newest 64 that sessions held before, each once, as `SecretValue` objects: `known_secrets` without the ones requests carried."""
         with self._lock:
             found = {}
             for secret in [session.db_password for session in self._sessions.values()] + self._retired:
+                if secret is not None:
+                    found.setdefault(secret.reveal(), secret)
+            return tuple(found.values())
+
+    def known_secrets(self):
+        """Every database password that a live session holds, the newest 64 that sessions held before and the newest 64 that requests carried, each once, as `SecretValue` objects: what has to be overwritten in text that leaves the broker."""
+        with self._lock:
+            found = {}
+            for secret in [session.db_password for session in self._sessions.values()] + self._retired + self._remembered:
                 if secret is not None:
                     found.setdefault(secret.reveal(), secret)
             return tuple(found.values())

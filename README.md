@@ -49,6 +49,10 @@ python sdp.py runs logs <run_id>            # Output of a run (--follow to keep 
 python sdp.py runs cancel <run_id>          # Stop a run with the interrupt signal
 python sdp.py source error-logs             # Show error details for failed datasets
 python sdp.py db verify                     # Verifies file structure consistency
+
+# The broker (host side of a web UI; nothing uses it yet but its own client)
+python sdp.py broker passwd                 # Set its management password
+python sdp.py broker start                  # Start it (stop, status, audit: see below)
 ```
 
 ---
@@ -264,6 +268,18 @@ python sdp.py <db|source|run> [options]
 Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`. (The `jobs` profile starts via `sdp.py db start jobs`, not `sdp.py run`.) `--build` is needed after code or dependency changes. `--filter` (`-f`) takes an fnmatch glob on file ID (e.g. `"*2024*"`, `"RS_2024-*"`). `--skip-lingua-files` (parse only) treats existing lingua outputs as a skip signal, so you can delete old extracted/parsed files without re-decompressing on the next run. The global `--tag` flag prefixes interactive prompts with `[tag_id]` for automation tools like pexpect.
 
 `runs list` shows the pipeline runs that are alive now: each `sdp.py run` whose container is running, found through Docker, with an id of the form `live-<12 hex digits>` that `runs logs` and `runs cancel` take. A pipeline started with `docker compose up` instead of `sdp.py run` is not listed, and neither is a run that is still in its checks or its image build (it has no container yet). `runs cancel` sends the run's container the interrupt signal, so the stage ends through its own interrupt handling instead of being killed. The `runs` commands refuse a `.sdp/` folder in the deployment folder that belongs to another user, with the message `the run state folder cannot be used`.
+
+### Broker (`sdp.py broker`)
+
+| Command | Description |
+|---------|-------------|
+| `sdp.py broker passwd` | Set the management password with which a session logs in (asked twice, not echoed) |
+| `sdp.py broker start [--foreground]` | Start the broker in the background (or in this terminal with `--foreground`) |
+| `sdp.py broker stop [--force]` | Stop the broker; it lets a running action finish first, `--force` ends that action |
+| `sdp.py broker status` | Say whether the broker runs, its pid, since when, and whether a password is set |
+| `sdp.py broker audit [--limit N] [--verify] [--json]` | Print the newest lines of the broker's audit log, or check its chain with `--verify` |
+
+The broker is a host process on a unix socket through which a logged-in session can run a fixed list of typed actions. Nothing uses it yet apart from its own client. See [The broker](docs/guides/broker.md).
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 

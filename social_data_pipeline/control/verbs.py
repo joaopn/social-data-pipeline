@@ -32,6 +32,10 @@ PRESENTATION_FLAGS = frozenset({"json", "tag"})
 # Subcommand paths that have no verb, each with the reason.
 TERMINAL_ONLY = MappingProxyType({
     ("db", "setup-llm"): "A bundle of two other commands (db setup-mcp, then db setup-jobs); each has its own verb.",
+    ("broker", "start"): "Starts the broker itself, which serves the socket; a request arrives through the broker.",
+    ("broker", "stop"): "Stops the broker itself, which serves the socket; a request arrives through the broker.",
+    ("broker", "status"): "Says whether the broker runs, which only someone outside the broker needs to ask.",
+    ("broker", "passwd"): "Sets the management password, which a session must never be able to change.",
 })
 
 # Literal copies of the CLI parser's choices.
@@ -165,6 +169,14 @@ VERBS = _registry(
         socket_inputs={"run_id": Field(RunId(), required=True), "offset": Field(IntRange(0, 2**53)), "limit": Field(IntRange(1, 1048576))},
         socket_enabled=True,
         action="get_run_logs",
+    ),
+    Verb(
+        name="audit.list", cls="read", cli=("broker", "audit"),
+        # verify checks the whole file, which the terminal does; a client reads the newest lines.
+        cli_inputs={"limit", "verify"},
+        socket_inputs={"limit": Field(IntRange(1, 1000))},
+        socket_enabled=True,
+        note="Answered by the broker itself from its audit log: there is no action in the CLI.",
     ),
     # ---- write ----
     Verb(

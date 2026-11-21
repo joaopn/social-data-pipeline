@@ -33,6 +33,12 @@ Usage:
     sdp.py runs logs <run_id> [--follow]     Print the output of a run (--tail for its last lines)
     sdp.py runs cancel <run_id>              Cancel a run by sending its container the interrupt signal
 
+    sdp.py broker start [--foreground]       Start the broker, the host process that serves the web UI's socket
+    sdp.py broker stop [--force]             Stop the broker (--force ends the action that runs instead of waiting)
+    sdp.py broker status                     Say whether the broker runs, and since when
+    sdp.py broker passwd                     Set the broker's management password
+    sdp.py broker audit [--limit N] [--verify] [--json]  Print the newest lines of the broker's audit log, or check its chain
+
     sdp.py setup                             Legacy: full interactive setup (core + classifiers + platform)
 """
 
@@ -5669,6 +5675,146 @@ def cmd_runs_cancel(args):
 
 
 # ============================================================================
+# sdp broker
+# ============================================================================
+
+# What `broker status` says about the management password, by what the broker or the file answered.
+_BROKER_PASSWORD_TEXT = {True: "set", False: "not set", None: "cannot be told (the password file is not usable)"}
+
+
+def _broker_module():
+    """The broker's module. Imported at first use, so that loading the CLI loads nothing more than before."""
+    from social_data_pipeline.control import broker
+
+    return broker
+
+
+def cmd_broker_passwd(args):
+    """Set the broker's management password: asked twice, never echoed. Running sessions end at their next request."""
+    from social_data_pipeline.control import files, passwords
+
+    broker = _broker_module()
+    first = getpass("  New management password: ")
+    second = getpass("  The same password again: ")
+    if first != second:
+        print("\n  Error: the two passwords are not the same.\n")
+        return 1
+    try:
+        with files.folder(ROOT / broker.STATE_FOLDER, create=True):
+            pass
+        passwords.set_password(broker.broker_folder(ROOT), first)
+    except (passwords.PasswordRefused, passwords.PasswordFileNotUsable, passwords.PasswordNotDerivable, files.BrokerFileError) as e:
+        print(f"\n  Error: {e.message}.\n")
+        return 1
+    print("\n  The management password is set. Sessions that logged in with another one end at their next request.\n")
+    return 0
+
+
+def cmd_broker_start(args):
+    """Start the broker: detached (the default), or in this process with --foreground."""
+    broker = _broker_module()
+    if args.foreground:
+        return broker.main(["--root", str(ROOT), "--foreground"])
+    outcome, detail = broker.start_detached(ROOT)
+    if outcome == "started":
+        print(f"  The broker is started (pid {detail}).")
+        return 0
+    if outcome == "running":
+        print(f"  The broker is already running (pid {detail}).")
+        return 0
+    print(f"  Error: {detail}")
+    return 1
+
+
+def cmd_broker_stop(args):
+    """Stop the broker. It lets a state-changing action that runs finish first; with --force it ends that action."""
+    broker = _broker_module()
+
+    def say_waiting():
+        if args.force:
+            print("  Waiting for the broker: it ends the action that runs, then stops.", flush=True)
+        else:
+            print("  Waiting for the broker: it lets the action that runs finish, then stops.", flush=True)
+
+    try:
+        stopped = broker.stop_broker(ROOT, force=args.force, on_wait=say_waiting)
+    except broker.StopRefused as e:
+        print(f"  Error: {e.message}.")
+        return 1
+    if not stopped:
+        print("  The broker is not running.")
+        return 1
+    print("  The broker has stopped.")
+    return 0
+
+
+def cmd_broker_status(args):
+    """Say whether the broker runs. Exit code 0 when it runs, 1 when it does not."""
+    status = _broker_module().broker_status(ROOT)
+    if status["running"]:
+        print(f"  Broker: running (pid {status['pid']}, since {status['started']})")
+        if not status["answering"]:
+            print("  It does not answer on its socket.")
+    else:
+        print("  Broker: not running")
+    print(f"  Socket: {status['socket']}")
+    print(f"  Management password: {_BROKER_PASSWORD_TEXT[status['password_set']]}")
+    return 0 if status["running"] else 1
+
+
+def _broker_audit_value(value):
+    """A value of an audit line as it is printed: plain text as it is when it is printable ASCII, anything else as JSON in ASCII."""
+    if isinstance(value, str) and value.isascii() and value.isprintable():
+        return value
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+
+def _broker_audit_text(line):
+    """One audit line as one line of text: time, session, event, and the event's fields as name=value."""
+    if line.get("unreadable") is True and len(line) == 1:
+        return "  (a line that cannot be read)"
+    if line.get("truncated") is True and len(line) == 1:
+        return "  (older lines left out: the newer ones hold more than is read at once)"
+    session = line.get("session")
+    details = " ".join(f"{_broker_audit_value(key)}={_broker_audit_value(value)}" for key, value in line.items() if key not in ("n", "t", "session", "event", "prev"))
+    return f"  {_broker_audit_value(line.get('t'))}  session {'-' if session is None else _broker_audit_value(session)}  {_broker_audit_value(line.get('event'))}  {details}".rstrip()
+
+
+def cmd_broker_audit(args):
+    """Print the newest lines of the broker's audit log, or with --verify check its chain (exit code 1 on a break or a file that cannot be read)."""
+    from social_data_pipeline.control import audit
+
+    path = os.path.join(_broker_module().broker_folder(ROOT), audit.FILE_NAME)
+    if args.verify:
+        report = audit.verify(path)
+        found = {"readable": report.readable, "lines": report.lines, "breaks": report.breaks, "first_break": report.first_break, "cut_off": report.cut_off, "repaired": report.repaired, "tail_changed": report.tail_changed}
+        if args.json:
+            print(json.dumps(found, indent=2))
+        elif not report.readable:
+            print("  The audit log cannot be read.")
+        else:
+            print(f"  Lines: {report.lines}")
+            print(f"  Breaks of the chain: {report.breaks}" + ("" if report.first_break is None else f" (the first where line {report.first_break} was expected)"))
+            print(f"  Cut-off end: {'yes' if report.cut_off else 'no'}")
+            print(f"  Repaired runs of cut-off lines: {report.repaired}")
+            print(f"  Lines that say the end of the log was changed: {report.tail_changed}")
+            print("  The chain is whole." if report.breaks == 0 else "  The chain is broken.")
+        return 0 if report.readable and report.breaks == 0 else 1
+    if not 1 <= args.limit <= 10000:
+        print("  Error: --limit must be from 1 to 10000.")
+        return 1
+    lines = audit.read_tail(path, args.limit)
+    if args.json:
+        print(json.dumps(lines, indent=2))
+    elif not lines:
+        print("  The audit log is empty, or cannot be read.")
+    else:
+        for line in lines:
+            print(_broker_audit_text(line))
+    return 0
+
+
+# ============================================================================
 # Argument parser
 # ============================================================================
 
@@ -5867,6 +6013,30 @@ def build_parser():
     runs_cancel_p.add_argument("run_id", help="Run id, as `runs list` shows it")
     runs_cancel_p.set_defaults(func=cmd_runs_cancel)
 
+    # ---- sdp broker ----
+    broker_parser = subparsers.add_parser("broker", help="The broker: the host process that serves the web UI's socket")
+    broker_sub = broker_parser.add_subparsers(dest="broker_command", help="Broker command")
+
+    broker_start_p = broker_sub.add_parser("start", help="Start the broker")
+    broker_start_p.add_argument("--foreground", action="store_true", help="Run the broker in this process until Ctrl-C, instead of in the background")
+    broker_start_p.set_defaults(func=cmd_broker_start)
+
+    broker_stop_p = broker_sub.add_parser("stop", help="Stop the broker; it lets the action that runs finish first")
+    broker_stop_p.add_argument("--force", action="store_true", help="End the action that runs instead of waiting for it")
+    broker_stop_p.set_defaults(func=cmd_broker_stop)
+
+    broker_status_p = broker_sub.add_parser("status", help="Say whether the broker runs (exit code 0 when it does, 1 when not)")
+    broker_status_p.set_defaults(func=cmd_broker_status)
+
+    broker_passwd_p = broker_sub.add_parser("passwd", help="Set the management password, with which a session logs in")
+    broker_passwd_p.set_defaults(func=cmd_broker_passwd)
+
+    broker_audit_p = broker_sub.add_parser("audit", help="Print the newest lines of the audit log, or check its chain")
+    broker_audit_p.add_argument("--limit", type=int, default=50, metavar="N", help="Print the newest N lines (1 to 10000, default: 50)")
+    broker_audit_p.add_argument("--verify", action="store_true", help="Check the chain of the whole log instead (exit code 1 on a break or a log that cannot be read)")
+    broker_audit_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
+    broker_audit_p.set_defaults(func=cmd_broker_audit)
+
     return parser
 
 
@@ -5894,6 +6064,9 @@ def main():
         return 0
     if args.command == "runs" and not getattr(args, "runs_command", None):
         parser.parse_args(["runs", "-h"])
+        return 0
+    if args.command == "broker" and not getattr(args, "broker_command", None):
+        parser.parse_args(["broker", "-h"])
         return 0
 
     if hasattr(args, "func"):

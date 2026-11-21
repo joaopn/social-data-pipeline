@@ -753,6 +753,44 @@ class TestDbPassword:
         assert str(caught.value) == "a database password is text"
         assert broker.sessions.db_password(token, OLD.digest) is None
 
+    def test_a_password_a_request_carried_is_remembered_apart_and_bounded(self, broker):
+        """Bug class: a database password that a request carried forgotten after the call (its run's log then shows it), kept without a bound, or kept in the same list as the sessions' old passwords, so that a stolen token that sends 64 requests pushes the operator's old password out of redaction."""
+        token = broker.login().token
+        broker.sessions.set_db_password(token, OLD.digest, DB_PASSWORD)
+        broker.sessions.logout(token)
+
+        for number in range(70):
+            broker.sessions.remember_secret(f"{DB_PASSWORD}-carried-{number:02d}")
+        broker.sessions.remember_secret(SecretValue(f"{DB_PASSWORD}-carried-69"))
+
+        known = [secret.reveal() for secret in broker.sessions.known_secrets()]
+        assert known == [DB_PASSWORD] + [f"{DB_PASSWORD}-carried-{number:02d}" for number in range(6, 70)]
+        assert DB_PASSWORD not in repr(vars(broker.sessions))
+
+    def test_a_carried_password_shorter_than_eight_characters_is_not_remembered(self, broker):
+        """Bug class: a short word sent as a password with one request overwritten in every later reply (a token holder blanking `error` or `parse` out of everything the broker hands out)."""
+        broker.sessions.remember_secret("seven77")
+        broker.sessions.remember_secret("eight888")
+
+        assert [secret.reveal() for secret in broker.sessions.known_secrets()] == ["eight888"]
+
+    def test_session_secrets_leave_out_the_carried_ones(self, broker):
+        """Bug class: the list for the audit view taking in what requests carried, so that it can be steered by whoever holds a token."""
+        token = broker.login().token
+        broker.sessions.set_db_password(token, OLD.digest, DB_PASSWORD)
+        broker.sessions.remember_secret(DB_PASSWORD + "-carried")
+
+        assert [secret.reveal() for secret in broker.sessions.session_secrets()] == [DB_PASSWORD]
+        assert [secret.reveal() for secret in broker.sessions.known_secrets()] == [DB_PASSWORD, DB_PASSWORD + "-carried"]
+
+    @pytest.mark.parametrize("value", [None, 12, b"bytes", "", SecretValue(None)])
+    def test_only_text_is_remembered(self, broker, value):
+        """Bug class: a value that is not text handed to redaction later, where it fails far from its cause."""
+        with pytest.raises(TypeError):
+            broker.sessions.remember_secret(value)
+
+        assert broker.sessions.known_secrets() == ()
+
 
 # ── 6. what a refusal holds ─────────────────────────────────────────────────
 

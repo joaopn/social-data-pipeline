@@ -4,7 +4,9 @@ A recorded run has an id of the form `r<UTC date>T<UTC time>-<6 hex>` and a fold
 
 The state folder is private to the operator (folders 0700, files 0600) and is created by the first write only: reading never creates anything. No folder or file of the store is reached through a symbolic link: each folder is opened by its own name relative to its parent with O_NOFOLLOW, each file relative to its folder. The state folder and its runs folder must belong to the user who runs the command (one made by a single run as another user, root for instance, is refused), and a file that is written must be a regular file.
 
-Every function takes the deployment root as an argument and the module keeps no state. It uses the standard library only and imports neither the CLI nor the control package. Docker is run through one function, `_docker`, always with a timeout; a container's environment holds database passwords and is never read, except for the one variable `SOURCE`, which the inspect template below picks out inside Docker.
+Every function takes the deployment root as an argument and the module keeps no state. It uses the standard library only and imports neither the CLI nor the control package. Docker is run through one function, `_docker`, always with a timeout, with two exceptions: following a log on a terminal, and the two commands that last as long as a container lives (waiting for its end, following its output into a descriptor), which the caller ends through a function that is asked about twice a second. A container's environment holds database passwords and is never read, except for the one variable `SOURCE`, which the inspect template below picks out inside Docker.
+
+Linux is assumed: the locks are `flock` locks, which belong to an open file and are passed on to a child process together with the descriptor.
 """
 
 import contextlib
@@ -66,12 +68,18 @@ DOCKER_STOP_TIMEOUT = 45
 # The pipeline services run Python as the container's first process, which ignores the default stop signal and is killed when the time is up; the interrupt signal ends it at once through KeyboardInterrupt.
 STOP_SIGNAL = "INT"
 STOP_GRACE_SECONDS = 30
+# How often a command that lasts as long as a container lives asks its caller whether to go on.
+DOCKER_WATCH_SECONDS = 0.5
 LOG_TAIL_LINES = 500
 
 # One line per container: its id and three of its labels, each as a JSON string, so that no label value can forge a second line or a field.
 PS_FORMAT = '[{{json .ID}},{{json (.Label "com.docker.compose.project.working_dir")}},{{json (.Label "com.docker.compose.service")}},{{json (.Label "sdp.run")}}]'
 # The start time, a space, and the one environment entry whose name is SOURCE. The environment list holds database passwords: it is walked inside Docker and only that one entry is printed.
 INSPECT_TEMPLATE = '{{.State.StartedAt}} {{range .Config.Env}}{{$kv := split . "="}}{{if eq (index $kv 0) "SOURCE"}}{{.}}{{end}}{{end}}'
+# The same line with the container's state (`created`, `running`, `exited`, ...) as a fifth item, for the listing that includes the containers that are not running.
+PS_STATE_FORMAT = '[{{json .ID}},{{json (.Label "com.docker.compose.project.working_dir")}},{{json (.Label "com.docker.compose.service")}},{{json (.Label "sdp.run")}},{{json .State}}]'
+# What Docker calls a container that exists and was never started.
+CONTAINER_CREATED = "created"
 ONEOFF_LABEL = "com.docker.compose.oneoff=True"
 RUN_LABEL_NAME = "sdp.run"
 
@@ -85,6 +93,8 @@ _FOLDER_MODE = 0o700
 _FILE_MODE = 0o600
 _RECORD_MAX_BYTES = 65536
 _CONTAINER_ID_PATTERN = r"[0-9a-f]{64}"
+# What `docker wait` prints for one container: its exit code on a line.
+_WAIT_ANSWER_PATTERN = r"([0-9]{1,3})\n?"
 _TIME_PATTERN = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
 _DOCKER_TIME_PATTERN = r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?Z"
 _EXIT_CODE_RANGE = range(-255, 256)
@@ -116,6 +126,10 @@ class RunNotFound(StoreError):
 
 class CancelRefused(StoreError):
     """The run is not in a state in which it can be cancelled."""
+
+
+class RunAlreadyEnded(StoreError):
+    """The end of a run was to be written into a record that already holds one."""
 
 
 class DockerUnavailable(StoreError):
@@ -368,8 +382,8 @@ def _write_record(run_fd, record):
         raise
 
 
-def create_run(root, fields):
-    """Create the folder and the record of a new run, in state `starting`, and return its id. `fields` holds `profile`, and may hold `source`, `flags` (the request's fields that are not secret: text, whole numbers up to 2**53 and booleans by name) and `started_by`. Raises ValueError, before anything is created, for fields a record cannot hold and for a record that would be larger than 64 KiB once the run's end is written into it."""
+def _create_run(root, fields, locked):
+    """Create the folder and the record of a new run, in state `starting`: (id, descriptor that holds the run's lock or None). With `locked` the lock is taken before the record is written."""
     template = {
         "id": None, "profile": fields.get("profile"), "source": fields.get("source"), "flags": fields.get("flags", {}), "started_by": fields.get("started_by"),
         "state": STATE_STARTING, "started": _now(), "ended": None, "exit_code": None,
@@ -389,11 +403,30 @@ def create_run(root, fields):
         run_fd = _open_folder(run_id, dir_fd=runs_fd)
         if run_fd is None:
             raise StoreError(STORE_NOT_USABLE)
+        lock_fd = None
         try:
+            if locked:
+                lock_fd = _take_run_lock(run_fd)
+                if lock_fd is None:
+                    raise StoreError(STORE_NOT_USABLE)
             _write_record(run_fd, {**template, "id": run_id})
+        except BaseException:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            raise
         finally:
             os.close(run_fd)
-    return run_id
+    return run_id, lock_fd
+
+
+def create_run(root, fields):
+    """Create the folder and the record of a new run, in state `starting`, and return its id. `fields` holds `profile`, and may hold `source`, `flags` (the request's fields that are not secret: text, whole numbers up to 2**53 and booleans by name) and `started_by`. Raises ValueError, before anything is created, for fields a record cannot hold and for a record that would be larger than 64 KiB once the run's end is written into it."""
+    return _create_run(root, fields, False)[0]
+
+
+def create_run_locked(root, fields):
+    """Create a new run as `create_run` does and return (id, descriptor that holds the run's exclusive lock). The lock is taken before the record is written, so there is no moment in which the record exists and nobody holds the lock: such a run would read as `lost`. The caller hands the descriptor to the process that supervises the run (it is close-on-exec, so it is passed on by name, with `pass_fds`) and closes its own copy; the lock is held until the last copy is closed."""
+    return _create_run(root, fields, True)
 
 
 def read_record(root, run_id):
@@ -420,6 +453,17 @@ def update_record(root, run_id, **changes):
     """Change fields of a run's record (any but `id`) and return the new record. The caller is the one writer of the record at that time: the process that supervises the run, or one that holds the run's lock. Raises ValueError, with the record left as it was, for a change a record cannot hold or that makes it larger than 64 KiB (for a run that has not ended: larger than that once its end is written); StoreError when the record cannot be read."""
     with _os_errors_refused(), _run_folder(root, run_id) as run_fd:
         return _update_record(run_fd, run_id, changes)
+
+
+def end_run(root, run_id, state, exit_code):
+    """Write the end of a run into its record: `state` is `finished` or `cancelled`, the end time is now, `exit_code` a whole number from -255 to 255 or None when it is not known. For the one writer of the record, as `update_record`, whose errors it raises. A record that already holds an end is left as it is: RunAlreadyEnded."""
+    if state not in FINAL_STATES:
+        raise ValueError("a run ends as finished or cancelled")
+    with _os_errors_refused(), _run_folder(root, run_id) as run_fd:
+        record = _read_record(run_fd, run_id)
+        if record is not None and record["state"] in FINAL_STATES:
+            raise RunAlreadyEnded(RUN_ENDED)
+        return _update_record(run_fd, run_id, {"state": state, "ended": _now(), "exit_code": exit_code})
 
 
 def open_run_log(root, run_id):
@@ -476,6 +520,20 @@ def acquire_run_lock(root, run_id):
         return _take_run_lock(run_fd)
 
 
+def holds_run_lock(root, run_id, fd):
+    """Whether `fd` is an open descriptor of the lock file of a recorded run through which the run's exclusive lock is held. For a process that was handed the descriptor by the one that created the run. False for a descriptor of any other file, for one that is not open, when nobody holds the lock (it is not taken here), and when another descriptor holds it."""
+    with _os_errors_refused(), _run_folder(root, run_id) as run_fd:
+        try:
+            ours = os.fstat(fd)
+            named = os.stat(_LOCK_NAME, dir_fd=run_fd, follow_symlinks=False)
+            if not stat.S_ISREG(ours.st_mode) or (ours.st_dev, ours.st_ino) != (named.st_dev, named.st_ino):
+                return False
+            # Someone holds the lock when a second descriptor cannot share it, and asking for it again through this descriptor changes nothing exactly when this descriptor is that holder.
+            return not _lock_is_free(run_fd) and _flock(fd, fcntl.LOCK_EX)
+        except (OSError, TypeError, ValueError, OverflowError):
+            return False
+
+
 def release_run_lock(fd):
     """Give up a lock that `acquire_run_lock` returned."""
     os.close(fd)
@@ -518,25 +576,45 @@ def _request_cancel(run_fd):
 # ── Docker ──────────────────────────────────────────────────────────────────
 
 
-def _docker(args, *, timeout, merge_stderr=False, attached=False):
-    """Run `docker <args>` and return (exit code, standard output as text). The one place the store runs Docker. Standard error is dropped, or with merge_stderr joined into the output (a container's log has both); `attached` gives the command this process's own output and waits for it without a time limit, for following a log on a terminal. Raises DockerUnavailable when the binary is missing or the call runs out of time."""
+def _docker(args, *, timeout, merge_stderr=False, attached=False, into=None, until=None):
+    """Run `docker <args>` and return (exit code, standard output as text). The one place the store runs Docker. Standard error is dropped, or with merge_stderr joined into the output (a container's log has both); `attached` gives the command this process's own output and waits for it without a time limit, for following a log on a terminal. With `until`, a function without arguments, the command is one that lasts as long as a container lives: it runs without a time limit, `until` is asked every DOCKER_WATCH_SECONDS, and as soon as it answers true the command is ended and the exit code returned is None; `into` is a descriptor that then receives the command's output instead of it being returned. Raises DockerUnavailable when the binary is missing or the call runs out of time."""
     command = ["docker", *args]
     try:
-        if attached:
+        if until is not None:
+            code, output = _run_until(command, merge_stderr, into, until)
+        elif attached:
             return subprocess.run(command, stdin=subprocess.DEVNULL).returncode, ""
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL, timeout=timeout)
+        else:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL, timeout=timeout)
+            code, output = result.returncode, result.stdout
     except (OSError, subprocess.SubprocessError):
         raise DockerUnavailable(DOCKER_NOT_REACHABLE) from None
-    output = result.stdout
     if isinstance(output, bytes):
         output = output.decode("utf-8", "replace")
-    return result.returncode, output if isinstance(output, str) else ""
+    return code, output if isinstance(output, str) else ""
 
 
-def _containers(root, labels):
-    """The running containers that carry every one of the labels and were started by compose in this deployment's folder, as (container id, service, run label). The folder a container names must be an absolute path (a relative one would be read against this process's working directory) and is compared after resolving links on both sides. A line that is not what the format prints is passed over. Raises DockerUnavailable when Docker does not answer the listing."""
+def _run_until(command, merge_stderr, into, until):
+    """Run a command until it ends by itself or `until` answers true: (exit code, output), the exit code None when it was ended here. The process is never left behind: it is killed and waited for on every way out, an error of `until` included."""
+    with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE if into is None else into, stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL) as process:
+        try:
+            while True:
+                try:
+                    output, _ = process.communicate(timeout=DOCKER_WATCH_SECONDS)
+                except subprocess.TimeoutExpired:
+                    if until():
+                        return None, b""
+                    continue
+                return process.returncode, output
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+
+def _containers(root, labels, every_state=False):
+    """The running containers that carry every one of the labels and were started by compose in this deployment's folder, as (container id, service, run label). With `every_state` the containers that are not running are listed too, and each entry has a fourth item, the state as Docker names it. The folder a container names must be an absolute path (a relative one would be read against this process's working directory) and is compared after resolving links on both sides. A line that is not what the format prints is passed over. Raises DockerUnavailable when Docker does not answer the listing."""
     filters = [argument for label in labels for argument in ("--filter", f"label={label}")]
-    code, output = _docker(["ps", "--no-trunc", *filters, "--format", PS_FORMAT], timeout=DOCKER_READ_TIMEOUT)
+    code, output = _docker(["ps", *(["-a"] if every_state else []), "--no-trunc", *filters, "--format", PS_STATE_FORMAT if every_state else PS_FORMAT], timeout=DOCKER_READ_TIMEOUT)
     if code != 0:
         raise DockerUnavailable(DOCKER_NOT_REACHABLE)
     here = os.path.realpath(root)
@@ -546,9 +624,9 @@ def _containers(root, labels):
             fields = json.loads(line)
         except (ValueError, RecursionError):
             continue
-        if not isinstance(fields, list) or len(fields) != 4 or not all(isinstance(item, str) for item in fields):
+        if not isinstance(fields, list) or len(fields) != (5 if every_state else 4) or not all(isinstance(item, str) for item in fields):
             continue
-        container, working_dir, service, run = fields
+        container, working_dir, service, run = fields[:4]
         if not re.fullmatch(_CONTAINER_ID_PATTERN, container) or not os.path.isabs(working_dir):
             continue
         try:
@@ -556,7 +634,7 @@ def _containers(root, labels):
                 continue
         except (OSError, ValueError):
             continue
-        found.append((container, service, run))
+        found.append((container, service, run, *fields[4:]))
     return found
 
 
@@ -614,6 +692,64 @@ def _container_log_tail(container, limit):
 def _stop(container):
     """Send the interrupt signal to a container and wait for it to stop; True when Docker stopped it."""
     code, _ = _docker(["stop", "--signal", STOP_SIGNAL, "-t", str(STOP_GRACE_SECONDS), container], timeout=DOCKER_STOP_TIMEOUT)
+    return code == 0
+
+
+# ── the containers of a recorded run, for the process that supervises it ─────
+
+
+def count_run_containers(root, run_id):
+    """How many running containers carry the label of a recorded run. Raises RunIdNotValid before Docker is asked, DockerUnavailable when it does not answer."""
+    _require_recorded(run_id)
+    return len(_labelled_containers(os.fspath(root), run_id))
+
+
+def stop_run_containers(root, run_id):
+    """Send the interrupt signal to every container that carries the label of a recorded run, and return (how many were listed, how many are still listed afterwards). What a stop answered is not taken on trust: the second number comes from a new listing, which is not made when there was nothing to stop. Raises RunIdNotValid before Docker is asked, DockerUnavailable when a listing is not answered."""
+    _require_recorded(run_id)
+    root = os.fspath(root)
+    containers = _labelled_containers(root, run_id)
+    for container in containers:
+        _stop(container)
+    return len(containers), len(_labelled_containers(root, run_id)) if containers else 0
+
+
+def clear_run_containers(root, run_id):
+    """The last look at the containers of a recorded run before its end is written. Every container that carries the run's label is listed, whatever its state; one that was created and never started is removed, with its full id and without force, so that one that has started meanwhile is not removed (it is then stopped as a running one); returns how many containers are still listed, in any state, after that. 0 is the only answer on which an end is written: a container that is created can still be started, and one that is listed as anything else has not gone yet. Raises RunIdNotValid before Docker is asked, DockerUnavailable when a listing is not answered."""
+    _require_recorded(run_id)
+    root = os.fspath(root)
+    labels = (ONEOFF_LABEL, f"{RUN_LABEL_NAME}={run_id}")
+    listed = [(container, state) for container, _, run, state in _containers(root, labels, every_state=True) if run == run_id]
+    created = [container for container, state in listed if state == CONTAINER_CREATED]
+    for container in created:
+        _docker(["rm", container], timeout=DOCKER_READ_TIMEOUT)
+    if not created:
+        return len(listed)
+    return len([container for container, _, run, _ in _containers(root, labels, every_state=True) if run == run_id])
+
+
+def wait_run_container(root, run_id, until):
+    """Wait for the container of a recorded run to end and return its exit code (0 to 255). The wait has no time limit: `until`, a function without arguments, is asked about twice a second and ends it by answering true. None when no container carries the run's label, when the wait was ended by `until`, and when Docker's answer is not an exit code (the container was gone before the wait reached it, the daemon stopped). Raises RunIdNotValid before Docker is asked, DockerUnavailable when the listing is not answered."""
+    _require_recorded(run_id)
+    containers = _labelled_containers(os.fspath(root), run_id)
+    if not containers:
+        return None
+    code, output = _docker(["wait", containers[0]], timeout=None, until=until)
+    answer = re.fullmatch(_WAIT_ANSWER_PATTERN, output) if code == 0 else None
+    if answer is None or int(answer.group(1)) > 255:
+        return None
+    return int(answer.group(1))
+
+
+def follow_run_output(root, run_id, fd, since, until):
+    """Write what the container of a recorded run printed from the time `since` on (seconds since the epoch), standard output and standard error together, into the descriptor `fd`, and keep writing what follows until the container ends or `until`, a function without arguments that is asked about twice a second, answers true. True when Docker followed the output to the container's end. False when no container carries the run's label, when the following was ended by `until` and when Docker refused it. Raises ValueError for a time that is not a number, RunIdNotValid before Docker is asked, DockerUnavailable when the listing is not answered."""
+    _require_recorded(run_id)
+    if isinstance(since, bool) or not isinstance(since, (int, float)) or not 0 <= since < float("inf"):
+        raise ValueError("the time is not a number of seconds")
+    containers = _labelled_containers(os.fspath(root), run_id)
+    if not containers:
+        return False
+    code, _ = _docker(["logs", "--follow", "--since", f"{since:.3f}", containers[0]], timeout=None, merge_stderr=True, into=fd, until=until)
     return code == 0
 
 

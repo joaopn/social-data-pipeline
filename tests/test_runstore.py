@@ -10,6 +10,7 @@ The contracts pinned here:
 - Docker is asked with exactly the arguments written out below, every call with a timeout, and a container's environment is never read apart from the one variable the inspect template picks out.
 - A log is read in pieces by byte offset that never end inside a character and that add up to the whole log.
 - Cancel stops only a container that is listed for this deployment, with the interrupt signal and the full container id; a run that has ended is refused, and a run with a live supervisor only gets its cancel file.
+- What the supervisor of a recorded run uses: a run created with its lock already held, the check that a descriptor holds that lock, the end of a run written into its record, and the containers of the run counted, stopped, waited for and followed, each looked up by the run's label in a new listing, the two lasting commands ended by their caller.
 
 Docker is replaced by the `fake_run_docker` fixture; everything else is the real file system under a temp folder.
 """
@@ -55,6 +56,7 @@ pytestmark = pytest.mark.usefixtures("run_docker_guard")
 # What the store must ask Docker, written out so that a change of a format is a change here too.
 PS_FORMAT = '[{{json .ID}},{{json (.Label "com.docker.compose.project.working_dir")}},{{json (.Label "com.docker.compose.service")}},{{json (.Label "sdp.run")}}]'
 INSPECT_TEMPLATE = '{{.State.StartedAt}} {{range .Config.Env}}{{$kv := split . "="}}{{if eq (index $kv 0) "SOURCE"}}{{.}}{{end}}{{end}}'
+PS_STATE_FORMAT = '[{{json .ID}},{{json (.Label "com.docker.compose.project.working_dir")}},{{json (.Label "com.docker.compose.service")}},{{json (.Label "sdp.run")}},{{json .State}}]'
 PS_ONEOFF = ["ps", "--no-trunc", "--filter", "label=com.docker.compose.oneoff=True", "--format", PS_FORMAT]
 PS_LABELLED = ["ps", "--no-trunc", "--filter", "label=com.docker.compose.oneoff=True", "--filter", "label=sdp.run", "--format", PS_FORMAT]
 
@@ -62,6 +64,11 @@ PS_LABELLED = ["ps", "--no-trunc", "--filter", "label=com.docker.compose.oneoff=
 def ps_for(run_id):
     """What the store asks Docker for the containers of one recorded run."""
     return ["ps", "--no-trunc", "--filter", "label=com.docker.compose.oneoff=True", "--filter", f"label=sdp.run={run_id}", "--format", PS_FORMAT]
+
+
+def ps_all_for(run_id):
+    """What the store asks Docker for the containers of one recorded run in every state."""
+    return ["ps", "-a", "--no-trunc", "--filter", "label=com.docker.compose.oneoff=True", "--filter", f"label=sdp.run={run_id}", "--format", PS_STATE_FORMAT]
 
 
 # The compose service of every pipeline profile, as the CLI passes it.
@@ -216,10 +223,23 @@ def id_taking_calls(root, run_id):
         ("read_run_log", lambda: runstore.read_run_log(root, SERVICES, run_id, 0, 100)),
         ("follow_run_log", lambda: runstore.follow_run_log(root, SERVICES, run_id, 10)),
         ("cancel_run", lambda: runstore.cancel_run(root, SERVICES, run_id)),
+        ("end_run", lambda: runstore.end_run(root, run_id, "finished", 0)),
+        ("holds_run_lock", lambda: runstore.holds_run_lock(root, run_id, 0)),
+        ("count_run_containers", lambda: runstore.count_run_containers(root, run_id)),
+        ("stop_run_containers", lambda: runstore.stop_run_containers(root, run_id)),
+        ("wait_run_container", lambda: runstore.wait_run_container(root, run_id, lambda: True)),
+        ("follow_run_output", lambda: runstore.follow_run_output(root, run_id, 1, 0.0, lambda: True)),
+        ("clear_run_containers", lambda: runstore.clear_run_containers(root, run_id)),
     ]
 
 
-RECORDED_ONLY = ("container_name", "run_label", "read_record", "update_record", "open_run_log", "acquire_run_lock", "cancel_requested", "read_run")
+# The functions that never open the run's folder: they work on the id alone, or on the containers Docker lists for it.
+NO_RUN_FOLDER = ("run_id_kind", "container_name", "run_label", "follow_run_log", "count_run_containers", "stop_run_containers", "wait_run_container", "follow_run_output", "clear_run_containers")
+
+RECORDED_ONLY = (
+    "container_name", "run_label", "read_record", "update_record", "open_run_log", "acquire_run_lock", "cancel_requested", "read_run",
+    "end_run", "holds_run_lock", "count_run_containers", "stop_run_containers", "wait_run_container", "follow_run_output", "clear_run_containers",
+)
 
 
 # ── 1. run ids ──────────────────────────────────────────────────────────────
@@ -337,7 +357,7 @@ class TestStateFolder:
         before = tree(other)
 
         for name, call in id_taking_calls(root, RUN_A):
-            if name in ("run_id_kind", "container_name", "run_label", "follow_run_log"):
+            if name in NO_RUN_FOLDER:
                 continue
             _, error = outcome_of(call)
             assert type(error) is runstore.StoreError and error.message == NOT_A_FOLDER, (name, error)
@@ -433,7 +453,7 @@ class TestStateFolder:
 
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(os, "fstat", fstat)
-            calls = [call for name, call in id_taking_calls(root, run_id) if name not in ("run_id_kind", "container_name", "run_label", "follow_run_log")]
+            calls = [call for name, call in id_taking_calls(root, run_id) if name not in NO_RUN_FOLDER]
             calls += [lambda: runstore.list_runs(root, SERVICES, 50), lambda: runstore.create_run(root, {"profile": "parse"})]
             if foreign == ".sdp":
                 calls.append(lambda: runstore.store_lock(root).__enter__())
@@ -450,7 +470,7 @@ class TestStateFolder:
         fake_run_docker.add(CONTAINER_A, root)
         assert [run["id"] for run in runstore.list_runs(root, SERVICES, 50)["runs"]] == [LIVE_A]
         for name, call in id_taking_calls(root, RUN_A):
-            if name in ("run_id_kind", "container_name", "run_label", "follow_run_log"):
+            if name in NO_RUN_FOLDER:
                 continue
             _, error = outcome_of(call)
             assert type(error) is runstore.RunNotFound, name
@@ -1687,6 +1707,424 @@ class TestCancel:
         assert runstore.cancel_run(root, SERVICES, run_id) == "recorded"
 
         assert runstore.read_record(root, run_id)["state"] == "cancelled" and fake_run_docker.named("stop") == []
+
+
+# ── 9. what the supervisor of a recorded run uses ───────────────────────────
+
+
+def lock_is_held(root, run_id):
+    """Whether someone holds the run's lock, asked the way a reader of the run's state asks."""
+    probe = os.open(run_dir(root, run_id) / "lock", os.O_RDONLY)
+    try:
+        fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(probe)
+    return False
+
+
+class TestCreatedWithItsLock:
+    def test_the_lock_is_held_before_the_record_exists(self, root, monkeypatch, fake_run_docker):
+        """Bug class: a run whose record exists for a moment while nobody holds its lock. A listing in that moment reports the run as `lost`, and a cancel takes the lock and records the run as cancelled before it ever started. The lock must be held when the record is written, and stay held through the descriptor that is returned."""
+        seen = []
+        real = runstore._write_record
+
+        def write(run_fd, record):
+            seen.append(("lock file", "lock" in os.listdir(run_fd)))
+            seen.append(("free", runstore._lock_is_free(run_fd)))
+            real(run_fd, record)
+
+        monkeypatch.setattr(runstore, "_write_record", write)
+        run_id, lock_fd = runstore.create_run_locked(root, {"profile": "parse", "source": "reddit", "flags": {"build": True}, "started_by": "operator"})
+        monkeypatch.undo()
+
+        assert seen == [("lock file", True), ("free", False)]
+        assert runstore.run_id_kind(run_id) == "web"
+        assert runstore.read_run(root, run_id)["state"] == "starting" and fake_run_docker.calls == []
+        assert runstore.read_record(root, run_id) == {"id": run_id, "profile": "parse", "source": "reddit", "flags": {"build": True}, "started_by": "operator", "state": "starting", "started": runstore.read_record(root, run_id)["started"], "ended": None, "exit_code": None}
+        assert runstore.acquire_run_lock(root, run_id) is None
+        assert runstore.holds_run_lock(root, run_id, lock_fd) is True
+        # Close-on-exec: a child gets the lock only when it is handed the descriptor on purpose.
+        assert os.get_inheritable(lock_fd) is False
+        assert mode(run_dir(root, run_id) / "lock") == 0o600
+        os.close(lock_fd)
+        assert runstore.read_run(root, run_id)["state"] == "lost"
+
+    def test_a_record_that_cannot_be_written_leaves_no_descriptor_open(self, root, monkeypatch):
+        """Bug class: the lock descriptor left open when the record of the new run cannot be written: the process that starts runs would hold the lock of a run that does not exist for as long as it lives, and lose a descriptor each time."""
+        def broken(run_fd, record):
+            raise OSError(28, "No space left on device")
+
+        runstore.create_run(root, {"profile": "parse"})
+        monkeypatch.setattr(runstore, "_write_record", broken)
+        before = sorted(os.listdir("/proc/self/fd"))
+
+        with pytest.raises(runstore.StoreError) as exc:
+            runstore.create_run_locked(root, {"profile": "parse"})
+
+        assert exc.value.message == NOT_USABLE
+        assert sorted(os.listdir("/proc/self/fd")) == before
+
+    def test_fields_a_record_cannot_hold_create_nothing(self, root):
+        """Bug class: the locked way of creating a run skipping the checks of the plain one, and leaving a folder and a held lock behind for a run that was refused."""
+        with pytest.raises(ValueError):
+            runstore.create_run_locked(root, {"profile": "parse", "flags": {"secret": object()}})
+
+        assert not (root / ".sdp").exists()
+
+
+class TestHoldingTheLock:
+    def test_only_the_descriptor_that_holds_the_lock_says_so(self, root, tmp_path, monkeypatch):
+        """Bug class: a supervisor that believes it holds the run's lock when it was handed a descriptor of another file, a descriptor of the lock file that was never locked, one that is closed, or the lock file of another run, and then supervises a run that every reader sees as `lost`; and the check itself taking a lock nobody held, which would hide the mistake of the process that started the run."""
+        run_id, lock_fd = runstore.create_run_locked(root, {"profile": "parse"})
+        other_run, other_fd = runstore.create_run_locked(root, {"profile": "parse"})
+        unlocked = os.open(run_dir(root, run_id) / "lock", os.O_RDWR)
+        elsewhere = os.open(tmp_path / "another-file", os.O_RDWR | os.O_CREAT, 0o600)
+        closed = os.dup(elsewhere)
+        os.close(closed)
+
+        assert runstore.holds_run_lock(root, run_id, lock_fd) is True
+        assert runstore.holds_run_lock(root, run_id, unlocked) is False
+        assert runstore.holds_run_lock(root, run_id, elsewhere) is False
+        assert runstore.holds_run_lock(root, run_id, closed) is False
+        assert runstore.holds_run_lock(root, run_id, other_fd) is False
+        assert runstore.holds_run_lock(root, run_id, -1) is False
+        assert runstore.holds_run_lock(root, run_id, "3") is False
+        # Still held by the first descriptor, and by that one only.
+        assert runstore.holds_run_lock(root, run_id, lock_fd) is True
+
+        os.close(lock_fd)
+        assert runstore.holds_run_lock(root, run_id, unlocked) is False
+        # The check took nothing: the lock is as free as it was.
+        assert lock_is_held(root, run_id) is False
+        for fd in (unlocked, elsewhere, other_fd):
+            os.close(fd)
+
+    def test_a_copy_of_the_descriptor_in_a_child_process_holds_the_lock(self, root):
+        """Bug class: a lock that does not travel with the descriptor (a lock that belongs to the process, as `fcntl.lockf` locks do): the supervisor would inherit a descriptor without the lock. The process that created the run closes its copy, and the child's copy still holds the lock and says so."""
+        run_id, lock_fd = runstore.create_run_locked(root, {"profile": "parse"})
+        code = (
+            "import sys, time; from social_data_pipeline import runstore; "
+            "print(runstore.holds_run_lock(sys.argv[1], sys.argv[2], int(sys.argv[3])), flush=True); sys.stdin.read()"
+        )
+        child = subprocess.Popen([sys.executable, "-c", code, str(root), run_id, str(lock_fd)], cwd=REPO_ROOT, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, pass_fds=(lock_fd,))
+        try:
+            os.close(lock_fd)
+            assert child.stdout.readline() == "True\n"
+            assert lock_is_held(root, run_id) is True
+        finally:
+            child.stdin.close()
+            child.wait(timeout=30)
+            child.stdout.close()
+        assert lock_is_held(root, run_id) is False
+
+
+class TestTheEndOfARun:
+    @pytest.mark.parametrize("state, exit_code", [("finished", 0), ("finished", 137), ("finished", -9), ("finished", None), ("cancelled", 3), ("cancelled", None)])
+    def test_the_end_is_written_with_its_time(self, root, monkeypatch, state, exit_code):
+        """Bug class: a run that ended without an end time, with the exit code under another name, or with the state of a run that is still alive."""
+        run_id = make_run(root, RUN_A, "running")
+        monkeypatch.setattr(runstore, "_now", lambda: "2026-11-21T10:45:00Z")
+
+        returned = runstore.end_run(root, run_id, state, exit_code)
+
+        record = runstore.read_record(root, run_id)
+        assert returned == record
+        assert (record["state"], record["ended"], record["exit_code"]) == (state, "2026-11-21T10:45:00Z", exit_code)
+
+    @pytest.mark.parametrize("final", ["finished", "cancelled"])
+    @pytest.mark.parametrize("state, exit_code", [("finished", 0), ("cancelled", 3)])
+    def test_an_end_is_never_written_over_an_end(self, root, final, state, exit_code):
+        """Bug class: a second end written over the first: a supervisor that finishes a run a cancel has already recorded as cancelled (or the other way round) would change a record every reader takes as final, its end time and exit code included. The store refuses, whoever asks, and the record stays byte for byte."""
+        run_id = make_run(root, RUN_A, final, ended="2026-11-21T10:20:00Z", exit_code=7)
+        before = (run_dir(root, run_id) / "record.json").read_bytes()
+
+        with pytest.raises(runstore.RunAlreadyEnded) as exc:
+            runstore.end_run(root, run_id, state, exit_code)
+
+        assert exc.value.message == ENDED and isinstance(exc.value, runstore.StoreError)
+        assert (run_dir(root, run_id) / "record.json").read_bytes() == before
+
+    def test_the_end_of_a_run_without_a_usable_record_is_refused(self, root):
+        """Bug class: an end written into a record that cannot be read, which would replace whatever is there with a record made up from nothing."""
+        run_id = make_run(root, RUN_A, "running")
+        (run_dir(root, run_id) / "record.json").write_text("{")
+
+        with pytest.raises(runstore.StoreError) as exc:
+            runstore.end_run(root, run_id, "finished", 0)
+
+        assert exc.value.message == RECORD_NOT_READABLE and (run_dir(root, run_id) / "record.json").read_text() == "{"
+
+    @pytest.mark.parametrize("state", ["running", "starting", "lost", "detached", "", None])
+    def test_only_an_end_is_an_end(self, root, state):
+        """Bug class: `end_run` used to write a state that is no end, which would give a living run an end time."""
+        run_id = make_run(root, RUN_A, "running")
+        before = (run_dir(root, run_id) / "record.json").read_bytes()
+
+        with pytest.raises(ValueError):
+            runstore.end_run(root, run_id, state, 0)
+
+        assert (run_dir(root, run_id) / "record.json").read_bytes() == before
+
+
+class TestTheContainersOfARun:
+    def test_counted_and_stopped_by_the_label_in_a_new_listing(self, root, fake_run_docker):
+        """Bug class: the supervisor's stop reaching a container that is not this run's (another run's label, another deployment, a container that only has the label and was not started by compose), a stop that is believed without looking again, or a second listing made when there was nothing to stop."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A)
+        fake_run_docker.add(CONTAINER_B, root, run=RUN_B)
+        fake_run_docker.add("c3" * 32, "/srv/another-deployment", run=RUN_A)
+        fake_run_docker.add("d4" * 32, root, run=RUN_A, oneoff=False)
+
+        assert runstore.count_run_containers(root, run_id) == 1
+        assert runstore.stop_run_containers(root, run_id) == (1, 0)
+        assert runstore.count_run_containers(root, run_id) == 0
+        assert runstore.stop_run_containers(root, run_id) == (0, 0)
+
+        ps = ps_for(RUN_A)
+        assert fake_run_docker.calls == [ps, ps, ["stop", "--signal", "INT", "-t", "30", CONTAINER_A], ps, ps, ps]
+        assert [container["id"] for container in fake_run_docker.containers] == [CONTAINER_B, "c3" * 32, "d4" * 32]
+
+    def test_a_container_that_docker_does_not_stop_is_still_counted(self, root, fake_run_docker):
+        """Bug class: a stop that failed reported as "nothing is left", after which the supervisor records the run as cancelled while its container runs on."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A)
+        fake_run_docker.stop_fails = True
+
+        assert runstore.stop_run_containers(root, run_id) == (1, 1)
+
+    def test_docker_out_of_reach_is_said_and_not_read_as_no_container(self, root, fake_run_docker):
+        """Bug class: "Docker cannot be asked" read as "no container", which lets the supervisor record the end of a run whose container is alive."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.reachable = False
+
+        for call in (lambda: runstore.count_run_containers(root, run_id), lambda: runstore.stop_run_containers(root, run_id), lambda: runstore.wait_run_container(root, run_id, lambda: False), lambda: runstore.follow_run_output(root, run_id, 1, 0.0, lambda: False), lambda: runstore.clear_run_containers(root, run_id)):
+            with pytest.raises(runstore.DockerUnavailable):
+                call()
+
+    def test_the_last_look_removes_only_a_listed_container_of_the_run_that_never_started(self, root, fake_run_docker):
+        """Bug class: `docker rm` reaching anything but a container of this run, in this deployment, started by compose with `run`, that was created and never started: a running one (never with force), one that has ended and is on its way out, another run's, another deployment's, one that only carries the label. The complete list of Docker calls is written out, each removal with the full id from the listing and nothing else, and the format of the listing is the one that adds the state to the four known items."""
+        run_id = make_run(root, RUN_A, "running")
+        created, created_too, running, exited = "c1" * 32, "c2" * 32, "c3" * 32, "c4" * 32
+        fake_run_docker.add(created, root, run=RUN_A, state="created")
+        fake_run_docker.add(created_too, root, run=RUN_A, state="created")
+        fake_run_docker.add(running, root, run=RUN_A)
+        fake_run_docker.add(exited, root, run=RUN_A, state="exited")
+        fake_run_docker.add("d1" * 32, root, run=RUN_B, state="created")
+        fake_run_docker.add("d2" * 32, "/srv/another-deployment", run=RUN_A, state="created")
+        fake_run_docker.add("d3" * 32, root, run=RUN_A, state="created", oneoff=False)
+
+        assert runstore.clear_run_containers(root, run_id) == 2
+
+        assert fake_run_docker.calls == [ps_all_for(RUN_A), ["rm", created], ["rm", created_too], ps_all_for(RUN_A)]
+        assert all(options == {"timeout": 15, "merge_stderr": False, "attached": False} for options in fake_run_docker.options)
+        assert [container["id"] for container in fake_run_docker.containers] == [running, exited, "d1" * 32, "d2" * 32, "d3" * 32]
+        assert runstore.PS_STATE_FORMAT == PS_STATE_FORMAT == runstore.PS_FORMAT[:-1] + ",{{json .State}}]"
+        assert "Env" not in PS_STATE_FORMAT and ".Labels" not in PS_STATE_FORMAT
+
+    def test_the_last_look_counts_what_is_listed_in_any_state(self, root, fake_run_docker):
+        """Bug class: a container that is listed and not running counted as "none is left" (the end of the run is written on that answer), or a second listing made when nothing was removed."""
+        run_id = make_run(root, RUN_A, "running")
+        assert runstore.clear_run_containers(root, run_id) == 0
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A, state="exited")
+        fake_run_docker.add(CONTAINER_B, root, run=RUN_A, state="removing")
+        assert runstore.clear_run_containers(root, run_id) == 2
+        assert runstore.count_run_containers(root, run_id) == 0
+
+        assert fake_run_docker.calls == [ps_all_for(RUN_A), ps_all_for(RUN_A), ps_for(RUN_A)]
+        assert fake_run_docker.named("rm") == []
+
+    @pytest.mark.parametrize("how", ["starts", "refused"])
+    def test_a_container_that_is_not_removed_is_still_counted(self, root, fake_run_docker, how):
+        """Bug class: a removal that failed (the container has started in the meantime, or Docker refused) believed, so the end of the run is written with the container present. What was removed is not taken on trust: the number comes from a new listing."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A, state="created")
+        if how == "starts":
+            fake_run_docker.starts_at_rm = {CONTAINER_A}
+        else:
+            fake_run_docker.rm_fails = True
+
+        assert runstore.clear_run_containers(root, run_id) == 1
+
+        assert fake_run_docker.calls == [ps_all_for(RUN_A), ["rm", CONTAINER_A], ps_all_for(RUN_A)]
+        assert runstore.count_run_containers(root, run_id) == (1 if how == "starts" else 0)
+
+    def test_a_line_of_the_last_look_that_is_not_what_the_format_prints_is_passed_over(self, root, fake_run_docker):
+        """Bug class: a line of the listing with a missing or an extra item taken apart anyway, so that a label value lands where the state is read, or a container without a state is treated as one that never started and removed."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.extra_ps_lines = [
+            json.dumps([CONTAINER_A, str(root), "parse", RUN_A]),
+            json.dumps([CONTAINER_A, str(root), "parse", RUN_A, "created", "created"]),
+            json.dumps([CONTAINER_A, str(root), "parse", RUN_A, None]),
+            json.dumps([CONTAINER_A[:12], str(root), "parse", RUN_A, "created"]),
+            json.dumps([CONTAINER_B, str(root), "parse", RUN_A, "Created"]),
+        ]
+
+        assert runstore.clear_run_containers(root, run_id) == 1
+
+        assert fake_run_docker.named("rm") == []
+
+    def test_the_wait_returns_the_exit_code(self, root, fake_run_docker):
+        """Bug class: the exit code of a container taken from the wrong place: the exit code of the `docker wait` command (0 when it worked) instead of the number it prints; a wait made with a time limit, which would end a long run's wait as "Docker cannot be reached"; a wait that cannot be ended by its caller."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A)
+        asked = []
+
+        def until():
+            asked.append(True)
+            if len(asked) == 3:
+                fake_run_docker.end(CONTAINER_A, 137)
+            return False
+
+        assert runstore.wait_run_container(root, run_id, until) == 137
+
+        assert fake_run_docker.calls == [ps_for(RUN_A), ["wait", CONTAINER_A]]
+        assert fake_run_docker.options[1] == {"timeout": None, "merge_stderr": False, "attached": False, "into": None, "until": until}
+        assert runstore.wait_run_container(root, run_id, until) is None
+        assert fake_run_docker.calls[2:] == [ps_for(RUN_A)]
+
+    def test_a_wait_that_its_caller_ends_has_no_exit_code(self, root, fake_run_docker):
+        """Bug class: a wait that was ended because a cancel was asked returning a number, which the supervisor would record as the exit code of a container that is still running."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A)
+
+        assert runstore.wait_run_container(root, run_id, lambda: True) is None
+        assert [container["id"] for container in fake_run_docker.containers] == [CONTAINER_A]
+
+    @pytest.mark.parametrize("answer, expected", [
+        ((0, "0\n"), 0), ((0, "3\n"), 3), ((0, "255"), 255),
+        ((0, "256\n"), None), ((0, "-1\n"), None), ((0, "3\n4\n"), None), ((0, ""), None), ((0, " 3\n"), None), ((0, "3 \n"), None), ((0, "\u0663\n"), None), ((0, "Error response from daemon\n"), None),
+        ((1, "3\n"), None), ((1, ""), None), ((None, ""), None),
+    ], ids=repr)
+    def test_only_an_exit_code_is_an_exit_code(self, root, monkeypatch, fake_run_docker, answer, expected):
+        """Bug class: an exit code read out of an answer that is none: an error text, two numbers, a number no process can exit with, a digit that is not ASCII, or the output of a wait that failed."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A)
+        real = runstore._docker
+        monkeypatch.setattr(runstore, "_docker", lambda args, **options: answer if args[0] == "wait" else real(args, **options))
+
+        assert runstore.wait_run_container(root, run_id, lambda: False) == expected
+
+    def test_the_output_is_followed_into_the_descriptor(self, root, tmp_path, fake_run_docker):
+        """Bug class: the output of a container whose compose process died never reaching the run's log, written without the container's standard error, read from the start again (the log would hold everything twice), or followed with a time limit or without a way for the caller to end it. The exact Docker arguments are written out: the time is passed as a number of seconds with three decimals and nothing a caller wrote."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A, log="from the container\n")
+        fd = os.open(tmp_path / "out", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        asked = []
+
+        def until():
+            asked.append(True)
+            if len(asked) == 2:
+                fake_run_docker.end(CONTAINER_A, 0)
+            return False
+
+        assert runstore.follow_run_output(root, run_id, fd, 1795244503.21649, until) is True
+
+        assert (tmp_path / "out").read_bytes() == b"from the container\n"
+        assert fake_run_docker.calls == [ps_for(RUN_A), ["logs", "--follow", "--since", "1795244503.216", CONTAINER_A]]
+        assert fake_run_docker.options[1] == {"timeout": None, "merge_stderr": True, "attached": False, "into": fd, "until": until}
+        assert runstore.follow_run_output(root, run_id, fd, 0, until) is False
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A)
+        assert runstore.follow_run_output(root, run_id, fd, 0, lambda: True) is False
+        os.close(fd)
+
+    @pytest.mark.parametrize("since", ["1795244503", "10m", None, True, float("nan"), float("inf"), -1, [0]], ids=repr)
+    def test_a_time_that_is_no_number_reaches_nothing(self, root, fake_run_docker, since):
+        """Bug class: text a caller wrote handed to Docker as the `--since` value (a relative time, an option), or a number Docker does not take."""
+        run_id = make_run(root, RUN_A, "running")
+        fake_run_docker.add(CONTAINER_A, root, run=RUN_A)
+
+        with pytest.raises(ValueError):
+            runstore.follow_run_output(root, run_id, 1, since, lambda: True)
+
+        assert fake_run_docker.calls == []
+
+
+# A stand-in for the Docker binary: a command that prints its arguments on both outputs and then does what its first argument says.
+LASTING_COMMAND = """
+import sys, time
+print("out", sys.argv[1:], flush=True)
+print("err", file=sys.stderr, flush=True)
+if sys.argv[1] == "lasts":
+    time.sleep(600)
+sys.exit(int(sys.argv[2]))
+"""
+
+
+class TestCommandsThatLastAsLongAsAContainer:
+    @pytest.fixture
+    def stand_in(self, tmp_path, monkeypatch, run_docker_guard):
+        """Run the store's real Docker function with a small Python program in the place of the Docker binary; returns the list of the processes it started."""
+        script = tmp_path / "lasting.py"
+        script.write_text(LASTING_COMMAND)
+        started = []
+        real = subprocess.Popen
+
+        def popen(command, **options):
+            assert command[0] == "docker"
+            process = real([sys.executable, str(script), *command[1:]], **options)
+            started.append((command, options, process))
+            return process
+
+        monkeypatch.setattr(runstore.subprocess, "Popen", popen)
+        monkeypatch.setattr(runstore, "_docker", run_docker_guard.real)
+        monkeypatch.setattr(runstore, "DOCKER_WATCH_SECONDS", 0.05)
+        yield started
+        for _, _, process in started:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=30)
+
+    def test_a_command_that_ends_by_itself(self, stand_in, tmp_path):
+        """Bug class: the exit code or the output of a lasting command lost, the command given a standard input to wait on, or its error text mixed into an answer that is taken apart (the exit code `docker wait` prints)."""
+        asked = []
+
+        assert runstore._docker(["ends", "3"], timeout=None, until=lambda: asked.append(True)) == (3, "out ['ends', '3']\n")
+        assert runstore._docker(["ends", "0"], timeout=None, merge_stderr=True, until=lambda: False) in ((0, "out ['ends', '0']\nerr\n"), (0, "err\nout ['ends', '0']\n"))
+
+        fd = os.open(tmp_path / "out", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        assert runstore._docker(["ends", "5"], timeout=None, merge_stderr=True, into=fd, until=lambda: False) == (5, "")
+        os.close(fd)
+        assert sorted((tmp_path / "out").read_text().splitlines()) == ["err", "out ['ends', '5']"]
+        assert [(command, options["stdin"]) for command, options, _ in stand_in] == [(["docker", "ends", "3"], subprocess.DEVNULL), (["docker", "ends", "0"], subprocess.DEVNULL), (["docker", "ends", "5"], subprocess.DEVNULL)]
+        assert all(process.returncode is not None for _, _, process in stand_in)
+
+    def test_a_command_its_caller_ends_leaves_no_process(self, stand_in):
+        """Bug class: a `docker wait` or `docker logs --follow` left running after the supervisor was told to cancel, one for every cancelled run; or a caller that can never end the command, so a cancel is not honoured while the container lives."""
+        asked = []
+
+        def until():
+            asked.append(True)
+            return len(asked) >= 3
+
+        assert runstore._docker(["lasts"], timeout=None, until=until) == (None, "")
+
+        assert len(asked) == 3
+        process = stand_in[0][2]
+        assert process.returncode == -signal.SIGKILL
+
+    def test_an_error_of_the_caller_leaves_no_process(self, stand_in):
+        """Bug class: the lasting command left running when the function that is asked whether to go on raises."""
+        def until():
+            raise RuntimeError("the caller failed")
+
+        with pytest.raises(RuntimeError):
+            runstore._docker(["lasts"], timeout=None, until=until)
+
+        assert stand_in[0][2].returncode == -signal.SIGKILL
+
+    def test_a_binary_that_is_missing_is_out_of_reach(self, monkeypatch, run_docker_guard):
+        """Bug class: a host without Docker surfacing as a traceback in the supervisor instead of "Docker cannot be reached"."""
+        def popen(command, **options):
+            raise FileNotFoundError(2, "No such file or directory: 'docker'")
+
+        monkeypatch.setattr(runstore.subprocess, "Popen", popen)
+        monkeypatch.setattr(runstore, "_docker", run_docker_guard.real)
+
+        with pytest.raises(runstore.DockerUnavailable) as exc:
+            runstore._docker(["wait", CONTAINER_A], timeout=None, until=lambda: False)
+        assert exc.value.message == NOT_REACHABLE and exc.value.__cause__ is None
 
 
 # ── where the module sits ───────────────────────────────────────────────────

@@ -5297,7 +5297,7 @@ def cmd_run(args):
         return e.exit_code
 
 
-def do_run_start(*, profile, source, build=False, filter=None, skip_lingua_files=False, classifier=None, admin_password=None, _ask_password=None):
+def do_run_start(*, profile, source, build=False, filter=None, skip_lingua_files=False, classifier=None, admin_password=None, _ask_password=None, _run_id=None):
     """Run a pipeline profile for a source. Asks nothing itself; returns the exit code.
 
     `source` may be None, which selects the only configured source (a terminal convenience). The admin password is taken from `admin_password`, else from the `_ask_password` callback at the point where the terminal asks today, and only for a profile whose database has authentication on: a password passed otherwise is ignored.
@@ -5311,6 +5311,14 @@ def do_run_start(*, profile, source, build=False, filter=None, skip_lingua_files
         "sr_ingest": "STARROCKS_AUTH_ENABLED",
         "sr_ml": "STARROCKS_AUTH_ENABLED",
     }
+    # `_run_id` is the id of the recorded run this call belongs to, given by the process that supervises that run and never by a terminal: the container is then started with the name and the label by which the run store finds it. The store builds both and refuses anything that is not the id of a recorded run, here, before anything is read or changed.
+    _run_options = []
+    if _run_id is not None:
+        runstore = _run_store()
+        try:
+            _run_options = ["--name", runstore.container_name(_run_id), "-l", runstore.run_label(_run_id)]
+        except runstore.StoreError as e:
+            raise ActionError(e.message) from None
     _require_plain_password(admin_password)
     # Without a password and without a terminal to ask on, stop before anything runs: the body would otherwise probe the running containers' mounts before it reaches the question it cannot ask.
     if not admin_password and _ask_password is None:
@@ -5420,6 +5428,7 @@ def do_run_start(*, profile, source, build=False, filter=None, skip_lingua_files
     compose_args = ["--profile", profile, "run", "--rm"]
     if build:
         compose_args.append("--build")
+    compose_args.extend(_run_options)
     compose_args.append(service)
 
     print(f"  Source: {source} (platform: {platform})")

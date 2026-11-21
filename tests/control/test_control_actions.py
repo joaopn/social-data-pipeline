@@ -4,7 +4,7 @@ A process that runs a verb without a terminal passes the validated request field
 
 - Exactly the verbs listed below have an action, and the CLI module has no other function with an action prefix: `do_` for a state-changing command, `get_` for a read command, whose action returns the data the terminal prints.
 - An action takes keyword-only parameters; its public ones are the verb's socket inputs, required exactly where the input is required.
-- An action has a confirmation callback exactly when the command asks for a confirmation, and a password callback exactly when it asks for the admin password; both default to None, which the action treats as "nobody to ask". A read command asks neither, so a getter has no private parameter at all.
+- An action has a confirmation callback exactly when the command asks for a confirmation, and a password callback exactly when it asks for the admin password; both default to None, which the action treats as "nobody to ask". A read command asks neither, so a getter has no private parameter at all. The one other private parameter is the run id of `do_run_start`, which the process that supervises a recorded run passes and no request field can set.
 
 The registry is reached through the module (`verbs.<name>`) and the CLI as `import sdp`.
 """
@@ -42,6 +42,9 @@ ACTIONS = {
 # The private parameter an action has for each thing its command asks on the terminal.
 CALLBACK_FOR_PROMPT = {"confirmation": "_confirm", "admin_password": "_ask_password"}
 
+# The private parameters an action has that are no callback for a prompt, written out per verb: `_run_id` is how the supervisor of a recorded run tells `do_run_start` which run the container belongs to.
+OTHER_PRIVATE_PARAMETERS = {"run.start": {"_run_id"}}
+
 
 def _parameters(verb_name):
     return inspect.signature(getattr(sdp, verbs.VERBS[verb_name].action)).parameters
@@ -77,9 +80,9 @@ class TestActionsMatchTheRegistry:
 
     @pytest.mark.parametrize("verb_name", sorted(ACTIONS))
     def test_callbacks_match_what_the_command_asks(self, verb_name):
-        """Bug class: an action for a command that asks for a confirmation or the admin password without the matching callback (it could then only ask on a terminal it does not have, or skip the question), or a callback whose default is anything but None (a default that answers yes, or one that prompts). For a getter the expected set is empty: a private parameter there would be an input no request can carry and no type checks."""
+        """Bug class: an action for a command that asks for a confirmation or the admin password without the matching callback (it could then only ask on a terminal it does not have, or skip the question), or a callback whose default is anything but None (a default that answers yes, or one that prompts). For a getter the expected set is empty: a private parameter there would be an input no request can carry and no type checks. Any other private parameter must be in the literal list above for its verb, and its default is None too, so a call without it is the terminal's call."""
         prompted = verbs.VERBS[verb_name].prompted_inputs
         private = {name: param for name, param in _parameters(verb_name).items() if name.startswith("_")}
 
-        assert set(private) == {callback for prompt, callback in CALLBACK_FOR_PROMPT.items() if prompt in prompted}
+        assert set(private) == {callback for prompt, callback in CALLBACK_FOR_PROMPT.items() if prompt in prompted} | OTHER_PRIVATE_PARAMETERS.get(verb_name, set())
         assert all(param.default is None for param in private.values())

@@ -34,3 +34,11 @@ class InputError(ControlError):
     def __init__(self, message, field=None):
         super().__init__(message)
         self.field = field
+
+
+class RunNotStarted(ControlError):
+    """A pipeline run was not started. `code` says why: `run_active` (a run of the same profile for the same source is alive), `docker_not_reachable` (so that cannot be told), `not_the_deployment` (the folder is not the one the CLI acts on), `store_not_usable` (the run state folder), `cli_not_loadable` (the CLI module could not be imported), `record_not_possible` (the run's fields are not what a record can hold), `start_failed` (the process that supervises the run could not be started; the run is then recorded as finished with exit code 1)."""
+
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code

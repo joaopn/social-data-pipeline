@@ -608,3 +608,63 @@ class TestResolveSource:
         assert sdp.cmd_run(_args(profile="parse", source=name, build=False, filter=None)) == 1
         assert capsys.readouterr().out == text + "\n"
         assert project.rec.events == []
+
+
+# ── the recorded run a call belongs to ──────────────────────────────────────
+
+
+RUN_ID = "r20261121T101500-0a1b2c"
+
+# The compose call of `run` as it was before the action learned about recorded runs, written out for several flag combinations.
+BASE_COMPOSE_CALLS = [
+    ({"profile": "parse"}, ("--profile", "parse", "run", "--rm", "parse")),
+    ({"profile": "parse", "build": True}, ("--profile", "parse", "run", "--rm", "--build", "parse")),
+    ({"profile": "parse", "filter": "RS_2024-*", "skip_lingua_files": True}, ("--profile", "parse", "run", "--rm", "parse")),
+    ({"profile": "postgres_ingest"}, ("--profile", "postgres_ingest", "run", "--rm", "postgres-ingest")),
+    ({"profile": "postgres_ingest", "build": True, "filter": "RS_2024-*"}, ("--profile", "postgres_ingest", "run", "--rm", "--build", "postgres-ingest")),
+]
+
+
+def _compose_calls(recorder):
+    return [args for kind, args in recorder.events if kind == "compose"]
+
+
+class TestRunId:
+    @pytest.mark.parametrize("flags, expected", BASE_COMPOSE_CALLS)
+    def test_without_a_run_id_the_compose_call_is_what_it_was(self, project, flags, expected):
+        """Bug class: the terminal's `run` changed by the parameter that exists for recorded runs: a container name or a label on a run nobody records (it would then be listed as a recorded run without a record, and a second `sdp run` of the same profile would be refused by the daemon over the name). Without a run id, with `None` passed, and through the command, the compose arguments are the literal lists of before."""
+        assert sdp.do_run_start(source="ok", **flags) == 0
+        assert sdp.do_run_start(source="ok", _run_id=None, **flags) == 0
+        command_args = {"build": False, "filter": None, "skip_lingua_files": False, "classifier": None, **flags}
+        assert sdp.cmd_run(_args(source="ok", **command_args)) == 0
+
+        assert _compose_calls(project.rec) == [expected, expected, expected]
+
+    @pytest.mark.parametrize("flags, expected", [
+        ({"profile": "parse"}, ("--profile", "parse", "run", "--rm", "--name", "sdp-run-" + RUN_ID, "-l", "sdp.run=" + RUN_ID, "parse")),
+        ({"profile": "postgres_ingest", "build": True, "filter": "RS_2024-*"}, ("--profile", "postgres_ingest", "run", "--rm", "--build", "--name", "sdp-run-" + RUN_ID, "-l", "sdp.run=" + RUN_ID, "postgres-ingest")),
+    ])
+    def test_with_a_run_id_the_container_gets_its_name_and_label(self, project, flags, expected):
+        """Bug class: a recorded run whose container the run store cannot find (no label, another label name, the name without the label), so the run cannot be cancelled and reads as lost while it runs; or the two options placed after the service name, where compose takes them as the command to run in the container."""
+        assert sdp.do_run_start(source="ok", _run_id=RUN_ID, **flags) == 0
+
+        assert _compose_calls(project.rec) == [expected]
+
+    @pytest.mark.parametrize("run_id", [
+        "", "live-0a1b2c3d4e5f", RUN_ID + "\n", RUN_ID + " --privileged", "../" + RUN_ID, RUN_ID.upper(), "r20261121T101500-0a1b2", "--volume=/:/host", 20261121, ["r20261121T101500-0a1b2c"], True,
+    ], ids=repr)
+    def test_a_malformed_run_id_is_refused_before_anything_happens(self, project, monkeypatch, capsys, run_id):
+        """Bug class: a run id that is not the id of a recorded run reaching the compose command line as a container name or a label (an option of `docker compose run` in the worst case), or being refused only after the action has read the configuration, probed the running containers, created the data folders or written the run's settings into the environment. The functions that would do those things record their calls, and the lists must be empty."""
+        reached = []
+        for name in ("load_env", "_validate_run_mounts", "_set_auth_env"):
+            monkeypatch.setattr(sdp, name, lambda *args, _name=name, **kwargs: reached.append(_name))
+        before = _snapshot(project.root)
+
+        with pytest.raises(sdp.ActionError) as exc:
+            sdp.do_run_start(profile="postgres_ingest", source="ok", admin_password="made-up-password", _run_id=run_id)
+
+        assert exc.value.message == "the run id is not a valid run id" and exc.value.exit_code == 1
+        assert reached == [] and project.rec.events == []
+        assert _snapshot(project.root) == before
+        assert {name: os.environ.get(name) for name in RUN_VARS + PASSWORD_VARS} == dict.fromkeys(RUN_VARS + PASSWORD_VARS)
+        assert capsys.readouterr().out == ""

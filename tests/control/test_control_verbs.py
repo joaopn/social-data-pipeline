@@ -478,11 +478,14 @@ class TestSecretsNeverShow:
 
 class TestImports:
     @pytest.mark.parametrize("statement, forbidden", [
-        ("import social_data_pipeline.control.verbs", ("sdp", "social_data_pipeline.db", "social_data_pipeline.jobs", "social_data_pipeline.orchestrators", "social_data_pipeline.classifiers", "social_data_pipeline.core", "social_data_pipeline.platforms")),
-        ("import sdp", ("social_data_pipeline.control",)),
-    ])
+        ("import social_data_pipeline.control.verbs", ("sdp", "social_data_pipeline.runstore", "social_data_pipeline.control.child", "social_data_pipeline.control.supervise", "social_data_pipeline.control.runs", "social_data_pipeline.db", "social_data_pipeline.jobs", "social_data_pipeline.orchestrators", "social_data_pipeline.classifiers", "social_data_pipeline.core", "social_data_pipeline.platforms")),
+        ("import sdp", ("social_data_pipeline.control", "social_data_pipeline.runstore")),
+        ("import social_data_pipeline.control.child", ("sdp", "social_data_pipeline.runstore", "social_data_pipeline.control.supervise", "social_data_pipeline.control.runs", "social_data_pipeline.db")),
+        ("import social_data_pipeline.control.supervise", ("sdp", "yaml", "social_data_pipeline.setup", "social_data_pipeline.control.verbs", "social_data_pipeline.control.types", "social_data_pipeline.control.child", "social_data_pipeline.control.runs", "social_data_pipeline.db")),
+        ("import social_data_pipeline.control.runs", ("sdp", "social_data_pipeline.control.child", "social_data_pipeline.control.supervise", "social_data_pipeline.db")),
+    ], ids=["registry", "cli", "child", "supervise", "runs"])
     def test_import_boundaries(self, statement, forbidden):
-        """Bug class: an import cycle between the CLI script and the registry, or the host-side registry pulling in container-only modules (database drivers) that are not installed on the host. Run in a fresh interpreter, since this process has already imported both."""
+        """Bug class: an import cycle between the CLI script and the registry, or the host-side registry pulling in container-only modules (database drivers) that are not installed on the host. Run in a fresh interpreter, since this process has already imported both. The same for the three modules that act on a request: the CLI loads none of them (and not the run store), the registry loads neither the CLI nor the run store, each of the three loads the CLI only when it calls it, and the supervisor, which lives as long as a run, loads the run store and nothing of the registry."""
         code = (
             f"import sys; {statement}; "
             f"bad = sorted(m for m in sys.modules if any(m == f or m.startswith(f + '.') for f in {forbidden!r})); "

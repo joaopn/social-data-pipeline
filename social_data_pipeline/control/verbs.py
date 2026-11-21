@@ -61,7 +61,7 @@ class FieldRefused(ValueError):
 
 @dataclass(frozen=True)
 class Verb:
-    """One named action. `cli` is the subcommand path, `cli_inputs` its argparse destinations, `prompted_inputs` what the command asks interactively today, `socket_inputs` the fields accepted over the socket."""
+    """One named action. `cli` is the subcommand path, `cli_inputs` its argparse destinations, `prompted_inputs` what the command asks interactively today, `socket_inputs` the fields accepted over the socket, `action` the name of the CLI module's function that runs the verb without a terminal (None while there is none)."""
 
     name: str
     cls: str
@@ -73,6 +73,8 @@ class Verb:
     socket_enabled: bool = False
     check: Callable | None = None
     note: str = ""
+    # A name, not the function: the CLI module is never imported here. Its keyword parameters are the socket inputs.
+    action: str | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "cli", tuple(self.cli))
@@ -152,12 +154,14 @@ VERBS = _registry(
         },
         socket_enabled=True,
         check=_check_run_start,
+        action="do_run_start",
     ),
     Verb(
         name="db.stop", cls="write", cli=("db", "stop"),
         cli_inputs={"service"},
         socket_inputs={"service": Field(Enum(SERVICES))},
         socket_enabled=True,
+        action="do_db_stop",
     ),
     Verb(
         name="source.download", cls="write", cli=("source", "download"),
@@ -172,6 +176,7 @@ VERBS = _registry(
         socket_inputs={"service": Field(Enum(SERVICES)), "admin_password": Field(Secret())},
         socket_enabled=True,
         note="Step-up until the PostgreSQL start checks the admin password instead of setting it; then write.",
+        action="do_db_start",
     ),
     Verb(
         name="db.reset", cls="step_up", cli=("db", "reset"),
@@ -179,6 +184,7 @@ VERBS = _registry(
         prompted_inputs={"confirmation"},
         socket_inputs={"db": Field(Enum(DATABASES), required=True)},
         socket_enabled=True,
+        action="do_db_reset",
     ),
     Verb(
         name="db.unsetup", cls="step_up", cli=("db", "unsetup"),
@@ -187,14 +193,17 @@ VERBS = _registry(
         # Required: without a database the CLI removes all of them and asks a data choice for each, which stays terminal-only.
         socket_inputs={"db": Field(Enum(DATABASES), required=True)},
         socket_enabled=True,
+        action="do_db_unsetup",
     ),
     Verb(
         name="db.unsetup_mcp", cls="step_up", cli=("db", "unsetup-mcp"),
         socket_enabled=True,
+        action="do_db_unsetup_mcp",
     ),
     Verb(
         name="db.unsetup_jobs", cls="step_up", cli=("db", "unsetup-jobs"),
         socket_enabled=True,
+        action="do_db_unsetup_jobs",
     ),
     Verb(
         name="source.remove", cls="step_up", cli=("source", "remove"),
@@ -202,6 +211,7 @@ VERBS = _registry(
         prompted_inputs={"confirmation"},
         socket_inputs={"name": Field(ConfiguredSource(require_config=False), required=True)},
         socket_enabled=True,
+        action="do_source_remove",
     ),
     Verb(
         name="db.setup", cls="step_up", cli=("db", "setup"),

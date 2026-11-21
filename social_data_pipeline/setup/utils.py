@@ -364,6 +364,30 @@ def load_db_setup():
     return result
 
 
+def resolve_source_name(source_name=None):
+    """Resolve a source name, auto-selecting if only one exists, without printing or exiting.
+
+    Returns the source name. Raises ValueError when the named source is not configured, when no source is configured, or when several are and none was named; the message is the text the terminal shows for that case, ready for one print().
+    """
+    if source_name:
+        source_dir = SOURCES_DIR / source_name
+        if not source_dir.exists() or not (source_dir / "platform.yaml").exists():
+            raise ValueError(f"\n  Error: Source '{source_name}' not found in config/sources/\n")
+        return source_name
+
+    sources = list_sources()
+    if not sources:
+        raise ValueError("\n  No sources configured. Run 'python sdp.py source add <name>' first.\n")
+    if len(sources) == 1:
+        return sources[0]
+
+    raise ValueError(
+        f"\n  Multiple sources configured: {', '.join(sources)}"
+        "\n"
+        "  Please specify --source <name>\n"
+    )
+
+
 def resolve_source(source_name=None):
     """Resolve a source name, auto-selecting if only one exists.
 
@@ -376,23 +400,11 @@ def resolve_source(source_name=None):
     Raises:
         SystemExit if no sources or ambiguous.
     """
-    if source_name:
-        source_dir = SOURCES_DIR / source_name
-        if not source_dir.exists() or not (source_dir / "platform.yaml").exists():
-            print(f"\n  Error: Source '{source_name}' not found in config/sources/\n")
-            sys.exit(1)
-        return source_name
-
-    sources = list_sources()
-    if not sources:
-        print("\n  No sources configured. Run 'python sdp.py source add <name>' first.\n")
+    try:
+        return resolve_source_name(source_name)
+    except ValueError as e:
+        print(e)
         sys.exit(1)
-    if len(sources) == 1:
-        return sources[0]
-
-    print(f"\n  Multiple sources configured: {', '.join(sources)}")
-    print("  Please specify --source <name>\n")
-    sys.exit(1)
 
 
 # ============================================================================

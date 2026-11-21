@@ -282,6 +282,43 @@ def _set_auth_env(password):
     os.environ["STARROCKS_ROOT_PASSWORD"] = password
 
 
+class ActionError(Exception):
+    """An action function (`do_*`) was called without an input it needs on the path it took, and stopped before changing anything. `message` is one line that holds no input value; `exit_code` is the code a command returns for it."""
+
+    def __init__(self, message, exit_code=1):
+        super().__init__(message)
+        self.message = message
+        self.exit_code = exit_code
+
+
+_ADMIN_PASSWORD_REQUIRED = "the database admin password is required"
+
+
+def already_confirmed(prompt):
+    """Confirmation callback for a caller that authenticated the operator and took the confirmation another way: every question is answered yes. An action proceeds only on exactly True, so a callback that returns anything else (the typed answer, None) is a no."""
+    return True
+
+
+def _confirm_on_terminal(prompt):
+    """Confirmation callback of the terminal commands: ask the y/N question and return whether the answer is yes."""
+    return input(prompt).strip().lower() in ("y", "yes")
+
+
+def _require_plain_password(admin_password):
+    """Refuse an admin password that is not a plain string. A caller holding a wrapped secret must unwrap it first: passed on as it is, it would be ignored where no password is needed and fail late where one is."""
+    if admin_password is not None and not isinstance(admin_password, str):
+        raise TypeError("admin_password must be a plain string")
+
+
+def _resolve_admin_password(admin_password, _ask_password):
+    """Return the admin password for an action that needs one: the password passed in, else the answer of the terminal callback. Raises ActionError when there is neither, so an action never waits on a terminal it does not have."""
+    if admin_password:
+        return admin_password
+    if _ask_password is not None:
+        return _ask_password()
+    raise ActionError(_ADMIN_PASSWORD_REQUIRED)
+
+
 _DB_DATA_PATH_ENV = {
     "postgres": "PGDATA_PATH",
     "mongo": "MONGO_DATA_PATH",
@@ -499,6 +536,11 @@ def cmd_db_setup_llm(args):
 
 def cmd_db_unsetup_jobs(args):
     """Remove jobs scheduler configuration and stop its container."""
+    return do_db_unsetup_jobs()
+
+
+def do_db_unsetup_jobs():
+    """Remove jobs scheduler configuration and stop its container. Asks nothing; returns the exit code."""
     jobs_local = CONFIG_DIR / "jobs" / "config.local.yaml"
     if not jobs_local.exists():
         print("\n  No jobs configuration found.\n")
@@ -565,6 +607,11 @@ def cmd_db_unsetup_jobs(args):
 
 def cmd_db_unsetup_mcp(args):
     """Remove MCP configuration and stop MCP containers."""
+    return do_db_unsetup_mcp()
+
+
+def do_db_unsetup_mcp():
+    """Remove MCP configuration and stop MCP containers. Asks nothing; returns the exit code."""
     mcp_path = CONFIG_DIR / "db" / "mcp.yaml"
     if not mcp_path.exists():
         print("\n  No MCP configuration found.\n")
@@ -1044,12 +1091,33 @@ def _print_exited_services(exited):
 
 def cmd_db_start(args):
     """Start configured database server(s)."""
+    try:
+        return do_db_start(service=args.service, _ask_password=lambda: _prompt_db_password(tag="sdp_db_password"))
+    except ActionError as e:
+        print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+
+
+def do_db_start(*, service=None, admin_password=None, _ask_password=None):
+    """Start configured database server(s). Asks nothing itself; returns the exit code.
+
+    The admin password is taken from `admin_password`, else from the `_ask_password` callback at the point where the terminal asks today, and only on a path that needs it: a password passed for a deployment without authentication is ignored.
+    """
+    _require_plain_password(admin_password)
+    # Without a password and without a terminal to ask on, stop before anything runs: the body would otherwise probe the containers on the MCP path before it reaches the question it cannot ask.
+    if not admin_password and _ask_password is None:
+        if service and service.endswith("-mcp"):
+            password_needed = _is_auth_enabled()
+        else:
+            password_needed = _needs_admin_password()
+        if password_needed:
+            raise ActionError(_ADMIN_PASSWORD_REQUIRED)
+
     configured = _get_configured_db_services()
     if not configured:
         print("  No databases configured. Run: python sdp.py db setup")
         return 1
 
-    service = args.service
     mcp_services = _get_configured_mcp_services()
 
     # MCP-only target (e.g. "postgres-mcp" → profile "postgres_mcp")
@@ -1066,7 +1134,7 @@ def cmd_db_start(args):
             return ps_result.returncode
         # Prompt for admin password if auth is enabled (needed for init container)
         if _is_auth_enabled():
-            password = _prompt_db_password(tag="sdp_db_password")
+            password = _resolve_admin_password(admin_password, _ask_password)
             _set_auth_env(password)
         # Start only the MCP profile (init container runs first via depends_on).
         # `--wait` blocks until services are running and (where defined) healthy;
@@ -1089,7 +1157,7 @@ def cmd_db_start(args):
             print("  Error: 'jobs' is not configured. Run: python sdp.py db setup-jobs")
             return 1
         if _needs_admin_password():
-            password = _prompt_db_password(tag="sdp_db_password")
+            password = _resolve_admin_password(admin_password, _ask_password)
             _set_auth_env(password)
         # Scope the jobs profile and rebuild its image (jobs contains SDP
         # package code, so it drifts on every code change).
@@ -1110,7 +1178,7 @@ def cmd_db_start(args):
     # to authenticate web UI logins. Single prompt covers both.
     password = None
     if _needs_admin_password():
-        password = _prompt_db_password(tag="sdp_db_password")
+        password = _resolve_admin_password(admin_password, _ask_password)
         _set_auth_env(password)
 
     # Determine which MCP profiles to start
@@ -1217,12 +1285,16 @@ def _jobs_backend_profiles() -> list[str]:
 
 def cmd_db_stop(args):
     """Stop configured database server(s)."""
+    return do_db_stop(service=args.service)
+
+
+def do_db_stop(*, service=None):
+    """Stop configured database server(s). Asks nothing; returns the exit code."""
     configured = _get_configured_db_services()
     if not configured:
         print("  No databases configured. Run: python sdp.py db setup")
         return 1
 
-    service = args.service
     mcp_services = _get_configured_mcp_services()
 
     # MCP-only target (e.g. "postgres-mcp" → profile "postgres_mcp")
@@ -1940,11 +2012,13 @@ DB_GENERATED_FILES = [
 ]
 
 
-def _unsetup_single_db(db_name, env):
+def _unsetup_single_db(db_name, env, confirm=None):
     """Remove a single database entirely: containers, config, data, and shared-file entries.
 
     Containers, config, and data are always removed together — this is not a reconfigure path.
     Use 'sdp db setup --add <db>' to reconfigure a DB in place without losing data.
+
+    `confirm` is called with each of the two confirmation questions and returns True to proceed; without it the removal stops with ActionError before anything is changed.
     """
     import yaml
 
@@ -2068,17 +2142,19 @@ def _unsetup_single_db(db_name, env):
         print()
 
     # --- Double confirmation ---
-    confirm1 = input(
+    if confirm is None:
+        raise ActionError("confirmation required")
+    confirm1 = confirm(
         f"  Delete {db_label} entirely? Config, containers, and data will be removed. "
         f"This CANNOT be undone [y/N]: "
-    ).strip().lower()
-    if confirm1 not in ("y", "yes"):
+    )
+    if confirm1 is not True:
         print("\n  Aborted — nothing was changed.\n")
         return 0
-    confirm2 = input(
+    confirm2 = confirm(
         f"  Are you SURE? All {db_label} data will be permanently lost [y/N]: "
-    ).strip().lower()
-    if confirm2 not in ("y", "yes"):
+    )
+    if confirm2 is not True:
         print("\n  Aborted — nothing was changed.\n")
         return 0
     print()
@@ -2196,12 +2272,22 @@ def _unsetup_single_db(db_name, env):
     return 0
 
 
+def do_db_unsetup(*, db, _confirm=None):
+    """Remove one database entirely: containers, config, data, and shared-file entries. Asks nothing itself: `_confirm` answers the two confirmation questions. Returns the exit code."""
+    env = load_env()
+    return _unsetup_single_db(db, env, confirm=_confirm)
+
+
 def cmd_db_unsetup(args):
     """Remove database configuration and optionally database data."""
-    env = load_env()
-
     if getattr(args, "db", None):
-        return _unsetup_single_db(args.db, env)
+        try:
+            return do_db_unsetup(db=args.db, _confirm=_confirm_on_terminal)
+        except ActionError as e:
+            print(f"\n  Error: {e.message}\n")
+            return e.exit_code
+
+    env = load_env()
 
     # Capture which DBs are configured BEFORE we delete their config files,
     # so we know which per-source overrides to clean up at the end.
@@ -2560,6 +2646,15 @@ def _read_pg_tablespace_paths():
 
 
 def cmd_db_reset(args):
+    """Wipe a database's data; preserve all config."""
+    try:
+        return do_db_reset(db=args.db, _confirm=_confirm_on_terminal)
+    except ActionError as e:
+        print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+
+
+def do_db_reset(*, db, _confirm=None):
     """Wipe a database's data; preserve all config.
 
     Deletes only the DB server's own subdirectories under ``<DB>_DATA_PATH``
@@ -2574,8 +2669,10 @@ def cmd_db_reset(args):
     Use when the data is corrupt or you want to re-ingest from scratch.
     Use ``db unsetup --db <name>`` instead to remove the DB entirely (config
     included).
+
+    Asks nothing itself: `_confirm` is called with the confirmation question and returns True to proceed; without it the reset stops with ActionError before anything is changed. Returns the exit code.
     """
-    db_name = args.db
+    db_name = db
     env = load_env()
 
     if db_name not in _get_configured_db_services():
@@ -2665,10 +2762,12 @@ def cmd_db_reset(args):
         print("         They will fail until you run 'sdp db start' again.")
         print()
 
-    confirm = input(
+    if _confirm is None:
+        raise ActionError("confirmation required")
+    confirm = _confirm(
         f"  Reset {db_label} data? This CANNOT be undone [y/N]: "
-    ).strip().lower()
-    if confirm not in ("y", "yes"):
+    )
+    if confirm is not True:
         print("\n  Aborted — nothing was changed.\n")
         return 0
     print()
@@ -4055,13 +4154,22 @@ def cmd_source_add_classifiers(args):
 
 def cmd_source_remove(args):
     """Remove source configuration."""
-    source_dir = CONFIG_DIR / "sources" / args.name
+    try:
+        return do_source_remove(name=args.name, _confirm=_confirm_on_terminal)
+    except ActionError as e:
+        print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+
+
+def do_source_remove(*, name, _confirm=None):
+    """Remove source configuration. Asks nothing itself: `_confirm` is called with the confirmation question and returns True to proceed; without it the removal stops with ActionError before anything is changed. Returns the exit code."""
+    source_dir = CONFIG_DIR / "sources" / name
     if not source_dir.exists():
-        print(f"\n  Error: Source '{args.name}' not found in config/sources/\n")
+        print(f"\n  Error: Source '{name}' not found in config/sources/\n")
         return 1
 
-    print(f"\n  Source: {args.name}")
-    print(f"  Directory: config/sources/{args.name}/")
+    print(f"\n  Source: {name}")
+    print(f"  Directory: config/sources/{name}/")
 
     # List files
     files = sorted(source_dir.glob("*"))
@@ -4071,13 +4179,15 @@ def cmd_source_remove(args):
             print(f"    {f.name}")
     print()
 
-    confirm = input(f"  Remove source '{args.name}' configuration? [y/N]: ").strip().lower()
-    if confirm not in ("y", "yes"):
+    if _confirm is None:
+        raise ActionError("confirmation required")
+    confirm = _confirm(f"  Remove source '{name}' configuration? [y/N]: ")
+    if confirm is not True:
         print("  Aborted.\n")
         return 0
 
     shutil.rmtree(source_dir)
-    print(f"\n  Removed config/sources/{args.name}/")
+    print(f"\n  Removed config/sources/{name}/")
     print("  Note: Data files (dumps, csv, output) were NOT removed.\n")
     _warn_mount_drift_after_source_change()
     return 0
@@ -4470,24 +4580,61 @@ def _print_mongoimport_log_sections(log_dir, failed_filenames):
 
 def cmd_run(args):
     """Run a pipeline profile for a source."""
-    from social_data_pipeline.setup.utils import resolve_source, load_source_config
+    try:
+        return do_run_start(
+            profile=args.profile,
+            source=args.source,
+            build=args.build,
+            filter=args.filter,
+            skip_lingua_files=getattr(args, "skip_lingua_files", False),
+            classifier=getattr(args, "classifier", None),
+            _ask_password=lambda: _prompt_db_password(tag="sdp_db_password"),
+        )
+    except ActionError as e:
+        print(f"\n  Error: {e.message}\n")
+        return e.exit_code
 
-    profile = args.profile
+
+def do_run_start(*, profile, source, build=False, filter=None, skip_lingua_files=False, classifier=None, admin_password=None, _ask_password=None):
+    """Run a pipeline profile for a source. Asks nothing itself; returns the exit code.
+
+    `source` may be None, which selects the only configured source (a terminal convenience). The admin password is taken from `admin_password`, else from the `_ask_password` callback at the point where the terminal asks today, and only for a profile whose database has authentication on: a password passed otherwise is ignored.
+    """
+    from social_data_pipeline.setup.utils import resolve_source_name, load_source_config
+
+    _profile_auth = {
+        "postgres_ingest": "POSTGRES_AUTH_ENABLED",
+        "postgres_ml": "POSTGRES_AUTH_ENABLED",
+        "mongo_ingest": "MONGO_AUTH_ENABLED",
+        "sr_ingest": "STARROCKS_AUTH_ENABLED",
+        "sr_ml": "STARROCKS_AUTH_ENABLED",
+    }
+    _require_plain_password(admin_password)
+    # Without a password and without a terminal to ask on, stop before anything runs: the body would otherwise probe the running containers' mounts before it reaches the question it cannot ask.
+    if not admin_password and _ask_password is None:
+        auth_key = _profile_auth.get(profile)
+        if auth_key and load_env().get(auth_key) == "true":
+            raise ActionError(_ADMIN_PASSWORD_REQUIRED)
+
     if profile not in VALID_PROFILES:
         print(f"  Error: Unknown profile '{profile}'.")
         print(f"  Valid profiles: {', '.join(VALID_PROFILES)}")
         return 1
 
-    if getattr(args, "skip_lingua_files", False) and profile != "parse":
+    if skip_lingua_files and profile != "parse":
         print(f"  Error: --skip-lingua-files only applies to the 'parse' profile (got '{profile}').")
         return 1
 
-    if getattr(args, "classifier", None) and profile not in ("ml", "lingua", "sr_ml"):
+    if classifier and profile not in ("ml", "lingua", "sr_ml"):
         print(f"  Error: --classifier only applies to the 'ml', 'lingua' and 'sr_ml' profiles (got '{profile}').")
         return 1
 
     # Resolve source (auto-selects if only one exists)
-    source = resolve_source(args.source)
+    try:
+        source = resolve_source_name(source)
+    except ValueError as e:
+        print(e)
+        return 1
     source_config = load_source_config(source)
 
     # Determine PLATFORM from source config
@@ -4530,16 +4677,9 @@ def cmd_run(args):
         return rc
 
     # Prompt for admin password if auth enabled for the target database
-    _profile_auth = {
-        "postgres_ingest": "POSTGRES_AUTH_ENABLED",
-        "postgres_ml": "POSTGRES_AUTH_ENABLED",
-        "mongo_ingest": "MONGO_AUTH_ENABLED",
-        "sr_ingest": "STARROCKS_AUTH_ENABLED",
-        "sr_ml": "STARROCKS_AUTH_ENABLED",
-    }
     auth_key = _profile_auth.get(profile)
     if auth_key and load_env().get(auth_key) == "true":
-        password = _prompt_db_password(tag="sdp_db_password")
+        password = _resolve_admin_password(admin_password, _ask_password)
         _set_auth_env(password)
 
     # Build per-source environment (read paths from source config, with defaults)
@@ -4561,14 +4701,14 @@ def cmd_run(args):
         data_dir.mkdir(parents=True, exist_ok=True)
 
     # Pass file filter if provided
-    if args.filter:
-        env_overrides["FILE_FILTER"] = args.filter
+    if filter:
+        env_overrides["FILE_FILTER"] = filter
 
-    if getattr(args, "skip_lingua_files", False):
+    if skip_lingua_files:
         env_overrides["SKIP_LINGUA_FILES"] = "1"
 
-    if getattr(args, "classifier", None):
-        env_overrides["CLASSIFIER"] = args.classifier
+    if classifier:
+        env_overrides["CLASSIFIER"] = classifier
 
     # Set env vars for docker compose
     for key, value in env_overrides.items():
@@ -4576,17 +4716,17 @@ def cmd_run(args):
 
     service = PROFILE_SERVICE_MAP.get(profile, profile)
     compose_args = ["--profile", profile, "run", "--rm"]
-    if args.build:
+    if build:
         compose_args.append("--build")
     compose_args.append(service)
 
     print(f"  Source: {source} (platform: {platform})")
-    if args.filter:
-        print(f"  Filter: {args.filter}")
-    if getattr(args, "skip_lingua_files", False):
+    if filter:
+        print(f"  Filter: {filter}")
+    if skip_lingua_files:
         print("  Skip-lingua-files: enabled")
-    if getattr(args, "classifier", None):
-        print(f"  Classifier: {args.classifier} (single)")
+    if classifier:
+        print(f"  Classifier: {classifier} (single)")
     result = docker_compose(*compose_args)
     return result.returncode
 

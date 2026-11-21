@@ -1,0 +1,76 @@
+"""Tests that each verb's `action` names a function of the CLI module whose keyword parameters are that verb's socket inputs.
+
+A process that runs a verb without a terminal passes the validated request fields to the action as keyword arguments. The contracts pinned here:
+
+- Exactly the verbs listed below have an action, and the CLI module has no other function with the action prefix.
+- An action takes keyword-only parameters; its public ones are the verb's socket inputs, required exactly where the input is required.
+- An action has a confirmation callback exactly when the command asks for a confirmation, and a password callback exactly when it asks for the admin password; both default to None, which the action treats as "nobody to ask".
+
+The registry is reached through the module (`verbs.<name>`) and the CLI as `import sdp`.
+"""
+
+from __future__ import annotations
+
+import inspect
+
+import pytest
+
+import sdp
+from social_data_pipeline.control import verbs
+
+# Written out on purpose: giving a verb an action makes it runnable without a terminal, so that decision is made in two places.
+ACTIONS = {
+    "run.start": "do_run_start",
+    "db.start": "do_db_start",
+    "db.stop": "do_db_stop",
+    "db.reset": "do_db_reset",
+    "db.unsetup": "do_db_unsetup",
+    "db.unsetup_mcp": "do_db_unsetup_mcp",
+    "db.unsetup_jobs": "do_db_unsetup_jobs",
+    "source.remove": "do_source_remove",
+}
+
+# The private parameter an action has for each thing its command asks on the terminal.
+CALLBACK_FOR_PROMPT = {"confirmation": "_confirm", "admin_password": "_ask_password"}
+
+
+def _parameters(verb_name):
+    return inspect.signature(getattr(sdp, verbs.VERBS[verb_name].action)).parameters
+
+
+class TestActionsMatchTheRegistry:
+    def test_exactly_these_verbs_have_an_action(self):
+        """Bug class: a verb made runnable without a terminal by accident (an action added to a verb whose inputs are not typed yet), or an action dropped from the registry so its verb silently stops being runnable."""
+        assert {name: verb.action for name, verb in verbs.VERBS.items() if verb.action is not None} == ACTIONS
+
+    def test_every_action_function_of_the_cli_is_in_the_registry(self):
+        """Bug class: an action function added to the CLI without a verb, which no signature or no-prompt check would then cover."""
+        in_cli = {name for name, value in vars(sdp).items() if name.startswith("do_") and inspect.isfunction(value)}
+
+        assert in_cli == set(ACTIONS.values())
+
+    @pytest.mark.parametrize("verb_name", sorted(ACTIONS))
+    def test_parameters_are_keyword_only(self, verb_name):
+        """Bug class: a positional parameter, which lets a caller bind a request field to the wrong input by order."""
+        kinds = {name: param.kind for name, param in _parameters(verb_name).items()}
+
+        assert all(kind is inspect.Parameter.KEYWORD_ONLY for kind in kinds.values()), kinds
+
+    @pytest.mark.parametrize("verb_name", sorted(ACTIONS))
+    def test_public_parameters_are_the_socket_inputs(self, verb_name):
+        """Bug class: drift between what the socket validates and what the action takes: a validated field the action does not accept (a TypeError at run time), or an action parameter no request can carry (a new CLI flag reaching the action without a typed input). A parameter is required exactly when the input is, so an absent optional field never needs an invented default."""
+        socket_inputs = verbs.VERBS[verb_name].socket_inputs
+        public = {name: param for name, param in _parameters(verb_name).items() if not name.startswith("_")}
+
+        assert set(public) == set(socket_inputs)
+        has_no_default = {name: param.default is inspect.Parameter.empty for name, param in public.items()}
+        assert has_no_default == {name: spec.required for name, spec in socket_inputs.items()}
+
+    @pytest.mark.parametrize("verb_name", sorted(ACTIONS))
+    def test_callbacks_match_what_the_command_asks(self, verb_name):
+        """Bug class: an action for a command that asks for a confirmation or the admin password without the matching callback (it could then only ask on a terminal it does not have, or skip the question), or a callback whose default is anything but None (a default that answers yes, or one that prompts)."""
+        prompted = verbs.VERBS[verb_name].prompted_inputs
+        private = {name: param for name, param in _parameters(verb_name).items() if name.startswith("_")}
+
+        assert set(private) == {callback for prompt, callback in CALLBACK_FOR_PROMPT.items() if prompt in prompted}
+        assert all(param.default is None for param in private.values())

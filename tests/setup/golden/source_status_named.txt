@@ -1,0 +1,30 @@
+
+  Social Data Pipeline - Source Status
+  ===================================
+
+  Source: reddit
+    Platform:    reddit
+    Data types:  submissions, comments
+    Profiles:    parse, lingua, ml, postgres_ingest, postgres_ml, mongo_ingest, sr_ingest, sr_ml
+    Paths:
+      Dumps:     /mnt/dumps/reddit
+      Extracted: ./data/extracted/reddit
+      Parsed:    ./data/parsed/reddit
+      Output:    ./data/output/reddit
+
+    PostgreSQL ingestion:
+      ingest_comments: 0 datasets [in progress: RC_2024-02] [1 failed]
+      ingest_submissions: 2 datasets (latest: RS_2024-02)
+        last updated: 2024-03-05T10:11:12.123456
+      ml_comments: 1 datasets (latest: toxic_roberta/RC_2024-01)
+        last updated: 2024-03-06T08:00:00
+
+    MongoDB ingestion:
+      ingest_comments: 1 datasets (latest: RC_2024-01) [2 failed]
+
+    StarRocks ingestion:
+      comments: 1 datasets (latest: RC_2024-01)
+        last updated: 2024-03-05
+
+    StarRocks ML ingestion: no data yet for source 'reddit'.
+

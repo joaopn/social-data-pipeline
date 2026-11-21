@@ -1,0 +1,60 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: disabled
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      datasets
+    Port:      5432
+    Running:   no
+
+    Ingestion status:
+      platform: numbers
+        - 7.posts: 1 datasets (main data)
+            latest: P_1
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27017
+    Running:   no
+
+    Ingestion status:
+      platform: numbers
+        - 2024-01-01: 1 datasets
+            latest: P_1
+
+  PostgreSQL MCP:
+    Port:      8000
+    Read-only: no (access-mode 5)
+    Endpoint:  http://<server_ip>:8000/sse (type: sse)
+    Running:   no
+
+  MongoDB MCP:
+    Port:      3000.5
+    Read-only: no
+    Endpoint:  http://<server_ip>:3000.5/mcp (type: http)
+    Running:   no
+
+  Jobs scheduler:
+    Port:         None
+    Result root:  2024-01-01
+    Max concur.:  [1, 2]
+    Web UI:       http://<server_ip>:None/
+    MCP:          http://<server_ip>:None/mcp (type: http)
+    Running:      yes
+    Targets:      7 (PostgreSQL), 2024-02-02 (MongoDB), third (None)
+    Queue:        pending=0 approved=0 running=0
+
+  Drift:
+    mcp: DRIFT (2 issues)
+      [mcp] postgres_mcp is enabled but .ro_credentials is missing for postgres; the MCP entrypoint will fail loud
+        Fix: sdp db recover-password --regenerate-ro
+      [mcp] mongo_mcp is enabled but .ro_credentials is missing for mongo; the MCP entrypoint will fail loud
+        Fix: sdp db recover-password --regenerate-ro
+    jobs: DRIFT (1 issue)
+      [jobs] jobs target 'third' has unknown backend None (expected postgres / starrocks / mongodb)
+        Fix: edit config/jobs/config.local.yaml or rerun 'sdp db setup-jobs'
+  Run 'sdp db verify' for a per-DB exit-code-aware report.
+

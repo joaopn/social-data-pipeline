@@ -1,0 +1,100 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: enabled
+    RW user:       postgres: pgadmin, mongo: mongoadmin, starrocks: root
+    RO user:       pg_reader
+      PostgreSQL:  <root>/data/database/postgres/.ro_credentials
+      MongoDB:     <root>/storage/mongo/.ro_credentials
+      StarRocks:   <root>/elsewhere/starrocks/.ro_credentials
+    MCP user:
+      PostgreSQL:  pg_mcp
+      MongoDB:     mongo_mcp
+      StarRocks:   sr_mcp
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      research
+    Port:      5433
+    Running:   yes
+
+    Ingestion status:
+      platform: adhoc
+        - adhoc.adhoc: 1 datasets (main data)
+            latest: one
+      platform: reddit
+        - reddit_data.comments: 0 datasets (main data) [in progress: RC_2024-02] [1 failed]
+        - reddit_data.submissions: 2 datasets (main data)
+            latest: RS_2024-02, updated: 2024-03-05
+        - reddit_data.comments_lingua: 1 datasets (classifier: lingua) [1 failed]
+            latest: RC_2024-01, updated: 2024-03-06
+        - reddit_data.comments_toxicity: 2 datasets (classifier: toxic_roberta) [1 failed]
+            latest: RC_2024-02, updated: 2024-03-06
+        - reddit_data.comments_unknown: 1 datasets (classifier: unknown) [1 failed]
+            latest: RC_legacy, updated: 2024-03-06
+      platform: twitter
+        - twitter.tweets: 1 datasets (main data)
+            latest: TW_2024, updated: 2024-03-07
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27018
+    Running:   no
+
+    Ingestion status:
+      platform: forum
+        - custom_forum__posts: 2 datasets [1 failed]
+            latest: P_2
+      platform: reddit
+        - reddit_comments: 1 datasets
+            latest: RC_2024-01, updated: 2024-03-05
+      platform: twitter
+        - tw_archive: 1 datasets
+            latest: TW_2024
+
+  StarRocks:
+    Path:      <root>/elsewhere/starrocks
+    Port:      9031
+    FE HTTP:   8031
+    Running:   yes
+
+    Ingestion status:
+      platform: reddit
+        - reddit.comments: 1 datasets [in progress: RC_2024-02]
+            latest: RC_2024-01, updated: 2024-03-05
+        - reddit.comments: 1 datasets (ml classifiers)
+            latest: toxic_roberta/RC_2024-01, updated: 2024-03-06
+
+  Export:
+    Host path:      /srv/export
+    Container path: /export
+
+  PostgreSQL MCP:
+    Port:      8001
+    Read-only: yes (access-mode restricted)
+    Endpoint:  http://<server_ip>:8001/sse (type: sse)
+    Running:   no
+
+  MongoDB MCP:
+    Port:      3001
+    Read-only: yes (filtered tool list)
+    Endpoint:  http://<server_ip>:3001/mcp (type: http)
+    Running:   yes
+
+  StarRocks MCP:
+    Port:      9001
+    Read-only: yes (database-level via sdp_readonly role)
+    Endpoint:  http://<server_ip>:9001/mcp (type: http)
+    Running:   no
+
+  Jobs scheduler:
+    Port:         8055
+    Result root:  /srv/jobs/results
+    Max concur.:  3
+    Web UI:       http://<server_ip>:8055/
+    MCP:          http://<server_ip>:8055/mcp (type: http)
+    Running:      yes
+    Targets:      pg_main (PostgreSQL), mongo_main (MongoDB), sr_main (StarRocks)
+    Queue:        pending=2 approved=1 running=0
+

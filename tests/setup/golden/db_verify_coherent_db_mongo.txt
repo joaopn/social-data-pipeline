@@ -1,0 +1,9 @@
+
+  Social Data Pipeline - Database Verify
+  =====================================
+
+  Findings:
+    All databases coherent.
+
+  OK
+

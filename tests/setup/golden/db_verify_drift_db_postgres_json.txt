@@ -1,0 +1,66 @@
+{
+  "ok": false,
+  "exit_code": 1,
+  "results": {
+    "postgres": {
+      "ok": false,
+      "findings": [
+        {
+          "category": "auth",
+          "message": "config/db/postgres.yaml has auth:true but .env is missing POSTGRES_AUTH_ENABLED=true; the DB entrypoint will not enforce auth",
+          "fix": "sdp db setup --add postgres  # rewrites .env from yaml"
+        },
+        {
+          "category": "creds",
+          "message": "postgres auth enabled but <root>/data/database/postgres/.ro_credentials is missing",
+          "fix": "sdp db recover-password --regenerate-ro"
+        },
+        {
+          "category": "container",
+          "message": "running postgres container has POSTGRES_AUTH_ENABLED=true but .env now says false; container was started before .env changed",
+          "fix": "sdp db stop postgres && sdp db start postgres"
+        },
+        {
+          "category": "mounts",
+          "message": "docker-compose.override.yml is missing source mount: /mnt/ssd/parsed/reddit:/data/parsed/reddit:ro",
+          "fix": "sdp db stop postgres && sdp db start postgres"
+        },
+        {
+          "category": "mounts",
+          "message": "docker-compose.override.yml has stale source mount: /mnt/gone/parsed/removed:/data/parsed/removed:ro",
+          "fix": "sdp db stop postgres && sdp db start postgres"
+        }
+      ]
+    },
+    "mcp": {
+      "ok": false,
+      "findings": [
+        {
+          "category": "mcp",
+          "message": "postgres_mcp is enabled but .ro_credentials is missing for postgres; the MCP entrypoint will fail loud",
+          "fix": "sdp db recover-password --regenerate-ro"
+        },
+        {
+          "category": "mcp",
+          "message": "config/db/mcp.yaml enables starrocks_mcp but starrocks itself is not configured",
+          "fix": "sdp db setup --add starrocks  # or: sdp db unsetup-mcp"
+        }
+      ]
+    },
+    "jobs": {
+      "ok": false,
+      "findings": [
+        {
+          "category": "jobs",
+          "message": "jobs target 'old' has unknown backend 'sqlite' (expected postgres / starrocks / mongodb)",
+          "fix": "edit config/jobs/config.local.yaml or rerun 'sdp db setup-jobs'"
+        },
+        {
+          "category": "jobs",
+          "message": "jobs target 'sr_main' routes to starrocks but starrocks is not configured",
+          "fix": "sdp db setup --add starrocks  # or: sdp db unsetup-jobs"
+        }
+      ]
+    }
+  }
+}

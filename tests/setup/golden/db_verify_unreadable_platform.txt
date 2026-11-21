@@ -1,0 +1,10 @@
+  Warning: Could not read <root>/config/sources/broken/platform.yaml: <yaml error>
+
+  Social Data Pipeline - Database Verify
+  =====================================
+
+  Findings:
+    All databases coherent.
+
+  OK
+

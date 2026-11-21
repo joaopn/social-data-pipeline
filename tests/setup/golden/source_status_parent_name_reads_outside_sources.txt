@@ -1,0 +1,18 @@
+
+  Social Data Pipeline - Source Status
+  ===================================
+
+  Source: ../x
+    Platform:    outside
+    Data types:  posts
+    Profiles:    postgres_ingest, mongo_ingest
+    Paths:
+      Dumps:     ./data/dumps/../x
+      Extracted: ./data/extracted/../x
+      Parsed:    ./data/parsed/../x
+      Output:    ./data/output/../x
+
+    PostgreSQL ingestion: no data yet for source '../x'.
+
+    MongoDB ingestion: no data yet for source '../x'.
+

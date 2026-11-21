@@ -1,0 +1,70 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: enabled
+    RW user:       postgres: pgadmin, mongo: mongoadmin, starrocks: root
+    RO user:       pg_reader
+      PostgreSQL:  <root>/data/database/postgres/.ro_credentials
+      MongoDB:     <root>/storage/mongo/.ro_credentials
+      StarRocks:   <root>/elsewhere/starrocks/.ro_credentials
+    MCP user:
+      PostgreSQL:  pg_mcp
+      MongoDB:     mongo_mcp
+      StarRocks:   sr_mcp
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      research
+    Port:      5433
+    Running:   yes
+
+    Ingestion: run with --verbose for per-source breakdown.
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27018
+    Running:   no
+
+    Ingestion: run with --verbose for per-source breakdown.
+
+  StarRocks:
+    Path:      <root>/elsewhere/starrocks
+    Port:      9031
+    FE HTTP:   8031
+    Running:   yes
+
+    Ingestion: run with --verbose for per-source breakdown.
+
+  Export:
+    Host path:      /srv/export
+    Container path: /export
+
+  PostgreSQL MCP:
+    Port:      8001
+    Read-only: yes (access-mode restricted)
+    Endpoint:  http://<server_ip>:8001/sse (type: sse)
+    Running:   no
+
+  MongoDB MCP:
+    Port:      3001
+    Read-only: yes (filtered tool list)
+    Endpoint:  http://<server_ip>:3001/mcp (type: http)
+    Running:   yes
+
+  StarRocks MCP:
+    Port:      9001
+    Read-only: yes (database-level via sdp_readonly role)
+    Endpoint:  http://<server_ip>:9001/mcp (type: http)
+    Running:   no
+
+  Jobs scheduler:
+    Port:         8055
+    Result root:  /srv/jobs/results
+    Max concur.:  3
+    Web UI:       http://<server_ip>:8055/
+    MCP:          http://<server_ip>:8055/mcp (type: http)
+    Running:      yes
+    Targets:      pg_main (PostgreSQL), mongo_main (MongoDB), sr_main (StarRocks)
+    Queue:        pending=2 approved=1 running=0
+

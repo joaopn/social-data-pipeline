@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "exit_code": 0,
+  "results": {
+    "postgres": {
+      "ok": true,
+      "findings": []
+    },
+    "mongo": {
+      "ok": true,
+      "findings": []
+    }
+  }
+}

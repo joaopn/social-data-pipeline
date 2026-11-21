@@ -1,0 +1,28 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: enabled
+    RW user:       starrocks: root
+
+  StarRocks:
+    Path:      <root>/elsewhere/starrocks
+    Port:      9030
+    FE HTTP:   8030
+    Running:   no
+
+  Jobs scheduler:
+    Port:         8050
+    Result root:  ./data/jobs/results
+    Max concur.:  1
+    Web UI:       http://<server_ip>:8050/
+    MCP:          http://<server_ip>:8050/mcp (type: http)
+    Running:      no
+    Queue:        pending=0 approved=0 running=0
+
+  Drift:
+    starrocks: DRIFT (1 issue)
+      [creds] starrocks auth enabled but <root>/elsewhere/starrocks/.ro_credentials is missing
+        Fix: sdp db recover-password --regenerate-ro
+  Run 'sdp db verify' for a per-DB exit-code-aware report.
+

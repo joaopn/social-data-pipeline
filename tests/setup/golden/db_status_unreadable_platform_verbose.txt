@@ -1,0 +1,35 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: disabled
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      datasets
+    Port:      5432
+    Running:   no
+  Warning: Could not read <root>/config/sources/broken/platform.yaml: <yaml error>
+
+    Ingestion status:
+      platform: broken
+        - broken.posts: 1 datasets (main data)
+            latest: P_1
+        - broken.users: 1 datasets (main data)
+            latest: U_1
+      platform: fine
+        - fine.posts: 1 datasets (main data)
+            latest: P_1
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27017
+    Running:   no
+  Warning: Could not read <root>/config/sources/broken/platform.yaml: <yaml error>
+
+    Ingestion status:
+      platform: broken
+        - broken_posts: 1 datasets
+            latest: P_1
+  Warning: Could not read <root>/config/sources/broken/platform.yaml: <yaml error>
+

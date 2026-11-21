@@ -1,0 +1,6 @@
+
+  Social Data Pipeline - Error Logs
+  ==================================
+
+  Source '../x': not found
+

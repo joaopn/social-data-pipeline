@@ -1,0 +1,15 @@
+
+  Social Data Pipeline - Error Logs
+  ==================================
+
+  Source: fresh
+
+    postgres_ingest errors (comments): 2 failed
+
+      RC_2024-02 [2024-03-05T10:11:12.123456]
+        COPY failed: line 7
+        DETAIL: unterminated quoted field
+
+      unknown
+        no error message
+

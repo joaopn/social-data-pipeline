@@ -1,0 +1,81 @@
+
+  Social Data Pipeline - Source Status
+  ===================================
+
+  Source: bare
+    Platform:    bare
+    Data types:  
+    Profiles:    none
+    Paths:
+      Dumps:     ./data/dumps/bare
+      Extracted: ./data/extracted/bare
+      Parsed:    ./data/parsed/bare
+      Output:    ./data/output/bare
+
+  Source 'blank': not found
+  Warning: Could not read <root>/config/sources/broken/platform.yaml: <yaml error>
+
+  Source 'broken': not found
+
+  Source: dated
+    Platform:    2024-01-01
+    Data types:  posts
+    Profiles:    parse
+    Paths:
+      Dumps:     ./data/dumps/dated
+      Extracted: ./data/extracted/dated
+      Parsed:    ./data/parsed/dated
+      Output:    7
+
+  Source: forum
+    Platform:    custom/forum
+    Data types:  posts
+    Profiles:    parse, lingua, mongo_ingest
+    Paths:
+      Dumps:     ./data/dumps/forum
+      Extracted: ./data/extracted/forum
+      Parsed:    ./data/parsed/forum
+      Output:    ./data/output/forum
+
+    MongoDB ingestion: no data yet for source 'forum'.
+
+  Source: reddit
+    Platform:    reddit
+    Data types:  submissions, comments
+    Profiles:    parse, lingua, ml, postgres_ingest, postgres_ml, mongo_ingest, sr_ingest, sr_ml
+    Paths:
+      Dumps:     /mnt/dumps/reddit
+      Extracted: ./data/extracted/reddit
+      Parsed:    ./data/parsed/reddit
+      Output:    ./data/output/reddit
+
+    PostgreSQL ingestion:
+      ingest_comments: 0 datasets [in progress: RC_2024-02] [1 failed]
+      ingest_submissions: 2 datasets (latest: RS_2024-02)
+        last updated: 2024-03-05T10:11:12.123456
+      ml_comments: 1 datasets (latest: toxic_roberta/RC_2024-01)
+        last updated: 2024-03-06T08:00:00
+
+    MongoDB ingestion:
+      ingest_comments: 1 datasets (latest: RC_2024-01) [2 failed]
+
+    StarRocks ingestion:
+      comments: 1 datasets (latest: RC_2024-01)
+        last updated: 2024-03-05
+
+    StarRocks ML ingestion: no data yet for source 'reddit'.
+
+  Source: twitter
+    Platform:    twitter
+    Data types:  tweets
+    Profiles:    parse, sr_ingest
+    Paths:
+      Dumps:     ./data/dumps/twitter
+      Extracted: ./data/extracted/twitter
+      Parsed:    ./data/parsed/twitter
+      Output:    ./data/output/twitter
+
+    StarRocks ingestion:
+
+    StarRocks ML ingestion: no data yet for source 'twitter'.
+

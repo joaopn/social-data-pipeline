@@ -1,0 +1,6 @@
+
+  Social Data Pipeline - Error Logs
+  ==================================
+
+  No errors found for any source.
+

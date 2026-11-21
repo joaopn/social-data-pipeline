@@ -1,0 +1,51 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: disabled
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      datasets
+    Port:      5432
+    Running:   no
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27017
+    Running:   no
+
+  StarRocks:
+    Path:      <root>/elsewhere/starrocks
+    Port:      9030
+    FE HTTP:   8030
+    Running:   no
+
+  PostgreSQL MCP:
+    Port:      8000
+    Read-only: no (access-mode unrestricted)
+    Endpoint:  http://<server_ip>:8000/sse (type: sse)
+    Running:   yes
+
+  MongoDB MCP:
+    Port:      3005
+    Read-only: no
+    Endpoint:  http://<server_ip>:3005/mcp (type: http)
+    Running:   no
+
+  StarRocks MCP:
+    Port:      9000
+    Read-only: no (auth disabled — RO role not enforced)
+    Endpoint:  http://<server_ip>:9000/mcp (type: http)
+    Running:   yes
+
+  Drift:
+    mcp: DRIFT (3 issues)
+      [mcp] postgres_mcp is enabled but .ro_credentials is missing for postgres; the MCP entrypoint will fail loud
+        Fix: sdp db recover-password --regenerate-ro
+      [mcp] mongo_mcp is enabled but .ro_credentials is missing for mongo; the MCP entrypoint will fail loud
+        Fix: sdp db recover-password --regenerate-ro
+      [mcp] starrocks_mcp is enabled but .ro_credentials is missing for starrocks; the MCP entrypoint will fail loud
+        Fix: sdp db recover-password --regenerate-ro
+  Run 'sdp db verify' for a per-DB exit-code-aware report.
+

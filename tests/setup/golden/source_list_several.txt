@@ -1,0 +1,18 @@
+
+  Configured sources:
+
+    bare
+      profiles: none
+    blank
+      profiles: postgres_ingest
+    broken
+      profiles: postgres_ingest
+    dated
+      profiles: parse
+    forum
+      profiles: parse, lingua, mongo_ingest
+    reddit
+      profiles: parse, lingua, ml, postgres_ingest, postgres_ml, mongo_ingest, sr_ingest, sr_ml
+    twitter
+      profiles: parse, sr_ingest
+

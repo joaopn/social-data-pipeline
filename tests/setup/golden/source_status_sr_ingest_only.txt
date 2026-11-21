@@ -1,0 +1,18 @@
+
+  Social Data Pipeline - Source Status
+  ===================================
+
+  Source: twitter
+    Platform:    twitter
+    Data types:  tweets
+    Profiles:    parse, sr_ingest
+    Paths:
+      Dumps:     ./data/dumps/twitter
+      Extracted: ./data/extracted/twitter
+      Parsed:    ./data/parsed/twitter
+      Output:    ./data/output/twitter
+
+    StarRocks ingestion:
+
+    StarRocks ML ingestion: no data yet for source 'twitter'.
+

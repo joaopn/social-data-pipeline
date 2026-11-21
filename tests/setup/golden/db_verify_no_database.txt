@@ -1,0 +1,3 @@
+
+  No databases configured. Run: python sdp.py db setup
+

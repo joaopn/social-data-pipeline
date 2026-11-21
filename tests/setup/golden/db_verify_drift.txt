@@ -1,0 +1,34 @@
+
+  Social Data Pipeline - Database Verify
+  =====================================
+
+  Findings:
+    postgres: DRIFT (5 issues)
+      [auth] config/db/postgres.yaml has auth:true but .env is missing POSTGRES_AUTH_ENABLED=true; the DB entrypoint will not enforce auth
+        Fix: sdp db setup --add postgres  # rewrites .env from yaml
+      [creds] postgres auth enabled but <root>/data/database/postgres/.ro_credentials is missing
+        Fix: sdp db recover-password --regenerate-ro
+      [container] running postgres container has POSTGRES_AUTH_ENABLED=true but .env now says false; container was started before .env changed
+        Fix: sdp db stop postgres && sdp db start postgres
+      [mounts] docker-compose.override.yml is missing source mount: /mnt/ssd/parsed/reddit:/data/parsed/reddit:ro
+        Fix: sdp db stop postgres && sdp db start postgres
+      [mounts] docker-compose.override.yml has stale source mount: /mnt/gone/parsed/removed:/data/parsed/removed:ro
+        Fix: sdp db stop postgres && sdp db start postgres
+    mongo: DRIFT (2 issues)
+      [creds] <root>/storage/mongo/.ro_credentials mode is 0o644, expected 0600
+        Fix: chmod 600 <root>/storage/mongo/.ro_credentials
+      [container] mongo container is running but unhealthy; the auth-aware healthcheck includes an RO-user probe, so this is typically a missing or drifted RO password
+        Fix: sdp db stop mongo && sdp db start mongo
+    mcp: DRIFT (2 issues)
+      [mcp] postgres_mcp is enabled but .ro_credentials is missing for postgres; the MCP entrypoint will fail loud
+        Fix: sdp db recover-password --regenerate-ro
+      [mcp] config/db/mcp.yaml enables starrocks_mcp but starrocks itself is not configured
+        Fix: sdp db setup --add starrocks  # or: sdp db unsetup-mcp
+    jobs: DRIFT (2 issues)
+      [jobs] jobs target 'old' has unknown backend 'sqlite' (expected postgres / starrocks / mongodb)
+        Fix: edit config/jobs/config.local.yaml or rerun 'sdp db setup-jobs'
+      [jobs] jobs target 'sr_main' routes to starrocks but starrocks is not configured
+        Fix: sdp db setup --add starrocks  # or: sdp db unsetup-jobs
+
+  Exit: 1 (drift in 4 of 4 check group(s))
+

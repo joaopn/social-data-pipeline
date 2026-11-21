@@ -1,0 +1,6 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  No databases configured. Run: python sdp.py db setup
+

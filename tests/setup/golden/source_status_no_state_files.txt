@@ -1,0 +1,16 @@
+
+  Social Data Pipeline - Source Status
+  ===================================
+
+  Source: forum
+    Platform:    custom/forum
+    Data types:  posts
+    Profiles:    parse, lingua, mongo_ingest
+    Paths:
+      Dumps:     ./data/dumps/forum
+      Extracted: ./data/extracted/forum
+      Parsed:    ./data/parsed/forum
+      Output:    ./data/output/forum
+
+    MongoDB ingestion: no data yet for source 'forum'.
+

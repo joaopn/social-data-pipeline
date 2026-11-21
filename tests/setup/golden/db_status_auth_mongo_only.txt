@@ -1,0 +1,26 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: enabled
+    RW user:       postgres: postgres
+    RO user:       stale_pg_reader (password in <root>/storage/mongo/.ro_credentials)
+    MCP user:      sr_mcp
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      datasets
+    Port:      5432
+    Running:   no
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27017
+    Running:   yes
+
+  StarRocks:
+    Path:      <root>/elsewhere/starrocks
+    Port:      9030
+    FE HTTP:   8030
+    Running:   no
+

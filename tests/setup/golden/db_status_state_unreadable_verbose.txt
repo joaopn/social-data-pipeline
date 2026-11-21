@@ -1,0 +1,32 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: disabled
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      datasets
+    Port:      5432
+    Running:   no
+
+    Ingestion status:
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27017
+    Running:   no
+
+    Ingestion status:
+      platform: reddit
+        - reddit_submissions: 1 datasets
+            latest: RS_2024-01
+
+  StarRocks:
+    Path:      <root>/elsewhere/starrocks
+    Port:      9030
+    FE HTTP:   8030
+    Running:   no
+
+    No ingestion data yet.
+

@@ -1,0 +1,27 @@
+
+  Social Data Pipeline - Database Status
+  =====================================
+
+  Authentication: disabled
+
+  PostgreSQL:
+    Path:      ./data/database/postgres
+    Name:      datasets
+    Port:      5432
+    Running:   no
+
+    Ingestion: run with --verbose for per-source breakdown.
+
+  MongoDB:
+    Path:      ./storage/mongo
+    Port:      27017
+    Running:   no
+
+    Ingestion: run with --verbose for per-source breakdown.
+
+  StarRocks:
+    Path:      <root>/elsewhere/starrocks
+    Port:      9030
+    FE HTTP:   8030
+    Running:   no
+

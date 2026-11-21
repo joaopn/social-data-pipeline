@@ -1,0 +1,1 @@
+{"ok": true, "exit_code": 0, "message": "No databases configured. Run: python sdp.py db setup", "results": {}}

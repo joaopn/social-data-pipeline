@@ -1,0 +1,15 @@
+  Warning: Could not read <root>/config/sources/broken/platform.yaml: <yaml error>
+{
+  "ok": true,
+  "exit_code": 0,
+  "results": {
+    "postgres": {
+      "ok": true,
+      "findings": []
+    },
+    "mongo": {
+      "ok": true,
+      "findings": []
+    }
+  }
+}

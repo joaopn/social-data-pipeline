@@ -1,0 +1,7 @@
+
+  Social Data Pipeline - Error Logs
+  ==================================
+  Warning: Could not read <root>/config/sources/broken/platform.yaml: <yaml error>
+
+  Source 'broken': not found
+

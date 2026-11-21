@@ -24,6 +24,7 @@ ACTIONS = {
     "db.verify": "get_db_verify",
     "source.list": "get_source_list",
     "source.status": "get_source_status",
+    "source.progress": "get_source_progress",
     "source.error_logs": "get_source_error_logs",
     "run.start": "do_run_start",
     "db.start": "do_db_start",

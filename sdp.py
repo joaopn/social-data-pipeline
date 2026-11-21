@@ -25,6 +25,7 @@ Usage:
     sdp.py source remove <name>              Remove source config
     sdp.py source list                       List configured sources
     sdp.py source status [name]              Show source processing/ingestion status
+    sdp.py source progress [name] [--json]   Show how many files each processing stage has finished
     sdp.py source error-logs [name]          Show database ingestion error logs
 
     sdp.py run <profile> [--source <name>]   Run pipeline for a source (--build to rebuild, --filter to select files)
@@ -33,6 +34,7 @@ Usage:
 """
 
 import argparse
+import errno
 import json
 import math
 import os
@@ -42,6 +44,7 @@ import stat
 import subprocess
 import sys
 import unicodedata
+from datetime import datetime, timezone
 from getpass import getpass
 from pathlib import Path
 
@@ -4694,6 +4697,296 @@ def _print_source_ingestion(source, ingestion):
 
 
 # ============================================================================
+# sdp source progress
+# ============================================================================
+
+# Why a part of the progress report could not be read. None of them holds an input value.
+_PROGRESS_CONFIG_NOT_READABLE = "the source config cannot be read"
+_PROGRESS_CONFIG_NOT_A_MAPPING = "the source config is not a mapping"
+_PROGRESS_PATHS_NOT_A_MAPPING = "paths in the source config is not a mapping"
+_PROGRESS_DATA_TYPES_NOT_A_LIST = "data_types in the source config is not a list"
+_PROGRESS_PATH_NOT_VALID = "the path in the source config is empty or not text"
+_PROGRESS_DATA_TYPE_NOT_VALID = "the data type is not a valid folder name"
+_PROGRESS_FOLDER_NOT_READABLE = "the folder cannot be read"
+
+_PROGRESS_FINISHED_SUFFIXES = (".csv", ".parquet")
+_PROGRESS_WRITING_SUFFIX = ".temp"
+# Sub-folders of a source's output folder that are not a classifier: lingua is reported as its own stage, lingua_ingest holds a second copy of the lingua files for ingestion.
+_PROGRESS_NOT_A_CLASSIFIER = ("lingua", "lingua_ingest")
+# What a data type of the config that is not text is called in the progress data, and how many characters of a text that is no folder name are carried.
+_PROGRESS_DATA_TYPE_NOT_TEXT = "(not text)"
+_PROGRESS_DATA_TYPE_SHOWN = 80
+_DISPLAY_UNSAFE_CATEGORIES = ("Cc", "Cf", "Zl", "Zp", "Cs")
+
+
+def _display_safe(text):
+    """Return text with every control character (categories Cc, Zl, Zp), every format character (category Cf: a direction override reorders the line a terminal shows) and every lone surrogate (how an undecodable byte of a file name arrives) replaced by its backslash escape, so that the result can be printed on a terminal and encoded as UTF-8."""
+    if not any(unicodedata.category(ch) in _DISPLAY_UNSAFE_CATEGORIES for ch in text):
+        return text
+    return "".join(ch.encode("unicode_escape").decode("ascii") if unicodedata.category(ch) in _DISPLAY_UNSAFE_CATEGORIES else ch for ch in text)
+
+
+def cmd_source_progress(args):
+    """Show how many files each processing stage has finished."""
+    try:
+        data = get_source_progress(name=args.name)
+    except ActionError as e:
+        if getattr(args, "json", False):
+            # Standard output stays empty, so a reader of the JSON is not handed a line that is not JSON.
+            print(f"  Error: {e.message}", file=sys.stderr)
+        else:
+            print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+    else:
+        print_source_progress(data)
+    if args.name is not None and not data["sources"][0]["found"]:
+        return 1
+    return 0
+
+
+def get_source_progress(*, name=None):
+    """Count the files each file-based stage has written, for the named source or for all. Prints nothing and returns `{"sources": [...]}` for `print_source_progress`: one entry per source with `name`, `found`, `warnings` (the line about a platform.yaml that cannot be read), `not_readable` (None, or why the config cannot be used), `stages` and `output` (the `path` of the output folder, whether it `exists`, and `not_readable`; None without a usable config); `stages` holds parse, then lingua, then one entry per classifier folder in name order, each with `stage`, `kind` (`parse`, `lingua` or `classifier`), `path`, `not_readable` and `data_types`, one item per data type of the config with `data_type` (`(not text)` for a value that is not text, the first 80 characters and `...` for a text longer than that which is no folder name), `exists` (the folder was listed), `not_readable`, `finished` (files ending in .csv or .parquet), `being_written` (files ending in .temp) and `newest` (`name` and `modified`, an ISO-8601 UTC time, of the finished file changed last; None without one). Every `not_readable` is None or a constant reason, and every name and path is display-safe. Raises ActionError for a name that is not one path component, the empty string included (only None means all sources); a well-formed name without a readable config is an entry with `found` false."""
+    if name is not None and not _is_one_path_component(name):
+        raise ActionError(_SOURCE_NAME_NOT_VALID)
+
+    from social_data_pipeline.setup.utils import list_sources
+
+    sources = [name] if name is not None else list_sources()
+    return {"sources": [_get_source_progress_entry(source) for source in sources]}
+
+
+def _get_source_progress_entry(source):
+    """The entry of one source in the data of `get_source_progress`."""
+    from social_data_pipeline.setup.utils import read_source_config
+
+    entry = {"name": _display_safe(source), "found": False, "warnings": [], "not_readable": None, "stages": [], "output": None}
+    try:
+        config, warning = read_source_config(source)
+    except Exception:
+        # The reader lets more through than can be listed: a source folder that cannot be entered raises OSError where the reader looks for the file, a platform.yaml that is not UTF-8 text raises UnicodeDecodeError, one nested hundreds of levels deep raises RecursionError in the YAML parser, and a tagged value the parser cannot build (`!!bool maybe`, `!!int ""`, `!!timestamp x`) raises KeyError, IndexError or AttributeError. Whatever it is, this source's config cannot be read and the next source is still reported.
+        entry["not_readable"] = _PROGRESS_CONFIG_NOT_READABLE
+        return entry
+    if warning is not None:
+        entry["warnings"].append(_display_safe(warning))
+        entry["not_readable"] = _PROGRESS_CONFIG_NOT_READABLE
+    if config is None:
+        return entry
+
+    entry["found"] = True
+    if not isinstance(config, dict):
+        entry["not_readable"] = _PROGRESS_CONFIG_NOT_A_MAPPING
+        return entry
+    paths = config.get("paths", {})
+    if not isinstance(paths, dict):
+        entry["not_readable"] = _PROGRESS_PATHS_NOT_A_MAPPING
+        return entry
+    # A string is not taken as a list of one-letter data types, and a missing key is not taken as "no data types".
+    data_types = config.get("data_types")
+    if not isinstance(data_types, list):
+        entry["not_readable"] = _PROGRESS_DATA_TYPES_NOT_A_LIST
+        return entry
+
+    parsed = _resolve_progress_folder(paths.get("parsed", f"./data/parsed/{source}"))
+    output = _resolve_progress_folder(paths.get("output", f"./data/output/{source}"))
+    entry["stages"].append(_get_stage_progress("parse", "parse", parsed, data_types))
+    entry["stages"].append(_get_stage_progress("lingua", "lingua", None if output is None else os.path.join(output, "lingua"), data_types))
+    if output is None:
+        entry["output"] = {"path": None, "exists": False, "not_readable": _PROGRESS_PATH_NOT_VALID}
+        return entry
+
+    classifiers, exists, not_readable = _list_classifier_folders(output)
+    entry["output"] = {"path": _display_safe(output), "exists": exists, "not_readable": not_readable}
+    for classifier in classifiers:
+        entry["stages"].append(_get_stage_progress(classifier, "classifier", os.path.join(output, classifier), data_types))
+    return entry
+
+
+def _resolve_progress_folder(value):
+    """Return a stage path of a source config as an absolute path (a relative one is under the project root, not the working directory), or None when the value is not a non-empty string."""
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = ROOT / path
+    return str(path)
+
+
+def _list_classifier_folders(output):
+    """List the classifier folders of a source's output folder with one directory listing: every direct sub-folder that is not lingua or lingua_ingest, in name order. Returns (names, whether the output folder exists, None or why it cannot be listed)."""
+    try:
+        with os.scandir(output) as listing:
+            entries = list(listing)
+    except FileNotFoundError:
+        return [], False, None
+    except (OSError, ValueError):
+        # ValueError: a path that cannot be handed to the file system at all (a NUL character, a character its encoding does not have).
+        return [], False, _PROGRESS_FOLDER_NOT_READABLE
+
+    names = []
+    for entry in entries:
+        if entry.name in _PROGRESS_NOT_A_CLASSIFIER:
+            continue
+        try:
+            if entry.is_dir():
+                names.append(entry.name)
+        except OSError:
+            continue
+    return sorted(names), True, None
+
+
+def _get_stage_progress(stage, kind, folder, data_types):
+    """One stage entry in the data of `get_source_progress`. `folder` is the stage folder as an absolute path, or None when the config holds no usable path for it; each data type is counted in its own sub-folder."""
+    entry = {"stage": _display_safe(stage), "kind": kind, "path": None, "not_readable": None, "data_types": []}
+    if folder is None:
+        entry["not_readable"] = _PROGRESS_PATH_NOT_VALID
+        return entry
+
+    entry["path"] = _display_safe(folder)
+    for data_type in data_types:
+        if _is_one_path_component(data_type):
+            counts = _count_stage_files(os.path.join(folder, data_type))
+        else:
+            # Never joined to a path: it could name a folder outside the stage.
+            counts = {"exists": False, "not_readable": _PROGRESS_DATA_TYPE_NOT_VALID, "finished": 0, "being_written": 0, "newest": None}
+        entry["data_types"].append({"data_type": _data_type_label(data_type), **counts})
+    return entry
+
+
+def _data_type_label(data_type):
+    """The text the progress data carries for one data type of a source config. A value that is not text is never converted to text (a number can be too long to convert, a list or a mapping would be written out whole): it gets a constant label. A text that is no folder name is cut after its first characters; a folder name is at most 255 bytes and is carried whole."""
+    if not isinstance(data_type, str):
+        return _PROGRESS_DATA_TYPE_NOT_TEXT
+    if len(data_type) > _PROGRESS_DATA_TYPE_SHOWN and not _is_one_path_component(data_type):
+        return _display_safe(data_type[:_PROGRESS_DATA_TYPE_SHOWN]) + "..."
+    return _display_safe(data_type)
+
+
+def _count_stage_files(folder):
+    """Count the files directly in one data type folder of a stage, with one directory listing and no recursion. Returns `exists`, `not_readable`, `finished`, `being_written` and `newest` as `get_source_progress` describes them; a folder that cannot be listed has `exists` false and its counts at zero."""
+    counts = {"exists": False, "not_readable": None, "finished": 0, "being_written": 0, "newest": None}
+    try:
+        with os.scandir(folder) as listing:
+            entries = list(listing)
+    except FileNotFoundError:
+        return counts
+    except (OSError, ValueError):
+        # ValueError: a path that cannot be handed to the file system at all (a NUL character, a character its encoding does not have).
+        counts["not_readable"] = _PROGRESS_FOLDER_NOT_READABLE
+        return counts
+
+    finished, being_written, modified = 0, 0, []
+    for entry in entries:
+        is_finished = entry.name.endswith(_PROGRESS_FINISHED_SUFFIXES)
+        if not is_finished and not entry.name.endswith(_PROGRESS_WRITING_SUFFIX):
+            continue
+        try:
+            # Follows links, as the stages do when they look for their files; a folder with such a name is not a file.
+            if not entry.is_file():
+                continue
+            if is_finished:
+                modified.append((os.stat(entry.path).st_mtime_ns, entry.name))
+        except FileNotFoundError:
+            # A stage renames and deletes files while this runs: a file gone since the listing is not counted.
+            continue
+        except OSError as error:
+            # A link that leads back to itself, or through a file as if it were a folder, is not a file, as a link that leads nowhere is not.
+            if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                continue
+            counts["not_readable"] = _PROGRESS_FOLDER_NOT_READABLE
+            return counts
+        if is_finished:
+            finished += 1
+        else:
+            being_written += 1
+
+    counts.update(exists=True, finished=finished, being_written=being_written)
+    # The newest file is the one changed last, the greater name among files changed at the same time. A file whose time no date can hold is counted and passed over here.
+    for mtime_ns, name in sorted(modified, reverse=True):
+        when = _iso_utc_seconds(mtime_ns)
+        if when is not None:
+            counts["newest"] = {"name": _display_safe(name), "modified": when}
+            break
+    return counts
+
+
+def _iso_utc_seconds(mtime_ns):
+    """Return a modification time in nanoseconds as an ISO-8601 UTC string with seconds precision that ends in Z, or None when no date can hold it."""
+    try:
+        return datetime.fromtimestamp(mtime_ns // 1_000_000_000, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _local_minute(iso_utc):
+    """Return an ISO-8601 UTC time of the progress data as `YYYY-MM-DD HH:MM` in the local time zone, or None when it cannot be converted."""
+    try:
+        return datetime.fromisoformat(iso_utc[:-1] + "+00:00").astimezone().strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _progress_text(item):
+    """The text `source progress` shows for one data type of one stage."""
+    if item["not_readable"]:
+        return f"not readable ({item['not_readable']})"
+    if not item["exists"]:
+        return "no folder yet"
+    text = f"{item['finished']} finished"
+    if item["being_written"] > 0:
+        text += f", {item['being_written']} being written"
+    newest = item["newest"]
+    if newest:
+        when = _local_minute(newest["modified"])
+        text += f", newest: {newest['name']} ({when} local time)" if when else f", newest: {newest['name']} ({newest['modified']})"
+    return text
+
+
+def print_source_progress(data):
+    """Print the text of `source progress` from the data of `get_source_progress`."""
+    if not data["sources"]:
+        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
+        return
+
+    print()
+    print("  Social Data Pipeline - Source Progress")
+    print("  ======================================")
+
+    being_written = False
+    for entry in data["sources"]:
+        source = entry["name"]
+        for warning in entry["warnings"]:
+            print(warning)
+        if entry["not_readable"]:
+            print(f"\n  Source '{source}': not readable ({entry['not_readable']})")
+            continue
+        if not entry["found"]:
+            print(f"\n  Source '{source}': not found")
+            continue
+
+        print(f"\n  Source: {source}")
+        width = max((len(item["data_type"]) for stage in entry["stages"] for item in stage["data_types"]), default=0) + 1
+        for stage in entry["stages"]:
+            if stage["not_readable"]:
+                print(f"    {stage['stage']}: not readable ({stage['not_readable']})")
+                continue
+            print(f"    {stage['stage']}:")
+            if not stage["data_types"]:
+                print("      no data types configured")
+            for item in stage["data_types"]:
+                print(f"      {(item['data_type'] + ':').ljust(width)} {_progress_text(item)}")
+                being_written = being_written or (not item["not_readable"] and item["being_written"] > 0)
+        if entry["output"]["not_readable"]:
+            print(f"    classifier folders: not readable ({entry['output']['not_readable']})")
+
+    print()
+    if being_written:
+        print("  Note: a file being written can also be left over from an interrupted run.\n")
+
+
+# ============================================================================
 # sdp source error-logs
 # ============================================================================
 
@@ -5284,6 +5577,11 @@ def build_parser():
     src_status_p = source_sub.add_parser("status", help="Show source status")
     src_status_p.add_argument("name", nargs="?", help="Source name (default: all sources)")
     src_status_p.set_defaults(func=cmd_source_status)
+
+    src_progress_p = source_sub.add_parser("progress", help="Show how many files each processing stage has finished")
+    src_progress_p.add_argument("name", nargs="?", help="Source name (default: all sources)")
+    src_progress_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
+    src_progress_p.set_defaults(func=cmd_source_progress)
 
     src_errors_p = source_sub.add_parser("error-logs", help="Show database ingestion error logs")
     src_errors_p.add_argument("name", nargs="?", help="Source name (default: all sources)")

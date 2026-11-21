@@ -136,6 +136,13 @@ VERBS = _registry(
         action="get_source_status",
     ),
     Verb(
+        name="source.progress", cls="read", cli=("source", "progress"),
+        cli_inputs={"name"},
+        socket_inputs={"name": Field(ConfiguredSource())},
+        socket_enabled=True,
+        action="get_source_progress",
+    ),
+    Verb(
         name="source.error_logs", cls="read", cli=("source", "error-logs"),
         cli_inputs={"name", "profile"},
         socket_inputs={"name": Field(ConfiguredSource()), "profile": Field(Enum(ERROR_LOG_PROFILES))},

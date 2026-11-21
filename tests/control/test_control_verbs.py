@@ -32,6 +32,7 @@ CLASSIFICATION = {
     "source.list": ("read", True),
     "db.verify": ("read", True),
     "source.status": ("read", True),
+    "source.progress": ("read", True),
     "source.error_logs": ("read", True),
     "run.start": ("write", True),
     "db.stop": ("write", True),

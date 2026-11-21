@@ -43,6 +43,7 @@ python sdp.py run {postgres_ml | sr_ml}     # Ingest classifier outputs into Pos
 # Check status
 python sdp.py db status                     # Database status
 python sdp.py source status                 # Ingestion source status
+python sdp.py source progress               # Files finished per processing stage
 python sdp.py source error-logs             # Show error details for failed datasets
 python sdp.py db verify                     # Verifies file structure consistency
 ```
@@ -239,6 +240,7 @@ python sdp.py <db|source|run> [options]
 | `sdp.py source remove <name>` | Remove source configuration |
 | `sdp.py source list` | List configured sources |
 | `sdp.py source status [name]` | Show source processing/ingestion status |
+| `sdp.py source progress [name] [--json]` | Show how many files each processing stage (parse, lingua, classifiers) has finished, counted in the stage output folders |
 | `sdp.py source error-logs [name]` | Show database ingestion error logs |
 
 `source add` walks you through platform selection, file patterns, fields, indexes, and optional classifier configuration. With `--hf`, it fetches HF dataset metadata (configs, fields, types) to pre-populate defaults — you still go through the full interactive setup. `source download` accepts `--token` for private datasets and `--data-type` to download selectively. All per-source config is written to `config/sources/<name>/`.

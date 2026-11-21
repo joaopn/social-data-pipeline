@@ -1,4 +1,4 @@
-"""Tests for the functions that return the data of the read commands (`get_db_status`, `get_db_verify`, `get_source_list`, `get_source_status`, `get_source_error_logs`) and the printers that turn that data into the terminal text.
+"""Tests for the functions that return the data of the read commands (`get_db_status`, `get_db_verify`, `get_source_list`, `get_source_status`, `get_source_error_logs`, and for what all getters share also `get_source_progress`) and the printers that turn that data into the terminal text.
 
 A caller without a terminal gets the data as JSON; the terminal prints the same data. The contracts pinned here, on the scenarios and golden files of `test_status_golden.py`:
 
@@ -30,7 +30,7 @@ from social_data_pipeline.setup import utils
 
 SCENARIOS_BY_NAME = {scenario.name: scenario for scenario in golden.SCENARIOS}
 
-GETTER_NAMES = ["get_db_status", "get_db_verify", "get_source_error_logs", "get_source_list", "get_source_status"]
+GETTER_NAMES = ["get_db_status", "get_db_verify", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
 
 NAME_NOT_VALID = "the source name is not a valid name"
 
@@ -289,6 +289,8 @@ SECRET_CALLS = [
     ("get_source_list", {}, ["print_source_list"]),
     ("get_source_status", {}, ["print_source_status"]),
     ("get_source_status", {"name": "reddit"}, ["print_source_status"]),
+    ("get_source_progress", {}, ["print_source_progress"]),
+    ("get_source_progress", {"name": "reddit"}, ["print_source_progress"]),
     ("get_source_error_logs", {}, ["print_source_error_logs"]),
     ("get_source_error_logs", {"name": "reddit", "profile": "postgres_ingest"}, ["print_source_error_logs"]),
     ("get_source_error_logs", {"name": "reddit", "profile": "mongo_ingest"}, ["print_source_error_logs"]),
@@ -331,11 +333,15 @@ def test_no_secret_reaches_the_data_or_the_text(tmp_path, monkeypatch, capsys):
 MALFORMED_NAMES = ["../x", "a/b", "/srv/x", ".", "..", "a\\b", "ok\n", "a\u2028b", "a\u2029b", "a\x85b", "x" * 300, "\u00e9" * 128, 5, "", 0]
 
 
-@pytest.mark.parametrize("getter", ["get_source_status", "get_source_error_logs"])
+@pytest.mark.parametrize("getter", ["get_source_status", "get_source_error_logs", "get_source_progress"])
 @pytest.mark.parametrize("name", MALFORMED_NAMES)
 def test_getter_refuses_a_malformed_source_name(getter, name, tmp_path, monkeypatch, capsys):
     """Bug class: a getter called directly (no terminal command in front of it) reporting on a folder outside config/sources/, because the name check was left to the unchecked function the terminal command calls; and an error text that repeats the name, which is whatever the caller sent. The getter raises before it lists or loads anything, and its message is a constant."""
+    reads = []
+
     def must_not_read(*args, **kwargs):
+        # Recorded as well as raised: a getter that turns an error of the config reader into a fact would hide the raise.
+        reads.append(args)
         raise AssertionError("a source was read for a malformed name")
 
     golden.deploy(SCENARIOS_BY_NAME["source_status_all"], tmp_path, monkeypatch)
@@ -348,6 +354,7 @@ def test_getter_refuses_a_malformed_source_name(getter, name, tmp_path, monkeypa
     with pytest.raises(sdp.ActionError) as exc:
         getattr(sdp, getter)(name=name)
 
+    assert reads == []
     assert (exc.value.message, exc.value.exit_code) == (NAME_NOT_VALID, 1)
     assert capsys.readouterr().out == ""
 

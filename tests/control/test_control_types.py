@@ -18,6 +18,7 @@ VALID_STRING = [
     (types.FileFilter(), "RS_2024-*"),
     (types.ConfiguredSource(), "ok"),
     (types.ConfiguredSource(require_config=False), "ok"),
+    (types.RunId(), "r20261121T101500-0a1b2c"),
     (types.Secret(), "correct horse"),
 ]
 
@@ -39,6 +40,9 @@ ACCEPTED = [
     (types.FileFilter(), "RC_2024-0?"),
     (types.FileFilter(), "a.b"),
     (types.FileFilter(), "a" * 128),
+    (types.RunId(), "r20261121T101500-0a1b2c"),
+    (types.RunId(), "r00000000T000000-000000"),
+    (types.RunId(), "live-0123456789ab"),
     (types.Secret(), "p"),
     (types.Secret(), "correct horse"),
     (types.Secret(), "../etc/passwd"),
@@ -88,6 +92,30 @@ REFUSED = [
     (types.FileFilter(), "{a,b}"),
     (types.FileFilter(), "RS_*\n"),
     (types.FileFilter(), None),
+    (types.RunId(), ""),
+    (types.RunId(), ".."),
+    (types.RunId(), "r20261121T101500-0a1b2c/.."),
+    (types.RunId(), "../r20261121T101500-0a1b2c"),
+    (types.RunId(), "r20261121T101500-0a1b2c\n"),
+    (types.RunId(), "live-0123456789ab\n"),
+    (types.RunId(), "r20261121T101500-0A1B2C"),
+    (types.RunId(), "live-0123456789AB"),
+    (types.RunId(), "R20261121T101500-0a1b2c"),
+    (types.RunId(), "r20261121t101500-0a1b2c"),
+    (types.RunId(), "r2026112T101500-0a1b2c"),
+    (types.RunId(), "r20261121T101500-0a1b2"),
+    (types.RunId(), "r20261121T101500-0a1b2c0"),
+    (types.RunId(), "r20261121T1015000a1b2c"),
+    (types.RunId(), "r\u0662\u0660261121T101500-0a1b2c"),
+    (types.RunId(), "live-0123456789a"),
+    (types.RunId(), "live-0123456789abc"),
+    (types.RunId(), "live-0123456789ag"),
+    (types.RunId(), "live-"),
+    (types.RunId(), "live-0123456789ab r20261121T101500-0a1b2c"),
+    (types.RunId(), b"live-0123456789ab"),
+    (types.RunId(), ["live-0123456789ab"]),
+    (types.RunId(), 20261121),
+    (types.RunId(), None),
     (types.Secret(), ""),
     (types.Secret(), "a\nb"),
     (types.Secret(), "a\rb"),
@@ -216,6 +244,8 @@ class TestStringLayers:
         (types.Enum(("a", "b")), "a\n"),
         (types.Name(), "ok\n"),
         (types.FileFilter(), "RS_*\n"),
+        (types.RunId(), "r20261121T101500-0a1b2c\n"),
+        (types.RunId(), "live-0123456789ab\n"),
     ], ids=_case_id)
     def test_patterns_refuse_a_trailing_newline_on_their_own(self, monkeypatch, case):
         """Bug class: `re.match` with a trailing `$`, which accepts a value that ends in a newline. With the shared check forced to say no, the pattern alone must still refuse it."""
@@ -236,6 +266,7 @@ class TestStringLayers:
             "Name": (True, False),
             "FileFilter": (True, False),
             "ConfiguredSource": (True, False),
+            "RunId": (True, False),
             "Secret": (True, True),
         }
 
@@ -247,6 +278,7 @@ class TestNoValueInReason:
         types.FileFilter(),
         types.ConfiguredSource(),
         types.ConfiguredSource(require_config=False),
+        types.RunId(),
         types.Secret(),
         types.Secret(max_len=8),
     ], ids=repr)

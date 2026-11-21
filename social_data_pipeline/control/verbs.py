@@ -17,7 +17,9 @@ from social_data_pipeline.control.types import (
     ConfiguredSource,
     Enum,
     FileFilter,
+    IntRange,
     Name,
+    RunId,
     Secret,
     SecretValue,
 )
@@ -149,6 +151,21 @@ VERBS = _registry(
         socket_enabled=True,
         action="get_source_error_logs",
     ),
+    Verb(
+        name="run.list", cls="read", cli=("runs", "list"),
+        cli_inputs={"limit"},
+        socket_inputs={"limit": Field(IntRange(1, 1000))},
+        socket_enabled=True,
+        action="get_run_list",
+    ),
+    Verb(
+        name="run.logs", cls="read", cli=("runs", "logs"),
+        # tail and follow are how the terminal prints a log; a client reads pieces by offset.
+        cli_inputs={"run_id", "offset", "limit", "tail", "follow"},
+        socket_inputs={"run_id": Field(RunId(), required=True), "offset": Field(IntRange(0, 2**53)), "limit": Field(IntRange(1, 1048576))},
+        socket_enabled=True,
+        action="get_run_logs",
+    ),
     # ---- write ----
     Verb(
         name="run.start", cls="write", cli=("run",),
@@ -174,6 +191,13 @@ VERBS = _registry(
         socket_inputs={"service": Field(Enum(SERVICES))},
         socket_enabled=True,
         action="do_db_stop",
+    ),
+    Verb(
+        name="run.cancel", cls="write", cli=("runs", "cancel"),
+        cli_inputs={"run_id"},
+        socket_inputs={"run_id": Field(RunId(), required=True)},
+        socket_enabled=True,
+        action="do_run_cancel",
     ),
     Verb(
         name="source.download", cls="write", cli=("source", "download"),

@@ -38,6 +38,7 @@ tests/
     conftest.py                        # Root fixtures (paths, NDJSON helpers, marker registration)
     fixtures/                          # NDJSON / CSV / Parquet / config / state fixtures
     test_cli_help.py                   # Smoke: every subcommand --help exits 0
+    test_runstore.py                   # Run store: records, logs, locks, terminal runs found through Docker
     control/                           # Verb registry and its typed inputs (what a request may carry)
     core/                              # Pure-logic core
     db/                                # Pure-logic DB ingestion
@@ -52,6 +53,7 @@ tests/
         conftest.py                    # Per-test workspace lifecycle
         helpers/                       # pexpect wrapper, fixtures, DB assertion helpers
         tests/                         # Test scenarios
+        manual/                        # Hand-run checks against a real Docker (plain scripts, not collected by pytest)
     benchmark/                         # Performance measurement tools (no assertions, CI-excluded)
         README.md                      # What lives here and why it is excluded
         sr_compression.sh              # StarRocks LZ4 vs ZSTD: size, query time, CPU
@@ -119,10 +121,11 @@ Focused on the SQL shape of dedup / upsert paths and contract checks that span p
 | `test_utils.py` | CLI input helpers (`ask`, `ask_bool`, `ask_choice`, `ask_multi_select`, `ask_int`) with mocked stdin, glob-to-regex conversion, file-pattern derivation |
 | `test_source.py` | Per-source config generation: platform routing, field/index derivation, deep merge with templates |
 | `test_hf.py` | `organize_hf_downloads` — copies HF parquet files from `dumps/` into `extracted/<data_type>/` according to `hf_config_map` |
-| `test_actions.py` | The state-changing commands as action functions (`do_run_start`, `do_db_start`, `do_db_reset`, ...): no prompt and no process exit without a terminal, confirmation fails closed, a missing password fails before any side effect, and the terminal wrappers still ask as before; the same syntax-tree walk checks that the six getters (`get_db_status`, `get_db_verify`, `get_source_list`, `get_source_status`, `get_source_progress`, `get_source_error_logs`) reach no prompt and no exit |
+| `test_actions.py` | The state-changing commands as action functions (`do_run_start`, `do_db_start`, `do_db_reset`, ...): no prompt and no process exit without a terminal, confirmation fails closed, a missing password fails before any side effect, and the terminal wrappers still ask as before; the same syntax-tree walk checks that `do_run_cancel` and the eight getters (`get_db_status`, `get_db_verify`, `get_source_list`, `get_source_status`, `get_source_progress`, `get_source_error_logs`, `get_run_list`, `get_run_logs`) reach no prompt and no exit |
 | `test_status_golden.py` | Golden files (`golden/`) for the whole terminal text and the exit code of `db status`, `db verify`, `source list`, `source status` and `source error-logs` on fixture deployments built in a temp folder; regenerate with `SDP_REGENERATE_GOLDEN=1` after an intended change of the text |
-| `test_status_data.py` | The functions that return the data of those five commands (`get_db_status`, `get_db_verify`, ...): they print nothing, return JSON-serialisable data that prints the golden text, carry no secret, and refuse a malformed source name; `get_source_progress` is held to the no-print, no-secret and source-name checks here as well |
+| `test_status_data.py` | The functions that return the data of those five commands (`get_db_status`, `get_db_verify`, ...): they print nothing, return JSON-serialisable data that prints the golden text, carry no secret, and refuse a malformed source name; `get_source_progress` is held to the no-print, no-secret and source-name checks here as well, `get_run_list` and `get_run_logs` to the no-print and no-secret checks |
 | `test_source_progress.py` | `source progress`: finished (`.csv`, `.parquet`) and being-written (`.temp`) files counted per stage and data type with the newest file by modification time, the stage list (parse, lingua, classifier folders without `lingua_ingest`), relative paths resolved under the project root, a damaged config or tree reported as "not readable" instead of a traceback, names with control or format characters or non-UTF-8 bytes made safe to print and send, a data type that is not text given a constant label, the exit codes, the `--json` output (a refusal goes to standard error) and the text for a fixed tree in a pinned time zone |
+| `test_runs_commands.py` | The `runs` commands (`runs list`, `runs logs`, `runs cancel`) and their functions `get_run_list`, `get_run_logs`, `do_run_cancel`: a malformed or unknown run id refused with a constant message before a path is built or Docker is asked, strings from Docker and from records made safe to print and send while a log's text is returned as decoded, nothing of a container's environment but the source in the data, the whole text of `runs list` for a fixed set of runs, `--json`, `--tail`, `--follow`, the exit codes, and the three verbs in the registry (the `RunId` type and the store refuse the same ids, the socket's number ranges are the getters') |
 | `test_env_and_compose.py` | `.env` updates (preserves siblings on partial writes), `docker-compose.override.yml` generation (tablespaces, SR multi-disk, jobs `/jobs_export` mount) |
 | `test_profile_gating.py` | Profile-gating tables in `sdp.py` — every pipeline profile is mapped to its required DB / source / classifier prerequisites; `cmd_run` blocks on missing config |
 | `test_index_persistence.py` | `sdp db create-indexes` persistence routing — base tables to `indexes` / `sr_indexes`, classifier tables to `ml_indexes` / `sr_ml_indexes`; StarRocks entries merge per index type and a stored plain list is promoted, not overwritten |
@@ -132,6 +135,7 @@ Focused on the SQL shape of dedup / upsert paths and contract checks that span p
 | Module | What's covered |
 |--------|----------------|
 | `test_cli_help.py` | Smoke: every `sdp.py` subcommand's `--help` exits 0. Catches argparse regressions and import errors |
+| `test_runstore.py` | The run store (`social_data_pipeline/runstore.py`) with Docker replaced by a fake: the two forms of a run id checked before any path or Docker use, the state folder private (0700 / 0600), owned by the user who runs the command and never reached through a symbolic link, a named pipe in a file's place refused without waiting on it, records replaced in one step (one too large to read back is never written) and a damaged one reported as `unreadable`, the computed states (`detached`, `lost`, `unknown`), which containers count as a run started in a terminal, the exact arguments of every Docker call (a container's environment is never read apart from `SOURCE`), log pieces by byte offset that never split a character, output read from Docker cut to its last bytes, and cancel (interrupt signal, full container id, refusals, a container Docker could not stop). The `run_docker_guard` fixture of `tests/conftest.py` fails any test of this file or of `test_runs_commands.py` that reaches Docker without the fake in its place |
 
 ## E2E tests
 
@@ -162,6 +166,14 @@ Requires [sysbox](https://github.com/nestybox/sysbox) **>= 0.7.0** on the host �
 ```
 
 First run builds Docker images inside the sysbox container (~3-5 min). Subsequent runs use the Docker layer cache (~5-10 min total).
+
+### Hand-run checks
+
+`tests/e2e/manual/` holds plain scripts that need a real Docker but no sysbox and no database. They are not collected by pytest and not started by `run.sh`.
+
+| Script | What it checks |
+|--------|----------------|
+| `check_runs.py` | The `runs` commands against a real Docker: in a throwaway compose project, a container started with `docker compose run` is listed as a terminal run with its profile and source, its output is read, a made-up password planted in its environment appears nowhere in the data, and cancel stops it within seconds with the program seeing the interrupt (exit code 3); the same through `sdp.py runs list / logs / cancel`; a labelled container next to a hand-made record is a `detached` recorded run and is cancelled by its label; a one-off container of another service is not a run. Needs the image `python:3.13-alpine`; run with `python tests/e2e/manual/check_runs.py` |
 
 ### Test scenarios
 

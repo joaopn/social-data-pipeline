@@ -29,6 +29,9 @@ Usage:
     sdp.py source error-logs [name]          Show database ingestion error logs
 
     sdp.py run <profile> [--source <name>]   Run pipeline for a source (--build to rebuild, --filter to select files)
+    sdp.py runs list [--limit N] [--json]    List the pipeline runs that are alive now, and the recorded ones
+    sdp.py runs logs <run_id> [--follow]     Print the output of a run (--tail for its last lines)
+    sdp.py runs cancel <run_id>              Cancel a run by sending its container the interrupt signal
 
     sdp.py setup                             Legacy: full interactive setup (core + classifiers + platform)
 """
@@ -5431,6 +5434,232 @@ def do_run_start(*, profile, source, build=False, filter=None, skip_lingua_files
 
 
 # ============================================================================
+# sdp runs
+# ============================================================================
+
+# Why a runs command refused a number. Neither holds an input value.
+_RUN_LIMIT_NOT_VALID = "the limit is not a whole number in the accepted range"
+_RUN_OFFSET_NOT_VALID = "the offset is not a whole number in the accepted range"
+_RUN_LIST_LIMIT_MAX = 1000
+_RUN_LOG_LIMIT_MAX = 1048576
+_RUN_LOG_OFFSET_MAX = 2 ** 53
+# How many bytes of a log file the logs command reads at a time.
+_RUN_LOG_PIECE = 65536
+# The states in which a live process supervises a run, so its log file can still grow.
+_RUN_STATES_SUPERVISED = ("starting", "running")
+_RUN_LIST_COLUMNS = (("ID", "id"), ("KIND", "kind"), ("PROFILE", "profile"), ("SOURCE", "source"), ("STATE", "state"), ("STARTED", "started"), ("ENDED", "ended"), ("EXIT", "exit_code"))
+_RUN_DOCKER_NOTE = "  Note: Docker cannot be reached. Runs started in a terminal are not listed, and a recorded run that has not ended and has no live supervisor shows as unknown."
+# What `runs cancel` says it did, by the outcome the run store reports.
+_RUN_CANCEL_TEXT = {
+    "stopped": "interrupt signal sent, the container has stopped",
+    "requested": "cancel requested, the process that holds the run stops it",
+    "recorded": "recorded as cancelled, no container was left to stop",
+}
+
+
+def _run_store():
+    """The module that keeps the runs. Imported at first use, so that loading the CLI loads nothing more than before."""
+    from social_data_pipeline import runstore
+
+    return runstore
+
+
+def _run_service_profiles():
+    """The compose service of each pipeline profile, mapped to its profile. A profile without an entry in PROFILE_SERVICE_MAP has a service of its own name."""
+    return {PROFILE_SERVICE_MAP.get(profile, profile): profile for profile in VALID_PROFILES}
+
+
+def _require_run_id(run_id):
+    """Refuse a run id that has neither the form of a recorded run nor that of a terminal run, before it is used for a path or handed to Docker. The message is a constant."""
+    runstore = _run_store()
+    try:
+        runstore.run_id_kind(run_id)
+    except runstore.StoreError as e:
+        raise ActionError(e.message) from None
+
+
+def _require_whole_number(value, lowest, highest, message):
+    """Refuse a value that is not a whole number from lowest to highest (a boolean is not a number)."""
+    if isinstance(value, bool) or not isinstance(value, int) or not lowest <= value <= highest:
+        raise ActionError(message)
+
+
+def _run_display_safe(value):
+    """A value of the run data with every string in it made display-safe, the keys of a mapping included."""
+    if isinstance(value, str):
+        return _display_safe(value)
+    if isinstance(value, dict):
+        return {_display_safe(key): _run_display_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_run_display_safe(item) for item in value]
+    return value
+
+
+def get_run_list(*, limit=50):
+    """List the pipeline runs of this deployment. Prints nothing and returns `{"docker_available": bool, "runs": [...]}` for `print_run_list`: the recorded runs, newest first and at most `limit` (1 to 1000) of them, then the runs started with `sdp run` in a terminal that are alive now, oldest first. Each run has `id`, `kind` (`web` for a recorded run, `terminal`), `profile`, `source`, `flags` (the non-secret fields of the request that started a recorded run; None for a terminal run), `started_by`, `state`, `started` and `ended` (ISO-8601 UTC times ending in Z, or None) and `exit_code`. The state of a recorded run is `starting`, `running`, `finished` or `cancelled` as recorded; `detached` when the process that supervised it is gone and its container is alive, `lost` when both are gone, `unknown` when Docker cannot be asked, `unreadable` when its record cannot be used (every other field of it is then None). A terminal run is `running`; its source is the container's `SOURCE` variable, the only part of a container's environment that is read. When Docker cannot be reached nothing is raised: `docker_available` is false and no terminal run is listed. Every string that comes from Docker or a record is display-safe. Raises ActionError for a limit out of range, and when the run state folder is a link or cannot be opened."""
+    _require_whole_number(limit, 1, _RUN_LIST_LIMIT_MAX, _RUN_LIMIT_NOT_VALID)
+    runstore = _run_store()
+    try:
+        data = runstore.list_runs(ROOT, _run_service_profiles(), limit)
+    except runstore.StoreError as e:
+        raise ActionError(e.message) from None
+    return {"docker_available": data["docker_available"], "runs": [_run_display_safe(run) for run in data["runs"]]}
+
+
+def get_run_logs(*, run_id, offset=0, limit=65536):
+    """Read a piece of the output of one run. Prints nothing and returns `id`, `kind`, `state`, `text`, `next_offset` and `complete`. For a recorded run the text is read from its log file: `offset` (0 to 2**53) and `limit` (1 to 1048576) are byte positions, the piece never ends inside a multi-byte character, bytes that are not UTF-8 become the replacement character, `next_offset` is the offset of the next piece (an offset at or past the end gives an empty text) and `complete` is true. For a terminal run, and for a recorded run that is `detached`, the text is the last 500 lines Docker has, standard output and standard error together, cut to their last `limit` bytes (the end is kept and the text begins with a whole character): `offset` does not apply, `next_offset` is None and `complete` is false. `text` is the one string that is NOT made display-safe: it is returned as decoded, with whatever control and format characters the program wrote, and the caller renders it. Raises ActionError with a constant message for a run id that has neither of the two forms (before any path or Docker use), for one that names no run, for a number out of range, and when the log or Docker cannot be read (Docker out of reach, or a container that is listed and whose output Docker does not hand over)."""
+    _require_run_id(run_id)
+    _require_whole_number(offset, 0, _RUN_LOG_OFFSET_MAX, _RUN_OFFSET_NOT_VALID)
+    _require_whole_number(limit, 1, _RUN_LOG_LIMIT_MAX, _RUN_LIMIT_NOT_VALID)
+    runstore = _run_store()
+    try:
+        data = runstore.read_run_log(ROOT, _run_service_profiles(), run_id, offset, limit)
+    except runstore.StoreError as e:
+        raise ActionError(e.message) from None
+    return {"id": data["id"], "kind": data["kind"], "state": data["state"], "text": data["text"], "next_offset": data["next_offset"], "complete": data["complete"]}
+
+
+def do_run_cancel(*, run_id):
+    """Cancel one run. Asks nothing; prints one line that says what was done and returns the exit code: 0 when the run's container was sent the interrupt signal (a terminal run, or a recorded run without a live supervisor, which is then recorded as cancelled), when such a recorded run had no container left and was recorded as cancelled without a signal, or when the cancel was left for the process that holds the run's lock (the one that supervises the run, or another cancel that is at work); 1 when the run is refused because it has ended, is lost or has no usable record, in which case nothing is stopped and neither a cancel request nor the record is written, and 1 when Docker could not stop the container, in which case the record stays as it was and the run can be cancelled again. A terminal run is looked up again in the current listing, so nothing but a listed run of this deployment is ever stopped. Raises ActionError with a constant message for a run id that has neither of the two forms (before any path or Docker use), for one that names no run, and when Docker is needed and cannot be reached. Two of these can come AFTER something was done to a recorded run without a live supervisor: when no container of the run is left (this call stopped it, or it had ended by itself) and the record then could not be written, and when Docker stops answering after the cancel request file was written or after the stop was sent; in both the cancel request file exists and the record still says the run is alive."""
+    _require_run_id(run_id)
+    runstore = _run_store()
+    try:
+        outcome = runstore.cancel_run(ROOT, _run_service_profiles(), run_id)
+    except runstore.CancelRefused as e:
+        print(f"  Run {run_id}: not cancelled, {e.message}.")
+        return 1
+    except runstore.StoreError as e:
+        raise ActionError(e.message) from None
+    print(f"  Run {run_id}: {_RUN_CANCEL_TEXT[outcome]}.")
+    return 0
+
+
+def print_run_list(data):
+    """Print the text of `runs list` from the data of `get_run_list`: one line per run, the columns aligned, a missing value as `-`."""
+    if not data["runs"]:
+        print("\n  No runs.\n")
+    else:
+        rows = [[title for title, _ in _RUN_LIST_COLUMNS]]
+        rows += [["-" if run[key] is None else str(run[key]) for _, key in _RUN_LIST_COLUMNS] for run in data["runs"]]
+        widths = [max(len(row[index]) for row in rows) for index in range(len(_RUN_LIST_COLUMNS))]
+        print()
+        print("  Social Data Pipeline - Runs")
+        print("  ===========================")
+        print()
+        for row in rows:
+            print("  " + "  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
+        print()
+    if not data["docker_available"]:
+        print(_RUN_DOCKER_NOTE + "\n")
+
+
+def _last_lines(text, count):
+    """The last `count` lines of text, a last line without a line end included. Only the newline ends a line: a carriage return is how a progress bar rewrites its line."""
+    if count <= 0:
+        return ""
+    lines = text.split("\n")
+    ends_in_newline = lines[-1] == ""
+    if ends_in_newline:
+        lines.pop()
+    return "\n".join(lines[-count:]) + ("\n" if ends_in_newline and lines else "")
+
+
+def print_run_logs(data, *, tail=None):
+    """Write the text of the data of `get_run_logs` to standard output as it is, the way `docker logs` does; with `tail`, only its last lines. Nothing is added, so pieces written one after the other are the log."""
+    sys.stdout.write(data["text"] if tail is None else _last_lines(data["text"], tail))
+
+
+def _show_run_logs(*, run_id, offset, limit, tail, follow):
+    """The body of `runs logs`. A log file is read piece by piece from `offset` to its end (one piece of at most `limit` bytes when a limit is given); with `tail` only the last lines of that are printed; with `follow` the file is then read again about once a second for as long as a live process supervises the run. Output that Docker holds (a terminal run, a detached run) is its last 500 lines, cut to their last `limit` bytes (65536 when no limit is given), and with `follow` Docker keeps printing until the container stops."""
+    import time
+
+    runstore = _run_store()
+    data = get_run_logs(run_id=run_id, offset=offset, limit=_RUN_LOG_PIECE if limit is None else limit)
+    from_file = data["complete"]
+    kept = None if tail is None else ""
+    while data["complete"]:
+        if kept is None:
+            print_run_logs(data)
+        else:
+            # The last lines of everything read so far; a line cut by the end of a piece is completed by the next one.
+            kept = _last_lines(kept + data["text"], tail)
+        at_end = data["text"] == ""
+        if at_end or (limit is not None and not follow):
+            if kept is not None:
+                sys.stdout.write(kept)
+                kept = None
+            sys.stdout.flush()
+            if not follow or (at_end and data["state"] not in _RUN_STATES_SUPERVISED):
+                return
+            if at_end:
+                time.sleep(1)
+        data = get_run_logs(run_id=run_id, offset=data["next_offset"], limit=_RUN_LOG_PIECE)
+
+    # The output is with Docker: the run was started in a terminal, or the process that wrote its log file is gone.
+    if kept:
+        sys.stdout.write(kept)
+    if not follow:
+        if not from_file:
+            print_run_logs(data, tail=tail)
+        return
+    sys.stdout.flush()
+    lines = 0 if from_file else runstore.LOG_TAIL_LINES if tail is None else min(tail, runstore.LOG_TAIL_LINES)
+    try:
+        runstore.follow_run_log(ROOT, _run_service_profiles(), run_id, lines)
+    except runstore.RunNotFound:
+        # The container stopped between the two calls: there is nothing left to follow.
+        return
+    except runstore.StoreError as e:
+        raise ActionError(e.message) from None
+
+
+def cmd_runs_list(args):
+    """List the pipeline runs."""
+    try:
+        data = get_run_list(limit=args.limit)
+    except ActionError as e:
+        if getattr(args, "json", False):
+            # Standard output stays empty, so a reader of the JSON is not handed a line that is not JSON.
+            print(f"  Error: {e.message}", file=sys.stderr)
+        else:
+            print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+    else:
+        print_run_list(data)
+    return 0
+
+
+def cmd_runs_logs(args):
+    """Print the output of a run."""
+    if args.tail is not None and args.tail < 0:
+        print("\n  Error: --tail must not be negative\n")
+        return 1
+    try:
+        _show_run_logs(run_id=args.run_id, offset=args.offset, limit=args.limit, tail=args.tail, follow=args.follow)
+    except ActionError as e:
+        print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+    except KeyboardInterrupt:
+        if not args.follow:
+            raise
+        # Ctrl-C is how following ends.
+        print()
+    return 0
+
+
+def cmd_runs_cancel(args):
+    """Cancel a run."""
+    try:
+        return do_run_cancel(run_id=args.run_id)
+    except ActionError as e:
+        print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+
+
+# ============================================================================
 # Argument parser
 # ============================================================================
 
@@ -5608,6 +5837,27 @@ def build_parser():
                                  "(e.g. 'toxic_roberta') instead of all of them.")
     run_parser.set_defaults(func=cmd_run)
 
+    # ---- sdp runs ----
+    runs_parser = subparsers.add_parser("runs", help="Pipeline runs: list them, print their output, cancel one")
+    runs_sub = runs_parser.add_subparsers(dest="runs_command", help="Runs command")
+
+    runs_list_p = runs_sub.add_parser("list", help="List the pipeline runs that are alive now, and the recorded ones")
+    runs_list_p.add_argument("--limit", type=int, default=50, metavar="N", help="List at most N recorded runs, newest first (1 to 1000, default: 50)")
+    runs_list_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
+    runs_list_p.set_defaults(func=cmd_runs_list)
+
+    runs_logs_p = runs_sub.add_parser("logs", help="Print the output of a run")
+    runs_logs_p.add_argument("run_id", help="Run id, as `runs list` shows it")
+    runs_logs_p.add_argument("--offset", type=int, default=0, metavar="BYTES", help="Recorded run: start at this byte of the log (default: 0)")
+    runs_logs_p.add_argument("--limit", type=int, default=None, metavar="BYTES", help="Print at most this many bytes: of a recorded run's log from the offset on (default: to its end), of the output Docker holds its end (default: 65536)")
+    runs_logs_p.add_argument("--tail", type=int, default=None, metavar="LINES", help="Print only the last LINES lines (the output of a run started in a terminal is at most its last 500 lines)")
+    runs_logs_p.add_argument("--follow", action="store_true", help="Keep printing new output until the run ends (Ctrl-C to stop)")
+    runs_logs_p.set_defaults(func=cmd_runs_logs)
+
+    runs_cancel_p = runs_sub.add_parser("cancel", help="Cancel a run by sending its container the interrupt signal")
+    runs_cancel_p.add_argument("run_id", help="Run id, as `runs list` shows it")
+    runs_cancel_p.set_defaults(func=cmd_runs_cancel)
+
     return parser
 
 
@@ -5632,6 +5882,9 @@ def main():
         return 0
     if args.command == "source" and not getattr(args, "source_command", None):
         parser.parse_args(["source", "-h"])
+        return 0
+    if args.command == "runs" and not getattr(args, "runs_command", None):
+        parser.parse_args(["runs", "-h"])
         return 0
 
     if hasattr(args, "func"):

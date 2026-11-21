@@ -44,6 +44,9 @@ python sdp.py run {postgres_ml | sr_ml}     # Ingest classifier outputs into Pos
 python sdp.py db status                     # Database status
 python sdp.py source status                 # Ingestion source status
 python sdp.py source progress               # Files finished per processing stage
+python sdp.py runs list                     # Pipeline runs that are alive now
+python sdp.py runs logs <run_id>            # Output of a run (--follow to keep reading)
+python sdp.py runs cancel <run_id>          # Stop a run with the interrupt signal
 python sdp.py source error-logs             # Show error details for failed datasets
 python sdp.py db verify                     # Verifies file structure consistency
 ```
@@ -254,8 +257,13 @@ python sdp.py <db|source|run> [options]
 | `sdp.py run <profile> --build` | Rebuild the Docker image before running |
 | `sdp.py run <profile> --filter <pattern>` | Only process files matching pattern (fnmatch glob on file ID) |
 | `sdp.py run parse --skip-lingua-files` | Parse only: also skip files that already have a lingua output (lets you delete old extracted/parsed files) |
+| `sdp.py runs list [--limit N] [--json]` | List the pipeline runs that are alive now, with id, profile, source, state and start time |
+| `sdp.py runs logs <run_id> [--tail LINES] [--follow]` | Print the output of a run; `--follow` keeps printing until the run ends |
+| `sdp.py runs cancel <run_id>` | Cancel a run: its container is sent the interrupt signal |
 
 Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`. (The `jobs` profile starts via `sdp.py db start jobs`, not `sdp.py run`.) `--build` is needed after code or dependency changes. `--filter` (`-f`) takes an fnmatch glob on file ID (e.g. `"*2024*"`, `"RS_2024-*"`). `--skip-lingua-files` (parse only) treats existing lingua outputs as a skip signal, so you can delete old extracted/parsed files without re-decompressing on the next run. The global `--tag` flag prefixes interactive prompts with `[tag_id]` for automation tools like pexpect.
+
+`runs list` shows the pipeline runs that are alive now: each `sdp.py run` whose container is running, found through Docker, with an id of the form `live-<12 hex digits>` that `runs logs` and `runs cancel` take. A pipeline started with `docker compose up` instead of `sdp.py run` is not listed, and neither is a run that is still in its checks or its image build (it has no container yet). `runs cancel` sends the run's container the interrupt signal, so the stage ends through its own interrupt handling instead of being killed. The `runs` commands refuse a `.sdp/` folder in the deployment folder that belongs to another user, with the message `the run state folder cannot be used`.
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 

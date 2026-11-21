@@ -30,7 +30,7 @@ from social_data_pipeline.setup import utils
 
 SCENARIOS_BY_NAME = {scenario.name: scenario for scenario in golden.SCENARIOS}
 
-GETTER_NAMES = ["get_db_status", "get_db_verify", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
+GETTER_NAMES = ["get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
 
 NAME_NOT_VALID = "the source name is not a valid name"
 
@@ -261,8 +261,17 @@ def build_with_secrets(p):
     p.write(f"{golden.MONGO}/logs/mongoimport_reddit_comments.log", SECRET_MONGOIMPORT_LOG)
 
 
-def stub_docker_with_secrets(monkeypatch, calls):
-    """Answer the three subprocesses the container probe runs; `docker inspect` returns an environment that holds the marker."""
+# The container of a run started in a terminal, as the stub below lists it, and the id `runs list` gives that run.
+TERMINAL_RUN_CONTAINER = "ab" * 32
+TERMINAL_RUN_ID = "live-" + "ab" * 6
+
+
+# The two getters that list containers and read their output themselves. Every other getter reaches Docker through the container probe only.
+RUN_GETTERS = ("get_run_list", "get_run_logs")
+
+
+def stub_docker_with_secrets(monkeypatch, calls, root=None, running=None):
+    """Answer the three subprocesses the container probe runs; `docker inspect` returns an environment that holds the marker. Any other subprocess fails the test, with one exception: while `running`, a list the test keeps the name of the getter it is calling in, names one of the run getters, `docker ps` lists one container that compose started with `run` for the parse service in the folder root, and `docker logs` returns two lines. For every other getter those two calls are unexpected, as they were before the run getters existed. The inspect answer stays the whole environment for the run getters too, which is what a format that printed more than the one variable would hand over."""
     inspect = [{
         "State": {"Health": {"Status": "healthy"}},
         "Config": {"Env": [f"POSTGRES_PASSWORD={MARKER}", f"MONGO_INITDB_ROOT_PASSWORD={MARKER}", f"STARROCKS_ROOT_PASSWORD={MARKER}", "POSTGRES_AUTH_ENABLED=true", "MONGO_AUTH_ENABLED=true", "STARROCKS_AUTH_ENABLED=true"]},
@@ -272,6 +281,11 @@ def stub_docker_with_secrets(monkeypatch, calls):
         calls.append(list(argv[:3]))
         if list(argv[:2]) == ["docker", "inspect"]:
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(inspect), stderr="")
+        for_a_run_getter = running is not None and running and running[0] in RUN_GETTERS
+        if for_a_run_getter and list(argv[:2]) == ["docker", "ps"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps([TERMINAL_RUN_CONTAINER, str(root), "parse", ""]) + "\n", stderr="")
+        if for_a_run_getter and list(argv[:2]) == ["docker", "logs"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="parsing RC_2024-01\ndone\n", stderr="")
         assert list(argv[:3]) == ["docker", "compose", "ps"], f"unexpected subprocess: {argv}"
         if "-q" in argv:
             return subprocess.CompletedProcess(argv, 0, stdout="0123456789ab\n", stderr="")
@@ -289,6 +303,8 @@ SECRET_CALLS = [
     ("get_source_list", {}, ["print_source_list"]),
     ("get_source_status", {}, ["print_source_status"]),
     ("get_source_status", {"name": "reddit"}, ["print_source_status"]),
+    ("get_run_list", {}, ["print_run_list"]),
+    ("get_run_logs", {"run_id": TERMINAL_RUN_ID}, ["print_run_logs"]),
     ("get_source_progress", {}, ["print_source_progress"]),
     ("get_source_progress", {"name": "reddit"}, ["print_source_progress"]),
     ("get_source_error_logs", {}, ["print_source_error_logs"]),
@@ -303,7 +319,8 @@ def test_no_secret_reaches_the_data_or_the_text(tmp_path, monkeypatch, capsys):
     build_with_secrets(golden.Project(root))
     golden.point_at(monkeypatch, root)
     calls = []
-    stub_docker_with_secrets(monkeypatch, calls)
+    running = [None]
+    stub_docker_with_secrets(monkeypatch, calls, root, running)
 
     assert MARKER in sdp.load_env().values()
     assert MARKER in json.dumps(sdp._build_verify_context(env=sdp.load_env(), probe_containers=False))
@@ -314,10 +331,17 @@ def test_no_secret_reaches_the_data_or_the_text(tmp_path, monkeypatch, capsys):
     assert [section["header"][3] for section in mongo["mongoimport_sections"]] == ["File: /data/extracted/reddit/comments/RC_2024-02.ndjson"]
     assert sdp._probe_container_state("postgres") == {"running": True, "healthy": True, "env_auth": True}
     assert ["docker", "inspect", "0123456789ab"] in calls
+    # The run listing asks Docker about its container and gets the whole environment back; the run is listed all the same, without a start time or a source.
+    running[0] = "get_run_list"
+    assert [(run["id"], run["profile"], run["started"], run["source"]) for run in sdp.get_run_list()["runs"]] == [(TERMINAL_RUN_ID, "parse", None, None)]
+    assert ["docker", "inspect", "--format"] in calls
+    running[0] = None
 
     assert sorted({name for name, _, _ in SECRET_CALLS}) == GETTER_NAMES
     for getter, kwargs, printers in SECRET_CALLS:
+        running[0] = getter
         data = getattr(sdp, getter)(**kwargs)
+        running[0] = None
         assert MARKER not in json.dumps(data), (getter, kwargs)
         for printer in printers:
             getattr(sdp, printer)(data)

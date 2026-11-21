@@ -167,6 +167,24 @@ class ConfiguredSource:
         return value
 
 
+# The id of a pipeline run: a recorded run (`r`, the UTC date, `T`, the UTC time, `-`, six hex digits) or a run started in a terminal (`live-` and the first twelve hex digits of its container id). A literal copy of the two patterns of the run store, which this package does not import; a test compares them.
+RUN_ID_PATTERN = r"r[0-9]{8}T[0-9]{6}-[0-9a-f]{6}|live-[0-9a-f]{12}"
+
+
+@dataclass(frozen=True)
+class RunId:
+    """The id of a pipeline run, in one of its two forms. Only the form is checked, nothing on disk and nothing in Docker: whether the run exists is the action's answer. The form has no '/', no '.' and no upper-case letter, so an id can be joined to the run state folder and handed to Docker as it is."""
+
+    is_string = True
+    is_secret = False
+
+    def validate(self, value):
+        value = _checked_string(value)
+        if not re.fullmatch(RUN_ID_PATTERN, value):
+            raise ValueError("must be the id of a run")
+        return value
+
+
 @dataclass(frozen=True)
 class Secret:
     """A password or token: 1 to max_len characters on one line. It may look like a path, since it never reaches one."""
@@ -205,4 +223,4 @@ class SecretValue:
 
 
 # The whole set. A socket input whose type is not one of these classes is refused when the registry is built.
-INPUT_TYPES = (Bool, IntRange, Enum, Name, FileFilter, ConfiguredSource, Secret)
+INPUT_TYPES = (Bool, IntRange, Enum, Name, FileFilter, ConfiguredSource, RunId, Secret)

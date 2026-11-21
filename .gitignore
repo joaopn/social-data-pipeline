@@ -73,3 +73,6 @@ pgdata/
 plans/
 plan/
 .mcp.json
+
+# Run state of the CLI (records and logs of pipeline runs)
+.sdp/

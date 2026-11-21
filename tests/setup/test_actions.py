@@ -157,8 +157,8 @@ FORBIDDEN_NAMES = {
 }
 
 ACTION_NAMES = [
-    "do_db_reset", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_start", "do_source_remove",
-    "get_db_status", "get_db_verify", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status",
+    "do_db_reset", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_remove",
+    "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status",
 ]
 
 # One helper each walk must have reached, so a walk that follows nothing cannot pass.
@@ -169,10 +169,13 @@ KNOWN_DEEP_HELPER = {
     "do_db_unsetup": "_unsetup_single_db",
     "do_db_unsetup_jobs": "docker_compose",
     "do_db_unsetup_mcp": "_get_configured_mcp_services",
+    "do_run_cancel": "_run_service_profiles",
     "do_run_start": "_container_mounts",
     "do_source_remove": "_running_services",
     "get_db_status": "_load_classifier_suffixes",
     "get_db_verify": "_probe_container_state",
+    "get_run_list": "_run_display_safe",
+    "get_run_logs": "_require_run_id",
     "get_source_error_logs": "_get_mongoimport_log_sections",
     # Calls only functions imported from the package, so the walk reaches nothing beyond the getter itself.
     "get_source_list": "get_source_list",

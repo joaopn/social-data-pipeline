@@ -24,7 +24,7 @@ from social_data_pipeline.control import errors, types, verbs
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The type classes a socket input may use, written out here on purpose: adding a type to the package does not widen this set.
-ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "ConfiguredSource", "Secret"}
+ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "ConfiguredSource", "RunId", "Secret"}
 
 # The security classification of every verb: (class, accepted over the socket). Changing one is a decision, so it is made in two places.
 CLASSIFICATION = {
@@ -34,7 +34,10 @@ CLASSIFICATION = {
     "source.status": ("read", True),
     "source.progress": ("read", True),
     "source.error_logs": ("read", True),
+    "run.list": ("read", True),
+    "run.logs": ("read", True),
     "run.start": ("write", True),
+    "run.cancel": ("write", True),
     "db.stop": ("write", True),
     "source.download": ("write", False),
     "db.start": ("step_up", True),
@@ -109,6 +112,7 @@ def _valid_value(kind):
         types.Name: "toxic_roberta",
         types.FileFilter: "RS_2024-*",
         types.ConfiguredSource: "ok",
+        types.RunId: "r20261121T101500-0a1b2c",
         types.Secret: "correct horse",
     }
     if isinstance(kind, types.Enum):

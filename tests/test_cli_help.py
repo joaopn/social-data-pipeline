@@ -51,6 +51,11 @@ SUBCOMMANDS = [
     ["source", "error-logs", "--help"],
     # run
     ["run", "--help"],
+    # runs group
+    ["runs", "--help"],
+    ["runs", "list", "--help"],
+    ["runs", "logs", "--help"],
+    ["runs", "cancel", "--help"],
 ]
 
 

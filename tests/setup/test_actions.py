@@ -2,7 +2,7 @@
 
 Each `cmd_*` function of a state-changing command is a thin wrapper around a `do_*` function that never prompts and never exits. The contracts pinned here:
 
-- No action, and no CLI helper an action reaches, asks a question or ends the process.
+- No action, and no CLI helper an action reaches, asks a question or ends the process. The same holds for the `get_*` functions, which return the data of the read commands.
 - A confirmation fails closed: without a confirm callback an action stops before it changes anything; the terminal wrapper still asks today's questions, with today's texts.
 - The admin password comes from the caller or from the wrapper's terminal callback, at the point where the terminal asks today. Without either, an action that needs it stops before it runs anything; a password that is not needed never reaches the environment compose reads.
 - `resolve_source` prints what it always printed and exits 1; `resolve_source_name` raises instead, so `do_run_start` can return 1.
@@ -156,7 +156,10 @@ FORBIDDEN_NAMES = {
     "db_main", "add_database", "mcp_main", "jobs_main", "source_main", "reddit_main", "classifiers_main",
 }
 
-ACTION_NAMES = ["do_db_reset", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_start", "do_source_remove"]
+ACTION_NAMES = [
+    "do_db_reset", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_start", "do_source_remove",
+    "get_db_status", "get_db_verify", "get_source_error_logs", "get_source_list", "get_source_status",
+]
 
 # One helper each walk must have reached, so a walk that follows nothing cannot pass.
 KNOWN_DEEP_HELPER = {
@@ -168,6 +171,12 @@ KNOWN_DEEP_HELPER = {
     "do_db_unsetup_mcp": "_get_configured_mcp_services",
     "do_run_start": "_container_mounts",
     "do_source_remove": "_running_services",
+    "get_db_status": "_load_classifier_suffixes",
+    "get_db_verify": "_probe_container_state",
+    "get_source_error_logs": "_get_mongoimport_log_sections",
+    # Calls only functions imported from the package, so the walk reaches nothing beyond the getter itself.
+    "get_source_list": "get_source_list",
+    "get_source_status": "_get_source_ingestion_state",
 }
 
 
@@ -209,8 +218,8 @@ def _forbidden_uses(names, functions):
 
 class TestActionsNeverPromptOrExit:
     def test_the_walk_starts_at_every_action(self):
-        """Bug class: an action added to the CLI that the walk below never visits."""
-        assert sorted(name for name in _cli_functions() if name.startswith("do_")) == ACTION_NAMES
+        """Bug class: an action or a getter added to the CLI that the walk below never visits."""
+        assert sorted(name for name in _cli_functions() if name.startswith(("do_", "get_"))) == ACTION_NAMES
 
     @pytest.mark.parametrize("action", ACTION_NAMES)
     def test_no_action_reaches_a_prompt_or_an_exit(self, action):

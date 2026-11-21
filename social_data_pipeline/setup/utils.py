@@ -269,16 +269,23 @@ def list_sources():
     ])
 
 
-def load_source_config(source_name):
-    """Load platform.yaml for a source. Returns dict or None."""
+def read_source_config(source_name):
+    """Load platform.yaml for a source without printing. Returns (config, warning): the dict or None, and the warning line `load_source_config` prints when the file exists but cannot be read (None otherwise). For a caller that returns data and leaves the printing to someone else."""
     source_path = SOURCES_DIR / source_name / "platform.yaml"
     if not source_path.exists():
-        return None
+        return None, None
     try:
-        return yaml.safe_load(source_path.read_text())
+        return yaml.safe_load(source_path.read_text()), None
     except (OSError, yaml.YAMLError) as e:
-        print(f"  Warning: Could not read {source_path}: {e}")
-        return None
+        return None, f"  Warning: Could not read {source_path}: {e}"
+
+
+def load_source_config(source_name):
+    """Load platform.yaml for a source. Returns dict or None."""
+    config, warning = read_source_config(source_name)
+    if warning is not None:
+        print(warning)
+    return config
 
 
 def get_source_profiles(source_name):

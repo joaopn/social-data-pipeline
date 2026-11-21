@@ -34,12 +34,14 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import secrets
 import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 from getpass import getpass
 from pathlib import Path
 
@@ -283,7 +285,7 @@ def _set_auth_env(password):
 
 
 class ActionError(Exception):
-    """An action function (`do_*`) was called without an input it needs on the path it took, and stopped before changing anything. `message` is one line that holds no input value; `exit_code` is the code a command returns for it."""
+    """An action function (`do_*`) was called without an input it needs on the path it took, and stopped before changing anything; or a function that returns data (`get_*`) was called with a source name that is not one path component, or with a database or profile it does not know, and stopped before reading anything. `message` is one line that holds no input value; `exit_code` is the code a command returns for it."""
 
     def __init__(self, message, exit_code=1):
         super().__init__(message)
@@ -663,19 +665,27 @@ def do_db_unsetup_mcp():
 # sdp db start / stop
 # ============================================================================
 
-def _collect_source_info():
+def _collect_source_info(warnings=None):
     """Snapshot all configured sources for mount-coherence helpers.
 
     Returns a list of dicts ``{name, profiles, paths}`` — the input shape
     consumed by ``setup.mount_sync.expected_source_mounts`` and
     ``compute_mount_drift``.
+
+    The warning about a platform.yaml that cannot be read is printed, as before, unless `warnings` is given: then it is appended to that list and nothing is printed, for a caller that returns data.
     """
     from social_data_pipeline.setup.utils import (
-        list_sources, load_source_config, get_source_profiles,
+        list_sources, load_source_config, read_source_config, get_source_profiles,
     )
     out = []
     for source in list_sources():
-        cfg = load_source_config(source) or {}
+        if warnings is None:
+            cfg = load_source_config(source) or {}
+        else:
+            cfg, warning = read_source_config(source)
+            if warning is not None:
+                warnings.append(warning)
+            cfg = cfg or {}
         out.append({
             "name": source,
             "profiles": list(get_source_profiles(source)),
@@ -1346,42 +1356,62 @@ def do_db_stop(*, service=None):
 
 def cmd_db_status(args):
     """Show database configuration and health."""
+    print_db_status(get_db_status(verbose=getattr(args, "verbose", False)))
+    return 0
+
+
+def _state_float(text):
+    """Return the float a number in a state file stands for, or, when it is not finite, the word the terminal prints for it as a single value (`nan`, `inf`, `-inf`)."""
+    value = float(text)
+    return value if math.isfinite(value) else str(value)
+
+
+def _parse_state_json(text):
+    """Parse the text of a state file. The JSON parser accepts NaN, Infinity and -Infinity, and reads a number too large for a float (`1e999`) as an infinity; JSON itself has no such numbers, so as floats they could not be returned as data. They become the word the terminal prints for such a value on its own. Two shapes of a damaged file print differently than before because of it: a non-finite number inside a list or object that is printed whole now shows in quotes, and a failed entry whose file name is such a number can now match a log section named `nan` or `inf`."""
+    return json.loads(text, parse_constant=_state_float, parse_float=_state_float)
+
+
+def _json_fact(value):
+    """Return a value read from a YAML file in a form JSON can hold: a string, a boolean, a number or None as it is, anything else (a date, a list) as its `str()`, which is the text the terminal prints for it."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return str(value)
+
+
+def get_db_status(*, verbose=False):
+    """Gather what `db status` shows. Prints nothing and returns JSON-serialisable data for `print_db_status`: `verbose` and `configured` always; with a database configured also `auth`, `databases` (one entry per database, each with its `ingestion`), `export`, `mcp`, `jobs` and `drift`. The per-source ingestion detail is read only with `verbose`; without it each `ingestion` says only whether state files exist."""
     env = load_env()
     configured = _get_configured_db_services()
 
-    print()
-    print("  Social Data Pipeline - Database Status")
-    print("  =====================================")
+    data = {"verbose": bool(verbose), "configured": list(configured)}
 
     if not configured:
-        print("\n  No databases configured. Run: python sdp.py db setup\n")
-        return 0
+        return data
 
     # Authentication status
     auth_enabled = (env.get("POSTGRES_AUTH_ENABLED") == "true"
                     or env.get("MONGO_AUTH_ENABLED") == "true"
                     or env.get("STARROCKS_AUTH_ENABLED") == "true")
-    print(f"\n  Authentication: {'enabled' if auth_enabled else 'disabled'}")
+    data["auth"] = {"enabled": auth_enabled, "rw_users": [], "ro_user": None, "ro_credentials": [], "mcp_users": []}
     if auth_enabled:
         pg_user = env.get("POSTGRES_USER", "postgres") if "postgres" in configured else None
         mongo_user = env.get("MONGO_ADMIN_USER") if "mongo" in configured else None
         sr_auth = "starrocks" in configured and env.get("STARROCKS_AUTH_ENABLED") == "true"
-        if pg_user or mongo_user or sr_auth:
-            rw_parts = []
-            if pg_user:
-                rw_parts.append(f"postgres: {pg_user}")
-            if mongo_user:
-                rw_parts.append(f"mongo: {mongo_user}")
-            if sr_auth:
-                rw_parts.append("starrocks: root")
-            print(f"    RW user:       {', '.join(rw_parts)}")
+        if pg_user:
+            data["auth"]["rw_users"].append({"db": "postgres", "user": pg_user})
+        if mongo_user:
+            data["auth"]["rw_users"].append({"db": "mongo", "user": mongo_user})
+        if sr_auth:
+            data["auth"]["rw_users"].append({"db": "starrocks", "user": "root"})
         ro_user = env.get("POSTGRES_RO_USER") or env.get("MONGO_RO_USER") or env.get("STARROCKS_RO_USER")
         if ro_user:
+            data["auth"]["ro_user"] = ro_user
             # Iterate every configured DB whose auth is enabled and report its
             # `.ro_credentials` path independently. Collapsing to the first
             # match (the old behavior) silently hid per-DB drift — e.g. Mongo
             # and StarRocks both having creds but only Mongo's path surfacing.
-            ro_cred_paths = []  # [(display_name, cred_path), ...]
             db_path_env = [
                 ("postgres",  "POSTGRES_AUTH_ENABLED",  "PGDATA_PATH",         "./data/database/postgres"),
                 ("mongo",     "MONGO_AUTH_ENABLED",     "MONGO_DATA_PATH",     "./data/database/mongo"),
@@ -1397,21 +1427,10 @@ def cmd_db_status(args):
                     dp = ROOT / dp
                 cred_file = dp / ".ro_credentials"
                 if cred_file.exists():
-                    ro_cred_paths.append((_DB_DISPLAY.get(db_name, db_name), cred_file))
-            if not ro_cred_paths:
-                print(f"    RO user:       {ro_user} (no password)")
-            elif len(ro_cred_paths) == 1:
-                _, cred_path = ro_cred_paths[0]
-                print(f"    RO user:       {ro_user} (password in {cred_path})")
-            else:
-                print(f"    RO user:       {ro_user}")
-                width = max(len(name) for name, _ in ro_cred_paths)
-                for name, cred_path in ro_cred_paths:
-                    print(f"      {(name + ':'):<{width + 1}}  {cred_path}")
+                    data["auth"]["ro_credentials"].append({"db": db_name, "path": str(cred_file)})
 
         # MCP user per configured DB — same `or`-chain anti-pattern as RO above
         # collapsed every DB to whichever envvar resolved first. Iterate.
-        mcp_users = []
         for db_name, mcp_env in (
             ("postgres",  "POSTGRES_MCP_USER"),
             ("mongo",     "MONGO_MCP_USER"),
@@ -1421,14 +1440,7 @@ def cmd_db_status(args):
                 continue
             user = env.get(mcp_env)
             if user:
-                mcp_users.append((_DB_DISPLAY.get(db_name, db_name), user))
-        if len(mcp_users) == 1:
-            print(f"    MCP user:      {mcp_users[0][1]}")
-        elif len(mcp_users) > 1:
-            print("    MCP user:")
-            width = max(len(name) for name, _ in mcp_users)
-            for name, user in mcp_users:
-                print(f"      {(name + ':'):<{width + 1}}  {user}")
+                data["auth"]["mcp_users"].append({"db": db_name, "user": user})
 
     # Check which services are running
     running_services = set()
@@ -1446,6 +1458,8 @@ def cmd_db_status(args):
             except json.JSONDecodeError:
                 pass
 
+    data["databases"] = []
+
     # PostgreSQL
     if "postgres" in configured:
         pgdata_path = env.get("PGDATA_PATH", "./data/database/postgres")
@@ -1453,14 +1467,15 @@ def cmd_db_status(args):
         if not pgdata.is_absolute():
             pgdata = ROOT / pgdata
 
-        print("\n  PostgreSQL:")
-        print(f"    Path:      {pgdata_path}")
-        print(f"    Name:      {env.get('DB_NAME', 'datasets')}")
-        print(f"    Port:      {env.get('POSTGRES_PORT', '5432')}")
-        print(f"    Running:   {'yes' if 'postgres' in running_services else 'no'}")
-
         state_dir = pgdata / "state_tracking"
-        _maybe_print_ingestion(state_dir, "_postgres_", "postgres", getattr(args, "verbose", False))
+        data["databases"].append({
+            "db": "postgres",
+            "path": pgdata_path,
+            "name": env.get('DB_NAME', 'datasets'),
+            "port": env.get('POSTGRES_PORT', '5432'),
+            "running": 'postgres' in running_services,
+            "ingestion": _get_ingestion(state_dir, "_postgres_", "postgres", verbose),
+        })
 
     # MongoDB
     if "mongo" in configured:
@@ -1469,13 +1484,14 @@ def cmd_db_status(args):
         if not mongo_data.is_absolute():
             mongo_data = ROOT / mongo_data
 
-        print("\n  MongoDB:")
-        print(f"    Path:      {mongo_data_path}")
-        print(f"    Port:      {env.get('MONGO_PORT', '27017')}")
-        print(f"    Running:   {'yes' if 'mongo' in running_services else 'no'}")
-
         state_dir = mongo_data / "state_tracking"
-        _maybe_print_ingestion(state_dir, "_mongo_", "mongo", getattr(args, "verbose", False))
+        data["databases"].append({
+            "db": "mongo",
+            "path": mongo_data_path,
+            "port": env.get('MONGO_PORT', '27017'),
+            "running": 'mongo' in running_services,
+            "ingestion": _get_ingestion(state_dir, "_mongo_", "mongo", verbose),
+        })
 
     # StarRocks
     if "starrocks" in configured:
@@ -1484,66 +1500,200 @@ def cmd_db_status(args):
         if not sr_data.is_absolute():
             sr_data = ROOT / sr_data
 
-        print("\n  StarRocks:")
-        print(f"    Path:      {sr_data_path}")
-        print(f"    Port:      {env.get('STARROCKS_PORT', '9030')}")
-        print(f"    FE HTTP:   {env.get('STARROCKS_FE_HTTP_PORT', '8030')}")
-        print(f"    Running:   {'yes' if 'starrocks' in running_services else 'no'}")
-
         state_dir = sr_data / "state_tracking"
-        _maybe_print_ingestion(state_dir, "_sr_", "sr", getattr(args, "verbose", False))
+        data["databases"].append({
+            "db": "starrocks",
+            "path": sr_data_path,
+            "port": env.get('STARROCKS_PORT', '9030'),
+            "fe_http_port": env.get('STARROCKS_FE_HTTP_PORT', '8030'),
+            "running": 'starrocks' in running_services,
+            "ingestion": _get_ingestion(state_dir, "_sr_", "sr", verbose),
+        })
 
     # Export path
     export_path = env.get("DB_EXPORT_PATH")
-    if export_path:
-        print("\n  Export:")
-        print(f"    Host path:      {export_path}")
-        print("    Container path: /export")
+    data["export"] = {"host_path": export_path} if export_path else None
 
     # MCP servers
+    data["mcp"] = []
     mcp_config = _load_mcp_config()
     if mcp_config:
         pg_mcp = mcp_config.get("postgres", {})
         if pg_mcp.get("enabled"):
             port = pg_mcp.get("port", 8000)
             access = pg_mcp.get("access_mode", "restricted")
-            running = "yes" if "postgres-mcp" in running_services else "no"
-            print("\n  PostgreSQL MCP:")
-            print(f"    Port:      {port}")
-            if access == "restricted":
-                print("    Read-only: yes (access-mode restricted)")
-            else:
-                print(f"    Read-only: no (access-mode {access})")
-            print(f"    Endpoint:  http://<server_ip>:{port}/sse (type: sse)")
-            print(f"    Running:   {running}")
+            data["mcp"].append({
+                "db": "postgres",
+                "port": _json_fact(port),
+                "read_only": access == "restricted",
+                "access_mode": _json_fact(access),
+                "running": "postgres-mcp" in running_services,
+            })
 
         mongo_mcp = mcp_config.get("mongo", {})
         if mongo_mcp.get("enabled"):
             port = mongo_mcp.get("port", 3000)
             read_only = mongo_mcp.get("read_only", True)
-            running = "yes" if "mongo-mcp" in running_services else "no"
+            data["mcp"].append({
+                "db": "mongo",
+                "port": _json_fact(port),
+                "read_only": bool(read_only),
+                "running": "mongo-mcp" in running_services,
+            })
+
+        sr_mcp = mcp_config.get("starrocks", {})
+        if sr_mcp.get("enabled"):
+            port = sr_mcp.get("port", 9000)
+            sr_ro_active = (
+                env.get("STARROCKS_AUTH_ENABLED") == "true"
+                and bool(env.get("STARROCKS_RO_USER"))
+            )
+            data["mcp"].append({
+                "db": "starrocks",
+                "port": _json_fact(port),
+                "read_only": sr_ro_active,
+                "running": "starrocks-mcp" in running_services,
+            })
+
+    # Jobs scheduler
+    data["jobs"] = None
+    if _is_jobs_configured():
+        jobs_cfg = _load_jobs_config()
+        port = jobs_cfg.get("port", 8050)
+        targets = jobs_cfg.get("targets") or {}
+
+        # Queue depth summary from the filesystem store
+        jobs_dir = ROOT / "data" / "jobs"
+        pending_n = len(list((jobs_dir / "pending").glob("*.json"))) if (jobs_dir / "pending").exists() else 0
+        approved_n = len(list((jobs_dir / "approved").glob("*.json"))) if (jobs_dir / "approved").exists() else 0
+        running_n = len(list((jobs_dir / "running").glob("*.json"))) if (jobs_dir / "running").exists() else 0
+        data["jobs"] = {
+            "port": _json_fact(port),
+            "result_root": _json_fact(jobs_cfg.get('result_root', './data/jobs/results')),
+            "max_concurrent": _json_fact(jobs_cfg.get('max_concurrent', 1)),
+            "running": "jobs" in running_services,
+            "targets": [
+                {"name": _json_fact(n), "backend": _json_fact(spec.get('backend'))}
+                for n, spec in targets.items()
+            ],
+            "queue": {"pending": pending_n, "approved": approved_n, "running": running_n},
+        }
+
+    # Drift section (local-files only — running-container probes are reserved
+    # for `sdp db verify`, which has the matching exit-code contract).
+    # The warnings about an unreadable platform.yaml come from loading the source configs for the mount check, so in the text they follow every section above: they are kept with the findings for the printer to put them there.
+    warnings = []
+    drift_findings = _drift_findings(probe_containers=False, warnings=warnings)
+    data["drift"] = {
+        "warnings": warnings,
+        "findings": {name: [f.to_dict() for f in findings] for name, findings in drift_findings.items()},
+    }
+
+    return data
+
+
+def print_db_status(data):
+    """Print the text of `db status` from the data of `get_db_status`."""
+    print()
+    print("  Social Data Pipeline - Database Status")
+    print("  =====================================")
+
+    if not data["configured"]:
+        print("\n  No databases configured. Run: python sdp.py db setup\n")
+        return
+
+    # Authentication status
+    auth = data["auth"]
+    print(f"\n  Authentication: {'enabled' if auth['enabled'] else 'disabled'}")
+    if auth["enabled"]:
+        if auth["rw_users"]:
+            rw_parts = [f"{entry['db']}: {entry['user']}" for entry in auth["rw_users"]]
+            print(f"    RW user:       {', '.join(rw_parts)}")
+        ro_user = auth["ro_user"]
+        if ro_user:
+            ro_cred_paths = [(_DB_DISPLAY.get(entry["db"], entry["db"]), entry["path"]) for entry in auth["ro_credentials"]]  # [(display_name, cred_path), ...]
+            if not ro_cred_paths:
+                print(f"    RO user:       {ro_user} (no password)")
+            elif len(ro_cred_paths) == 1:
+                _, cred_path = ro_cred_paths[0]
+                print(f"    RO user:       {ro_user} (password in {cred_path})")
+            else:
+                print(f"    RO user:       {ro_user}")
+                width = max(len(name) for name, _ in ro_cred_paths)
+                for name, cred_path in ro_cred_paths:
+                    print(f"      {(name + ':'):<{width + 1}}  {cred_path}")
+
+        mcp_users = [(_DB_DISPLAY.get(entry["db"], entry["db"]), entry["user"]) for entry in auth["mcp_users"]]
+        if len(mcp_users) == 1:
+            print(f"    MCP user:      {mcp_users[0][1]}")
+        elif len(mcp_users) > 1:
+            print("    MCP user:")
+            width = max(len(name) for name, _ in mcp_users)
+            for name, user in mcp_users:
+                print(f"      {(name + ':'):<{width + 1}}  {user}")
+
+    for database in data["databases"]:
+        # PostgreSQL
+        if database["db"] == "postgres":
+            print("\n  PostgreSQL:")
+            print(f"    Path:      {database['path']}")
+            print(f"    Name:      {database['name']}")
+            print(f"    Port:      {database['port']}")
+            print(f"    Running:   {'yes' if database['running'] else 'no'}")
+
+        # MongoDB
+        if database["db"] == "mongo":
+            print("\n  MongoDB:")
+            print(f"    Path:      {database['path']}")
+            print(f"    Port:      {database['port']}")
+            print(f"    Running:   {'yes' if database['running'] else 'no'}")
+
+        # StarRocks
+        if database["db"] == "starrocks":
+            print("\n  StarRocks:")
+            print(f"    Path:      {database['path']}")
+            print(f"    Port:      {database['port']}")
+            print(f"    FE HTTP:   {database['fe_http_port']}")
+            print(f"    Running:   {'yes' if database['running'] else 'no'}")
+
+        _print_ingestion(database["ingestion"], data["verbose"])
+
+    # Export path
+    if data["export"]:
+        print("\n  Export:")
+        print(f"    Host path:      {data['export']['host_path']}")
+        print("    Container path: /export")
+
+    # MCP servers
+    for server in data["mcp"]:
+        port = server["port"]
+        running = "yes" if server["running"] else "no"
+        if server["db"] == "postgres":
+            print("\n  PostgreSQL MCP:")
+            print(f"    Port:      {port}")
+            if server["read_only"]:
+                print("    Read-only: yes (access-mode restricted)")
+            else:
+                print(f"    Read-only: no (access-mode {server['access_mode']})")
+            print(f"    Endpoint:  http://<server_ip>:{port}/sse (type: sse)")
+            print(f"    Running:   {running}")
+
+        if server["db"] == "mongo":
             print("\n  MongoDB MCP:")
             print(f"    Port:      {port}")
-            if read_only:
+            if server["read_only"]:
                 print("    Read-only: yes (filtered tool list)")
             else:
                 print("    Read-only: no")
             print(f"    Endpoint:  http://<server_ip>:{port}/mcp (type: http)")
             print(f"    Running:   {running}")
 
-        sr_mcp = mcp_config.get("starrocks", {})
-        if sr_mcp.get("enabled"):
-            port = sr_mcp.get("port", 9000)
-            running = "yes" if "starrocks-mcp" in running_services else "no"
-            sr_ro_active = (
-                env.get("STARROCKS_AUTH_ENABLED") == "true"
-                and bool(env.get("STARROCKS_RO_USER"))
-            )
+        if server["db"] == "starrocks":
             print("\n  StarRocks MCP:")
             print(f"    Port:      {port}")
             # StarRocks has no application-level read-only switch — the
             # parenthetical hint exists so operators don't go hunting for one.
-            if sr_ro_active:
+            if server["read_only"]:
                 print("    Read-only: yes (database-level via sdp_readonly role)")
             else:
                 print("    Read-only: no (auth disabled — RO role not enforced)")
@@ -1551,42 +1701,37 @@ def cmd_db_status(args):
             print(f"    Running:   {running}")
 
     # Jobs scheduler
-    if _is_jobs_configured():
-        jobs_cfg = _load_jobs_config()
-        port = jobs_cfg.get("port", 8050)
-        running = "yes" if "jobs" in running_services else "no"
-        targets = jobs_cfg.get("targets") or {}
+    jobs = data["jobs"]
+    if jobs:
+        port = jobs["port"]
+        running = "yes" if jobs["running"] else "no"
         print("\n  Jobs scheduler:")
         print(f"    Port:         {port}")
-        print(f"    Result root:  {jobs_cfg.get('result_root', './data/jobs/results')}")
-        print(f"    Max concur.:  {jobs_cfg.get('max_concurrent', 1)}")
+        print(f"    Result root:  {jobs['result_root']}")
+        print(f"    Max concur.:  {jobs['max_concurrent']}")
         print(f"    Web UI:       http://<server_ip>:{port}/")
         print(f"    MCP:          http://<server_ip>:{port}/mcp (type: http)")
         print(f"    Running:      {running}")
-        if targets:
+        if jobs["targets"]:
             names = ", ".join(
-                f"{n} ({_DB_DISPLAY.get(spec.get('backend'), spec.get('backend'))})"
-                for n, spec in targets.items()
+                f"{target['name']} ({_DB_DISPLAY.get(target['backend'], target['backend'])})"
+                for target in jobs["targets"]
             )
             print(f"    Targets:      {names}")
 
-        # Queue depth summary from the filesystem store
-        jobs_dir = ROOT / "data" / "jobs"
-        pending_n = len(list((jobs_dir / "pending").glob("*.json"))) if (jobs_dir / "pending").exists() else 0
-        approved_n = len(list((jobs_dir / "approved").glob("*.json"))) if (jobs_dir / "approved").exists() else 0
-        running_n = len(list((jobs_dir / "running").glob("*.json"))) if (jobs_dir / "running").exists() else 0
-        print(f"    Queue:        pending={pending_n} approved={approved_n} running={running_n}")
+        queue = jobs["queue"]
+        print(f"    Queue:        pending={queue['pending']} approved={queue['approved']} running={queue['running']}")
 
-    # Drift section (local-files only — running-container probes are reserved
-    # for `sdp db verify`, which has the matching exit-code contract).
-    drift_findings = _drift_findings(probe_containers=False)
+    # Drift section
+    for warning in data["drift"]["warnings"]:
+        print(warning)
+    drift_findings = data["drift"]["findings"]
     if drift_findings and not _is_drift_clean(drift_findings):
         print()
         _print_drift_findings(drift_findings, header="Drift")
         print("  Run 'sdp db verify' for a per-DB exit-code-aware report.")
 
     print()
-    return 0
 
 
 # ============================================================================
@@ -1688,12 +1833,12 @@ def _probe_container_state(service):
     return state
 
 
-def _build_verify_context(*, env, probe_containers):
-    """Assemble the ctx dict that ``setup.verify.compute_drift`` consumes."""
+def _build_verify_context(*, env, probe_containers, warnings=None):
+    """Assemble the ctx dict that ``setup.verify.compute_drift`` consumes. With `warnings` (a list) the warnings about source configs that cannot be read are appended to it and nothing is printed."""
     configured = _get_configured_db_services()
     db_yamls = {db: _load_db_yaml(db) for db in configured}
     cred_states = {db: _resolve_cred_state(db, env) for db in configured}
-    sources_info = _collect_source_info()
+    sources_info = _collect_source_info(warnings=warnings)
     override_data = _read_override_yaml()
     mcp_config = _load_mcp_config()
     jobs_config = _load_jobs_config() if _is_jobs_configured() else {}
@@ -1718,11 +1863,11 @@ def _build_verify_context(*, env, probe_containers):
     }
 
 
-def _drift_findings(*, probe_containers):
+def _drift_findings(*, probe_containers, warnings=None):
     """Wrapper that loads .env + builds the ctx + runs compute_drift."""
     from social_data_pipeline.setup.verify import compute_drift
     env = load_env()
-    ctx = _build_verify_context(env=env, probe_containers=probe_containers)
+    ctx = _build_verify_context(env=env, probe_containers=probe_containers, warnings=warnings)
     return compute_drift(ctx)
 
 
@@ -1733,9 +1878,7 @@ def _is_drift_clean(findings_by_name):
 def _print_drift_findings(findings_by_name, header="Drift"):
     """Render findings in `db status` / `db verify` text mode.
 
-    `findings_by_name` is the dict from compute_drift. Names are db names
-    (`postgres`, `mongo`, `starrocks`) plus optional cross-cutting
-    `mcp` / `jobs` keys; rendering preserves insertion order.
+    `findings_by_name` maps a name to its findings, each a dict with `category`, `message` and `fix` (the `to_dict()` of a compute_drift finding). Names are db names (`postgres`, `mongo`, `starrocks`) plus optional cross-cutting `mcp` / `jobs` keys; rendering preserves insertion order.
     """
     print(f"  {header}:")
     any_drift = False
@@ -1747,8 +1890,8 @@ def _print_drift_findings(findings_by_name, header="Drift"):
         n = len(findings)
         print(f"    {name}: DRIFT ({n} issue{'s' if n != 1 else ''})")
         for f in findings:
-            print(f"      [{f.category}] {f.message}")
-            print(f"        Fix: {f.fix}")
+            print(f"      [{f['category']}] {f['message']}")
+            print(f"        Fix: {f['fix']}")
     if not any_drift:
         print("    All databases coherent.")
 
@@ -1767,22 +1910,37 @@ def cmd_db_verify(args):
     ``--db <name>`` filters to a single database (cross-cutting MCP / jobs
     sections are still emitted because their findings can name that DB).
     """
+    data = get_db_verify(db=getattr(args, "db", None))
+    if getattr(args, "json", False):
+        print_db_verify_json(data)
+    else:
+        print_db_verify(data)
+    return data["report"]["exit_code"]
+
+
+# The databases `db verify --db` can be limited to: the parser's choices.
+_VERIFY_DATABASES = ("postgres", "mongo", "starrocks")
+
+
+def get_db_verify(*, db=None):
+    """Gather what `db verify` reports. Prints nothing and returns `{"report": ..., "warnings": [...]}`: `report` is the object `--json` prints (`ok`, `exit_code`, `results`; with no database configured also `message`), `warnings` the lines about an unreadable platform.yaml that the terminal shows before it. Raises ActionError for a `db` that is not one of the three databases."""
     from social_data_pipeline.setup.verify import compute_drift
+
+    # A name that matches no group would drop every database from the report and leave it "ok".
+    if db is not None and db not in _VERIFY_DATABASES:
+        raise ActionError("unknown database")
 
     env = load_env()
     configured = _get_configured_db_services()
     if not configured:
         msg = "No databases configured. Run: python sdp.py db setup"
-        if getattr(args, "json", False):
-            print(json.dumps({"ok": True, "exit_code": 0, "message": msg, "results": {}}))
-        else:
-            print(f"\n  {msg}\n")
-        return 0
+        return {"report": {"ok": True, "exit_code": 0, "message": msg, "results": {}}, "warnings": []}
 
-    ctx = _build_verify_context(env=env, probe_containers=True)
+    warnings = []
+    ctx = _build_verify_context(env=env, probe_containers=True, warnings=warnings)
     findings_by_name = compute_drift(ctx)
 
-    db_filter = getattr(args, "db", None)
+    db_filter = db
     if db_filter:
         # Keep the filtered DB plus cross-cutting checks (mcp / jobs); drop
         # other DBs. Cross-cutting findings can mention the filtered DB,
@@ -1795,35 +1953,55 @@ def cmd_db_verify(args):
     clean = _is_drift_clean(findings_by_name)
     exit_code = 0 if clean else 1
 
-    if getattr(args, "json", False):
-        payload = {
-            "ok": clean,
-            "exit_code": exit_code,
-            "results": {
-                name: {
-                    "ok": not findings,
-                    "findings": [f.to_dict() for f in findings],
-                }
-                for name, findings in findings_by_name.items()
-            },
-        }
-        print(json.dumps(payload, indent=2))
-        return exit_code
+    payload = {
+        "ok": clean,
+        "exit_code": exit_code,
+        "results": {
+            name: {
+                "ok": not findings,
+                "findings": [f.to_dict() for f in findings],
+            }
+            for name, findings in findings_by_name.items()
+        },
+    }
+    return {"report": payload, "warnings": warnings}
 
+
+def print_db_verify_json(data):
+    """Print the `--json` form of `db verify` from the data of `get_db_verify`."""
+    for warning in data["warnings"]:
+        print(warning)
+    report = data["report"]
+    # The report for "no database configured" is the one with a message, and the only one printed on a single line.
+    if "message" in report:
+        print(json.dumps(report))
+    else:
+        print(json.dumps(report, indent=2))
+
+
+def print_db_verify(data):
+    """Print the text form of `db verify` from the data of `get_db_verify`."""
+    for warning in data["warnings"]:
+        print(warning)
+    report = data["report"]
+    if "message" in report:
+        print(f"\n  {report['message']}\n")
+        return
+
+    findings_by_name = {name: result["findings"] for name, result in report["results"].items()}
     print()
     print("  Social Data Pipeline - Database Verify")
     print("  =====================================")
     print()
     _print_drift_findings(findings_by_name, header="Findings")
     print()
-    if clean:
+    if report["ok"]:
         print("  OK")
     else:
         n_drift = sum(1 for v in findings_by_name.values() if v)
         n_total = len(findings_by_name)
         print(f"  Exit: 1 (drift in {n_drift} of {n_total} check group(s))")
     print()
-    return exit_code
 
 
 def _load_classifier_suffixes():
@@ -1842,45 +2020,94 @@ def _load_classifier_suffixes():
         return {}
 
 
-def _maybe_print_ingestion(state_dir, label_split, db_type, verbose):
-    """Render the ingestion breakdown for `db_type` (verbose) or a one-line teaser.
+def _get_ingestion(state_dir, label_split, db_type, verbose):
+    """Gather the ingestion state of one database for `db status`.
 
-    Verbose mode dispatches to `_print_ingestion_state` for the full per-source
-    list. Default mode prints a single advisory line `Ingestion: run with
-    --verbose for per-source breakdown.` when state files exist, and nothing
-    when the state dir is empty or absent — no point teasing about data that
-    isn't there.
+    Verbose mode dispatches to `_get_ingestion_state` for the full per-source list. Default mode reads no state file and returns only `has_state_files`, which is all the one-line teaser needs: it is shown when state files exist, and nothing when the state dir is empty or absent — no point teasing about data that isn't there.
     """
     if verbose:
-        _print_ingestion_state(state_dir, label_split, db_type)
+        return _get_ingestion_state(state_dir, label_split, db_type)
+    return {"has_state_files": state_dir.exists() and any(state_dir.glob("*.json"))}
+
+
+def _print_ingestion(ingestion, verbose):
+    """Print the ingestion breakdown of one database (verbose) or the one-line teaser, from the data of `_get_ingestion`."""
+    if not verbose:
+        if ingestion["has_state_files"]:
+            print("\n    Ingestion: run with --verbose for per-source breakdown.")
         return
-    if state_dir.exists() and any(state_dir.glob("*.json")):
-        print("\n    Ingestion: run with --verbose for per-source breakdown.")
 
-
-def _print_ingestion_state(state_dir, label_split, db_type):
-    """Print ingestion state from JSON files in a state directory."""
-    from social_data_pipeline.setup.utils import load_source_config
-
-    if not state_dir.exists():
+    if not ingestion["has_state_files"]:
         print("\n    No ingestion data yet.")
         return
+
+    # The source configs are loaded while the state files are read, so a warning about one comes before the header.
+    for warning in ingestion["warnings"]:
+        print(warning)
+
+    # Print grouped by source
+    print("\n    Ingestion status:")
+    for group in ingestion["sources"]:
+        print(f"      platform: {group['source']}")
+        for entry in group["entries"]:
+            if entry["kind"] == "classifier":
+                tag = f"classifier: {entry['classifier']}"
+            elif entry["kind"] == "main":
+                tag = "main data"
+            elif entry["kind"] == "ml_classifiers":
+                tag = "ml classifiers"
+            else:
+                tag = ""
+            line = f"        - {entry['table']}: {entry['count']} datasets"
+            if tag:
+                line += f" ({tag})"
+            if entry["in_progress"]:
+                line += f" [in progress: {entry['in_progress']}]"
+            if entry["failed_count"]:
+                line += f" [{entry['failed_count']} failed]"
+            print(line)
+            details = []
+            # A dataset whose name is "-" is not shown as the latest: "-" used to stand for "none".
+            if entry["count"] and entry["latest"] != "-":
+                details.append(f"latest: {entry['latest']}")
+            if entry["last_updated"]:
+                details.append(f"updated: {entry['last_updated'][:10]}")
+            if details:
+                print(f"            {', '.join(details)}")
+
+
+def _state_file_facts(profile, data_type):
+    """Return the `profile` and `data_type` fields of an ingestion entry, as parsed from the name of its state file (`<source>_<profile>_<data_type>`): the pipeline profile and the data type, or None for both when the name does not have that shape (the profile part is not an ingestion profile, or no data type follows it). The composed `table` and `label` of an entry are text for the terminal; these two are for a reader of the data."""
+    if profile in INGESTION_PROFILES and data_type:
+        return {"profile": profile, "data_type": data_type}
+    return {"profile": None, "data_type": None}
+
+
+def _get_ingestion_state(state_dir, label_split, db_type):
+    """Read ingestion state from JSON files in a state directory. Returns `has_state_files`, the `warnings` about source configs that could not be read (in the order met) and `sources`: one group per source, sorted by name, each with its `entries` in file order. An entry has the `table` the terminal shows and, apart from it, the `profile` and `data_type` its file name says."""
+    from social_data_pipeline.setup.utils import read_source_config
+
+    ingestion = {"has_state_files": False, "warnings": [], "sources": []}
+
+    if not state_dir.exists():
+        return ingestion
 
     state_files = sorted(state_dir.glob("*.json"))
     if not state_files:
-        print("\n    No ingestion data yet.")
-        return
+        return ingestion
+
+    ingestion["has_state_files"] = True
 
     # Cache platform configs per source
     platform_cache = {}
     classifier_suffixes = None  # lazy-loaded
 
     # Collect entries grouped by source
-    source_entries = {}  # {source: [(label, count, latest, in_progress, failed, last_updated), ...]}
+    source_entries = {}  # {source: [entry, ...]}
 
     for sf in state_files:
         try:
-            sdata = json.loads(sf.read_text())
+            sdata = _parse_state_json(sf.read_text())
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -1899,10 +2126,15 @@ def _print_ingestion_state(state_dir, label_split, db_type):
             source = name
             profile = ""
             data_type = name
+        # label_split is "_postgres_", "_mongo_" or "_sr_": with the part after it, it names the pipeline profile.
+        named = _state_file_facts(f"{label_split[1:]}{profile}", data_type)
 
         # Load platform config for this source
         if source not in platform_cache:
-            platform_cache[source] = load_source_config(source) or {}
+            config, warning = read_source_config(source)
+            if warning is not None:
+                ingestion["warnings"].append(warning)
+            platform_cache[source] = config or {}
         pconfig = platform_cache[source]
 
         if source not in source_entries:
@@ -1937,12 +2169,19 @@ def _print_ingestion_state(state_dir, label_split, db_type):
                 suffix = classifier_suffixes.get(cls_name, f"_{cls_name}")
                 table = f"{schema}.{data_type}{suffix}"
                 count = len(datasets)
-                latest = datasets[-1] if datasets else "-"
+                latest = datasets[-1] if datasets else None
                 cls_failed = failed_by_classifier.get(cls_name, [])
-                tag = f"classifier: {cls_name}"
-                source_entries[source].append(
-                    (tag, table, count, latest, in_progress, cls_failed, last_updated)
-                )
+                source_entries[source].append({
+                    "table": table,
+                    "kind": "classifier",
+                    "classifier": cls_name,
+                    **named,
+                    "count": count,
+                    "latest": latest,
+                    "in_progress": in_progress,
+                    "failed_count": len(cls_failed),
+                    "last_updated": last_updated,
+                })
         else:
             # Main data (ingest profile, or SR ml — no per-classifier grouping).
             if db_type == "postgres":
@@ -1953,44 +2192,37 @@ def _print_ingestion_state(state_dir, label_split, db_type):
                 table = f"{source}.{data_type}"
             else:
                 if "mongo_db_name" in pconfig:
-                    table = pconfig["mongo_db_name"]
+                    table = _json_fact(pconfig["mongo_db_name"])
                 else:
                     template = pconfig.get("mongo_db_name_template", "{platform}_{data_type}")
                     platform = pconfig.get("platform", source).replace("/", "_")
                     table = template.format(platform=platform, data_type=data_type)
 
             count = len(processed)
-            latest = processed[-1] if processed else "-"
+            latest = processed[-1] if processed else None
             if db_type == "postgres":
-                tag = "main data"
+                kind = "main"
             elif db_type == "sr" and profile == "ml":
-                tag = "ml classifiers"
+                kind = "ml_classifiers"
             else:
-                tag = ""
-            source_entries[source].append(
-                (tag, table, count, latest, in_progress, failed, last_updated)
-            )
+                kind = None
+            source_entries[source].append({
+                "table": table,
+                "kind": kind,
+                "classifier": None,
+                **named,
+                "count": count,
+                "latest": latest,
+                "in_progress": in_progress,
+                "failed_count": len(failed) if failed else 0,
+                "last_updated": last_updated,
+            })
 
-    # Print grouped by source
-    print("\n    Ingestion status:")
-    for source, entries in sorted(source_entries.items()):
-        print(f"      platform: {source}")
-        for tag, table, count, latest, in_progress, failed, last_updated in entries:
-            line = f"        - {table}: {count} datasets"
-            if tag:
-                line += f" ({tag})"
-            if in_progress:
-                line += f" [in progress: {in_progress}]"
-            if failed:
-                line += f" [{len(failed)} failed]"
-            print(line)
-            details = []
-            if latest != "-":
-                details.append(f"latest: {latest}")
-            if last_updated:
-                details.append(f"updated: {last_updated[:10]}")
-            if details:
-                print(f"            {', '.join(details)}")
+    ingestion["sources"] = [
+        {"source": source, "entries": entries}
+        for source, entries in sorted(source_entries.items())
+    ]
+    return ingestion
 
 
 # ============================================================================
@@ -4199,69 +4431,113 @@ def do_source_remove(*, name, _confirm=None):
 
 def cmd_source_list(args):
     """List configured sources."""
+    print_source_list(get_source_list())
+    return 0
+
+
+def get_source_list():
+    """Gather the configured sources. Prints nothing and returns `{"sources": [{"name", "profiles"}, ...]}` for `print_source_list`."""
     from social_data_pipeline.setup.utils import list_sources, get_source_profiles
 
     sources = list_sources()
-    if not sources:
-        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
-        return 0
-
-    print("\n  Configured sources:\n")
+    data = {"sources": []}
     for source in sources:
         profiles = get_source_profiles(source)
+        data["sources"].append({"name": source, "profiles": list(profiles)})
+    return data
+
+
+def print_source_list(data):
+    """Print the text of `source list` from the data of `get_source_list`."""
+    if not data["sources"]:
+        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
+        return
+
+    print("\n  Configured sources:\n")
+    for entry in data["sources"]:
+        profiles = entry["profiles"]
         profiles_str = ", ".join(profiles) if profiles else "none"
-        print(f"    {source}")
+        print(f"    {entry['name']}")
         print(f"      profiles: {profiles_str}")
     print()
-    return 0
 
 
 # ============================================================================
 # sdp source status
 # ============================================================================
 
+# Holds no input value: the name is whatever the caller sent.
+_SOURCE_NAME_NOT_VALID = "the source name is not a valid name"
+
+
+def _is_one_path_component(name):
+    """Return True when name is exactly one path component, so that a folder joined from it stays inside config/sources/."""
+    # The control package has the same rule for requests. It is written out here because this module does not import that package.
+    if not isinstance(name, str) or not name:
+        return False
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return False
+    # A longer name cannot be a file name on common filesystems, and stat() on it raises OSError instead of answering "no such folder".
+    if len(name.encode("utf-8", "surrogatepass")) > 255:
+        return False
+    return not any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in name)
+
+
 def cmd_source_status(args):
     """Show source processing/ingestion status."""
-    from social_data_pipeline.setup.utils import list_sources, load_source_config, get_source_profiles
-
     source_name = args.name
+
+    print_source_status(_get_source_status(source_name))
+    return 0
+
+
+def get_source_status(*, name=None):
+    """Gather what `source status` shows, for the named source or for all. Prints nothing and returns `{"sources": [...]}` for `print_source_status`: one entry per source with `name`, `found` and `warnings` (the lines about a platform.yaml that cannot be read); a source that was found also has `platform`, `data_types`, `profiles`, `paths` and `ingestion` (one entry per database view the terminal shows). Raises ActionError for a name that is not one path component, the empty string included (only None means all sources); a well-formed name that does not exist is an entry with `found` false."""
+    if name is not None and not _is_one_path_component(name):
+        raise ActionError(_SOURCE_NAME_NOT_VALID)
+    return _get_source_status(name)
+
+
+def _get_source_status(source_name):
+    """The body of `get_source_status` without the check of the name. The terminal command calls it with the name as it was typed, which is joined to config/sources/ unchecked, as it always was."""
+    from social_data_pipeline.setup.utils import list_sources, read_source_config, get_source_profiles
 
     if source_name:
         sources = [source_name]
     else:
         sources = list_sources()
 
+    data = {"sources": []}
+
     if not sources:
-        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
-        return 0
+        return data
 
     env = load_env()
-    print()
-    print("  Social Data Pipeline - Source Status")
-    print("  ===================================")
 
     for source in sources:
-        config = load_source_config(source)
+        config, warning = read_source_config(source)
+        entry = {"name": source, "found": config is not None, "warnings": [warning] if warning is not None else []}
+        data["sources"].append(entry)
         if config is None:
-            print(f"\n  Source '{source}': not found")
             continue
 
         platform = config.get("platform", source)
         data_types = config.get("data_types", [])
         profiles = get_source_profiles(source)
 
-        print(f"\n  Source: {source}")
-        print(f"    Platform:    {platform}")
-        print(f"    Data types:  {', '.join(data_types)}")
-        print(f"    Profiles:    {', '.join(profiles) if profiles else 'none'}")
+        entry["platform"] = _json_fact(platform)
+        entry["data_types"] = [_json_fact(data_type) for data_type in data_types]
+        entry["profiles"] = list(profiles)
         paths = config.get("paths", {})
-        print("    Paths:")
-        print(f"      Dumps:     {paths.get('dumps', f'./data/dumps/{source}')}")
-        print(f"      Extracted: {paths.get('extracted', f'./data/extracted/{source}')}")
-        print(f"      Parsed:    {paths.get('parsed', f'./data/parsed/{source}')}")
-        print(f"      Output:    {paths.get('output', f'./data/output/{source}')}")
+        entry["paths"] = {
+            "dumps": _json_fact(paths.get('dumps', f'./data/dumps/{source}')),
+            "extracted": _json_fact(paths.get('extracted', f'./data/extracted/{source}')),
+            "parsed": _json_fact(paths.get('parsed', f'./data/parsed/{source}')),
+            "output": _json_fact(paths.get('output', f'./data/output/{source}')),
+        }
 
         # Show ingestion state for this source
+        entry["ingestion"] = []
         has_postgres = any(p.startswith("postgres") for p in profiles)
         if has_postgres:
             pgdata_path = env.get("PGDATA_PATH", "./data/database/postgres")
@@ -4269,7 +4545,7 @@ def cmd_source_status(args):
             if not pgdata.is_absolute():
                 pgdata = ROOT / pgdata
             state_dir = pgdata / "state_tracking"
-            _print_source_ingestion_state(state_dir, source, "postgres")
+            entry["ingestion"].append(_get_source_ingestion_state(state_dir, source, "postgres"))
 
         has_mongo = "mongo_ingest" in profiles
         if has_mongo:
@@ -4278,7 +4554,7 @@ def cmd_source_status(args):
             if not mongo_data.is_absolute():
                 mongo_data = ROOT / mongo_data
             state_dir = mongo_data / "state_tracking"
-            _print_source_ingestion_state(state_dir, source, "mongo")
+            entry["ingestion"].append(_get_source_ingestion_state(state_dir, source, "mongo"))
 
         has_starrocks = any(p.startswith("sr_") for p in profiles)
         if has_starrocks:
@@ -4287,16 +4563,58 @@ def cmd_source_status(args):
             if not sr_data.is_absolute():
                 sr_data = ROOT / sr_data
             state_dir = sr_data / "state_tracking"
-            _print_source_ingestion_state(state_dir, source, "sr_ingest")
-            _print_source_ingestion_state(state_dir, source, "sr_ml")
+            entry["ingestion"].append(_get_source_ingestion_state(state_dir, source, "sr_ingest"))
+            entry["ingestion"].append(_get_source_ingestion_state(state_dir, source, "sr_ml"))
+
+    return data
+
+
+def print_source_status(data):
+    """Print the text of `source status` from the data of `get_source_status`."""
+    if not data["sources"]:
+        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
+        return
 
     print()
-    return 0
+    print("  Social Data Pipeline - Source Status")
+    print("  ===================================")
+
+    for entry in data["sources"]:
+        source = entry["name"]
+        for warning in entry["warnings"]:
+            print(warning)
+        if not entry["found"]:
+            print(f"\n  Source '{source}': not found")
+            continue
+
+        profiles = entry["profiles"]
+
+        print(f"\n  Source: {source}")
+        print(f"    Platform:    {entry['platform']}")
+        print(f"    Data types:  {', '.join(entry['data_types'])}")
+        print(f"    Profiles:    {', '.join(profiles) if profiles else 'none'}")
+        paths = entry["paths"]
+        print("    Paths:")
+        print(f"      Dumps:     {paths['dumps']}")
+        print(f"      Extracted: {paths['extracted']}")
+        print(f"      Parsed:    {paths['parsed']}")
+        print(f"      Output:    {paths['output']}")
+
+        # Show ingestion state for this source
+        for ingestion in entry["ingestion"]:
+            _print_source_ingestion(source, ingestion)
+
+    print()
 
 
 def _print_source_ingestion_state(state_dir, source, db_type):
     """Print ingestion state for a specific source from state files."""
-    display = _DB_DISPLAY.get(db_type, db_type.title())
+    _print_source_ingestion(source, _get_source_ingestion_state(state_dir, source, db_type))
+
+
+def _get_source_ingestion_state(state_dir, source, db_type):
+    """Read ingestion state for a specific source from state files. Returns `db_type`, `has_state_files` (whether a state file of this source exists, readable or not) and `entries`, one per readable file, each with the `label` the terminal shows and, apart from it, the `profile` and `data_type` its file name says."""
+    ingestion = {"db_type": db_type, "has_state_files": False, "entries": []}
 
     prefix = f"{source}_{db_type}_"
     if state_dir.exists():
@@ -4305,13 +4623,12 @@ def _print_source_ingestion_state(state_dir, source, db_type):
         state_files = []
 
     if not state_files:
-        print(f"\n    {display} ingestion: no data yet for source '{source}'.")
-        return
+        return ingestion
 
-    print(f"\n    {display} ingestion:")
+    ingestion["has_state_files"] = True
     for sf in state_files:
         try:
-            sdata = json.loads(sf.read_text())
+            sdata = _parse_state_json(sf.read_text())
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -4325,20 +4642,55 @@ def _print_source_ingestion_state(state_dir, source, db_type):
         parts = name.split(f"_{db_type}_")
         label = parts[1] if len(parts) == 2 else name
 
-        count = len(processed)
-        latest = processed[-1] if processed else "-"
+        if len(parts) != 2:
+            named = _state_file_facts(None, None)
+        elif db_type in INGESTION_PROFILES:
+            # "sr_ingest" and "sr_ml" are profiles themselves: the label is the data type.
+            named = _state_file_facts(db_type, label)
+        else:
+            # "postgres" and "mongo" are databases: the label still starts with "ingest_" or "ml_".
+            token, _, data_type = label.partition("_")
+            named = _state_file_facts(f"{db_type}_{token}", data_type)
 
-        line = f"      {label}: {count} datasets"
-        if latest != "-":
-            line += f" (latest: {latest})"
-        if in_progress:
-            line += f" [in progress: {in_progress}]"
-        if failed:
-            line += f" [{len(failed)} failed]"
+        count = len(processed)
+        latest = processed[-1] if processed else None
+
+        ingestion["entries"].append({
+            "label": label,
+            **named,
+            "count": count,
+            "latest": latest,
+            "in_progress": in_progress,
+            "failed_count": len(failed) if failed else 0,
+            "last_updated": last_updated,
+        })
+
+    return ingestion
+
+
+def _print_source_ingestion(source, ingestion):
+    """Print the ingestion state of one source in one database view, from the data of `_get_source_ingestion_state`."""
+    db_type = ingestion["db_type"]
+    display = _DB_DISPLAY.get(db_type, db_type.title())
+
+    if not ingestion["has_state_files"]:
+        print(f"\n    {display} ingestion: no data yet for source '{source}'.")
+        return
+
+    print(f"\n    {display} ingestion:")
+    for entry in ingestion["entries"]:
+        line = f"      {entry['label']}: {entry['count']} datasets"
+        # A dataset whose name is "-" is not shown as the latest: "-" used to stand for "none".
+        if entry["count"] and entry["latest"] != "-":
+            line += f" (latest: {entry['latest']})"
+        if entry["in_progress"]:
+            line += f" [in progress: {entry['in_progress']}]"
+        if entry["failed_count"]:
+            line += f" [{entry['failed_count']} failed]"
         print(line)
 
-        if last_updated:
-            print(f"        last updated: {last_updated}")
+        if entry["last_updated"]:
+            print(f"        last updated: {entry['last_updated']}")
 
 
 # ============================================================================
@@ -4350,35 +4702,49 @@ INGESTION_PROFILES = ["postgres_ingest", "postgres_ml", "mongo_ingest", "sr_inge
 
 def cmd_source_error_logs(args):
     """Show database ingestion error logs for sources."""
-    from social_data_pipeline.setup.utils import list_sources, load_source_config, get_source_profiles
-
     source_name = args.name
     profile_filter = args.profile
+
+    print_source_error_logs(_get_source_error_logs(source_name, profile_filter))
+    return 0
+
+
+def get_source_error_logs(*, name=None, profile=None):
+    """Gather what `source error-logs` shows, for the named source or for all, for one ingestion profile or for every one. Prints nothing and returns `{"name": ..., "sources": [...]}` for `print_source_error_logs`: `name` is the source asked for (None for all); each source has `name`, `found` and `warnings`, and when found `profiles`, one entry per ingestion profile checked, with the state `files` that hold failed entries and, for MongoDB, the `mongoimport_sections` of the logs for those files. Raises ActionError for a name that is not one path component, the empty string included (only None means all sources), and for a profile that is not an ingestion profile; a well-formed name that does not exist is an entry with `found` false."""
+    # A profile that does not exist would be checked nowhere and answered with "no errors".
+    if profile is not None and profile not in INGESTION_PROFILES:
+        raise ActionError("unknown profile")
+
+    if name is not None and not _is_one_path_component(name):
+        raise ActionError(_SOURCE_NAME_NOT_VALID)
+    return _get_source_error_logs(name, profile)
+
+
+def _get_source_error_logs(source_name, profile_filter):
+    """The body of `get_source_error_logs` without the checks of the name and the profile. The terminal command calls it with both as they were typed, as it always did."""
+    from social_data_pipeline.setup.utils import list_sources, read_source_config, get_source_profiles
 
     if source_name:
         sources = [source_name]
     else:
         sources = list_sources()
 
+    data = {"name": source_name or None, "sources": []}
+
     if not sources:
-        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
-        return 0
+        return data
 
     env = load_env()
-    print()
-    print("  Social Data Pipeline - Error Logs")
-    print("  ==================================")
-
-    any_errors = False
 
     for source in sources:
-        config = load_source_config(source)
+        config, warning = read_source_config(source)
+        entry = {"name": source, "found": config is not None, "warnings": [warning] if warning is not None else []}
+        data["sources"].append(entry)
         if config is None:
-            print(f"\n  Source '{source}': not found")
             continue
 
         profiles = get_source_profiles(source)
-        source_has_errors = False
+        entry["profiles"] = []
 
         # Determine which ingestion profiles to check
         check_profiles = [profile_filter] if profile_filter else INGESTION_PROFILES
@@ -4407,18 +4773,78 @@ def cmd_source_error_logs(args):
                     mongo_data = ROOT / mongo_data
                 state_dir = mongo_data / "state_tracking"
 
-            # Print failed entries from state files
-            failed_files, found = _print_failed_entries(state_dir, source, profile, source_has_errors)
-            if found:
-                if not source_has_errors:
-                    source_has_errors = True
-                any_errors = True
-
+            # Failed entries from state files
+            failed_files, files = _get_failed_entries(state_dir, source, profile)
+            checked = {"profile": profile, "files": files, "mongoimport_sections": []}
+            entry["profiles"].append(checked)
+            if files:
                 # For mongo_ingest, also show relevant mongoimport log sections
                 if profile == "mongo_ingest" and failed_files:
                     log_dir = state_dir.parent / "logs"
                     if log_dir.exists():
-                        _print_mongoimport_log_sections(log_dir, failed_files)
+                        checked["mongoimport_sections"] = _get_mongoimport_log_sections(log_dir, failed_files)
+
+    return data
+
+
+def print_source_error_logs(data):
+    """Print the text of `source error-logs` from the data of `get_source_error_logs`."""
+    if not data["sources"]:
+        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
+        return
+
+    source_name = data["name"]
+    print()
+    print("  Social Data Pipeline - Error Logs")
+    print("  ==================================")
+
+    any_errors = False
+
+    for entry in data["sources"]:
+        source = entry["name"]
+        for warning in entry["warnings"]:
+            print(warning)
+        if not entry["found"]:
+            print(f"\n  Source '{source}': not found")
+            continue
+
+        source_has_errors = False
+
+        for checked in entry["profiles"]:
+            profile = checked["profile"]
+
+            for state_file in checked["files"]:
+                # The source's header comes once, before its first failed entries.
+                if not source_has_errors:
+                    print(f"\n  Source: {source}")
+                    source_has_errors = True
+                any_errors = True
+
+                failed = state_file["failed"]
+                print(f"\n    {profile} errors ({state_file['label']}): {len(failed)} failed")
+                for failure in failed:
+                    timestamp = failure["timestamp"]
+                    ts_display = f" [{timestamp}]" if timestamp else ""
+                    print(f"\n      {failure['filename']}{ts_display}")
+                    for line in failure["error"].split('\n'):
+                        print(f"        {line}")
+
+            sections = checked["mongoimport_sections"]
+            if sections:
+                # One header for all sections; it names the log file of the first, also when later sections come from another file.
+                print(f"\n    Mongoimport logs for failed files ({sections[0]['log_file']}):")
+            for section in sections:
+                # Print header block
+                print()
+                for hl in section["header"]:
+                    print(f"      {hl}")
+
+                # Print output
+                if section["output"]:
+                    for ol in section["output"]:
+                        print(f"      {ol}")
+                else:
+                    print("      (no mongoimport output found)")
 
         if not source_has_errors and source_name:
             print(f"\n  Source: {source}")
@@ -4428,13 +4854,12 @@ def cmd_source_error_logs(args):
         print("\n  No errors found for any source.")
 
     print()
-    return 0
 
 
-def _print_failed_entries(state_dir, source, profile, header_printed):
-    """Print failed entries from state files. Returns (failed_filenames, found_any)."""
+def _get_failed_entries(state_dir, source, profile):
+    """Read failed entries from state files. Returns (failed_filenames, files): the file names of all failed entries, and one dict per state file that holds any, with its `label` and its `failed` entries (`filename`, `error`, `timestamp`)."""
     if not state_dir.exists():
-        return [], False
+        return [], []
 
     prefix = f"{source}_{profile}_"
     state_files = sorted(f for f in state_dir.glob("*.json") if f.stem.startswith(prefix))
@@ -4444,14 +4869,14 @@ def _print_failed_entries(state_dir, source, profile, header_printed):
         state_files = sorted(state_dir.glob(f"*_{profile}_*.json"))
 
     if not state_files:
-        return [], False
+        return [], []
 
     all_failed = []
-    found_any = False
+    files = []
 
     for sf in state_files:
         try:
-            sdata = json.loads(sf.read_text())
+            sdata = _parse_state_json(sf.read_text())
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -4459,40 +4884,33 @@ def _print_failed_entries(state_dir, source, profile, header_printed):
         if not failed:
             continue
 
-        if not found_any and not header_printed:
-            print(f"\n  Source: {source}")
-        found_any = True
-
         # Extract data type from filename: {source}_{profile}_{data_type}
         parts = sf.stem.split(f"_{profile}_")
         label = parts[1] if len(parts) == 2 else sf.stem
 
-        print(f"\n    {profile} errors ({label}): {len(failed)} failed")
+        entries = []
         for entry in failed:
             filename = entry.get("filename", "unknown")
             error = entry.get("error", "no error message")
             timestamp = entry.get("timestamp", "")
-            ts_display = f" [{timestamp}]" if timestamp else ""
-            print(f"\n      {filename}{ts_display}")
             # Strip container log path from error message (we show logs inline)
             display_error = error.split(". See log:")[0] if ". See log:" in error else error
-            for line in display_error.split('\n'):
-                print(f"        {line}")
+            entries.append({"filename": filename, "error": display_error, "timestamp": timestamp})
             all_failed.append(filename)
+        files.append({"label": label, "failed": entries})
 
-    return all_failed, found_any
+    return all_failed, files
 
 
-def _print_mongoimport_log_sections(log_dir, failed_filenames):
-    """Print mongoimport log sections matching failed filenames."""
+def _get_mongoimport_log_sections(log_dir, failed_filenames):
+    """Read the mongoimport log sections matching failed filenames. Returns one dict per section, in the order found: the `log_file` it is in, its `header` block and its `output` lines."""
     import re
     separator = re.compile(r'^={10,}$')
     failed_set = set(failed_filenames)
     log_files = sorted(log_dir.glob("mongoimport_*.log"))
+    sections = []
     if not log_files:
-        return
-
-    printed_header = False
+        return sections
 
     for lf in log_files:
         try:
@@ -4556,22 +4974,10 @@ def _print_mongoimport_log_sections(log_dir, failed_filenames):
             if output_after:
                 output_lines += [l for l in output_after if l.strip()]
 
-            if not printed_header:
-                print(f"\n    Mongoimport logs for failed files ({lf}):")
-                printed_header = True
-
-            # Print header block
             header_block = lines[opening_sep:((closing_sep + 1) if closing_sep is not None else len(lines))]
-            print()
-            for hl in header_block:
-                print(f"      {hl}")
+            sections.append({"log_file": str(lf), "header": header_block, "output": output_lines})
 
-            # Print output
-            if output_lines:
-                for ol in output_lines:
-                    print(f"      {ol}")
-            else:
-                print("      (no mongoimport output found)")
+    return sections
 
 
 # ============================================================================

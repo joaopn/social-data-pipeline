@@ -210,7 +210,7 @@ class TestDbStatusVerbose:
         """Regression for I6: SR was missing from cmd_db_status entirely."""
         sdp.cmd_db_status(_args(verbose=True))
         out = capsys.readouterr().out
-        # SR rendering goes through _print_ingestion_state with db_type="sr"
+        # SR rendering goes through _get_ingestion_state and _print_ingestion with db_type="sr"
         # → table label is "<source>.<data_type>".
         assert "reddit.comments" in out
 

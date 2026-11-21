@@ -2,9 +2,9 @@
 
 A process that runs a verb without a terminal passes the validated request fields to the action as keyword arguments. The contracts pinned here:
 
-- Exactly the verbs listed below have an action, and the CLI module has no other function with the action prefix.
+- Exactly the verbs listed below have an action, and the CLI module has no other function with an action prefix: `do_` for a state-changing command, `get_` for a read command, whose action returns the data the terminal prints.
 - An action takes keyword-only parameters; its public ones are the verb's socket inputs, required exactly where the input is required.
-- An action has a confirmation callback exactly when the command asks for a confirmation, and a password callback exactly when it asks for the admin password; both default to None, which the action treats as "nobody to ask".
+- An action has a confirmation callback exactly when the command asks for a confirmation, and a password callback exactly when it asks for the admin password; both default to None, which the action treats as "nobody to ask". A read command asks neither, so a getter has no private parameter at all.
 
 The registry is reached through the module (`verbs.<name>`) and the CLI as `import sdp`.
 """
@@ -20,6 +20,11 @@ from social_data_pipeline.control import verbs
 
 # Written out on purpose: giving a verb an action makes it runnable without a terminal, so that decision is made in two places.
 ACTIONS = {
+    "db.status": "get_db_status",
+    "db.verify": "get_db_verify",
+    "source.list": "get_source_list",
+    "source.status": "get_source_status",
+    "source.error_logs": "get_source_error_logs",
     "run.start": "do_run_start",
     "db.start": "do_db_start",
     "db.stop": "do_db_stop",
@@ -44,8 +49,8 @@ class TestActionsMatchTheRegistry:
         assert {name: verb.action for name, verb in verbs.VERBS.items() if verb.action is not None} == ACTIONS
 
     def test_every_action_function_of_the_cli_is_in_the_registry(self):
-        """Bug class: an action function added to the CLI without a verb, which no signature or no-prompt check would then cover."""
-        in_cli = {name for name, value in vars(sdp).items() if name.startswith("do_") and inspect.isfunction(value)}
+        """Bug class: an action function added to the CLI without a verb, which no signature or no-prompt check would then cover. Both prefixes are swept: a `get_` function outside the registry would return data to a caller without typed inputs."""
+        in_cli = {name for name, value in vars(sdp).items() if name.startswith(("do_", "get_")) and inspect.isfunction(value)}
 
         assert in_cli == set(ACTIONS.values())
 
@@ -68,7 +73,7 @@ class TestActionsMatchTheRegistry:
 
     @pytest.mark.parametrize("verb_name", sorted(ACTIONS))
     def test_callbacks_match_what_the_command_asks(self, verb_name):
-        """Bug class: an action for a command that asks for a confirmation or the admin password without the matching callback (it could then only ask on a terminal it does not have, or skip the question), or a callback whose default is anything but None (a default that answers yes, or one that prompts)."""
+        """Bug class: an action for a command that asks for a confirmation or the admin password without the matching callback (it could then only ask on a terminal it does not have, or skip the question), or a callback whose default is anything but None (a default that answers yes, or one that prompts). For a getter the expected set is empty: a private parameter there would be an input no request can carry and no type checks."""
         prompted = verbs.VERBS[verb_name].prompted_inputs
         private = {name: param for name, param in _parameters(verb_name).items() if name.startswith("_")}
 

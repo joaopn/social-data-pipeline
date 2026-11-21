@@ -114,28 +114,33 @@ VERBS = _registry(
         cli_inputs={"verbose"},
         socket_inputs={"verbose": Field(Bool())},
         socket_enabled=True,
+        action="get_db_status",
     ),
     Verb(
         name="source.list", cls="read", cli=("source", "list"),
         socket_enabled=True,
+        action="get_source_list",
     ),
     Verb(
         name="db.verify", cls="read", cli=("db", "verify"),
         cli_inputs={"db"},
         socket_inputs={"db": Field(Enum(DATABASES))},
         socket_enabled=True,
+        action="get_db_verify",
     ),
     Verb(
         name="source.status", cls="read", cli=("source", "status"),
         cli_inputs={"name"},
         socket_inputs={"name": Field(ConfiguredSource())},
         socket_enabled=True,
+        action="get_source_status",
     ),
     Verb(
         name="source.error_logs", cls="read", cli=("source", "error-logs"),
         cli_inputs={"name", "profile"},
         socket_inputs={"name": Field(ConfiguredSource()), "profile": Field(Enum(ERROR_LOG_PROFILES))},
         socket_enabled=True,
+        action="get_source_error_logs",
     ),
     # ---- write ----
     Verb(

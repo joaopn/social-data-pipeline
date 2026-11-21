@@ -38,6 +38,7 @@ tests/
     conftest.py                        # Root fixtures (paths, NDJSON helpers, marker registration)
     fixtures/                          # NDJSON / CSV / Parquet / config / state fixtures
     test_cli_help.py                   # Smoke: every subcommand --help exits 0
+    control/                           # Verb registry and its typed inputs (what a request may carry)
     core/                              # Pure-logic core
     db/                                # Pure-logic DB ingestion
     jobs/                              # Jobs scheduler (store, runner, backends, auth, config)

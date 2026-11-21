@@ -1,0 +1,6 @@
+{#- A part of the output view, the answer to one request of it (see `output`): the whole lines to append (or, with the HX-Retarget header, the view's whole new content), then either the element that makes the next request (showing the unfinished line until it is replaced) or the line that says why the view stops. -#}
+{%- if text %}<div class="output-piece">{{ text }}</div>{% endif %}
+{%- if trigger %}<div class="output-next" hx-get="{{ next_href }}" hx-trigger="{{ trigger }}" hx-swap="outerHTML">{{ preview }}</div>
+{%- else %}<p class="output-end">{{ end }}{% if continue_href %} <a href="{{ continue_href }}">Continue from here</a>{% endif %}</p>
+{%- if errors %}<pre class="output">{{ errors }}</pre>{% endif %}
+{%- endif %}

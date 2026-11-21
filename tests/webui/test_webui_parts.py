@@ -182,6 +182,19 @@ def test_the_table_keeps_at_most_its_bound_and_forgets_the_oldest():
     assert sessions.get(ids[0]) is None and all(sessions.get(session_id) for session_id in ids[1:])
 
 
+def test_at_most_64_sessions_by_default():
+    """Bug class: a session table so large that its outcomes, held lines and pending actions (about 1.6 MiB a session) can fill the container's 512 MiB."""
+    from social_data_pipeline.webui import sessions
+
+    assert sessions.SESSIONS_MAX == 64
+    # The application's own default, where the real web packages are there (the jobs tests put a stand-in FastAPI in their place otherwise).
+    pytest.importorskip("starlette.testclient")
+    pytest.importorskip("jinja2")
+    from social_data_pipeline.webui import app as webapp
+
+    assert webapp.Limits().sessions_max == 64
+
+
 # ── imports (m) ─────────────────────────────────────────────────────────────
 
 

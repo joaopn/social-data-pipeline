@@ -17,7 +17,7 @@
   <nav class="side" aria-label="Management">
     <ul>
       {%- for key, page_title, address in pages %}
-      <li>{% if key == active %}<a class="side-on" href="{{ address }}" aria-current="page">{{ page_title }}</a>{% else %}<a href="{{ address }}">{{ page_title }}</a>{% endif %}{% if key != "overview" %} <small class="soon">next update</small>{% endif %}</li>
+      <li>{% if key == active %}<a class="side-on" href="{{ address }}" aria-current="page">{{ page_title }}</a>{% else %}<a href="{{ address }}">{{ page_title }}</a>{% endif %}</li>
       {%- endfor %}
     </ul>
   </nav>

@@ -1,0 +1,39 @@
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block content %}
+<p><a href="/runs">All runs</a></p>
+<section class="card" aria-labelledby="facts-title">
+  <h2 id="facts-title">The run</h2>
+  {%- if not block.ok %}
+  {%- include "_failure.html" %}
+  {%- elif block.run is none %}
+  <p class="muted">The list of runs does not hold this run: it is not among the newest 1000 recorded runs, or it was started in a terminal and has ended.</p>
+  {%- else %}
+  {%- set run = block.run %}
+  <dl class="facts">
+    <dt>Kind</dt><dd>{{ run.kind }}</dd>
+    <dt>Profile</dt><dd>{{ run.profile }}</dd>
+    <dt>Source</dt><dd>{% if run.source_href %}<a href="{{ run.source_href }}">{{ run.source }}</a>{% else %}{{ run.source }}{% endif %}</dd>
+    <dt>Fields</dt><dd>{% for key, value in run.flags %}<span class="tag">{{ key }}={{ value }}</span> {% else %}<span class="muted">none</span>{% endfor %}</dd>
+    <dt>Started by</dt><dd>{{ run.started_by }}</dd>
+    <dt>State</dt><dd>{{ run.state }}</dd>
+    <dt>Started</dt><dd>{{ run.started }}</dd>
+    <dt>Ended</dt><dd>{{ run.ended }}</dd>
+    <dt>Exit code</dt><dd>{{ run.exit_code }}</dd>
+  </dl>
+  {%- if run.alive %}
+  {{ forms.action("run.cancel", "Cancel this run", {"run_id": run_id}, danger=True) }}
+  {%- endif %}
+  {%- if not block.docker_available %}
+  <p class="notice notice-warn">Docker cannot be asked: the state shown may be out of date.</p>
+  {%- endif %}
+  {%- endif %}
+</section>
+
+<section class="card" aria-labelledby="output-title">
+  <h2 id="output-title">Output{% if offset %} <small>from byte {{ offset }}</small>{% endif %}</h2>
+  <div class="output-view" id="view-{{ view_id }}" aria-live="polite">
+    <div class="output-next" hx-get="{{ first_href }}" hx-trigger="load" hx-swap="outerHTML"><span class="muted">Loading the output...</span></div>
+  </div>
+</section>
+{% endblock %}

@@ -11,7 +11,18 @@ from webui_helpers import GATEWAY, HOST, HOSTS, LISTEN_PORT, Clock, StandInBroke
 
 @pytest.fixture
 def broker():
-    return StandInBroker()
+    """The stand-in broker. After the test, every call it received is checked against the web UI's table (property a): no route of any test may have made the broker receive a verb, an operation or a field outside it."""
+    from social_data_pipeline.webui import actions
+
+    made = StandInBroker()
+    yield made
+    for request in made.requests:
+        action = actions.TABLE.get(request["verb"])
+        assert action is not None, f"the broker received {request['verb']!r}, which is not in the table"
+        assert set(request["fields"]) <= set(action.inputs), f"the broker received a field outside the table for {request['verb']}"
+    for call in made.calls:
+        if call[0] == "call":
+            assert call[2] in actions.TABLE and not actions.TABLE[call[2]].op, f"the broker received {call[2]!r}, which is not a verb of the table"
 
 
 @pytest.fixture

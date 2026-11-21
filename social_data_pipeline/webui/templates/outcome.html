@@ -1,0 +1,7 @@
+{% extends "frame.html" %}
+{% block content %}
+{%- if outcome.command %}
+<pre class="command"><code>{{ outcome.command }}</code></pre>
+{%- endif %}
+{% include "_outcome.html" %}
+{% endblock %}

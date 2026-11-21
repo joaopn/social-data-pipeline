@@ -23,8 +23,11 @@ from social_data_pipeline.webui import app as webapp
 from social_data_pipeline.webui import config, guard
 
 CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
-GET_ROUTES = ["/", "/login", "/healthz", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/system", "/static/app.css", "/static/app.js", "/static/vendor/htmx.min.js", "/no-such-page"]
-POST_ROUTES = ["/login", "/logout", "/", "/healthz", "/no-such-page"]
+GET_ROUTES = [
+    "/", "/login", "/healthz", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/runs/r20261121T101500-0a1b2c", "/runs/r20261121T101500-0a1b2c/output?offset=0&view=0123456789abcdef", "/system",
+    "/pending/AAAAAAAAAAAAAAAAAAAAAA", "/actions/AAAAAAAAAAAAAAAAAAAAAA", "/static/app.css", "/static/app.js", "/static/vendor/htmx.min.js", "/no-such-page",
+]
+POST_ROUTES = ["/login", "/logout", "/", "/healthz", "/pending", "/pending/AAAAAAAAAAAAAAAAAAAAAA/confirm", "/no-such-page"]
 
 
 @pytest.fixture

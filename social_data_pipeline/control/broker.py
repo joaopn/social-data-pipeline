@@ -79,7 +79,7 @@ OPS = {
 OPTIONAL_KEYS = {"call": frozenset({"step_up"}), "login": frozenset({"channel"})}
 
 # Verbs that are refused while a pipeline run is alive, and when Docker cannot be asked whether one is.
-DESTRUCTIVE_VERBS = frozenset({"db.reset", "db.unsetup", "db.stop", "source.remove"})
+DESTRUCTIVE_VERBS = frozenset({"db.reset", "db.unsetup", "db.unsetup_mcp", "db.stop", "source.remove"})
 # The state-changing verb that takes no write lock: a cancel must get through while something else runs.
 UNLOCKED_VERBS = frozenset({"run.cancel"})
 # The verb that takes the write lock shared: several runs can be started at once, never while a state-changing child runs, and no destructive verb looks for live runs while one is being started.

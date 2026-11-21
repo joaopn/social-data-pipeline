@@ -1,0 +1,452 @@
+"""The Management pages besides the Overview, the way an action travels from a form to its outcome, and the output view of a run; `install(api, context)` adds their routes to the application of `app.create_app`.
+
+Pages, each read in one worker of the pages' bound, each block failing on its own:
+
+- `GET /sources`: the sources (`source.list`). `GET /sources/<name>` (a plain name, else not found): the ingestion state (`source.status`), the finished files per stage (`source.progress`), the error logs (`source.error_logs`, once per profile of the source among `postgres_ingest`, `postgres_ml`, `mongo_ingest`; one too large to send is answered with the terminal command to use instead), one small form per profile the source has, and "Remove this source".
+- `GET /databases` and `GET /databases/<database>` (one of the three, else not found): `db.status` and `db.verify` per database; the forms to start and stop services, to reset and remove a database, to remove the MCP servers' and the scheduler's configuration, and to keep or forget the database admin password for the session.
+- `GET /runs`: `run.list`. `GET /runs/<run id>` (either form of a run id, else not found; `?offset=` where a view starts): the run's facts, a cancel form while it is alive, and the output view.
+- `GET /system`: the broker's `hello`, the newest 200 lines of the audit log, the table of actions.
+
+An action, the same for every state-changing one: `POST /pending` with the form (`action` names the table's entry) is checked against the table without asking the broker and kept as a pending action of the session (`work.SessionWork`), answered with a redirect to `GET /pending/<id>`, which shows the `sdp` command, every input (a secret as dots), what a destructive verb destroys, and for a step-up entry a field for the management password. `POST /pending/<id>/confirm` carries that password or nothing; the pending action is taken out of the session before anything is awaited, so two confirms at once start one call. The call runs in a thread of its own, not tied to the request, under a bound of its own (`Limits.action_workers`; a cancel under `Limits.cancel_workers`, so that it gets through while long actions run; "busy" when full), through a client WITHOUT a time limit, and writes its outcome; the confirm waits for it up to `Limits.action_wait_seconds`: a refusal that came at once is shown on the pending page (`step_up_failed` and `step_up_required` put the action back, `unauthorized` and `session_ended` end the session), anything else is a redirect to `GET /actions/<id>`, which shows "under way" (an htmx poll every 2 seconds) and then the outcome. A broker that cannot be reached is an outcome there, not a logout.
+
+The output view (`GET /runs/<run id>/output?offset=<n>&view=<id>`, an htmx partial; see `output`): each answer carries the next request itself. Pieces of log files go through a bound of their own (`Limits.piece_workers`) and tails of Docker through another (`Limits.tail_workers`), apart from the pages', and are answered "busy, trying again" when theirs is full. A request for an offset below what the view has shown appends nothing and stops the view; a view that stops on an error shows its unfinished line first. An htmx poll of an outcome that is no longer kept gets a part that says so and polls no more. A request of htmx whose session has ended gets an empty answer with `HX-Redirect` to the login page. Every route here answers GET only (a HEAD is 405): a GET of a run page makes an output view's state, and a HEAD must change nothing.
+"""
+
+import logging
+import math
+import re
+import threading
+import time
+from functools import partial
+
+import anyio
+from fastapi import Request
+from fastapi.responses import PlainTextResponse, RedirectResponse
+
+from social_data_pipeline.webui import actions, output, overview, pages
+from social_data_pipeline.webui.calls import BUSY_GATE, SESSION_ENDING_CODES, call_broker, session_ends, why
+from social_data_pipeline.webui.work import ID_PATTERN, VIEW_ID_PATTERN, Outcome, View, new_id
+
+BUSY = "The web UI is busy with other requests: try again in a moment."
+ACTIONS_BUSY = "The web UI already runs as many actions as it runs at once: confirm again when one of them has ended."
+STEP_UP_MISSING = "Type the management password to confirm this action."
+CONFIRM_REFUSED = "The confirmation carried a field it does not take."
+FORM_REFUSED = "The action was not taken: a field of the form was refused. Nothing was sent to the broker."
+VIEW_CLOSED = "This output view was closed because newer ones were opened in this session: reload the page to follow the output again."
+VIEW_BEHIND = "This request asked for output this view has already shown, so nothing was added: reload the page to follow the output again."
+OUTCOME_GONE = "This outcome is no longer kept: the session keeps the newest 32. The action itself was not changed by that."
+OUTPUT_BUSY = "The web UI is busy: trying again in a moment."
+NOT_FOUND = "Not found.\n"
+OFFSET_PATTERN = r"[0-9]{1,16}"
+RETRY_CODES = ("step_up_failed", "step_up_required")
+RUN_PAGE_LIST_LIMIT = 1000
+AUDIT_LINES = 200
+# The Management page each action belongs to.
+ACTIVE = {"run.start": "sources", "source.remove": "sources", "run.cancel": "runs"}
+
+log = logging.getLogger("social_data_pipeline.webui")
+
+
+def _not_found():
+    return PlainTextResponse(NOT_FOUND, status_code=404)
+
+
+def _offset(value, default=0):
+    """An offset from a query: the default when absent, None when it is not 1 to 16 digits of at most 2**53."""
+    if value is None:
+        return default
+    if not re.fullmatch(OFFSET_PATTERN, value) or int(value) > actions.LOG_OFFSET_MAX:
+        return None
+    return int(value)
+
+
+def _is_htmx(request):
+    return request.headers.get("hx-request") == "true"
+
+
+def output_href(run_id, offset, view_id):
+    return f"/runs/{run_id}/output?offset={offset}&view={view_id}"
+
+
+def pending_model(pending, now, seconds):
+    """What the pending page shows of a pending action."""
+    action = actions.TABLE[pending.action]
+    fields = pending.fields or {}
+    return {
+        "id": pending.id,
+        "title": action.title,
+        "verb": action.name,
+        "command": action.command(fields) if action.command else None,
+        "no_command": action.form if action.command is None else None,
+        "inputs": actions.shown_inputs(action, fields),
+        "destroys": action.destroys(fields) if action.destroys else None,
+        "step_up": action.cls == "step_up",
+        "terminal_asks": action.terminal_asks,
+        "note": action.note,
+        "also": action.also(fields) if action.also else None,
+        "minutes_left": max(1, math.ceil((seconds - (now - pending.created)) / 60)),
+    }
+
+
+def outcome_model(outcome):
+    """What the outcome page shows of an outcome."""
+    action = actions.TABLE[outcome.action]
+    return {
+        "id": outcome.id,
+        "title": action.title,
+        "command": outcome.command,
+        "running": not outcome.done,
+        "kind": outcome.kind,
+        "exit_code": outcome.exit_code,
+        "output": outcome.output,
+        "errors": outcome.errors,
+        "run_href": "/runs/" + outcome.run_id if outcome.run_id and actions.is_run_id(outcome.run_id) else None,
+        "run_id": outcome.run_id,
+        "sentence": outcome.sentence,
+        "field": outcome.field,
+        "op": action.op,
+        "gone": None,
+    }
+
+
+def _first_ending(answers):
+    return next((value for kind, value in answers.values() if kind == "error" and session_ends(value)), None)
+
+
+def install(api, ctx):
+    """Add the routes of this module to `api`, with what `ctx` (an `app.Context`) gives."""
+    limits = ctx.limits
+
+    def asker(session):
+        def ask(name, fields=None):
+            return call_broker(lambda: ctx.broker(token=session.token, timeout=limits.read_seconds), lambda made: actions.call(made, name, fields or {}))
+
+        return ask
+
+    def plan_of(*requests):
+        """A plan that asks (key, name, fields) one after the other and stops once the session has ended."""
+
+        def plan(ask):
+            answers = {}
+            for key, name, fields in requests:
+                answers[key] = ask(name, fields)
+                if answers[key][0] == "error" and session_ends(answers[key][1]):
+                    break
+            return answers
+
+        return plan
+
+    async def page(request, active, title, template, plan, build):
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        answers = await ctx.pages.run(lambda: plan(asker(session)))
+        if answers is BUSY_GATE:
+            return ctx.frame("busy.html", active, session, 503, title=title, line=BUSY)
+        ending = _first_ending(answers)
+        if ending is not None:
+            ctx.sessions.forget(session_id)
+            return ctx.to_login(request, why(ending), clear_cookie=True)
+        return ctx.frame(template, active, session, title=title, **build(session, answers))
+
+    # ── sources ──
+
+    @api.get("/sources")
+    async def sources_page(request: Request):
+        def build(session, answers):
+            return {"block": pages.build(answers, {"list": overview.sources_block})["list"]}
+
+        return await page(request, "sources", "Sources", "sources.html", plan_of(("list", "source.list", {})), build)
+
+    @api.get("/sources/{name}")
+    async def source_page(request: Request, name: str):
+        if not actions.is_plain_name(name):
+            return _not_found()
+
+        def plan(ask):
+            answers = {"status": ask("source.status", {"name": name})}
+            if answers["status"][0] == "error" and session_ends(answers["status"][1]):
+                return answers
+            answers["progress"] = ask("source.progress", {"name": name})
+            if answers["progress"][0] == "error" and session_ends(answers["progress"][1]):
+                return answers
+            for profile in _error_log_profiles(answers["status"]):
+                answers["errors:" + profile] = ask("source.error_logs", {"name": name, "profile": profile})
+                if answers["errors:" + profile][0] == "error" and session_ends(answers["errors:" + profile][1]):
+                    break
+            return answers
+
+        def build(session, answers):
+            makers = {"status": pages.source_status_block, "progress": pages.source_progress_block}
+            profiles = [key.split(":", 1)[1] for key in answers if key.startswith("errors:")]
+            makers.update({"errors:" + profile: partial(pages.error_logs_block, profile=profile) for profile in profiles})
+            blocks = pages.build(answers, makers)
+            status = blocks["status"]
+            forms = None
+            if status["ok"] and status["found"]:
+                forms = [{"profile": profile, "inputs": actions.run_form_inputs(profile)} for profile in status["run_profiles"]]
+            error_logs = [{"profile": profile, "block": blocks["errors:" + profile], "command": f"python sdp.py source error-logs {name} --profile={profile}"} for profile in profiles]
+            return {"source_name": name, "source_status": status, "progress": blocks["progress"], "error_logs": error_logs, "run_forms": forms, "db_password_kept": session.work.db_password_kept, "database_profiles": actions.DATABASE_PROFILES}
+
+        return await page(request, "sources", f"Source {name}", "source.html", plan, build)
+
+    # ── databases ──
+
+    def databases_build(only):
+        def build(session, answers):
+            blocks = pages.build(answers, {"status": pages.databases_status_block, "verify": pages.databases_verify_block})
+            status, verify = blocks["status"], blocks["verify"]
+            sections = []
+            if status["ok"]:
+                for row in status["rows"]:
+                    if only is not None and row["db"] != only:
+                        continue
+                    result = verify["results"].get(row["db"]) if verify["ok"] and row["db"] else None
+                    sections.append({"row": row, "verify": result})
+            # The checks that are no database's section: those of the MCP servers and the scheduler on the whole page; every one (of this page) when the status could not be read, so that the checks still show.
+            shared = []
+            if verify["ok"] and not status["ok"]:
+                shared = [result for name, result in verify["results"].items() if only is None or name == only]
+            elif verify["ok"] and only is None:
+                shared = [result for name, result in verify["results"].items() if name not in actions.DATABASES]
+            return {"db_status": status, "db_verify": verify, "sections": sections, "shared": shared, "only": only, "services": actions.SERVICES, "db_password_kept": session.work.db_password_kept}
+
+        return build
+
+    @api.get("/databases")
+    async def databases_page(request: Request):
+        return await page(request, "databases", "Databases", "databases.html", plan_of(("status", "db.status", {}), ("verify", "db.verify", {})), databases_build(None))
+
+    @api.get("/databases/{name}")
+    async def database_page(request: Request, name: str):
+        if name not in actions.DATABASES:
+            return _not_found()
+        return await page(request, "databases", f"Database {name}", "databases.html", plan_of(("status", "db.status", {}), ("verify", "db.verify", {})), databases_build(name))
+
+    # ── runs ──
+
+    @api.get("/runs")
+    async def runs_page(request: Request):
+        def build(session, answers):
+            return {"block": pages.build(answers, {"runs": pages.runs_block})["runs"]}
+
+        return await page(request, "runs", "Runs", "runs.html", plan_of(("runs", "run.list", {})), build)
+
+    @api.get("/runs/{run_id}")
+    async def run_page(request: Request, run_id: str):
+        if not actions.is_run_id(run_id):
+            return _not_found()
+        offset = _offset(request.query_params.get("offset"))
+        if offset is None:
+            return _not_found()
+
+        def build(session, answers):
+            block = pages.build(answers, {"runs": partial(pages.run_facts_block, run_id=run_id)})["runs"]
+            view_id = session.work.add_view(View(run_id=run_id, offset=offset))
+            return {"run_id": run_id, "block": block, "view_id": view_id, "first_href": output_href(run_id, offset, view_id), "offset": offset}
+
+        return await page(request, "runs", f"Run {run_id}", "run.html", plan_of(("runs", "run.list", {"limit": RUN_PAGE_LIST_LIMIT})), build)
+
+    @api.get("/runs/{run_id}/output")
+    async def run_output(request: Request, run_id: str):
+        if not actions.is_run_id(run_id):
+            return _not_found()
+        offset_text = request.query_params.get("offset")
+        offset = _offset(offset_text, None) if offset_text is not None else None
+        view_id = request.query_params.get("view")
+        if offset is None or not isinstance(view_id, str) or not re.fullmatch(VIEW_ID_PATTERN, view_id):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        view = session.work.view(view_id, run_id)
+        if view is None:
+            return ctx.render("output.html", text="", preview="", end=VIEW_CLOSED, continue_href=None, errors=None, next_href=None, trigger=None)
+        if view.mode != "tail" and offset < view.offset:
+            # A request older than what the view shows (a stale tab, one made by hand): it would append again what is shown.
+            return ctx.render("output.html", text="", preview="", end=VIEW_BEHIND, continue_href=None, errors=None, next_href=None, trigger=None)
+        tail = run_id.startswith("live-") or view.mode == "tail"
+        ask = asker(session)
+        answer = await (ctx.tails if tail else ctx.pieces).run(lambda: ask("run.logs", {"run_id": run_id, "offset": offset, "limit": limits.log_piece_bytes}))
+        same = output_href(run_id, offset, view_id)
+        if answer is BUSY_GATE:
+            return ctx.render("output.html", text="", preview=OUTPUT_BUSY, end=None, continue_href=None, errors=None, next_href=same, trigger=output.BUSY_TRIGGER)
+        kind, value = answer
+        if kind == "error":
+            if session_ends(value):
+                ctx.sessions.forget(session_id)
+                return ctx.to_login(request, why(value), clear_cookie=True)
+            if getattr(value, "code", None) == "busy":
+                return ctx.render("output.html", text="", preview=OUTPUT_BUSY, end=None, continue_href=None, errors=None, next_href=same, trigger=output.BUSY_TRIGGER)
+            shown = overview.failure(value)
+            return ctx.render("output.html", text=output.flush(view), preview="", end=shown["sentence"], continue_href=None, errors=shown["errors"], next_href=None, trigger=None)
+        try:
+            data = value["data"] if isinstance(value, dict) else None
+            step = output.advance(view, offset, data, limit=limits.log_piece_bytes, held_max=limits.view_held_bytes, shown_max=limits.view_shown_bytes)
+        except output.ShapeError:
+            return ctx.render("output.html", text=output.flush(view), preview="", end=pages.SHAPE_SENTENCE, continue_href=None, errors=None, next_href=None, trigger=None)
+        headers = {"HX-Retarget": f"#view-{view_id}", "HX-Reswap": "innerHTML"} if step.replace else None
+        return ctx.render(
+            "output.html", headers=headers,
+            text=step.text, preview=step.preview, end=step.end, errors=None,
+            continue_href=f"/runs/{run_id}?offset={step.continue_offset}" if step.continue_offset is not None else None,
+            next_href=output_href(run_id, step.offset, view_id) if step.trigger else None, trigger=step.trigger,
+        )
+
+    # ── system ──
+
+    @api.get("/system")
+    async def system_page(request: Request):
+        def build(session, answers):
+            blocks = pages.build(answers, {"hello": pages.hello_block, "audit": pages.audit_block})
+            table = [{"name": action.name, "cls": action.cls, "title": action.title, "form": action.form} for action in actions.TABLE.values()]
+            return {"hello": blocks["hello"], "audit": blocks["audit"], "table": table}
+
+        return await page(request, "system", "System", "system.html", plan_of(("hello", "hello", {}), ("audit", "audit.list", {"limit": AUDIT_LINES})), build)
+
+    # ── actions ──
+
+    def pending_page(session, pending, status=200, line=None, refusal=None):
+        model = pending_model(pending, ctx.clock(), limits.pending_seconds)
+        return ctx.frame("pending.html", ACTIVE.get(pending.action, "databases"), session, status, title=model["title"], pending=model, line=line, refusal=refusal)
+
+    @api.post("/pending")
+    async def make_pending(request: Request):
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        form = dict(request.scope.get("sdp.form", {}))
+        name = form.pop("action", None)
+        action = actions.TABLE.get(name) if isinstance(name, str) else None
+        if action is None or not action.state_changing:
+            return ctx.frame("refused.html", "overview", session, 400, title="Not taken", line=FORM_REFUSED, field=None)
+        try:
+            fields = actions.parse_form(action, form)
+        except actions.Refused as refused:
+            label = action.inputs[refused.field].label if refused.field in action.inputs else None
+            return ctx.frame("refused.html", ACTIVE.get(name, "databases"), session, 400, title="Not taken", line=FORM_REFUSED, field=label)
+        pending = session.work.add_pending(name, fields, ctx.clock())
+        return RedirectResponse(f"/pending/{pending.id}", status_code=303)
+
+    @api.get("/pending/{pending_id}")
+    async def show_pending(request: Request, pending_id: str):
+        if not re.fullmatch(ID_PATTERN, pending_id):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        pending = session.work.pending(pending_id, ctx.clock())
+        if pending is None:
+            return _not_found()
+        return pending_page(session, pending)
+
+    def places_of(name):
+        """The bound an action runs under: a cancel has its own, so that it gets through while long actions hold the others (as at the broker, where it takes no lock)."""
+        return ctx.cancel_places if name == "run.cancel" else ctx.action_places
+
+    def start_action(session, name, fields, step_up, outcome):
+        """Run the call in a thread of its own, through a client without a time limit; the thread writes the outcome and gives the place back."""
+        token, work = session.token, session.work
+        places = places_of(name)
+
+        def run():
+            try:
+                kind, value = call_broker(lambda: ctx.broker(token=token, timeout=None), lambda made: actions.call(made, name, fields, step_up))
+                outcome.finish(kind, value, limits.outcome_text_bytes)
+                if kind == "ok" and name == "session.set_db_password":
+                    work.db_password_kept = True
+                elif kind == "ok" and name == "session.clear_db_password":
+                    work.db_password_kept = False
+            finally:
+                places.release()
+
+        threading.Thread(target=run, name="sdp-webui-action", daemon=True).start()
+
+    @api.post("/pending/{pending_id}/confirm")
+    async def confirm(request: Request, pending_id: str):
+        if not re.fullmatch(ID_PATTERN, pending_id):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        work = session.work
+        form = dict(request.scope.get("sdp.form", {}))
+        password = form.pop("management_password", None)
+        pending = work.pending(pending_id, ctx.clock())
+        if pending is None:
+            return _not_found()
+        step_up = actions.TABLE[pending.action].cls == "step_up"
+        if form or (not step_up and password is not None):
+            return pending_page(session, pending, 400, CONFIRM_REFUSED)
+        if step_up and not password:
+            return pending_page(session, pending, 400, STEP_UP_MISSING)
+        # Taken out in one step before anything is awaited: a second confirm finds nothing.
+        taken = work.take_pending(pending_id, ctx.clock())
+        if taken is None:
+            return _not_found()
+        if not places_of(taken.action).acquire(blocking=False):
+            work.put_back(taken, ctx.clock())
+            return pending_page(session, taken, 503, ACTIONS_BUSY)
+        command = actions.TABLE[taken.action].command(taken.fields) if actions.TABLE[taken.action].command else None
+        outcome = Outcome(new_id(), taken.action, command, ctx.clock())
+        work.add_outcome(outcome)
+        try:
+            start_action(session, taken.action, taken.fields, password if step_up else None, outcome)
+        except Exception as error:
+            places_of(taken.action).release()
+            work.remove_outcome(outcome.id)
+            work.put_back(taken, ctx.clock())
+            log.error("an action could not be started (%s)", type(error).__name__)
+            return pending_page(session, taken, 503, ACTIONS_BUSY)
+        password = None
+        deadline = time.monotonic() + limits.action_wait_seconds
+        while not outcome.done and time.monotonic() < deadline:
+            await anyio.sleep(0.02)
+        if outcome.done and outcome.kind == "refusal":
+            if outcome.code in SESSION_ENDING_CODES:
+                ctx.sessions.forget(session_id)
+                return ctx.to_login(request, "ended", clear_cookie=True)
+            if outcome.code in RETRY_CODES:
+                work.remove_outcome(outcome.id)
+                work.put_back(taken, ctx.clock())
+                return pending_page(session, taken, 403, outcome.sentence)
+            response = pending_page(session, taken, 200, None, outcome_model(outcome))
+            taken.fields = None
+            return response
+        taken.fields = None
+        return RedirectResponse(f"/actions/{outcome.id}", status_code=303)
+
+    @api.get("/actions/{outcome_id}")
+    async def show_outcome(request: Request, outcome_id: str):
+        if not re.fullmatch(ID_PATTERN, outcome_id):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        outcome = session.work.outcome(outcome_id)
+        if outcome is None and _is_htmx(request):
+            # The poll of an outcome page whose outcome was evicted: htmx swaps no 404, so the part says so and asks no more.
+            return ctx.render("_outcome.html", outcome={"id": outcome_id, "gone": OUTCOME_GONE, "running": False})
+        if outcome is None:
+            return _not_found()
+        if outcome.done and outcome.kind == "refusal" and outcome.code in SESSION_ENDING_CODES:
+            ctx.sessions.forget(session_id)
+            return ctx.to_login(request, "ended", clear_cookie=True)
+        model = outcome_model(outcome)
+        if _is_htmx(request):
+            return ctx.render("_outcome.html", outcome=model)
+        return ctx.frame("outcome.html", ACTIVE.get(outcome.action, "databases"), session, title=model["title"], outcome=model)
+
+
+def _error_log_profiles(status_answer):
+    """The profiles of a source whose error logs are read, from its `source.status` answer: none when that read failed or the source was not found."""
+    kind, value = status_answer
+    if kind != "ok":
+        return []
+    try:
+        block = pages.source_status_block(value)
+    except Exception:
+        return []
+    if not block["found"]:
+        return []
+    return [profile for profile in actions.ERROR_LOG_PROFILES if profile in block["run_profiles"]]

@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""A check of the web UI against a real Docker, run by hand: `python tests/e2e/manual/check_webui.py [--browser PYTHON]` (an interpreter with PyYAML; a Docker without user-id mapping that can pull `python:3.13-slim` and reach PyPI, unpkg.com and cdn.jsdelivr.net, with a `bridge` network whose gateway address this machine has). With `--browser`, PYTHON is an interpreter with Playwright and `PLAYWRIGHT_BROWSERS_PATH` must be set in the environment to the folder of its browsers. Linux only: it reads `/proc`.
+"""A check of the web UI against a real Docker, run by hand: `python tests/e2e/manual/check_webui.py [--browser PYTHON]` (an interpreter with PyYAML; a Docker without user-id mapping that can pull `python:3.13-slim` and reach PyPI, unpkg.com and cdn.jsdelivr.net, with a `bridge` network whose gateway address this machine has, and the image `python:3.13-alpine`, which the runs use and which is not pulled). With `--browser`, PYTHON is an interpreter with Playwright and `PLAYWRIGHT_BROWSERS_PATH` must be set in the environment to the folder of its browsers. Linux only: it reads `/proc`.
 
 It is not collected by pytest. It builds a throwaway deployment in a temp folder: a copy of the CLI, the package, `Dockerfile.webui` and `requirements-webui.txt`, and one source `demo`. The image, the container and the network get throwaway names (`sdp-webui-check-<hex>`), set on the host module before it is used. What it shows:
 
 1. `sdp.py broker passwd` and `sdp.py broker start` through the CLI; then the host module's setup with scripted answers (a free port, the gateway address of Docker's default `bridge` network as the one other listen address, one name, a generated certificate): the image is built, the files of `.sdp/webui` are private, the certificate's fingerprint is the SHA-256 of the certificate.
 2. The host module's start: the container is created and started and the broker answers from inside it.
-3. Over HTTPS, with the generated certificate as the only trust root: `/healthz`; a foreign `Host` refused; the login page's headers; a wrong and a right login (a form post with the right `Origin`); the Overview lists the source `demo`; a POST with a foreign `Origin` refused; the logout (the old cookie no longer works). With `--browser PYTHON`, `check_webui_browser.py` is run with that interpreter (one with Playwright) against the running page.
+3. Over HTTPS, with the generated certificate as the only trust root: `/healthz`; a foreign `Host` refused; the login page's headers; a wrong and a right login (a form post with the right `Origin`); the Overview lists the source `demo`; a POST with a foreign `Origin` refused. Then the actions, through the pages as a browser's forms send them: a run of the profile `parse` of `demo` (the deployment's compose file runs a program that prints a line every second and exits with code 3 on an interrupt) chosen, shown on its pending page with its command, confirmed and linked from its outcome; its output followed through the output view until it holds the program's lines; the run cancelled through its pending page, and its output view then stopping with the line of the interrupt; `db.stop` confirmed; a database admin password kept for the session; `db.unsetup_jobs` (a step-up verb) refused with a wrong management password, the pending action kept, and run with the right one; the audit view listing those calls; and no password and no token of 43 characters but the page's own form token in any page. With `--browser PYTHON`, `check_webui_browser.py` is run with that interpreter (one with Playwright) against the running page. Then the logout (the old cookie no longer works).
 4. The channel of a login needs both signs of the machine itself (the local port, and the gateway's address, as which Docker shows a client on 127.0.0.1): wrong logins through 127.0.0.1 until the web UI's own limit refuses them, after which the broker's `local` budget is empty (a login sent straight to the broker's socket on `local` is `throttled`, on `remote` it is not), and a right login through the bridge address (the other port, which Docker reaches through its proxy) still succeeds: it was sent as `remote`.
 5. `docker inspect`: the user, the read-only root, the dropped capabilities, the security options, the two read-only mounts and no other (no Docker socket), the network, the published ports (127.0.0.1 to 8444, the bridge address to 8443).
 6. From inside the container: the broker's socket answers `hello`; a name on the internet does not resolve and an address on it cannot be reached; nothing can be written to `/run/sdp`, `/tls` or the root.
 7. The container's log has one line per request with the method, the path and the status only, and no password.
 8. The host module's stop; the container is gone. Then a key that cannot be read: start says the server ended, prints its last log lines (which hold nothing of the key file), removes the container and returns 1.
 
-Clean-up, also when the check is interrupted: the container, the network and the image of the throwaway names are removed, the broker and every process of the deployment are killed, and the temp folder is deleted. What stays: the base image `python:3.13-slim` and Docker's build cache.
+Clean-up, also when the check is interrupted: the container, the network and the image of the throwaway names are removed, so are the containers and the network of the deployment's compose project, the broker and every process of the deployment are killed, and the temp folder is deleted. What stays: the base image `python:3.13-slim` and Docker's build cache.
 """
 
 import argparse
 import contextlib
 import hashlib
+import html
 import io
 import http.client
 import json
@@ -41,7 +42,11 @@ from social_data_pipeline import webui_host as host
 from social_data_pipeline.control import client as broker_client
 
 MANAGEMENT = "made-up-management-password-a51c"
+DB_PASSWORD = "made-up-db-admin-password-0f3e"
 NAME = "webui-check.example"
+RUN_IMAGE = "python:3.13-alpine"
+PROGRAM = "import sys, time\ntry:\n    n = 0\n    while True:\n        print('line', n, flush=True)\n        n += 1\n        time.sleep(1)\nexcept KeyboardInterrupt:\n    print('interrupted', flush=True)\n    sys.exit(3)\n"
+TOKEN_LIKE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
 CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
 
 
@@ -75,6 +80,9 @@ class Deployment:
         source.mkdir(parents=True)
         (source / "platform.yaml").write_text("data_types: [posts]\n")
         (source / "parse.yaml").write_text("{}\n")
+        # The pipeline service of the profile parse: a program that prints a line every second, from an image that must be there already (it is never pulled).
+        service = {"image": RUN_IMAGE, "pull_policy": "never", "profiles": ["parse"], "environment": {"SOURCE": "${SOURCE:-}"}, "command": ["python", "-u", "-c", PROGRAM]}
+        (self.root / "docker-compose.yml").write_text(json.dumps({"name": self.name, "services": {"parse": service}}, indent=2))
         self.env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         self.port = free_port()
         gateway = json.loads(self.docker("network", "inspect", "bridge", "--format", "{{json .IPAM.Config}}").stdout or "[]")
@@ -109,9 +117,15 @@ class Deployment:
                 found.append(int(name))
         return found
 
+    def project_containers(self):
+        return self.docker("ps", "-a", "-q", "--filter", f"label=com.docker.compose.project={self.name}").stdout.split()
+
     def clean_up(self):
         self.docker("rm", "--force", self.name)
         self.docker("network", "rm", self.name)
+        for container in self.project_containers():
+            self.docker("rm", "--force", container)
+        self.docker("network", "rm", f"{self.name}_default")
         self.docker("image", "rm", "--force", self.name, timeout=300)
         for pid in self.own_processes():
             try:
@@ -120,7 +134,7 @@ class Deployment:
                 pass
         time.sleep(0.5)
         left = {
-            "containers": self.docker("ps", "-a", "-q", "--filter", f"name={self.name}").stdout.split(),
+            "containers": self.docker("ps", "-a", "-q", "--filter", f"name={self.name}").stdout.split() + self.project_containers(),
             "networks": self.docker("network", "ls", "-q", "--filter", f"name={self.name}").stdout.split(),
             "images": self.docker("images", "-q", self.name).stdout.split(),
             "processes": self.own_processes(),
@@ -215,7 +229,9 @@ def check_https(deployment, cafile, browser):
     check(status == 200 and headers.get("content-security-policy") == CSP and headers.get("x-content-type-options") == "nosniff" and headers.get("referrer-policy") == "same-origin" and headers.get("cache-control") == "no-store", "the login page has the security headers")
     check("strict-transport-security" not in headers and "server" not in headers, "no HSTS and no Server header")
     origin = {"Origin": f"https://127.0.0.1:{deployment.port}"}
-    status, _, text, cookies = page.request("POST", "/login", headers=origin, form={"password": "a-wrong-made-up-password"})
+    # Through the bridge address: a wrong login through 127.0.0.1 here would count against the broker's local budget, which refills one attempt every 30 seconds while the actions below run, and step 4 needs that budget whole.
+    bridge = Page(deployment.port, cafile, deployment.bridge)
+    status, _, text, cookies = bridge.request("POST", "/login", headers=bridge.origin, form={"password": "a-wrong-made-up-password"})
     check(status == 403 and "The password is wrong." in text and not cookies, "a wrong login is refused")
     status, headers, _, cookies = page.request("POST", "/login", headers=origin, form={"password": MANAGEMENT})
     check(status == 303 and len(cookies) == 1 and re.fullmatch(r"__Host-sdp_session=[A-Za-z0-9_-]{43}; Path=/; Secure; HttpOnly; SameSite=Strict", cookies[0]) is not None, "the right login sets the session cookie: " + re.sub(r"=[A-Za-z0-9_-]{43};", "=<id>;", cookies[0]))
@@ -226,6 +242,7 @@ def check_https(deployment, cafile, browser):
     token = re.search(r'name="form_token" value="([^"]+)"', text).group(1)
     status, _, text, _ = page.request("POST", "/logout", headers={"Origin": "https://evil.example"}, form={"form_token": token})
     check(status == 403, "a POST with a foreign Origin is refused")
+    check_actions(deployment, page, token)
     if browser:
         result = subprocess.run([browser, str(Path(__file__).with_name("check_webui_browser.py")), f"https://127.0.0.1:{deployment.port}/"], input=MANAGEMENT + "\n", capture_output=True, text=True, timeout=300)
         print(result.stdout, end="")
@@ -234,6 +251,114 @@ def check_https(deployment, cafile, browser):
     check(status == 303 and cookies and "Max-Age=0" in cookies[0], "the logout clears the cookie")
     status, headers, _, _ = page.request("GET", "/")
     check(status == 303 and headers.get("location") == "/login", "the old cookie no longer opens the Overview")
+
+
+def pending_and_confirm(page, token, action, fields, password=None, seen=None):
+    """Choose an action as its form does, look at its pending page, confirm it: (the pending page's address, its text, the confirmation's status, its headers, its text)."""
+    status, headers, text, _ = page.request("POST", "/pending", headers=page.origin, form={"form_token": token, "action": action, **fields})
+    if status != 303:
+        raise AssertionError(f"the choice of {action} was answered {status}")
+    path = headers["location"]
+    _, _, pending_text, _ = page.request("GET", path)
+    form = {"form_token": token}
+    if password is not None:
+        form["management_password"] = password
+    status, headers, text, _ = page.request("POST", path + "/confirm", headers=page.origin, form=form)
+    if seen is not None:
+        seen += [pending_text, text]
+    return path, pending_text, status, headers, text
+
+
+def outcome_of(page, location, seen, seconds=120):
+    """The outcome page of a confirmed action once it is no longer under way."""
+    deadline = time.monotonic() + seconds
+    while True:
+        _, _, text, _ = page.request("GET", location)
+        seen.append(text)
+        if "under way" not in text or time.monotonic() > deadline:
+            return text
+        time.sleep(1)
+
+
+def follow_output(page, run_id, until, seen, seconds=90):
+    """Follow a run's output view as htmx would (each answer carries the next request) until `until(shown, end line)` holds or the view stops: (what it shows, the end line or None)."""
+    _, _, text, _ = page.request("GET", f"/runs/{run_id}")
+    seen.append(text)
+    href = html.unescape(re.search(r'hx-get="([^"]+)" hx-trigger="load"', text).group(1))
+    shown, end = "", None
+    deadline = time.monotonic() + seconds
+    while href and time.monotonic() < deadline:
+        status, headers, part, _ = page.request("GET", href, headers={"HX-Request": "true"})
+        seen.append(part)
+        if status != 200:
+            raise AssertionError(f"the output view was answered {status}")
+        if headers.get("hx-retarget"):
+            shown = ""
+        shown += "".join(html.unescape(piece) for piece in re.findall(r'<div class="output-piece">(.*?)</div>', part, re.DOTALL))
+        following = re.search(r'<div class="output-next" hx-get="([^"]+)" hx-trigger="([^"]+)"', part)
+        found = re.search(r'<p class="output-end">(.*?)</p>', part, re.DOTALL)
+        end = html.unescape(found.group(1)) if found else None
+        if until(shown, end) or not following:
+            break
+        href = html.unescape(following.group(1))
+        time.sleep(0.2 if following.group(2) == "load" else 1)
+    return shown, end
+
+
+def check_actions(deployment, page, token):
+    print("3b. actions through the pages")
+    seen = []
+    status, _, text, _ = page.request("GET", "/sources/demo")
+    seen.append(text)
+    check(status == 200 and 'name="profile" value="parse"' in text, "the page of the source demo offers a run of parse")
+    _, pending_text, status, headers, _ = pending_and_confirm(page, token, "run.start", {"profile": "parse", "source": "demo"}, seen=seen)
+    check("python sdp.py run parse --source=demo" in pending_text, "the pending page shows the command `python sdp.py run parse --source=demo`")
+    check(status == 303 and headers["location"].startswith("/actions/"), "the confirmation leads to the outcome page")
+    outcome = outcome_of(page, headers["location"], seen)
+    found = re.search(r'<a href="/runs/(r[0-9]{8}T[0-9]{6}-[0-9a-f]{6})">', outcome)
+    check(found is not None, "the outcome links the run it started")
+    run_id = found.group(1)
+    shown, end = follow_output(page, run_id, lambda shown, end: "line 2\n" in shown, seen)
+    if "line 2\n" not in shown:
+        # What the run printed instead, to say why.
+        print("\n".join("  | " + line for line in (shown.splitlines()[-15:] + [f"(the view's end line: {end})"])))
+    check("line 0\nline 1\nline 2\n" in shown, f"the output view of {run_id} holds the program's lines: {[line for line in shown.splitlines() if line.startswith('line ')][:3]}")
+    _, pending_text, status, headers, _ = pending_and_confirm(page, token, "run.cancel", {"run_id": run_id}, seen=seen)
+    check(f"python sdp.py runs cancel {run_id}" in pending_text, "the cancel's pending page shows `python sdp.py runs cancel <run>`")
+    outcome = outcome_of(page, headers["location"], seen)
+    check("exit code 0." in outcome, "the cancel ended with exit code 0")
+    shown, end = follow_output(page, run_id, lambda shown, end: end is not None and "ended" in end, seen)
+    check(end is not None and "has ended" in end and "interrupted\n" in shown, f"the output view stops after the cancel, with the program's last line ({[line for line in shown.splitlines() if line.strip()][-1]!r}): {end}")
+    _, _, text, _ = page.request("GET", f"/runs/{run_id}")
+    check("<dd>cancelled</dd>" in text and "<dd>3</dd>" in text, "the run page says cancelled, exit code 3")
+    _, pending_text, status, headers, _ = pending_and_confirm(page, token, "db.stop", {"service": ""}, seen=seen)
+    check("python sdp.py db stop</code>" in pending_text and status == 303, "db.stop: the pending page shows `python sdp.py db stop`, the confirmation leads to its outcome")
+    outcome = outcome_of(page, headers["location"], seen)
+    found = re.search(r"exit code (-?[0-9]+)\.", outcome)
+    check(found is not None, f"db.stop ran and its outcome shows its exit code ({found.group(1) if found else None})")
+    _, _, status, headers, text = pending_and_confirm(page, token, "session.set_db_password", {"password": DB_PASSWORD}, MANAGEMENT, seen=seen)
+    check(status == 303 and "Done." in outcome_of(page, headers["location"], seen), "a database admin password is kept for the session (with the management password)")
+    _, _, text, _ = page.request("GET", "/databases")
+    seen.append(text)
+    check("A database admin password is kept for this session" in text, "the Databases page says one is kept")
+    path, pending_text, status, _, text = pending_and_confirm(page, token, "db.unsetup_jobs", {}, "a-wrong-made-up-password", seen=seen)
+    check("python sdp.py db unsetup-jobs" in pending_text and 'name="management_password"' in pending_text, "the step-up action's pending page shows its command and asks for the management password")
+    check(status == 403 and "The management password given again was wrong." in text, "a wrong management password is refused")
+    status, _, text, _ = page.request("GET", path)
+    check(status == 200, "the pending action is kept")
+    status, headers, _, _ = page.request("POST", path + "/confirm", headers=page.origin, form={"form_token": token, "management_password": MANAGEMENT})
+    outcome = outcome_of(page, headers["location"], seen)
+    check(status == 303 and "exit code 0." in outcome, "the right one runs it: exit code 0")
+    _, _, text, _ = page.request("GET", "/system")
+    seen.append(text)
+    rows = re.findall(r"<tr><td>[^<]*</td><td>[^<]*</td><td>([^<]*)</td><td>([^<]*)</td><td>([^<]*)</td></tr>", text)
+    for event, verb in (("call_ended", "run.start"), ("call_ended", "run.cancel"), ("call_ended", "db.stop"), ("call_refused", "db.unsetup_jobs"), ("call_ended", "db.unsetup_jobs")):
+        check(any(row[0] == event and row[1] == verb for row in rows), f"the audit view lists {event} {verb}")
+    check(any(row[0] == "step_up_failed" for row in rows), "the audit view lists the failed step-up")
+    secrets_found = [secret for secret in (MANAGEMENT, DB_PASSWORD, "a-wrong-made-up-password") if any(secret in page_text for page_text in seen)]
+    check(secrets_found == [], f"no password in any of the {len(seen)} pages and parts seen")
+    tokens = {found for page_text in seen for found in TOKEN_LIKE.findall(page_text)}
+    check(tokens == {token}, "no token of 43 characters in them but the page's own form token")
 
 
 def check_channels(deployment, cafile):

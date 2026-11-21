@@ -1,0 +1,139 @@
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block content %}
+{%- if only %}
+<p><a href="/databases">All databases</a></p>
+{%- endif %}
+{%- if not only %}
+<section class="card" aria-labelledby="services-title">
+  <h2 id="services-title">Start and stop services</h2>
+  <div class="forms">
+  {%- call forms.action("db.start", "Start") %}
+  <h3>Start</h3>
+  <label>Service
+    <select name="service">
+      <option value="">every configured service</option>
+      {%- for service in services %}
+      <option value="{{ service }}">{{ service }}</option>
+      {%- endfor %}
+    </select>
+  </label>
+  {{ forms.admin_password(db_password_kept) }}
+  <p class="muted small">Needs the management password.</p>
+  {%- endcall %}
+  {%- call forms.action("db.stop", "Stop") %}
+  <h3>Stop</h3>
+  <label>Service
+    <select name="service">
+      <option value="">every configured service</option>
+      {%- for service in services %}
+      <option value="{{ service }}">{{ service }}</option>
+      {%- endfor %}
+    </select>
+  </label>
+  <p class="muted small">Refused while a pipeline run is alive.</p>
+  {%- endcall %}
+  </div>
+</section>
+{%- endif %}
+
+{%- if not db_status.ok %}
+<section class="card" aria-labelledby="status-title">
+  <h2 id="status-title">Status</h2>
+  {%- with block = db_status %}{% include "_failure.html" %}{% endwith %}
+</section>
+{%- elif not db_status.configured %}
+<section class="card" aria-labelledby="status-title">
+  <h2 id="status-title">Status</h2>
+  <p class="muted">No database is configured. Set them up in a terminal with <code>python sdp.py db setup</code>.</p>
+</section>
+{%- endif %}
+{%- if not db_verify.ok %}
+<section class="card" aria-labelledby="verify-title">
+  <h2 id="verify-title">Checks</h2>
+  {%- with block = db_verify %}{% include "_failure.html" %}{% endwith %}
+</section>
+{%- else %}
+{%- for warning in db_verify.warnings %}
+<p class="notice notice-warn">{{ warning }}</p>
+{%- endfor %}
+{%- if db_verify.message %}
+<p class="muted">{{ db_verify.message }}</p>
+{%- endif %}
+{%- endif %}
+
+{%- for section in sections %}
+{%- set row = section.row %}
+<section class="card" aria-labelledby="db-{{ loop.index }}-title">
+  <h2 id="db-{{ loop.index }}-title">{{ row.title }}</h2>
+  <dl class="facts">
+    <dt>State</dt><dd><span class="state {{ 'state-on' if row.running else 'state-off' }}">{{ "running" if row.running else "stopped" }}</span></dd>
+    <dt>Ports</dt><dd><code>{{ row.ports | join(", ") }}</code></dd>
+    <dt>Data folder</dt><dd><code>{{ row.path }}</code></dd>
+    <dt>Admin user</dt><dd>{{ row.admin_user or "none: authentication is off" }}</dd>
+  </dl>
+  <h3>Checks</h3>
+  {%- if section.verify is none %}
+  <p class="muted">{% if db_verify.ok %}No check result for this database.{% else %}The checks could not be read (see above).{% endif %}</p>
+  {%- elif section.verify.ok %}
+  <p><span class="state state-on">no drift</span></p>
+  {%- else %}
+  {%- with findings = section.verify.findings %}{% include "_findings.html" %}{% endwith %}
+  {%- endif %}
+  {%- if row.db %}
+  <div class="forms">
+  {{ forms.action("db.reset", "Reset " ~ row.db, {"db": row.db}, danger=True) }}
+  {{ forms.action("db.unsetup", "Remove " ~ row.db, {"db": row.db}, danger=True) }}
+  </div>
+  {%- endif %}
+</section>
+{%- endfor %}
+
+{%- for result in shared %}
+<section class="card" aria-labelledby="shared-{{ loop.index }}-title">
+  <h2 id="shared-{{ loop.index }}-title">Checks: {{ result.name }}</h2>
+  {%- if result.ok %}
+  <p><span class="state state-on">no drift</span></p>
+  {%- else %}
+  {%- with findings = result.findings %}{% include "_findings.html" %}{% endwith %}
+  {%- endif %}
+</section>
+{%- endfor %}
+
+{%- if not only %}
+{%- if db_status.ok and (db_status.mcp or db_status.jobs) %}
+<section class="card" aria-labelledby="extra-title">
+  <h2 id="extra-title">MCP servers and scheduler</h2>
+  <table>
+    <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">Port</th></tr></thead>
+    <tbody>
+      {%- for entry in db_status.mcp %}
+      <tr><td>{{ entry.name }}{% if entry.read_only %} <small>read-only</small>{% endif %}</td><td><span class="state {{ 'state-on' if entry.running else 'state-off' }}">{{ "running" if entry.running else "stopped" }}</span></td><td><code>{{ entry.port }}</code></td></tr>
+      {%- endfor %}
+      {%- if db_status.jobs %}
+      <tr><td>jobs</td><td><span class="state {{ 'state-on' if db_status.jobs.running else 'state-off' }}">{{ "running" if db_status.jobs.running else "stopped" }}</span></td><td><code>{{ db_status.jobs.port }}</code></td></tr>
+      {%- endif %}
+    </tbody>
+  </table>
+</section>
+{%- endif %}
+
+
+<section class="card" aria-labelledby="config-title">
+  <h2 id="config-title">Configuration and the session's database password</h2>
+  <div class="forms">
+  {{ forms.action("db.unsetup_mcp", "Remove the MCP servers' configuration", danger=True) }}
+  {{ forms.action("db.unsetup_jobs", "Remove the scheduler's configuration", danger=True) }}
+  </div>
+  <p class="muted">{% if db_password_kept %}A database admin password is kept for this session: a start and a run use it when their form leaves the field empty.{% else %}No database admin password is kept for this session.{% endif %}</p>
+  <div class="forms">
+  {%- call forms.action("session.set_db_password", "Keep it for this session") %}
+  <label>Database admin password
+    <input type="password" name="password" autocomplete="off" maxlength="1024" required>
+  </label>
+  {%- endcall %}
+  {{ forms.action("session.clear_db_password", "Forget it") }}
+  </div>
+</section>
+{%- endif %}
+{% endblock %}

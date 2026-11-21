@@ -1,0 +1,165 @@
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block content %}
+<p><a href="/sources">All sources</a></p>
+
+<section class="card" aria-labelledby="status-title">
+  <h2 id="status-title">Ingestion state</h2>
+  {%- with block = source_status %}
+  {%- if not block.ok %}
+  {%- include "_failure.html" %}
+  {%- else %}
+  {%- for warning in block.warnings %}
+  <p class="notice notice-warn">{{ warning }}</p>
+  {%- endfor %}
+  {%- if not block.found %}
+  <p class="muted">The source has no readable configuration.</p>
+  {%- else %}
+  <dl class="facts">
+    <dt>Platform</dt><dd>{{ block.platform }}</dd>
+    <dt>Data types</dt><dd>{% for item in block.data_types %}<span class="tag">{{ item }}</span> {% else %}<span class="muted">none</span>{% endfor %}</dd>
+    <dt>Profiles</dt><dd>{% for profile in block.profiles %}<span class="tag">{{ profile }}</span> {% else %}<span class="muted">none</span>{% endfor %}</dd>
+    {%- for key, value in block.paths %}
+    <dt>{{ key }}</dt><dd><code>{{ value }}</code></dd>
+    {%- endfor %}
+  </dl>
+  {%- for view in block.ingestion %}
+  <h3>{{ view.name }} ingestion</h3>
+  {%- if not view.has_state_files %}
+  <p class="muted">No data yet.</p>
+  {%- elif not view.entries %}
+  <p class="muted">The state files cannot be read.</p>
+  {%- else %}
+  <table>
+    <thead><tr><th scope="col">State file</th><th scope="col">Datasets</th><th scope="col">Latest</th><th scope="col">In progress</th><th scope="col">Failed</th><th scope="col">Updated</th></tr></thead>
+    <tbody>
+      {%- for entry in view.entries %}
+      <tr><td>{{ entry.label }}</td><td>{{ entry.count }}</td><td>{{ entry.latest }}</td><td>{{ entry.in_progress }}</td><td>{{ entry.failed_count }}</td><td>{{ entry.last_updated }}</td></tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+  {%- endfor %}
+  {%- endif %}
+  {%- endif %}
+  {%- endwith %}
+</section>
+
+<section class="card" aria-labelledby="progress-title">
+  <h2 id="progress-title">Finished files per stage</h2>
+  {%- with block = progress %}
+  {%- if not block.ok %}
+  {%- include "_failure.html" %}
+  {%- else %}
+  {%- for warning in block.warnings %}
+  <p class="notice notice-warn">{{ warning }}</p>
+  {%- endfor %}
+  {%- if block.not_readable %}
+  <p class="notice notice-warn">Not readable: {{ block.not_readable }}</p>
+  {%- elif not block.found %}
+  <p class="muted">The source has no readable configuration.</p>
+  {%- else %}
+  {%- for stage in block.stages %}
+  <h3>{{ stage.stage }} <small><code>{{ stage.path }}</code></small></h3>
+  {%- if stage.not_readable %}
+  <p class="notice notice-warn">Not readable: {{ stage.not_readable }}</p>
+  {%- elif not stage.data_types %}
+  <p class="muted">No data types configured.</p>
+  {%- else %}
+  <table>
+    <thead><tr><th scope="col">Data type</th><th scope="col">Files</th><th scope="col">Newest finished file</th></tr></thead>
+    <tbody>
+      {%- for item in stage.data_types %}
+      <tr><td>{{ item.data_type }}</td><td>{{ item.state }}</td><td>{{ item.newest or "-" }}</td></tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+  {%- endfor %}
+  {%- if block.output and block.output.not_readable %}
+  <p class="notice notice-warn">Classifier folders not readable: {{ block.output.not_readable }}</p>
+  {%- endif %}
+  {%- endif %}
+  {%- endif %}
+  {%- endwith %}
+</section>
+
+<section class="card" aria-labelledby="errors-title">
+  <h2 id="errors-title">Error logs</h2>
+  {%- if not error_logs %}
+  <p class="muted">{% if source_status.ok %}The source has no profile with an error log (postgres_ingest, postgres_ml, mongo_ingest).{% else %}Cannot be shown: the source's profiles are not known, because its ingestion state could not be read.{% endif %}</p>
+  {%- endif %}
+  {%- for entry in error_logs %}
+  <h3>{{ entry.profile }}</h3>
+  {%- with block = entry.block %}
+  {%- if not block.ok and block.code == "too_large" %}
+  <p class="notice notice-warn">This error log is too large for the page. Read it in a terminal with <code>{{ entry.command }}</code></p>
+  {%- elif not block.ok %}
+  {%- include "_failure.html" %}
+  {%- elif not block.files %}
+  <p class="muted">No errors.</p>
+  {%- else %}
+  {%- for state_file in block.files %}
+  <h4>{{ state_file.label }}: {{ state_file.failed | length }} failed</h4>
+  <table>
+    <thead><tr><th scope="col">File</th><th scope="col">When</th><th scope="col">Error</th></tr></thead>
+    <tbody>
+      {%- for failed in state_file.failed %}
+      <tr><td>{{ failed.filename }}</td><td>{{ failed.timestamp }}</td><td><pre class="output">{{ failed.error }}</pre></td></tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endfor %}
+  {%- for section in block.sections %}
+  <h4>mongoimport log <code>{{ section.log_file }}</code></h4>
+  <pre class="output">{{ section.header }}
+{{ section.output }}</pre>
+  {%- endfor %}
+  {%- endif %}
+  {%- endwith %}
+  {%- endfor %}
+</section>
+
+<section class="card" aria-labelledby="run-title">
+  <h2 id="run-title">Run a profile</h2>
+  {%- if run_forms is none %}
+  <p class="muted">Cannot be offered: the source's profiles are not known, because its ingestion state could not be read.</p>
+  {%- elif not run_forms %}
+  <p class="muted">The source has no profile that can be run.</p>
+  {%- else %}
+  <p class="muted small">Each form makes a pending action: the next page shows the command and asks you to confirm it.</p>
+  <div class="forms">
+  {%- for form in run_forms %}
+  {%- call forms.action("run.start", "Run " ~ form.profile, {"profile": form.profile, "source": source_name}) %}
+  <h3>{{ form.profile }}</h3>
+  {%- if "build" in form.inputs %}
+  <label><input type="checkbox" name="build" value="yes"> Rebuild the image first</label>
+  {%- endif %}
+  {%- if "filter" in form.inputs %}
+  <label>Only the files whose id matches <small>(optional, e.g. RS_2024-*)</small>
+    <input type="text" name="filter" maxlength="128" autocomplete="off">
+  </label>
+  {%- endif %}
+  {%- if "skip_lingua_files" in form.inputs %}
+  <label><input type="checkbox" name="skip_lingua_files" value="yes"> Also skip files that already have a lingua output</label>
+  {%- endif %}
+  {%- if "classifier" in form.inputs %}
+  <label>Only this classifier <small>(optional)</small>
+    <input type="text" name="classifier" maxlength="64" autocomplete="off">
+  </label>
+  {%- endif %}
+  {%- if "admin_password" in form.inputs %}
+  {{ forms.admin_password(db_password_kept) }}
+  {%- endif %}
+  {%- endcall %}
+  {%- endfor %}
+  </div>
+  {%- endif %}
+</section>
+
+<section class="card" aria-labelledby="remove-title">
+  <h2 id="remove-title">Remove this source</h2>
+  <p class="muted">Removes the folder config/sources/{{ source_name }}/; the data files stay. Needs the management password.</p>
+  {{ forms.action("source.remove", "Remove this source", {"name": source_name}, danger=True) }}
+</section>
+{% endblock %}

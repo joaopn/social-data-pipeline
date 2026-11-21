@@ -1,0 +1,36 @@
+{#- The outcome of a confirmed action; while it is under way it asks for itself again every 2 seconds (htmx), and the answer replaces it. -#}
+{%- if outcome.gone %}
+<section class="card outcome" id="outcome-{{ outcome.id }}">
+  <p class="notice">{{ outcome.gone }}</p>
+</section>
+{%- elif outcome.running %}
+<section class="card outcome" id="outcome-{{ outcome.id }}" hx-get="/actions/{{ outcome.id }}" hx-trigger="load delay:2s" hx-swap="outerHTML">
+  <p><span class="state state-on">under way</span> The broker runs the action; this page shows its outcome when it has ended.</p>
+</section>
+{%- else %}
+<section class="card outcome" id="outcome-{{ outcome.id }}">
+  {%- if outcome.kind == "refusal" %}
+  <p class="notice notice-bad" role="alert">{{ outcome.sentence }}{% if outcome.field %} The field: {{ outcome.field }}.{% endif %}</p>
+  {%- if outcome.exit_code is not none %}
+  <p>Exit code <code>{{ outcome.exit_code }}</code></p>
+  {%- endif %}
+  {%- if outcome.errors %}
+  <pre class="output">{{ outcome.errors }}</pre>
+  {%- endif %}
+  {%- elif outcome.run_href %}
+  <p class="notice">The run was started: <a href="{{ outcome.run_href }}"><code>{{ outcome.run_id }}</code></a></p>
+  {%- elif outcome.op %}
+  <p class="notice">Done.</p>
+  {%- else %}
+  <p class="notice {{ '' if outcome.exit_code == 0 else 'notice-bad' }}">{% if outcome.exit_code == 0 %}The command ended with exit code 0.{% else %}The command ended with exit code {{ outcome.exit_code if outcome.exit_code is not none else "unknown" }}.{% endif %}</p>
+  {%- if outcome.output %}
+  <h3>Output <small>(its end)</small></h3>
+  <pre class="output">{{ outcome.output }}</pre>
+  {%- endif %}
+  {%- if outcome.errors %}
+  <h3>Errors <small>(their end)</small></h3>
+  <pre class="output">{{ outcome.errors }}</pre>
+  {%- endif %}
+  {%- endif %}
+</section>
+{%- endif %}

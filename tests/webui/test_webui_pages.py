@@ -208,15 +208,15 @@ def test_the_runs_block_lists_only_runs_alive_now(client, broker):
 
 
 def test_the_pages_call_nothing_but_read_verbs(client, broker, make_app, make_client):
-    """Bug class: a page of this read-only version calling a verb that changes something."""
+    """Bug class: a page or a GET calling a verb that changes something (the full sweep of every GET route is `test_webui_management.py`, property i)."""
     for route in ("/", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/system", "/login", "/healthz"):
         client.get(route)
         client.head(route)
     client.post("/logout", data={"form_token": form_token(client)}, headers={"origin": ORIGIN})
     called = broker.verbs_called()
     assert called and set(called) <= {name for name, verb in verbs.VERBS.items() if verb.cls == "read"}
-    assert set(called) == set(overview.READ_VERBS)
-    assert all(call[3] == {} for call in broker.calls if call[0] == "call")
+    assert set(overview.READ_VERBS) <= set(called)
+    assert all(call[3] == {} for call in broker.calls if call[0] == "call" and call[2] in overview.READ_VERBS)
 
 
 # ── i. a slow broker ────────────────────────────────────────────────────────

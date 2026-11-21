@@ -1,0 +1,34 @@
+{% extends "frame.html" %}
+{% block content %}
+<section class="card" aria-labelledby="runs-title">
+  <h2 id="runs-title">Pipeline runs</h2>
+  {%- if not block.ok %}
+  {%- include "_failure.html" %}
+  {%- else %}
+  {%- if not block.docker_available %}
+  <p class="notice notice-warn">Docker cannot be asked: runs started in a terminal are not listed, and the state of a recorded run whose supervisor is gone is unknown.</p>
+  {%- endif %}
+  {%- if not block.rows %}
+  <p class="muted">No runs. Start one from a source's page.</p>
+  {%- else %}
+  <table>
+    <thead><tr><th scope="col">Run</th><th scope="col">Kind</th><th scope="col">Profile</th><th scope="col">Source</th><th scope="col">State</th><th scope="col">Started</th><th scope="col">Ended</th><th scope="col">Exit code</th></tr></thead>
+    <tbody>
+      {%- for row in block.rows %}
+      <tr>
+        <td>{% if row.href %}<a href="{{ row.href }}"><code>{{ row.id }}</code></a>{% else %}<code>{{ row.id }}</code>{% endif %}</td>
+        <td>{{ row.kind }}</td>
+        <td>{{ row.profile }}</td>
+        <td>{% if row.source_href %}<a href="{{ row.source_href }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %}</td>
+        <td>{{ row.state }}</td>
+        <td>{{ row.started }}</td>
+        <td>{{ row.ended }}</td>
+        <td>{{ row.exit_code }}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+  {%- endif %}
+</section>
+{% endblock %}

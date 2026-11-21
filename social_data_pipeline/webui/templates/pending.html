@@ -1,0 +1,50 @@
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block content %}
+{%- if line %}
+<p class="notice notice-bad" role="alert">{{ line }}</p>
+{%- endif %}
+<section class="card" aria-labelledby="pending-title">
+  <h2 id="pending-title">{% if refusal %}Refused{% else %}Confirm this action{% endif %}</h2>
+  {%- if pending.command %}
+  <p>The command it stands for:</p>
+  <pre class="command"><code>{{ pending.command }}</code></pre>
+  {%- else %}
+  <p class="muted">{{ pending.no_command }}</p>
+  {%- endif %}
+  {%- if pending.inputs %}
+  <dl class="facts">
+    {%- for label, value in pending.inputs %}
+    <dt>{{ label }}</dt><dd>{{ value }}</dd>
+    {%- endfor %}
+  </dl>
+  {%- endif %}
+  {%- if pending.also %}
+  <p class="notice">{{ pending.also }}</p>
+  {%- endif %}
+  {%- if pending.destroys %}
+  <p class="notice notice-bad"><strong>{{ pending.destroys[1] }}</strong>: {{ pending.destroys[0] }}</p>
+  {%- endif %}
+  {%- if pending.note %}
+  <p class="notice">{{ pending.note }}</p>
+  {%- endif %}
+  {%- if pending.terminal_asks %}
+  <p class="muted small">{{ pending.terminal_asks }}</p>
+  {%- endif %}
+  {%- if refusal %}
+  {%- with outcome = refusal %}{% include "_outcome.html" %}{% endwith %}
+  {%- else %}
+  <form method="post" action="/pending/{{ pending.id }}/confirm" class="action-form">
+    {{ forms.token() }}
+    {%- if pending.step_up %}
+    <label>Management password
+      <input type="password" name="management_password" autocomplete="off" required>
+    </label>
+    <p class="muted small">This action needs the management password again. A terminal would also ask for the secrets the command above does not show.</p>
+    {%- endif %}
+    <button type="submit" class="{{ 'danger' if pending.destroys else '' }}">Confirm</button>
+  </form>
+  <p class="muted small">This pending action is kept for {{ pending.minutes_left }} more minute{{ "s" if pending.minutes_left != 1 }}; nothing is done until you confirm. <a href="/">Leave it</a></p>
+  {%- endif %}
+</section>
+{% endblock %}

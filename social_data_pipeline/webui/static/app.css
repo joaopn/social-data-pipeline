@@ -1,4 +1,9 @@
 /* The web UI's own stylesheet, on top of Pico CSS. Colours follow the browser's light or dark setting. */
+/* Pico draws the arrow of a select and the mark of a checked box from data: images, which the content policy (default-src 'self') blocks: the same two images are served from this folder instead. */
+:root {
+  --pico-icon-chevron: url("/static/icons/chevron.svg");
+  --pico-icon-checkbox: url("/static/icons/checkbox.svg");
+}
 :root {
   --sdp-surface: #fcfcfb;
   --sdp-surface-2: #f3f2ee;
@@ -26,8 +31,8 @@
 body { margin: 0; font-size: 15px; }
 h1 { font-size: 1.4rem; margin-bottom: 1rem; }
 h2 { font-size: 1.05rem; margin-bottom: 0.6rem; }
-small, .muted, .soon { color: var(--sdp-muted); }
-.soon { font-size: 0.75rem; }
+small, .muted { color: var(--sdp-muted); }
+.small { font-size: 0.85rem; }
 
 .topbar { display: flex; align-items: center; gap: 1rem; padding: 0 1rem; min-height: 3rem; border-bottom: 1px solid var(--sdp-line); background: var(--sdp-surface); }
 .brand { font-weight: 700; }
@@ -60,6 +65,20 @@ small, .muted, .soon { color: var(--sdp-muted); }
 .state-on::before { background: var(--sdp-good); }
 
 .login { max-width: 26rem; margin-top: 5rem; }
+
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0 0 1rem; }
+.facts dt { font-weight: 600; margin: 0; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.forms { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
+.action-form { border: 1px solid var(--sdp-line); border-radius: 8px; padding: 0.75rem; margin: 0 0 0.5rem; min-width: 16rem; }
+.action-form h3 { margin-top: 0; }
+.action-form button { margin-top: 0.5rem; }
+button.danger { background: var(--sdp-bad); border-color: var(--sdp-bad); color: #fff; }
+.command { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; }
+.output-view { max-height: 32rem; overflow: auto; font-family: var(--pico-font-family-monospace, monospace); font-size: 0.8rem; background: var(--sdp-surface-2); border: 1px solid var(--sdp-line); border-radius: 6px; padding: 0.5rem 0.75rem; }
+.output-piece, .output-next { white-space: pre-wrap; overflow-wrap: anywhere; }
+.output-next { color: var(--sdp-muted); }
+.output-end { margin: 0.5rem 0 0; color: var(--sdp-muted); font-family: var(--pico-font-family, sans-serif); }
 
 @media (max-width: 800px) {
   .shell { flex-direction: column; }

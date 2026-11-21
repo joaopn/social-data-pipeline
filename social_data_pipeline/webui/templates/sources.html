@@ -1,0 +1,23 @@
+{% extends "frame.html" %}
+{% block content %}
+<section class="card" aria-labelledby="sources-title">
+  <h2 id="sources-title">Configured sources</h2>
+  {%- if not block.ok %}
+  {%- include "_failure.html" %}
+  {%- elif not block.rows %}
+  <p class="muted">No source is configured. Add one in a terminal with <code>python sdp.py source add &lt;name&gt;</code>.</p>
+  {%- else %}
+  <table>
+    <thead><tr><th scope="col">Source</th><th scope="col">Profiles</th></tr></thead>
+    <tbody>
+      {%- for row in block.rows %}
+      <tr>
+        <td>{% if row.href %}<a href="{{ row.href }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</td>
+        <td>{% for profile in row.profiles %}<span class="tag">{{ profile }}</span> {% else %}<span class="muted">none</span>{% endfor %}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+</section>
+{% endblock %}

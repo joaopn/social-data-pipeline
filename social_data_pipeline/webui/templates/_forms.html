@@ -1,0 +1,23 @@
+{#- Pieces of the forms of the Management pages. Import with context (they use the page's form token). Every form that changes something posts to /pending, which only keeps the choice as a pending action and asks the broker nothing. -#}
+{% macro token() -%}
+<input type="hidden" name="form_token" value="{{ form_token }}">
+{%- endmacro %}
+
+{% macro action(name, button, hidden={}, danger=False) -%}
+<form method="post" action="/pending" class="action-form">
+  {{ token() }}
+  <input type="hidden" name="action" value="{{ name }}">
+  {%- for key, value in hidden.items() %}
+  <input type="hidden" name="{{ key }}" value="{{ value }}">
+  {%- endfor %}
+  {%- if caller is defined %}{{ caller() }}{% endif %}
+  <button type="submit" class="{{ 'danger' if danger else 'secondary' }}">{{ button }}</button>
+</form>
+{%- endmacro %}
+
+{% macro admin_password(kept) -%}
+<label>Database admin password <small>(optional)</small>
+  <input type="password" name="admin_password" autocomplete="off" maxlength="1024">
+</label>
+<p class="muted small">{% if kept %}A database admin password is kept for this session: it is used when this field is empty.{% else %}No database admin password is kept for this session: give it here when the database has authentication on.{% endif %}</p>
+{%- endmacro %}

@@ -1,0 +1,49 @@
+{% extends "frame.html" %}
+{% block content %}
+<section class="card" aria-labelledby="broker-title">
+  <h2 id="broker-title">The broker</h2>
+  {%- with block = hello %}
+  {%- if not block.ok %}
+  {%- include "_failure.html" %}
+  {%- else %}
+  <dl class="facts">
+    <dt>Protocol</dt><dd>{{ block.protocol }}</dd>
+    <dt>Management password set</dt><dd>{{ block.password_set }}</dd>
+  </dl>
+  {%- endif %}
+  {%- endwith %}
+</section>
+
+<section class="card" aria-labelledby="audit-title">
+  <h2 id="audit-title">Audit log <small>newest first, at most 200 lines</small></h2>
+  {%- with block = audit %}
+  {%- if not block.ok %}
+  {%- include "_failure.html" %}
+  {%- elif not block.rows %}
+  <p class="muted">The audit log has no lines.</p>
+  {%- else %}
+  <table>
+    <thead><tr><th scope="col">Time</th><th scope="col">Session</th><th scope="col">Event</th><th scope="col">Verb</th><th scope="col">Outcome</th></tr></thead>
+    <tbody>
+      {%- for row in block.rows %}
+      <tr><td>{{ row.time }}</td><td>{{ row.session }}</td><td>{{ row.event }}</td><td>{{ row.verb }}</td><td>{{ row.outcome }}</td></tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+  {%- endwith %}
+</section>
+
+<section class="card" aria-labelledby="table-title">
+  <h2 id="table-title">What the web UI may ask the broker</h2>
+  <p class="muted">A read changes nothing; a write needs a confirmation; a step-up needs the confirmation and the management password again.</p>
+  <table>
+    <thead><tr><th scope="col">Name</th><th scope="col">Class</th><th scope="col">What it does</th><th scope="col">Terminal command</th></tr></thead>
+    <tbody>
+      {%- for entry in table %}
+      <tr><td><code>{{ entry.name }}</code></td><td>{{ entry.cls }}</td><td>{{ entry.title }}</td><td><code>{{ entry.form }}</code></td></tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

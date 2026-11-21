@@ -847,7 +847,8 @@ class TestDatabasePassword:
 # ── 5. destructive verbs while a run is alive ───────────────────────────────
 
 
-DESTRUCTIVE = [("db.reset", {"db": "mongo"}, PASSWORD), ("db.unsetup", {"db": "mongo"}, PASSWORD), ("db.stop", {}, None), ("source.remove", {"name": "ok"}, PASSWORD)]
+# `db.unsetup_mcp` among them: the CLI stops each database that has an MCP server with that server (`docker compose --profile <db> --profile <db>_mcp down`), under a run that writes into it.
+DESTRUCTIVE = [("db.reset", {"db": "mongo"}, PASSWORD), ("db.unsetup", {"db": "mongo"}, PASSWORD), ("db.unsetup_mcp", {}, PASSWORD), ("db.stop", {}, None), ("source.remove", {"name": "ok"}, PASSWORD)]
 
 
 def _run(kind, state):
@@ -858,7 +859,7 @@ class TestDestructiveVerbs:
     @pytest.mark.parametrize("verb, fields, step_up", DESTRUCTIVE, ids=[entry[0] for entry in DESTRUCTIVE])
     @pytest.mark.parametrize("run", [_run("web", "starting"), _run("web", "running"), _run("web", "detached"), _run("web", "unknown"), _run("terminal", "running")], ids=["starting", "running", "detached", "unknown", "terminal"])
     def test_refused_while_a_run_is_alive(self, rig, verb, fields, step_up, run):
-        """Bug class: a database reset, removed or stopped (or a source removed) under a pipeline run that writes into it: a run whose supervisor is gone but whose container lives, or one Docker could not be asked about, counted as over."""
+        """Bug class: a database reset, removed or stopped (also by removing the MCP servers' configuration, which stops their databases) or a source removed under a pipeline run that writes into it: a run whose supervisor is gone but whose container lives, or one Docker could not be asked about, counted as over."""
         rig.start()
         rig.listing = {"docker_available": True, "runs": [_run("web", "finished"), run]}
         session = rig.login()

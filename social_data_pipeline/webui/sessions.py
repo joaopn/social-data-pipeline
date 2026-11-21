@@ -1,6 +1,6 @@
 """The browser sessions of the web UI, kept in this process's memory only.
 
-A login that the broker accepted gets a new random id (32 bytes, url-safe), which goes to the browser in the session cookie; the broker's token stays here, under the SHA-256 of that id, and leaves the process only towards the broker. Each session also has a form token, one for its whole life: a request that changes something must carry it, and it is compared in constant time. At most 256 sessions are kept; a login beyond that forgets the oldest. Nothing here is written to a file, and no repr shows an id or a token. Standard library only.
+A login that the broker accepted gets a new random id (32 bytes, url-safe), which goes to the browser in the session cookie; the broker's token stays here, under the SHA-256 of that id, and leaves the process only towards the broker. Each session also has a form token, one for its whole life: a request that changes something must carry it, and it is compared in constant time. Each session also holds `work`, what `new_work()` made for it (the web UI gives it a `work.SessionWork`: its pending actions, outcomes and output views), which is forgotten with the session. At most 64 sessions are kept; a login beyond that forgets the oldest. Nothing here is written to a file, and no repr shows an id, a token or the work. Standard library only.
 """
 
 import hashlib
@@ -10,7 +10,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
-SESSIONS_MAX = 256
+SESSIONS_MAX = 64
 
 
 def _new_id():
@@ -25,18 +25,20 @@ def _key(session_id):
 
 @dataclass
 class WebSession:
-    """One session: the broker's token, its form token, and when it began (on the clock of `WebSessions`)."""
+    """One session: the broker's token, its form token, when it began (on the clock of `WebSessions`) and its work."""
 
     token: str = field(repr=False)
     form_token: str = field(repr=False)
     started: float = 0.0
+    work: object = field(default=None, repr=False)
 
 
 class WebSessions:
-    def __init__(self, clock, *, sessions_max=SESSIONS_MAX, new_id=_new_id):
+    def __init__(self, clock, *, sessions_max=SESSIONS_MAX, new_id=_new_id, new_work=lambda: None):
         self._clock = clock
         self._max = sessions_max
         self._new_id = new_id
+        self._new_work = new_work
         self._lock = threading.Lock()
         self._table = OrderedDict()
 
@@ -46,7 +48,7 @@ class WebSessions:
         key = _key(session_id)
         if key is None:
             raise RuntimeError("the id source did not return an id")
-        session = WebSession(token=token, form_token=self._new_id(), started=self._clock())
+        session = WebSession(token=token, form_token=self._new_id(), started=self._clock(), work=self._new_work())
         with self._lock:
             if key in self._table:
                 raise RuntimeError("the id source did not return a new id")

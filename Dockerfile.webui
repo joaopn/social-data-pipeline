@@ -1,0 +1,37 @@
+# The web UI (sdp webui setup builds it as sdp-webui; sdp webui start runs it).
+# It holds only what it needs: the broker's client and the web package. It runs as the operator's uid, read-only, without capabilities; the broker's socket folder and the certificate folder are mounted read-only at run time.
+FROM python:3.13-slim
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# openssl: sdp webui setup makes the certificate with it, in a one-off container of this image.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-webui.txt ./
+RUN pip install --no-cache-dir -r requirements-webui.txt
+
+COPY social_data_pipeline/__init__.py ./social_data_pipeline/
+COPY social_data_pipeline/control/__init__.py social_data_pipeline/control/errors.py social_data_pipeline/control/framing.py social_data_pipeline/control/client.py ./social_data_pipeline/control/
+COPY social_data_pipeline/webui/ ./social_data_pipeline/webui/
+
+# htmx and Pico CSS, pinned by version and checked against the sums written here (measured when they were pinned).
+RUN mkdir -p social_data_pipeline/webui/static/vendor \
+    && cd social_data_pipeline/webui/static/vendor \
+    && python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js htmx.min.js \
+    && python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.min.css pico.min.css \
+    && printf '%s  %s\n' \
+        e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447 htmx.min.js \
+        fbc9a63fc9fc9f72d12fd7fc9806e11fa9f77ae4f9cad146b27003a1119ba3db pico.min.css \
+       | sha256sum -c - \
+    && chmod -R a+rX /app
+
+# Nobody by default; sdp webui start runs it as the operator's uid and gid.
+USER 65534:65534
+EXPOSE 8443 8444
+
+# HTTPS on 8443 (every listen address but 127.0.0.1) and 8444 (127.0.0.1 of the host only), one process with one application on both; the settings are in social_data_pipeline/webui/serve.py.
+CMD ["python", "-m", "social_data_pipeline.webui.serve"]

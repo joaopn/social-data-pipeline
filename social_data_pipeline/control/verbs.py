@@ -36,6 +36,11 @@ TERMINAL_ONLY = MappingProxyType({
     ("broker", "stop"): "Stops the broker itself, which serves the socket; a request arrives through the broker.",
     ("broker", "status"): "Says whether the broker runs, which only someone outside the broker needs to ask.",
     ("broker", "passwd"): "Sets the management password, which a session must never be able to change.",
+    ("webui", "setup"): "Sets up the web UI itself (its addresses, names and certificate), which a session of that web UI must not be able to change.",
+    ("webui", "start"): "Starts the web UI's container, which a session can only exist in once it runs.",
+    ("webui", "stop"): "Stops the web UI's container; a session would stop the page it is using.",
+    ("webui", "status"): "Says whether the web UI's container runs, which only someone outside the web UI needs to ask.",
+    ("webui", "unsetup"): "Removes the web UI itself, which a session of that web UI must not be able to do.",
 })
 
 # Literal copies of the CLI parser's choices.

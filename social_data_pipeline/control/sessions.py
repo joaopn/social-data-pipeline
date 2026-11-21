@@ -2,7 +2,7 @@
 
 One object, `Sessions`, holds all of it behind one lock, so that a decision and the change it leads to are one step and at most one password derivation runs at a time, whoever asks for it.
 
-- **Login budget.** Five units, one refilled every 30 seconds. A login reads the password file, refuses with `throttled` when the budget is empty WITHOUT verifying anything (the right password is refused too), verifies, and takes one unit for a wrong password. A right password takes nothing and gives nothing back.
+- **Login budgets.** Two budgets, one per channel a login comes through (`local`: a client on the operator's own machine, as the web UI tells it; `remote`: any other, and the default), each of five units, one refilled every 30 seconds. A login reads the password file, refuses with `throttled` when the budget of its channel is empty WITHOUT verifying anything (the right password is refused too), verifies, and takes one unit of that budget for a wrong password. A right password takes nothing and gives nothing back. Failed logins from afar therefore never lock out a login from the operator's own machine, nor the reverse.
 - **Sessions.** A login that verified returns a random token once. The table is keyed by the SHA-256 of the token and the token itself is not kept, so nothing read out of this object is a usable token. A session has a public number (a counter, unrelated to the token), its start time, the digest of the password file its login was verified against, an optional database password (wrapped, never shown by repr) and its count of failed second checks. At most 64 sessions live at a time: a login beyond that ends the expired ones and then, when there is still no room, the oldest (reason `superseded`).
 - **Every authenticated request** goes through `session_for(token, current_file_digest)`, and the three calls about a session's database password make the same checks: an unknown token is refused; a session eight hours old is ended; and when the digest of the password file as it is now differs from the session's (the password was changed, or the file is gone), every session with another digest is ended. A login that verified against the old file while it was being replaced therefore ends at its first request.
 - **Step-up.** `step_up` verifies the management password again for one session. It does not draw on the login budget, and a success changes nothing: the fifth failure in the session's life ends it.
@@ -26,6 +26,10 @@ from social_data_pipeline.control.types import SecretValue
 
 BUDGET_CAPACITY = 5
 BUDGET_REFILL_SECONDS = 30
+# The channels a login comes through, each with a budget of its own.
+CHANNEL_LOCAL = "local"
+CHANNEL_REMOTE = "remote"
+CHANNELS = (CHANNEL_LOCAL, CHANNEL_REMOTE)
 SESSION_SECONDS = 8 * 60 * 60
 STEP_UP_FAILURES = 5
 SESSIONS_MAX = 64
@@ -143,9 +147,9 @@ class Sessions:
         self._lock = threading.Lock()
         self._sessions = {}
         self._last_number = 0
-        self._budget = BUDGET_CAPACITY
-        # The time from which the next unit is counted; None while the budget is full.
-        self._refill_from = None
+        # Per channel: the units left, and the time from which the next unit is counted (None while the budget is full).
+        self._budget = dict.fromkeys(CHANNELS, BUDGET_CAPACITY)
+        self._refill_from = dict.fromkeys(CHANNELS)
         # The database passwords sessions held before, oldest first, each once.
         self._retired = []
         # The database passwords requests carried in their fields, oldest first, each once.
@@ -153,32 +157,40 @@ class Sessions:
 
     # ── the budget ──────────────────────────────────────────────────────────
 
-    def _refill(self, now):
-        if self._refill_from is None:
-            return
-        units = int(max(0, now - self._refill_from) // BUDGET_REFILL_SECONDS)
-        if units:
-            self._budget = min(BUDGET_CAPACITY, self._budget + units)
-            self._refill_from += units * BUDGET_REFILL_SECONDS
-        if self._budget >= BUDGET_CAPACITY:
-            self._refill_from = None
+    @staticmethod
+    def _channel(channel):
+        if channel not in CHANNELS:
+            raise ValueError("a login channel is 'local' or 'remote'")
+        return channel
 
-    def _take_unit(self, now):
-        if self._refill_from is None:
-            self._refill_from = now
-        self._budget -= 1
+    def _refill(self, channel, now):
+        start = self._refill_from[channel]
+        if start is None:
+            return
+        units = int(max(0, now - start) // BUDGET_REFILL_SECONDS)
+        if units:
+            self._budget[channel] = min(BUDGET_CAPACITY, self._budget[channel] + units)
+            self._refill_from[channel] = start + units * BUDGET_REFILL_SECONDS
+        if self._budget[channel] >= BUDGET_CAPACITY:
+            self._refill_from[channel] = None
+
+    def _take_unit(self, channel, now):
+        if self._refill_from[channel] is None:
+            self._refill_from[channel] = now
+        self._budget[channel] -= 1
 
     def reset_budget(self):
-        """Fill the login budget. For the terminal: after the password was set there, and at a restart."""
+        """Fill both login budgets. For the terminal: after the password was set there, and at a restart."""
         with self._lock:
-            self._budget = BUDGET_CAPACITY
-            self._refill_from = None
+            self._budget = dict.fromkeys(CHANNELS, BUDGET_CAPACITY)
+            self._refill_from = dict.fromkeys(CHANNELS)
 
-    def budget(self):
-        """How many failed logins the budget has room for right now."""
+    def budget(self, channel=CHANNEL_REMOTE):
+        """How many failed logins the budget of a channel has room for right now. Raises ValueError for a channel that is not one of `CHANNELS`."""
+        channel = self._channel(channel)
         with self._lock:
-            self._refill(self._now())
-            return self._budget
+            self._refill(channel, self._now())
+            return self._budget[channel]
 
     # ── helpers, all called with the lock held ──────────────────────────────
 
@@ -256,18 +268,19 @@ class Sessions:
 
     # ── login, requests, step-up ────────────────────────────────────────────
 
-    def login(self, candidate, read_file):
-        """Log in with the management password and return a `Login` (the token, the session's number, and the sessions ended to make room when 64 were live). `read_file()` returns the password file as `passwords.read_password_file` does. One login runs at a time, start to end. Raises SessionRefused: `no_password_set`, `password_file_not_usable`, `throttled` (the budget is empty: nothing was verified), `unauthorized` (the password is wrong: one unit of the budget is gone)."""
+    def login(self, candidate, read_file, channel=CHANNEL_REMOTE):
+        """Log in with the management password and return a `Login` (the token, the session's number, and the sessions ended to make room when 64 were live). `read_file()` returns the password file as `passwords.read_password_file` does; `channel` (`local` or `remote`) names the budget the login draws on. One login runs at a time, start to end. Raises ValueError for a channel that is not one of `CHANNELS`, before anything else, and SessionRefused: `no_password_set`, `password_file_not_usable`, `throttled` (the channel's budget is empty: nothing was verified), `unauthorized` (the password is wrong: one unit of the channel's budget is gone)."""
+        channel = self._channel(channel)
         with self._lock:
             password_file = self._read(read_file)
             if password_file is None:
                 raise SessionRefused(NO_PASSWORD_SET)
             now = self._now()
-            self._refill(now)
-            if self._budget < 1:
+            self._refill(channel, now)
+            if self._budget[channel] < 1:
                 raise SessionRefused(THROTTLED)
             if not self._verified(password_file, candidate):
-                self._take_unit(now)
+                self._take_unit(channel, now)
                 raise SessionRefused(UNAUTHORIZED)
             token = self._new_token()
             key = _token_key(token)

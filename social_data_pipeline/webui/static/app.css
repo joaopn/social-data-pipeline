@@ -1,0 +1,69 @@
+/* The web UI's own stylesheet, on top of Pico CSS. Colours follow the browser's light or dark setting. */
+:root {
+  --sdp-surface: #fcfcfb;
+  --sdp-surface-2: #f3f2ee;
+  --sdp-line: #e1e0d9;
+  --sdp-muted: #7b7973;
+  --sdp-accent: #2a78d6;
+  --sdp-accent-soft: rgba(42, 120, 214, 0.10);
+  --sdp-good: #0ca30c;
+  --sdp-warn-soft: rgba(250, 178, 25, 0.16);
+  --sdp-bad: #d03b3b;
+  --sdp-bad-soft: rgba(208, 59, 59, 0.09);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sdp-surface: #1a1a19;
+    --sdp-surface-2: #222220;
+    --sdp-line: #2c2c2a;
+    --sdp-muted: #898781;
+    --sdp-accent: #3987e5;
+    --sdp-accent-soft: rgba(57, 135, 229, 0.14);
+    --sdp-warn-soft: rgba(250, 178, 25, 0.13);
+    --sdp-bad-soft: rgba(208, 59, 59, 0.15);
+  }
+}
+body { margin: 0; font-size: 15px; }
+h1 { font-size: 1.4rem; margin-bottom: 1rem; }
+h2 { font-size: 1.05rem; margin-bottom: 0.6rem; }
+small, .muted, .soon { color: var(--sdp-muted); }
+.soon { font-size: 0.75rem; }
+
+.topbar { display: flex; align-items: center; gap: 1rem; padding: 0 1rem; min-height: 3rem; border-bottom: 1px solid var(--sdp-line); background: var(--sdp-surface); }
+.brand { font-weight: 700; }
+.brand-sub { color: var(--sdp-muted); font-weight: 500; }
+.windows { display: flex; gap: 0.25rem; align-items: stretch; }
+.window { padding: 0.6rem 0.9rem; border-bottom: 2px solid transparent; text-decoration: none; }
+.window-on { border-bottom-color: var(--sdp-accent); font-weight: 600; }
+.window-off { color: var(--sdp-muted); cursor: default; }
+.logout { margin: 0 0 0 auto; }
+.logout button { margin: 0; padding: 0.3rem 0.8rem; font-size: 0.85rem; }
+
+.shell { display: flex; min-height: calc(100vh - 3rem); }
+.side { width: 13rem; flex: none; padding: 0.75rem 0.5rem; border-right: 1px solid var(--sdp-line); background: var(--sdp-surface); }
+.side ul { list-style: none; margin: 0; padding: 0; }
+.side li { list-style: none; margin: 0; padding: 0.3rem 0.6rem; }
+.side a { text-decoration: none; }
+.side-on { font-weight: 600; }
+.side li:has(.side-on) { background: var(--sdp-accent-soft); border-radius: 6px; }
+.content { flex: 1; min-width: 0; padding: 1.2rem 1.5rem 3rem; }
+
+.card { border: 1px solid var(--sdp-line); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; background: var(--sdp-surface); overflow-x: auto; }
+.card table { margin-bottom: 0; }
+.notices { margin-bottom: 1rem; }
+.notice { padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid var(--sdp-line); background: var(--sdp-surface-2); }
+.notice-warn { background: var(--sdp-warn-soft); }
+.notice-bad { background: var(--sdp-bad-soft); border-color: var(--sdp-bad); }
+.output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font-size: 0.8rem; }
+.tag { display: inline-block; padding: 0 0.4rem; border-radius: 4px; font-size: 0.8rem; background: var(--sdp-surface-2); border: 1px solid var(--sdp-line); }
+.state::before { content: ""; display: inline-block; width: 0.5rem; height: 0.5rem; margin-right: 0.35rem; border-radius: 50%; background: var(--sdp-muted); }
+.state-on::before { background: var(--sdp-good); }
+
+.login { max-width: 26rem; margin-top: 5rem; }
+
+@media (max-width: 800px) {
+  .shell { flex-direction: column; }
+  .side { width: auto; border-right: 0; border-bottom: 1px solid var(--sdp-line); }
+  .side ul { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .window small { display: none; }
+}

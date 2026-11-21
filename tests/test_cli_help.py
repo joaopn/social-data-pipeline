@@ -63,6 +63,13 @@ SUBCOMMANDS = [
     ["broker", "status", "--help"],
     ["broker", "passwd", "--help"],
     ["broker", "audit", "--help"],
+    # webui group
+    ["webui", "--help"],
+    ["webui", "setup", "--help"],
+    ["webui", "start", "--help"],
+    ["webui", "stop", "--help"],
+    ["webui", "status", "--help"],
+    ["webui", "unsetup", "--help"],
 ]
 
 

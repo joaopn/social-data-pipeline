@@ -1,0 +1,5 @@
+{#- A block whose read failed: the sentence, and the end of the command's error output as text. -#}
+<p class="notice notice-bad">{{ block.sentence }}</p>
+{%- if block.errors %}
+<pre class="output">{{ block.errors }}</pre>
+{%- endif %}

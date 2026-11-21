@@ -1,6 +1,6 @@
 """The broker: one host process on a unix socket through which a logged-in session may run the fixed list of typed verbs of the CLI. `python -m social_data_pipeline.control.broker --root <root> --foreground` serves in this process; without `--foreground` it starts that command detached and says whether it came up, as `sdp broker start` does.
 
-What it defends, and only that: against another user of the machine (the socket's folder is 0700 and a connection from any other uid is closed without a reply, read from the kernel with `SO_PEERCRED`), against whatever can send bytes to the socket (the web UI container, which holds only the socket folder: one frame of at most `REQUEST_MAX_BYTES`, ten seconds for all of it, nothing but `hello` and `login` answered without a valid session token, every verb validated by the registry, deny by default), and against a stolen session token (typed verbs only, and the management password again for every verb of the class `step_up`). NOT against a program that runs on the host as the operator: that already has Docker and the files.
+What it defends, and only that: against another user of the machine (the socket's folder is 0700 and a connection from any other uid is closed without a reply, read from the kernel with `SO_PEERCRED`), against whatever can send bytes to the socket (the web UI container, which holds only the socket folder: one frame of at most `REQUEST_MAX_BYTES`, ten seconds for all of it, nothing but `hello` and `login` answered without a valid session token, every verb validated by the registry, deny by default; a login names its channel, `local` or `remote`, and draws on that channel's budget, see `sessions`), and against a stolen session token (typed verbs only, and the management password again for every verb of the class `step_up`). NOT against a program that runs on the host as the operator: that already has Docker and the files.
 
 Files: `<root>/.sdp/socket/broker.sock` (folder 0700), and `<root>/.sdp/broker/` (0700) with `password.json`, `audit.jsonl`, `broker.log`, `lock` (an `flock` held for the broker's life; it holds the pid and the start time), `write.lock` (taken for each state-changing call and inherited by its child, so that it stays held while an orphaned child still works after a broker crash; `run.start` takes it shared) and `calls/` (the standard output and standard error of each state-changing child, two files that are read and deleted when the child ends; files no running call owns are deleted at start and by the housekeeping every 30 seconds, whenever `write.lock` is free).
 
@@ -67,7 +67,7 @@ ACCEPT_PAUSE_SECONDS = 0.1
 # How long `stop_broker` waits before it says that it waits for an action.
 STOP_SAY_WAIT_SECONDS = 2.0
 
-# The ops of a request and the keys each one takes besides `op`; `step_up` of a call is optional.
+# The ops of a request and the keys each one takes besides `op`; `step_up` of a call and `channel` of a login are optional.
 OPS = {
     "hello": frozenset(),
     "login": frozenset({"password"}),
@@ -76,7 +76,7 @@ OPS = {
     "session.clear_db_password": frozenset({"token"}),
     "call": frozenset({"token", "verb", "fields"}),
 }
-OPTIONAL_KEYS = {"call": frozenset({"step_up"})}
+OPTIONAL_KEYS = {"call": frozenset({"step_up"}), "login": frozenset({"channel"})}
 
 # Verbs that are refused while a pipeline run is alive, and when Docker cannot be asked whether one is.
 DESTRUCTIVE_VERBS = frozenset({"db.reset", "db.unsetup", "db.stop", "source.remove"})
@@ -1004,10 +1004,12 @@ class Broker:
             # A file that cannot be used tells nothing about whether a password is set.
             return _ok({"protocol": PROTOCOL, "password_set": None if refusal is not None else bool(password_file)})
         if op == "login":
-            if set(request) != {"op", "password"}:
+            keys = set(request) - {"op"}
+            channel = request.get("channel", session_table.CHANNEL_REMOTE)
+            if not OPS[op] <= keys <= OPS[op] | OPTIONAL_KEYS[op] or not isinstance(channel, str) or channel not in session_table.CHANNELS:
                 self.audit.count_unauthenticated()
                 return _error("bad_request")
-            return self._login(request["password"])
+            return self._login(request["password"], channel)
         # Every other op needs a session before anything else of the request is looked at.
         password_file = self._current_password_file()
         token = request.get("token")
@@ -1030,13 +1032,13 @@ class Broker:
             return self._set_db_password(token, info, request, password_file)
         return self._call(token, info, request, password_file)
 
-    def _login(self, candidate):
+    def _login(self, candidate, channel):
         try:
             password_file = self._current_password_file()
         except _Refusal as refusal:
             return refusal.reply
         try:
-            login = self.sessions.login(candidate, lambda: password_file)
+            login = self.sessions.login(candidate, lambda: password_file, channel)
         except session_table.SessionRefused as refusal:
             if refusal.code in (session_table.UNAUTHORIZED, session_table.THROTTLED):
                 self.audit.count_failed_login()

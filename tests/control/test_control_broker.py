@@ -3,7 +3,7 @@
 The contracts pinned here, each test naming the bug class it catches:
 
 - Who may connect: another uid is closed without a reply; the folders and files have their modes whatever the umask; a stale socket is replaced only after the lock is taken, and a second broker is refused; an over-long socket path, and code or folders that someone else could change, refuse the start.
-- Nothing but `hello` and `login` is answered without a valid token, for every op and every verb and five kinds of bad token.
+- Nothing but `hello` and `login` is answered without a valid token, for every op and every verb and five kinds of bad token. A login draws on the budget of its channel (`local` or `remote`, the default); an unknown channel is a bad request; failed logins of both are one count.
 - A call: the registry's refusals with their codes (the field name comes back, never the value), the second check of the management password decided by the verb's class alone, its fifth failure ending the session.
 - The session's database password: stored only after the second check, added to `run.start` and `db.start` only when the fields have none, the audit line saying where it came from, and refused for the starts that paste it into a shell line.
 - The destructive verbs are refused while a pipeline run is alive or Docker cannot be asked.
@@ -678,6 +678,50 @@ class TestTokens:
         assert rig.client().hello() == {"protocol": 1, "password_set": True}
         if kind in ("expired", "password_changed"):
             assert [line["reason"] for line in rig.events("session_end")] == ["expired" if kind == "expired" else "password_changed"]
+
+
+class TestLoginChannels:
+    @pytest.mark.parametrize("spent, other", [("remote", "local"), ("local", "remote")])
+    def test_failed_logins_of_one_channel_leave_the_other_open(self, rig, spent, other):
+        """Bug class: the broker ignoring the channel of a login, so that five wrong guesses through the network lock the operator out on the operator's own machine (and the reverse)."""
+        rig.start()
+        for _ in range(5):
+            assert code_of(lambda: rig.client().login("made-up-wrong-pw-1", channel=spent)).code == "unauthorized"
+
+        assert code_of(lambda: rig.client().login(PASSWORD, channel=spent)).code == "throttled"
+        session = rig.client()
+        session.login(PASSWORD, channel=other)
+        assert session.call("db.status")["data"]["verb"] == "db.status"
+
+    def test_a_login_without_a_channel_draws_on_the_remote_budget(self, rig):
+        """Bug class: a client that names no channel (an older one, or a hand-made request) drawing on the local budget."""
+        rig.start()
+        for _ in range(5):
+            reply = decoded_reply(raw_exchange(rig.socket_path, frame(json.dumps({"op": "login", "password": "made-up-wrong-pw-1"}))))
+            assert reply["error"]["code"] == "unauthorized"
+
+        assert code_of(lambda: rig.client().login(PASSWORD, channel="remote")).code == "throttled"
+        rig.client().login(PASSWORD, channel="local")
+
+    @pytest.mark.parametrize("channel", ["LOCAL", "", None, 1, ["local"], "both"])
+    def test_an_unknown_channel_is_a_bad_request_and_verifies_nothing(self, rig, channel):
+        """Bug class: an unknown channel taken for one of the two (or for a third budget without a limit); a refusal that still costs a unit of a budget."""
+        rig.start()
+        for _ in range(3):
+            reply = decoded_reply(raw_exchange(rig.socket_path, frame(json.dumps({"op": "login", "password": PASSWORD, "channel": channel}))))
+            assert reply["error"]["code"] == "bad_request"
+
+        assert rig.broker.sessions.budget("local") == rig.broker.sessions.budget("remote") == 5
+        assert rig.events("login") == []
+
+    def test_failed_logins_of_both_channels_are_counted_as_one_number(self, rig):
+        """Bug class: the audit's count of failed logins split or losing the logins of one channel."""
+        rig.start()
+        code_of(lambda: rig.client().login("made-up-wrong-pw-1", channel="local"))
+        code_of(lambda: rig.client().login("made-up-wrong-pw-2", channel="remote"))
+        rig.stop()
+
+        assert rig.events("counts")[0]["failed_logins"] == 2
 
 
 # ── 3. a call ───────────────────────────────────────────────────────────────

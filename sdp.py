@@ -39,6 +39,12 @@ Usage:
     sdp.py broker passwd                     Set the broker's management password
     sdp.py broker audit [--limit N] [--verify] [--json]  Print the newest lines of the broker's audit log, or check its chain
 
+    sdp.py webui setup                       Set up the web UI: its port, addresses, names and certificate; build its image
+    sdp.py webui start                       Start the web UI's container (the broker must run for it to log in)
+    sdp.py webui stop                        Stop and remove the web UI's container
+    sdp.py webui status                      Say whether the web UI runs, where it answers and its certificate's fingerprint
+    sdp.py webui unsetup                     Remove the web UI's container, network, image and settings
+
     sdp.py setup                             Legacy: full interactive setup (core + classifiers + platform)
 """
 
@@ -5815,6 +5821,45 @@ def cmd_broker_audit(args):
 
 
 # ============================================================================
+# sdp webui
+# ============================================================================
+
+
+def _webui_host():
+    """The web UI's host-side module. Imported at first use, so that loading the CLI loads nothing more than before."""
+    from social_data_pipeline import webui_host
+
+    return webui_host
+
+
+def cmd_webui_setup(args):
+    """Set up the web UI: ask its port, listen addresses, names and certificate, build its image and make or copy the certificate."""
+    return _webui_host().cmd_setup(ROOT)
+
+
+def cmd_webui_start(args):
+    """Start the web UI's container. Exit code 0 when it was started or already runs."""
+    return _webui_host().cmd_start(ROOT)
+
+
+def cmd_webui_stop(args):
+    """Stop and remove the web UI's container. Exit code 0 when it ran, 1 when it did not."""
+    return _webui_host().cmd_stop(ROOT)
+
+
+def cmd_webui_status(args):
+    """Say whether the web UI is set up and runs, where it answers and its certificate. Exit code 0 when it runs, 1 when not."""
+    return _webui_host().cmd_status(ROOT)
+
+
+def cmd_webui_unsetup(args):
+    """Remove the web UI's container, network, image and settings, after a confirmation."""
+    from social_data_pipeline.setup.utils import ask_bool
+
+    return _webui_host().cmd_unsetup(ROOT, lambda: ask_bool("Remove the web UI's container, network, image and settings (.sdp/webui)?", default=False, tag="webui_unsetup_confirm"))
+
+
+# ============================================================================
 # Argument parser
 # ============================================================================
 
@@ -6037,6 +6082,25 @@ def build_parser():
     broker_audit_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
     broker_audit_p.set_defaults(func=cmd_broker_audit)
 
+    # ---- sdp webui ----
+    webui_parser = subparsers.add_parser("webui", help="The web UI: a page in the browser that works through the broker")
+    webui_sub = webui_parser.add_subparsers(dest="webui_command", help="Web UI command")
+
+    webui_setup_p = webui_sub.add_parser("setup", help="Set up the web UI: port, listen addresses, names, certificate; build its image")
+    webui_setup_p.set_defaults(func=cmd_webui_setup)
+
+    webui_start_p = webui_sub.add_parser("start", help="Start the web UI's container")
+    webui_start_p.set_defaults(func=cmd_webui_start)
+
+    webui_stop_p = webui_sub.add_parser("stop", help="Stop and remove the web UI's container (exit code 1 when it does not run)")
+    webui_stop_p.set_defaults(func=cmd_webui_stop)
+
+    webui_status_p = webui_sub.add_parser("status", help="Say whether the web UI runs, where it answers and its certificate (exit code 0 when it runs, 1 when not)")
+    webui_status_p.set_defaults(func=cmd_webui_status)
+
+    webui_unsetup_p = webui_sub.add_parser("unsetup", help="Remove the web UI's container, network, image and settings")
+    webui_unsetup_p.set_defaults(func=cmd_webui_unsetup)
+
     return parser
 
 
@@ -6067,6 +6131,9 @@ def main():
         return 0
     if args.command == "broker" and not getattr(args, "broker_command", None):
         parser.parse_args(["broker", "-h"])
+        return 0
+    if args.command == "webui" and not getattr(args, "webui_command", None):
+        parser.parse_args(["webui", "-h"])
         return 0
 
     if hasattr(args, "func"):

@@ -721,3 +721,49 @@ mcp_write_files:
 # hf_select_fields_{gi}:     Multi-select fields from mappable fields
 # hf_unmappable_{field_name}: Action for unmappable field (skip/cast/custom)
 # hf_custom_type_{field_name}: SQL type for unmappable field (if "enter custom type")
+
+# ===========================================================================
+# sdp webui setup / unsetup
+# ===========================================================================
+
+webui_port:
+  prompt: "Port of the web UI (1024-65535)"
+  explain: >
+    The port the page is published on, on 127.0.0.1 and on each listen address. The container itself listens on 8443.
+  default: "8443"
+
+webui_addresses:
+  prompt: "Listen addresses besides 127.0.0.1 (IP addresses, comma-separated; empty for none)"
+  explain: >
+    Addresses of this machine on which the page should also answer, for another machine or a tailnet to reach it. Every-address forms (0.0.0.0, ::, *), multicast, a link-local address with a zone and 127.0.0.1 itself are refused.
+  default: "(empty: this machine only)"
+
+webui_names:
+  prompt: "Names the page is reached by besides localhost (comma-separated; empty for none)"
+  explain: >
+    Host names a browser uses to reach the page. They go into the certificate and the Host check. Lower-case letters, digits, hyphens and dots; no wildcard, no trailing dot.
+  default: "(empty)"
+
+webui_certificate:
+  prompt: "Certificate"
+  explain: >
+    generate: a self-signed certificate (EC P-256, 825 days) for localhost, 127.0.0.1, the listen addresses and the names; own: the paths of your own certificate and key, which are copied into .sdp/webui/tls.
+  default: "1 (generate)"
+  options:
+    1: generate
+    2: own
+
+webui_cert_path:
+  prompt: "Path of your certificate (PEM)"
+  explain: Asked only for "own". The file is copied; at most 64 KiB.
+  default: "(none)"
+
+webui_key_path:
+  prompt: "Path of its private key (PEM, not encrypted)"
+  explain: Asked only for "own". It must be the key of the certificate; the file is copied with mode 0600.
+  default: "(none)"
+
+webui_unsetup_confirm:
+  prompt: "Remove the web UI's container, network, image and settings (.sdp/webui)?"
+  explain: Confirmation before `sdp webui unsetup` removes anything.
+  default: "no"

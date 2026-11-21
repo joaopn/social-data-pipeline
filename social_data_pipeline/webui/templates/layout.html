@@ -1,0 +1,21 @@
+{#- The document around every page: no inline script, no inline style, no style or on... attribute (a test scans for them). htmx reads its settings from the meta tag. -#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="same-origin">
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "selfRequestsOnly": true, "historyCacheSize": 0}'>
+  {%- if form_token is defined %}
+  <meta name="sdp-form-token" content="{{ form_token }}">
+  {%- endif %}
+  <title>{{ title }} - SDP</title>
+  <link rel="stylesheet" href="/static/vendor/pico.min.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+{% block body %}{% endblock %}
+</body>
+</html>

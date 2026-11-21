@@ -1,6 +1,6 @@
 """A small client of the broker's socket: one connection per request, one request and one reply (`framing`).
 
-`Client(socket_path)` keeps the token of the session it logged in with. Every method returns the reply's `result`, or raises `BrokerError` with the reply's `code`, `message` and `field` (and its other details, such as the exit code and the end of standard error of a command that failed, in `details`); `BrokerUnreachable`, a `BrokerError` with the code `unreachable`, when there is no broker to ask or the connection ended without a reply. The client sends nothing but what it is given and keeps nothing but the token. Standard library and this package only.
+`Client(socket_path)` keeps the token of the session it logged in with. Every method returns the reply's `result`, or raises `BrokerError` with the reply's `code`, `message` and `field` (and its other details, such as the exit code and the end of standard error of a command that failed, in `details`); `BrokerUnreachable`, a `BrokerError` with the code `unreachable`, when there is no broker to ask or the connection ended without a reply; its `reason` says which (`REASONS`). The client sends nothing but what it is given and keeps nothing but the token. Standard library and this package only.
 """
 
 import math
@@ -21,11 +21,38 @@ class BrokerError(Exception):
         self.details = dict(details or {})
 
 
-class BrokerUnreachable(BrokerError):
-    """No reply: the socket is missing, nobody listens on it, or the connection ended or ran out of time before a reply came."""
+# Why no reply came, each with its constant text.
+NO_SOCKET = "no_socket"
+REFUSED = "refused"
+PERMISSION_DENIED = "permission_denied"
+NO_REPLY = "no_reply"
+NOT_REACHED = "not_reached"
+REASONS = {
+    NO_SOCKET: "there is no broker socket",
+    REFUSED: "nobody listens on the broker socket",
+    PERMISSION_DENIED: "the broker socket cannot be opened: permission denied",
+    NO_REPLY: "the broker closed the connection without a reply",
+    NOT_REACHED: "the broker cannot be reached",
+}
 
-    def __init__(self, message):
-        super().__init__("unreachable", message)
+
+class BrokerUnreachable(BrokerError):
+    """No reply. `reason` is one of `REASONS`: `no_socket` (no socket file, or no folder for it), `refused` (a socket file that nobody listens on), `permission_denied` (the socket or its folder cannot be opened by this user), `no_reply` (connected, and the connection ended or ran out of time before a whole reply came, which is what the broker does to a connection from another user), `not_reached` (connecting or sending failed in another way, a time-out included). `message` is the reason's constant text."""
+
+    def __init__(self, reason):
+        super().__init__("unreachable", REASONS[reason])
+        self.reason = reason
+
+
+def _reason_of(error):
+    """The reason for an OSError raised while connecting."""
+    if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+        return NO_SOCKET
+    if isinstance(error, ConnectionRefusedError):
+        return REFUSED
+    if isinstance(error, PermissionError):
+        return PERMISSION_DENIED
+    return NOT_REACHED
 
 
 class Client:
@@ -44,9 +71,15 @@ class Client:
             try:
                 connection.settimeout(self.timeout)
                 connection.connect(self.socket_path)
+            except OSError as error:
+                raise BrokerUnreachable(_reason_of(error)) from None
+            try:
                 connection.sendall(framing.encode(document, max_bytes=framing.REQUEST_MAX_BYTES))
+            except (BrokenPipeError, ConnectionResetError):
+                # Connected, and closed by the other end before the request was in: no reply will come.
+                raise BrokerUnreachable(NO_REPLY) from None
             except OSError:
-                raise BrokerUnreachable("the broker cannot be reached") from None
+                raise BrokerUnreachable(NOT_REACHED) from None
 
             def read(count):
                 if self.timeout is not None:
@@ -56,7 +89,7 @@ class Client:
             try:
                 reply = framing.read_frame(read, max_bytes=framing.REPLY_MAX_BYTES, deadline=deadline)
             except framing.FrameError:
-                raise BrokerUnreachable("the broker sent no reply") from None
+                raise BrokerUnreachable(NO_REPLY) from None
         finally:
             connection.close()
         if reply.get("ok") is True and "result" in reply:
@@ -71,9 +104,9 @@ class Client:
         """`{"protocol", "password_set"}`: the one request answered without a session."""
         return self.request({"op": "hello"})
 
-    def login(self, password):
-        """Log in with the management password and keep the session's token. Returns `{"token", "session", "expires_in"}`."""
-        result = self.request({"op": "login", "password": password})
+    def login(self, password, channel="remote"):
+        """Log in with the management password and keep the session's token. `channel` is `remote` or `local`: the broker keeps a login budget for each (see `sessions`). Returns `{"token", "session", "expires_in"}`."""
+        result = self.request({"op": "login", "password": password, "channel": channel})
         self.token = result["token"]
         return result
 

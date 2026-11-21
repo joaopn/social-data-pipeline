@@ -50,9 +50,13 @@ python sdp.py runs cancel <run_id>          # Stop a run with the interrupt sign
 python sdp.py source error-logs             # Show error details for failed datasets
 python sdp.py db verify                     # Verifies file structure consistency
 
-# The broker (host side of a web UI; nothing uses it yet but its own client)
+# The broker (host side of the web UI)
 python sdp.py broker passwd                 # Set its management password
 python sdp.py broker start                  # Start it (stop, status, audit: see below)
+
+# The web UI (a page in the browser that works through the broker)
+python sdp.py webui setup                   # Port, addresses, names, certificate; builds its image
+python sdp.py webui start                   # Start it (stop, status, unsetup: see below)
 ```
 
 ---
@@ -279,7 +283,19 @@ Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mong
 | `sdp.py broker status` | Say whether the broker runs, its pid, since when, and whether a password is set |
 | `sdp.py broker audit [--limit N] [--verify] [--json]` | Print the newest lines of the broker's audit log, or check its chain with `--verify` |
 
-The broker is a host process on a unix socket through which a logged-in session can run a fixed list of typed actions. Nothing uses it yet apart from its own client. See [The broker](docs/guides/broker.md).
+The broker is a host process on a unix socket through which a logged-in session can run a fixed list of typed actions. The web UI uses it. See [The broker](docs/guides/broker.md).
+
+### Web UI (`sdp.py webui`)
+
+| Command | Description |
+|---------|-------------|
+| `sdp.py webui setup` | Ask the port, the listen addresses besides 127.0.0.1, the names and the certificate (generated or your own); build the image `sdp-webui`; print the certificate's fingerprint |
+| `sdp.py webui start` | Start the web UI's container and say whether the broker answered from inside it |
+| `sdp.py webui stop` | Stop and remove the container (exit code 1 when it was not running) |
+| `sdp.py webui status` | Say whether it runs, where it answers and the certificate's fingerprint and end date (exit code 0 when it runs) |
+| `sdp.py webui unsetup` | After a confirmation, remove the container, the network, the image and `.sdp/webui/` |
+
+The web UI is a page served over HTTPS from a container that holds only the broker's socket folder and its certificate. In this version it has the login and a read-only Overview (databases, sources, runs alive now, notices for databases without authentication and ports open beyond the machine). Linux, and a Docker without user-id mapping. See [The web UI](docs/guides/webui.md).
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 

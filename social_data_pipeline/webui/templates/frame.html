@@ -1,0 +1,29 @@
+{#- The frame of a page for a logged-in session: the window bar, the Management navigation and the logout form. Chat and Queue are not links: they do not exist yet. -#}
+{% extends "layout.html" %}
+{% block body %}
+<header class="topbar">
+  <span class="brand">SDP <span class="brand-sub">web UI</span></span>
+  <nav class="windows" aria-label="Windows">
+    <span class="window window-off" aria-disabled="true">Chat <small>not available yet</small></span>
+    <span class="window window-off" aria-disabled="true">Queue <small>not available yet</small></span>
+    <a class="window window-on" href="/" aria-current="page">Management</a>
+  </nav>
+  <form class="logout" method="post" action="/logout">
+    <input type="hidden" name="form_token" value="{{ form_token }}">
+    <button type="submit" class="secondary outline">Log out</button>
+  </form>
+</header>
+<div class="shell">
+  <nav class="side" aria-label="Management">
+    <ul>
+      {%- for key, page_title, address in pages %}
+      <li>{% if key == active %}<a class="side-on" href="{{ address }}" aria-current="page">{{ page_title }}</a>{% else %}<a href="{{ address }}">{{ page_title }}</a>{% endif %}{% if key != "overview" %} <small class="soon">next update</small>{% endif %}</li>
+      {%- endfor %}
+    </ul>
+  </nav>
+  <main class="content">
+    <h1>{{ title }}</h1>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% endblock %}

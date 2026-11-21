@@ -2,7 +2,7 @@
 
 The contracts pinned here:
 
-- The login budget holds five failures and gets one back every 30 seconds. With the budget empty a login is refused without verifying anything, the right password included. A success takes nothing and gives nothing back; `reset_budget` fills it.
+- Each of the two login budgets (`local`, `remote`) holds five failures and gets one back every 30 seconds; one being empty leaves the other open, `reset_budget` fills both and an unknown channel is refused. With the budget empty a login is refused without verifying anything, the right password included. A success takes nothing and gives nothing back; `reset_budget` fills it.
 - Logins run one at a time, start to end, so that logins from several threads never get more verifications than the budget has units. A step-up waits for a login that is running.
 - The token is handed out once and is not kept: nothing reachable from the object holds it. A session's public number is a counter.
 - A session ends at exactly eight hours, and at its first request after the password file changed or went away, together with every other session that was verified against another file, the one whose login raced the change included.
@@ -312,6 +312,61 @@ class TestBudget:
         assert recorder.most_running() == 1 and ("gave up" not in {what for what, _ in recorder.order})
         assert sum(1 for what, _ in recorder.order if what == "enter") == 5
         assert sorted(results) == ["throttled"] * 15 + ["unauthorized"] * 5
+
+
+class TestChannels:
+    """The two login budgets, `local` and `remote`."""
+
+    @pytest.mark.parametrize("spent, other", [("remote", "local"), ("local", "remote")])
+    def test_an_empty_budget_of_one_channel_leaves_the_other_channel_open(self, broker, spent, other):
+        """Bug class: one budget for every login, so that five wrong guesses from afar lock the operator out of the web UI on the operator's own machine (and the reverse)."""
+        for _ in range(5):
+            assert refused(lambda: broker.sessions.login(WRONG, broker.read_file, spent)).code == "unauthorized"
+
+        assert refused(lambda: broker.sessions.login(RIGHT, broker.read_file, spent)).code == "throttled"
+        assert broker.sessions.login(RIGHT, broker.read_file, other).number == 1
+        assert broker.sessions.budget(spent) == 0 and broker.sessions.budget(other) == 5
+        assert refused(lambda: broker.sessions.login(WRONG, broker.read_file, other)).code == "unauthorized"
+        assert broker.sessions.budget(other) == 4
+
+    def test_each_channel_refills_on_its_own_clock(self, broker):
+        """Bug class: the refill of one channel counted from the other channel's failures."""
+        for _ in range(5):
+            refused(lambda: broker.sessions.login(WRONG, broker.read_file, "remote"))
+        broker.clock.now += 20
+        refused(lambda: broker.sessions.login(WRONG, broker.read_file, "local"))
+        broker.clock.now += 10
+
+        assert broker.sessions.budget("remote") == 1
+        assert broker.sessions.budget("local") == 4
+        broker.clock.now += 20
+        assert broker.sessions.budget("local") == 5
+
+    def test_reset_budget_fills_both(self, broker):
+        """Bug class: a reset at the terminal that fills one channel and leaves the operator locked out of the other."""
+        for channel in ("local", "remote"):
+            for _ in range(5):
+                refused(lambda: broker.sessions.login(WRONG, broker.read_file, channel))
+
+        broker.sessions.reset_budget()
+
+        assert (broker.sessions.budget("local"), broker.sessions.budget("remote")) == (5, 5)
+
+    def test_the_default_channel_is_remote(self, broker):
+        """Bug class: a caller that names no channel drawing on the local budget, which is meant for the operator's own machine only."""
+        broker.fail_logins(5)
+
+        assert broker.sessions.budget("remote") == 0 and broker.sessions.budget("local") == 5
+
+    @pytest.mark.parametrize("channel", ["LOCAL", "", None, 1, "loopback"])
+    def test_an_unknown_channel_is_refused_before_anything_is_read(self, broker, channel):
+        """Bug class: an unknown channel falling through to a budget (a third, unlimited one, or a typo that draws on the local budget)."""
+        with pytest.raises(ValueError):
+            broker.sessions.login(RIGHT, broker.read_file, channel)
+        with pytest.raises(ValueError):
+            broker.sessions.budget(channel)
+
+        assert broker.reads == 0 and broker.verify.calls == []
 
 
 # ── 2. tokens and numbers ───────────────────────────────────────────────────

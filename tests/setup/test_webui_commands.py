@@ -1,0 +1,630 @@
+"""Tests for the `webui` commands of the CLI (`social_data_pipeline/webui_host.py`, wired in `sdp.py`): `setup`, `start`, `stop`, `status`, `unsetup`, and the bare `sdp webui`.
+
+The contracts pinned here, each test naming the bug class it catches:
+
+- The answers: every refused form of a listen address (every-address forms with the reason, multicast, a zone, 127.0.0.1 again, a duplicate, anything but an IP address) and of a name (a wildcard, upper case, a trailing dot, an empty or over-long label, an over-long name, a number as last label, localhost again, a duplicate); the port's range.
+- The `docker create` argument list, pinned literally for a setting with two addresses and two names; the certificate's `openssl` argument list, with every value its own argument.
+- `start`: refused when not set up, under rootless Docker or user-namespace remapping, for a container of another deployment; "already running" with exit code 0; a failed create or start removes the container and returns 1 with Docker's last line; a server that ends right after its start is reported with its last log lines, removed, and the command returns 1; the broker is asked from inside the container. 127.0.0.1 is published to the local port 8444, every other listen address (IPv6 ones included) to 8443.
+- `unsetup` removes nothing through a symbolic link: a linked `.sdp` is refused and what it points at stays.
+- `stop` and `status` exit codes; `unsetup` asks first and removes the container, the network, the image and `.sdp/webui`.
+- `setup` refuses without a management password before asking anything; the state folder and its files have modes 0700 and 0600; no argument list holds the key or a password; every prompt has a tag listed in `tests/e2e/questions.yaml`.
+- `import sdp` loads neither the web package nor the control package; `sdp webui` alone prints the group's help.
+
+Docker is a stand-in that records every argument list and answers from a small model of one container and one network; nothing reaches a real Docker.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+import sdp
+from social_data_pipeline import webui_host as host
+from social_data_pipeline.control import broker, passwords
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+UID, GID = 1000, 1000
+CERT_PEM = b"-----BEGIN CERTIFICATE-----\n" + base64.b64encode(b"made-up certificate body") + b"\n-----END CERTIFICATE-----\n"
+KEY_PEM = b"-----BEGIN PRIVATE KEY-----\nmade-up-key-material-77\n-----END PRIVATE KEY-----\n"
+
+
+def fake_scrypt(password, *, salt, n, r, p, maxmem, dklen):
+    return b"k" * dklen
+
+
+class FakeDocker:
+    """Records every argument list in `calls` and answers like Docker for one container `sdp-webui` and one network `sdp-webui`. `container` is None or (status, root label); `fail` maps a command word (`create`, `start`, `build`, `exec`) to the stderr of a failure; `security` is what `docker info` lists."""
+
+    def __init__(self, root):
+        self.root = str(root)
+        self.calls = []
+        self.container = None
+        self.network = None
+        self.ipam = [{"Subnet": "172.30.0.0/16", "Gateway": "172.30.0.1"}]
+        self.driver = "bridge"
+        self.fail = {}
+        self.security = ["name=seccomp,profile=builtin", "name=cgroupns"]
+        self.probe = "answered"
+        # The server ends right after `docker start` answered 0 (a key it cannot read).
+        self.exits_at_start = False
+
+    def __call__(self, arguments, *, capture=True, timeout=600):
+        self.calls.append(list(arguments))
+        assert arguments[0] == "docker"
+        word = arguments[1]
+        if word in self.fail:
+            return self.answer(1, stderr=f"first line\n{self.fail[word]}\n")
+        if word == "info":
+            return self.answer(0, json.dumps(self.security))
+        if arguments[1:3] == ["container", "inspect"]:
+            if self.container is None:
+                return self.answer(1, stderr="Error: No such container: sdp-webui")
+            status, label = self.container
+            return self.answer(0, f"{json.dumps(status)}\n{json.dumps({host.ROOT_LABEL: label} if label else {})}\n")
+        if word == "ps":
+            return self.answer(0, "")
+        if arguments[1:3] == ["network", "inspect"]:
+            if self.network is None:
+                return self.answer(1, stderr="Error: network sdp-webui not found")
+            return self.answer(0, json.dumps(self.driver) + "\n" + json.dumps(self.network) + "\n" + json.dumps(self.ipam) + "\n")
+        if arguments[1:3] == ["network", "create"]:
+            self.network = {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+            return self.answer(0, "made-up-network-id")
+        if arguments[1:3] == ["network", "rm"]:
+            if self.network is None:
+                return self.answer(1, stderr="Error response from daemon: network sdp-webui not found")
+            self.network = None
+            return self.answer(0, "sdp-webui")
+        if arguments[1:3] == ["image", "rm"]:
+            return self.answer(0, "Untagged: sdp-webui:latest")
+        if word == "create":
+            self.container = ("created", self.root)
+            return self.answer(0, "made-up-container-id")
+        if word == "start":
+            self.container = ("running", self.root)
+            return self.answer(0, "sdp-webui")
+        if word == "exec":
+            if self.exits_at_start:
+                self.container = ("exited", self.container[1])
+            return self.answer(0 if not self.exits_at_start else 1, self.probe + "\n")
+        if word == "logs":
+            return self.answer(0, "", "INFO Started server process [1]\nssl.SSLError: [SSL] PEM lib (_ssl.c:4123)\n")
+        if word == "stop":
+            self.container = ("exited", self.container[1])
+            return self.answer(0, "sdp-webui")
+        if word == "rm":
+            self.container = None
+            return self.answer(0, "sdp-webui")
+        if word == "build":
+            return self.answer(0)
+        if word == "run":
+            return self.openssl(arguments)
+        raise AssertionError(f"an unexpected Docker call: {arguments}")
+
+    def openssl(self, arguments):
+        mount = arguments[arguments.index("--mount") + 1]
+        folder = Path(dict(part.split("=", 1) for part in mount.split(",") if "=" in part)["source"])
+        command = arguments[arguments.index(host.IMAGE) + 1:]
+        if command[:2] == ["openssl", "req"]:
+            for name, content in ((host.NEW_CERT_NAME, CERT_PEM), (host.NEW_KEY_NAME, KEY_PEM)):
+                (folder / name).write_bytes(content)
+                os.chmod(folder / name, 0o644)
+            return self.answer(0, stderr="-----\n")
+        if "-enddate" in command:
+            return self.answer(0, "notAfter=Feb 23 19:43:49 2029 GMT\n")
+        if "-pubkey" in command or command[:2] == ["openssl", "pkey"]:
+            return self.answer(0, "-----BEGIN PUBLIC KEY-----\nmade-up\n-----END PUBLIC KEY-----\n")
+        raise AssertionError(f"an unexpected openssl call: {command}")
+
+    @staticmethod
+    def answer(code, stdout="", stderr=""):
+        return subprocess.CompletedProcess([], code, stdout, stderr)
+
+    def words(self):
+        return [" ".join(call[1:3]) if call[1] in ("network", "image", "container") else call[1] for call in self.calls]
+
+
+@pytest.fixture
+def root(tmp_path):
+    folder = tmp_path / "d"
+    folder.mkdir(mode=0o700)
+    return folder.resolve()
+
+
+@pytest.fixture
+def docker(root, monkeypatch):
+    fake = FakeDocker(root)
+    monkeypatch.setattr(host, "_docker", fake)
+    return fake
+
+
+def set_management_password(root):
+    os.makedirs(root / ".sdp", mode=0o700, exist_ok=True)
+    passwords.set_password(broker.broker_folder(root), "made-up-management-pw-31", scrypt=fake_scrypt)
+
+
+def scripted(answers):
+    """An `ask` that answers in order and records the prompts with their tags."""
+    asked = []
+
+    def ask(prompt, default=None, tag=None):
+        asked.append(tag)
+        return answers.pop(0) if answers else ("" if default is None else str(default))
+
+    def ask_choice(prompt, options, default=None, tag=None):
+        asked.append(tag)
+        return answers.pop(0) if answers else default
+
+    return ask, ask_choice, asked
+
+
+def set_up(root, docker, answers=None):
+    set_management_password(root)
+    ask, ask_choice, _ = scripted(list(answers if answers is not None else ["8443", "192.0.2.10, 2001:db8::5", "pipeline.example, ops.example", "generate"]))
+    return host._setup(str(root), ask, ask_choice, UID, GID)
+
+
+# ── the answers ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("answer, says", [
+    ("0.0.0.0", "every address"), ("::", "every address"), ("*", "every address"), ("all", "every address"), ("ANY", "every address"),
+    ("224.0.0.1", "multicast"), ("ff02::1", "multicast"),
+    ("fe80::1%eth0", "zone"),
+    ("127.0.0.1", "always served on 127.0.0.1"), ("::1", "always served on 127.0.0.1"), ("127.0.0.2", "always served on 127.0.0.1"), ("127.255.0.9", "always served on 127.0.0.1"), ("[::1]", "always served on 127.0.0.1"), ("::ffff:127.0.0.1", "always served on 127.0.0.1"),
+    ("192.0.2.1, 192.0.2.1", "twice"), ("2001:db8::5, 2001:db8:0::5", "twice"),
+    ("pipeline.example", "not an IP address"), ("192.0.2.0/24", "not an IP address"), ("192.0.2.256", "not an IP address"), ("010.0.0.1", "not an IP address"),
+])
+def test_refused_listen_addresses(answer, says):
+    """Bug class: a listen address that publishes the page on every network (0.0.0.0, ::), one Docker cannot publish (a zone, multicast) or a duplicate, accepted and found out only when the container fails to start, or never."""
+    with pytest.raises(host.Refused) as caught:
+        host.parse_addresses(answer)
+    assert says in caught.value.message
+
+
+def test_every_address_is_refused_with_the_reason():
+    """Bug class: "every address" refused without saying why, so the operator tries the next spelling of it."""
+    with pytest.raises(host.Refused) as caught:
+        host.parse_addresses("0.0.0.0")
+    assert caught.value.message == host.ALL_ADDRESSES_REFUSED and "networks you did not choose" in caught.value.message
+
+
+def test_listen_addresses_are_read_in_their_short_form():
+    """Bug class: an address kept as typed (`2001:0db8::0005`), which then differs from the certificate's and the Host check's form."""
+    assert host.parse_addresses("") == ()
+    assert host.parse_addresses(" 192.0.2.10 , 2001:0db8::0005, [2001:db8::6], 169.254.1.1") == ("192.0.2.10", "2001:db8::5", "2001:db8::6", "169.254.1.1")
+
+
+@pytest.mark.parametrize("answer", ["*.example", "*", "Pipeline.example", "pipeline.example.", "a..b", "x" * 64 + ".example", ".".join(["a" * 63] * 4), "under_score.example", "localhost", "a.example, a.example", "10.0.0.1", "host.123", "space name"])
+def test_refused_names(answer):
+    """Bug class: a wildcard, a name a browser will never send as Host, or a name that would be taken for an address, written into the certificate and the Host check."""
+    with pytest.raises(host.Refused):
+        host.parse_names(answer)
+
+
+def test_names_are_read():
+    """Bug class: good names refused, or empty parts of a list kept as names."""
+    assert host.parse_names("") == ()
+    assert host.parse_names("pipeline.example, ops-1.example,,box") == ("pipeline.example", "ops-1.example", "box")
+
+
+@pytest.mark.parametrize("answer", ["1023", "65536", "0", "x", "", "84 43", "-1", "\u0668\u0664\u0664\u0663"])
+def test_refused_ports(answer):
+    """Bug class: a privileged or out-of-range port accepted, which Docker refuses at start."""
+    with pytest.raises(host.Refused):
+        host.parse_port(answer)
+    assert host.parse_port("8443") == 8443 and host.parse_port("1024") == 1024
+
+
+# ── argument lists ──────────────────────────────────────────────────────────
+
+
+def test_the_create_argument_list_is_pinned():
+    """Bug class: one option of the container's confinement dropped or loosened (a writable root, a capability, the Docker socket, a third mount, a port on every address) by a change that no other test would notice."""
+    cfg = host.WebuiConfig(port=8443, addresses=("192.0.2.10", "2001:db8::5"), names=("pipeline.example", "ops.example"))
+    assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1") == [
+        "docker", "create",
+        "--name", "sdp-webui",
+        "--label", "sdp.webui.root=/srv/deploy",
+        "--restart", "no",
+        "--user", "1000:1001",
+        "--read-only",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--pids-limit", "256",
+        "--memory", "512m",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
+        "--network", "sdp-webui",
+        "--mount", "type=bind,source=/srv/deploy/.sdp/socket,target=/run/sdp,readonly",
+        "--mount", "type=bind,source=/srv/deploy/.sdp/webui/tls,target=/tls,readonly",
+        "-p", "127.0.0.1:8443:8444",
+        "-p", "192.0.2.10:8443:8443",
+        "-p", "[2001:db8::5]:8443:8443",
+        "-e", "SDP_WEBUI_HOSTS=localhost,127.0.0.1,192.0.2.10,[2001:db8::5],pipeline.example,ops.example",
+        "-e", "SDP_WEBUI_PORT=8443",
+        "-e", "SDP_WEBUI_SOCKET=/run/sdp/broker.sock",
+        "-e", "SDP_WEBUI_GATEWAY=172.30.0.1",
+        "sdp-webui",
+    ]
+
+
+@pytest.mark.parametrize("address", ["2001:db8::5", "192.0.2.10", "169.254.1.1"])
+def test_only_127_0_0_1_is_published_to_the_local_port(address):
+    """Bug class: a listen address other than 127.0.0.1 (an IPv6 one, which Docker may proxy from the gateway, or the IPv6 loopback) published to the local port, so that whoever reaches it logs in as `local`."""
+    cfg = host.WebuiConfig(port=9443, addresses=(address,))
+    arguments = host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1")
+    published = [arguments[index + 1] for index, word in enumerate(arguments) if word == "-p"]
+    shown = f"[{address}]" if ":" in address else address
+    assert published == ["127.0.0.1:9443:8444", f"{shown}:9443:8443"]
+
+
+def test_the_certificate_argument_list_passes_each_value_as_one_argument():
+    """Bug class: the names reaching openssl through a shell (an injected option or command), or a key of another kind or lifetime."""
+    cfg = host.WebuiConfig(port=8443, addresses=("192.0.2.10",), names=("pipeline.example",))
+    arguments = host.certificate_arguments("/srv/deploy", 1000, 1001, cfg)
+    assert arguments[:arguments.index("sdp-webui") + 1] == ["docker", "run", "--rm", "--network", "none", "--user", "1000:1001", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=bind,source=/srv/deploy/.sdp/webui/tls,target=/tls", "sdp-webui"]
+    command = arguments[arguments.index("sdp-webui") + 1:]
+    assert command == ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-noenc", "-keyout", "/tls/new-key.pem", "-out", "/tls/new-cert.pem", "-days", "825", "-subj", "/CN=sdp-webui", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:192.0.2.10,DNS:pipeline.example", "-addext", "extendedKeyUsage=serverAuth", "-addext", "keyUsage=critical,digitalSignature", "-addext", "basicConstraints=critical,CA:FALSE"]
+    assert "sh" not in arguments and "-c" not in arguments
+
+
+# ── start ───────────────────────────────────────────────────────────────────
+
+
+def test_start_creates_starts_and_asks_the_broker_from_inside(root, docker, capsys):
+    """Bug class: a start that skips the network, the mount source or the check of the broker, or that says "started" when Docker refused."""
+    assert set_up(root, docker) == 0
+    docker.calls.clear()
+    capsys.readouterr()
+
+    assert host._start(str(root), UID, GID) == 0
+    assert docker.words() == ["info", "container inspect", "ps", "network inspect", "network create", "network inspect", "create", "start", "exec", "container inspect"]
+    assert docker.calls[6] == host.create_arguments(str(root), UID, GID, host.read_config(str(root))[0], "172.30.0.1")
+    assert docker.calls[8] == ["docker", "exec", "sdp-webui", "python", "-m", "social_data_pipeline.webui.probe"]
+    out = capsys.readouterr().out
+    assert "The web UI is started." in out and host.PROBE_LINES["answered"] in out and "https://[2001:db8::5]:8443/" in out
+    assert stat.S_IMODE(os.lstat(root / ".sdp" / "socket").st_mode) == 0o700
+
+
+@pytest.mark.parametrize("probe", ["no_socket", "refused", "no_reply", "permission_denied"])
+def test_start_says_what_the_broker_answered(root, docker, capsys, probe):
+    """Bug class: a start that reports success while the container cannot reach the broker, or does not say why."""
+    set_up(root, docker)
+    docker.probe = probe
+    capsys.readouterr()
+    assert host._start(str(root), UID, GID) == 0
+    assert host.PROBE_LINES[probe] in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("step", ["create", "start"])
+def test_a_failed_create_or_start_removes_the_container_and_returns_1(root, docker, capsys, step):
+    """Bug class: a container left in the state `created` (Docker leaves one when a published address does not exist), which blocks the next start under the same name; a failure reported without Docker's reason."""
+    set_up(root, docker)
+    docker.fail[step] = "Error response from daemon: cannot assign requested address"
+    capsys.readouterr()
+    assert host._start(str(root), UID, GID) == 1
+    assert docker.calls[-1] == ["docker", "rm", "--force", "sdp-webui"]
+    out = capsys.readouterr().out
+    assert "cannot assign requested address" in out and "every listen address" in out
+    assert "first line" not in out
+
+
+def test_a_server_that_ends_right_after_its_start_is_reported_and_removed(root, docker, capsys):
+    """Bug class: "started" and exit code 0 for a container whose server ended at once (a key it cannot read, a setting it refuses): `docker start` answers 0 for it."""
+    set_up(root, docker)
+    docker.exits_at_start = True
+    docker.probe = "no_setting"
+    capsys.readouterr()
+    assert host._start(str(root), UID, GID) == 1
+    out = capsys.readouterr().out
+    assert "The web UI is started." not in out
+    assert "ended right after its start" in out and "ssl.SSLError: [SSL] PEM lib" in out
+    assert docker.words()[-3:] == ["container inspect", "logs", "rm"] and docker.container is None
+    assert ["docker", "logs", "--tail", "20", "sdp-webui"] in docker.calls
+
+
+def test_a_server_that_does_not_serve_is_reported_and_removed(root, docker, capsys):
+    """Bug class: a container whose server is still importing (and then ends on a key it cannot read) taken for a running web UI because it had not ended yet when it was looked at."""
+    set_up(root, docker)
+    docker.probe = "not_serving"
+    capsys.readouterr()
+    assert host._start(str(root), UID, GID) == 1
+    out = capsys.readouterr().out
+    assert "The web UI is started." not in out and "ended right after its start" in out
+    assert docker.container is None
+
+
+@pytest.mark.parametrize("option, says", [("name=rootless", "rootless"), ("name=userns", "remaps user ids")])
+def test_start_is_refused_under_user_id_mapping(root, docker, option, says):
+    """Bug class: a web UI started under rootless Docker or userns-remap, where the broker sees another uid and closes every connection without a word."""
+    set_up(root, docker)
+    docker.security = ["name=seccomp,profile=builtin", option]
+    docker.calls.clear()
+    with pytest.raises(host.Refused) as caught:
+        host._start(str(root), UID, GID)
+    assert says in caught.value.message
+    assert docker.words() == ["info"]
+
+
+def test_start_when_running_says_so_with_exit_code_0(root, docker, capsys):
+    """Bug class: a second start that fails, or that replaces the running container."""
+    set_up(root, docker)
+    host._start(str(root), UID, GID)
+    docker.calls.clear()
+    capsys.readouterr()
+    assert host._start(str(root), UID, GID) == 0
+    assert capsys.readouterr().out == "  The web UI is already running.\n"
+    assert "create" not in docker.words() and "rm" not in docker.words()
+
+
+def test_start_refuses_a_container_of_another_deployment(root, docker):
+    """Bug class: the web UI of another deployment folder taken for this one ("already running") or removed."""
+    set_up(root, docker)
+    docker.container = ("running", "/another/deployment")
+    with pytest.raises(host.Refused):
+        host._start(str(root), UID, GID)
+    assert "rm" not in docker.words()
+
+
+def test_start_when_not_set_up_says_how_to_set_it_up(root, docker, capsys):
+    """Bug class: a start that runs Docker without settings, or fails with a traceback."""
+    assert host.cmd_start(root) == 1
+    assert "not set up" in capsys.readouterr().out and docker.calls == []
+
+
+# ── stop, status, unsetup ───────────────────────────────────────────────────
+
+
+def test_stop_and_status_exit_codes(root, docker, capsys):
+    """Bug class: scripts that cannot tell a running web UI from a stopped one by the exit code."""
+    assert host.cmd_status(root) == 1
+    assert host.cmd_stop(root) == 1
+    set_up(root, docker)
+    host._start(str(root), UID, GID)
+    capsys.readouterr()
+    assert host.cmd_status(root) == 0
+    out = capsys.readouterr().out
+    assert "Web UI: running" in out and "Listen addresses: 127.0.0.1, 192.0.2.10, 2001:db8::5" in out and "Names: localhost, pipeline.example, ops.example" in out
+    assert host.certificate_fingerprint(CERT_PEM) in out and "Feb 23 19:43:49 2029 GMT" in out
+    docker.calls.clear()
+    assert host.cmd_stop(root) == 0
+    assert docker.words()[-2:] == ["stop", "rm"]
+    assert host.cmd_status(root) == 1
+    assert host.cmd_stop(root) == 1
+    docker.container = ("exited", str(root))
+    assert host.cmd_stop(root) == 1
+    assert docker.container is None
+
+
+def test_unsetup_asks_first_and_then_removes_everything(root, docker, capsys):
+    """Bug class: an unsetup that removes without asking, or that leaves the container, the network, the image or the settings with the certificate's key behind."""
+    set_up(root, docker)
+    host._start(str(root), UID, GID)
+    docker.calls.clear()
+    assert host.cmd_unsetup(root, lambda: False) == 0
+    assert docker.calls == [] and (root / ".sdp" / "webui").exists()
+    assert host.cmd_unsetup(root, lambda: True) == 0
+    assert docker.words() == ["container inspect", "rm", "network rm", "image rm"]
+    assert not (root / ".sdp" / "webui").exists() and (root / ".sdp" / "broker").exists()
+    assert host.cmd_unsetup(root, lambda: True) == 0
+
+
+def test_start_reads_the_gateway_and_refuses_a_network_without_one(root, docker):
+    """Bug class: a container started with no gateway (no login could ever be local), or with an IPv6 or made-up one."""
+    set_up(root, docker)
+    docker.network = {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+    docker.ipam = [{"Subnet": "fd00::/64", "Gateway": "fd00::1"}]
+    with pytest.raises(host.Refused) as caught:
+        host._start(str(root), UID, GID)
+    assert "no IPv4 gateway" in caught.value.message and "create" not in docker.words()
+    docker.ipam = [{"Subnet": "fd00::/64", "Gateway": "fd00::1"}, {"Subnet": "10.9.0.0/24", "Gateway": "10.9.0.1"}]
+    assert host._start(str(root), UID, GID) == 0
+    assert "SDP_WEBUI_GATEWAY=10.9.0.1" in next(call for call in docker.calls if call[1] == "create")
+
+
+@pytest.mark.parametrize("driver", ["macvlan", "ipvlan", "overlay", "host", ""])
+def test_start_refuses_a_network_that_is_not_a_bridge(root, docker, driver):
+    """Bug class: a network named sdp-webui made by someone else with another driver (a macvlan network whose "gateway" is the LAN's router) used as it is: the container's local port could then be reached from the LAN without the published port, and logins from the router's address would count as local."""
+    set_up(root, docker)
+    docker.network = {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+    docker.driver = driver
+    with pytest.raises(host.Refused) as caught:
+        host._start(str(root), UID, GID)
+    assert "not a bridge network" in caught.value.message and "docker network rm sdp-webui" in caught.value.message
+    assert "create" not in docker.words()
+
+
+def test_a_saved_loopback_listen_address_is_refused_at_start(root, docker, capsys):
+    """Bug class: a settings file written before loopback addresses were refused (or by hand) still publishing `::1` or `127.0.0.2` to the port where logins count as remote, or failing with a line that does not say why."""
+    set_up(root, docker)
+    path = root / ".sdp" / "webui" / "config.json"
+    saved = json.loads(path.read_text())
+    saved["addresses"] = ["::1"]
+    path.write_text(json.dumps(saved))
+    docker.calls.clear()
+    capsys.readouterr()
+    assert host.cmd_start(root) == 1
+    out = capsys.readouterr().out
+    assert host.LOOPBACK_REFUSED in out and "webui setup" in out
+    assert docker.calls == []
+
+
+def test_unsetup_says_whether_the_settings_were_there(root, docker, capsys):
+    """Bug class: "Removed .sdp/webui." printed when there was nothing to remove (the operator believes an old folder existed and is gone)."""
+    set_up(root, docker)
+    capsys.readouterr()
+    assert host.cmd_unsetup(root, lambda: True) == 0
+    assert "  Removed .sdp/webui.\n" in capsys.readouterr().out
+    assert host.cmd_unsetup(root, lambda: True) == 0
+    out = capsys.readouterr().out
+    assert "Removed .sdp/webui." not in out and "  There was no .sdp/webui to remove.\n" in out
+
+
+def test_unsetup_follows_no_link(root, docker, tmp_path, capsys):
+    """Bug class: `.sdp` replaced by a link to another folder, and unsetup removing that folder's `webui` (a check of the last part of the path only, then a removal that follows a link higher up)."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "webui" / "tls").mkdir(parents=True)
+    (elsewhere / "webui" / "keep.txt").write_text("not to be removed\n")
+    (root / ".sdp").symlink_to(elsewhere)
+    assert host.cmd_unsetup(root, lambda: True) == 1
+    assert (elsewhere / "webui" / "keep.txt").read_text() == "not to be removed\n"
+    assert (elsewhere / "webui" / "tls").is_dir()
+    assert "is a link or not a folder of this user" in capsys.readouterr().out
+
+
+def test_unsetup_follows_no_link_inside(root, docker, tmp_path):
+    """Bug class: a link inside `.sdp/webui` (planted as `tls`) followed by the removal."""
+    set_up(root, docker)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("kept\n")
+    (root / ".sdp" / "webui" / "planted").symlink_to(elsewhere)
+    assert host.cmd_unsetup(root, lambda: True) == 0
+    assert not (root / ".sdp" / "webui").exists() and (elsewhere / "keep.txt").read_text() == "kept\n"
+
+
+# ── setup ───────────────────────────────────────────────────────────────────
+
+
+def test_setup_refuses_without_a_management_password_before_asking(root, docker):
+    """Bug class: a web UI set up (and its image built) that nobody can log in to, the operator finding out only at the login page."""
+    ask, ask_choice, asked = scripted([])
+    with pytest.raises(host.Refused) as caught:
+        host._setup(str(root), ask, ask_choice, UID, GID)
+    assert "broker passwd" in caught.value.message
+    assert asked == [] and docker.calls == []
+    assert not (root / ".sdp" / "webui").exists()
+
+
+def test_setup_writes_private_files_and_prints_the_fingerprint(root, docker, capsys):
+    """Bug class: a key or settings readable by other users (a umask of 022), the key left under a temporary name, or a setup that does not show the fingerprint the browser will ask the operator to trust."""
+    old = os.umask(0o022)
+    try:
+        assert set_up(root, docker) == 0
+    finally:
+        os.umask(old)
+    folder = root / ".sdp" / "webui"
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700 and stat.S_IMODE((folder / "tls").stat().st_mode) == 0o700
+    for path in (folder / "config.json", folder / "tls" / "cert.pem", folder / "tls" / "key.pem"):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
+    assert sorted(os.listdir(folder / "tls")) == ["cert.pem", "key.pem"]
+    saved = json.loads((folder / "config.json").read_text())
+    assert saved == {"port": 8443, "addresses": ["192.0.2.10", "2001:db8::5"], "names": ["pipeline.example", "ops.example"], "certificate": "generate", "fingerprint": host.certificate_fingerprint(CERT_PEM), "not_after": "Feb 23 19:43:49 2029 GMT"}
+    out = capsys.readouterr().out
+    assert host.certificate_fingerprint(CERT_PEM) in out and "https://pipeline.example:8443/" in out
+    assert ["docker", "build", "-f", os.path.join(str(root), "Dockerfile.webui"), "-t", "sdp-webui", str(root)] in docker.calls
+
+
+def test_setup_with_the_operators_certificate_copies_it_and_puts_no_secret_on_a_command_line(root, docker, tmp_path):
+    """Bug class: the operator's key passed to Docker or openssl as an argument (visible in the process list), linked instead of copied (so the container mounts a file outside the state folder), or a key that does not belong to the certificate accepted."""
+    certificate, key = tmp_path / "mine.crt", tmp_path / "mine.key"
+    certificate.write_bytes(CERT_PEM)
+    key.write_bytes(KEY_PEM)
+    assert set_up(root, docker, ["9443", "", "", "own", str(certificate), str(key)]) == 0
+    tls = root / ".sdp" / "webui" / "tls"
+    assert (tls / "key.pem").read_bytes() == KEY_PEM and not (tls / "key.pem").is_symlink()
+    assert stat.S_IMODE((tls / "key.pem").stat().st_mode) == 0o600
+    flat = "\n".join(" ".join(call) for call in docker.calls)
+    assert "made-up-key-material" not in flat and "PRIVATE KEY" not in flat and "made-up-management-pw" not in flat
+
+
+def test_setup_with_a_key_of_another_certificate_is_refused(root, docker, tmp_path, monkeypatch):
+    """Bug class: a certificate and a key that do not match, found out only when the container cannot start."""
+    certificate, key = tmp_path / "mine.crt", tmp_path / "mine.key"
+    certificate.write_bytes(CERT_PEM)
+    key.write_bytes(KEY_PEM)
+    real = docker.openssl
+
+    def mismatched(arguments):
+        answer = real(arguments)
+        if "pkey" in arguments:
+            answer.stdout = "-----BEGIN PUBLIC KEY-----\nanother\n-----END PUBLIC KEY-----\n"
+        return answer
+
+    monkeypatch.setattr(docker, "openssl", mismatched)
+    with pytest.raises(host.Refused) as caught:
+        set_up(root, docker, ["9443", "", "", "own", str(certificate), str(key)])
+    assert "not the key of the certificate" in caught.value.message
+    assert not (root / ".sdp" / "webui" / "config.json").exists()
+
+
+def test_every_setup_prompt_has_a_tag_listed_in_the_questions(root, docker, monkeypatch, capsys):
+    """Bug class: a prompt without a tag (the E2E harness waits on it until its timeout), or a tag missing from the dictionary of questions."""
+    set_management_password(root)
+    monkeypatch.setattr(sdp, "ROOT", root)
+    monkeypatch.setenv("SDP_TAGGED_MODE", "1")
+    answers = iter(["8443", "", "", "1"])
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda text="": prompts.append(text) or next(answers))
+    args = sdp.build_parser().parse_args(["webui", "setup"])
+    assert args.func(args) == 0
+    shown = capsys.readouterr().out + "".join(prompts)
+    questions = yaml.safe_load((REPO_ROOT / "tests" / "e2e" / "questions.yaml").read_text())
+    for tag in ("webui_port", "webui_addresses", "webui_names", "webui_certificate"):
+        assert f"[{tag}]" in shown and tag in questions
+    for tag in ("webui_cert_path", "webui_key_path", "webui_unsetup_confirm"):
+        assert tag in questions
+
+
+def test_setup_asks_again_after_a_refused_answer(root, docker, capsys):
+    """Bug class: a refused answer ending the setup (the operator starts over) or taken anyway."""
+    assert set_up(root, docker, ["80", "8443", "0.0.0.0", "", "*.example", "", "generate"]) == 0
+    out = capsys.readouterr().out
+    assert "1024 to 65535" in out and "networks you did not choose" in out and "wildcard" in out
+
+
+def test_setup_refuses_while_the_container_exists(root, docker):
+    """Bug class: the certificate replaced under a running web UI."""
+    set_up(root, docker)
+    host._start(str(root), UID, GID)
+    with pytest.raises(host.Refused):
+        set_up(root, docker)
+
+
+# ── the CLI ─────────────────────────────────────────────────────────────────
+
+
+def test_importing_sdp_loads_neither_the_web_package_nor_the_control_package():
+    """Bug class: the CLI loading the web UI or the broker's package at its start (slower for every command, and the web package's imports on the host for nothing)."""
+    probe = "import json, sys\nimport sdp\nprint(json.dumps(sorted(sys.modules)))\n"
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=60, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert result.returncode == 0, result.stderr
+    loaded = json.loads(result.stdout)
+    assert [name for name in loaded if name.startswith(("social_data_pipeline.webui", "social_data_pipeline.control", "fastapi", "starlette"))] == []
+
+
+def test_bare_webui_prints_the_groups_help():
+    """Bug class: `sdp webui` without a command doing nothing, or failing, where `sdp broker` prints its help."""
+    result = subprocess.run([sys.executable, str(REPO_ROOT / "sdp.py"), "webui"], capture_output=True, text=True, timeout=30, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert result.returncode == 0
+    assert result.stdout.startswith("usage: sdp.py webui")
+    for command in ("setup", "start", "stop", "status", "unsetup"):
+        assert command in result.stdout
+
+
+@pytest.mark.parametrize("command, function", [("setup", "cmd_setup"), ("start", "cmd_start"), ("stop", "cmd_stop"), ("status", "cmd_status")])
+def test_each_command_reaches_its_function_with_the_deployment_folder(root, monkeypatch, command, function):
+    """Bug class: a command wired to the wrong function, or given the current directory instead of the deployment folder."""
+    seen = []
+    monkeypatch.setattr(sdp, "ROOT", root)
+    monkeypatch.setattr(host, function, lambda folder: seen.append(folder) or 7)
+    args = sdp.build_parser().parse_args(["webui", command])
+    assert args.func(args) == 7 and seen == [root]
+
+
+def test_unsetup_is_wired_with_a_confirmation(root, monkeypatch):
+    """Bug class: an unsetup that removes without the question."""
+    seen = []
+    monkeypatch.setattr(sdp, "ROOT", root)
+    monkeypatch.setattr(host, "cmd_unsetup", lambda folder, confirm: seen.append((folder, confirm())) or 0)
+    monkeypatch.setattr("builtins.input", lambda text="": "n")
+    args = sdp.build_parser().parse_args(["webui", "unsetup"])
+    assert args.func(args) == 0 and seen == [(root, False)]

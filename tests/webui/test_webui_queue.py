@@ -1442,7 +1442,8 @@ def test_any_other_mark_is_shown_as_nothing_and_never_echoed(client, token, door
     for key, page in pages.items():
         text = main_text(page)
         assert queue.ASSISTANT_LABEL not in text and queue.ASSISTANT_SENTENCE not in text and queue.EXPLAIN_ASSISTANT_SENTENCE not in text and queue.ASSISTANT_UNKNOWN not in text, key
-        assert 'class="tag write"' not in page and queue.ASSISTANT_ROW_NOTE not in text, key
+        # The assistant's tag exactly (rows: ASSISTANT_TAG; a job's page: ASSISTANT_LABEL); the confirm page's own "write" tag of the action's class is not one.
+        assert f'<span class="tag write">{queue.ASSISTANT_TAG}</span>' not in page and f'<span class="tag write">{queue.ASSISTANT_LABEL}</span>' not in page and queue.ASSISTANT_ROW_NOTE not in text, key
         assert HOSTILE_MARK not in page and not [mark for mark in RAW_MARKS if mark in page], key
 
 

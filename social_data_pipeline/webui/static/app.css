@@ -177,15 +177,7 @@ img { max-width: 100%; }
 .prose p, .prose blockquote, .prose li { white-space: pre-line; overflow-wrap: anywhere; }
 .prose > * + * { margin-top: 8px; }
 .prose h3, .prose h4, .prose h5, .prose h6 { font-size: 13px; color: var(--ink); text-transform: none; letter-spacing: 0; }
-.chat-title { font-weight: 600; overflow-wrap: anywhere; }
-.chat-log > * + * { margin-top: 12px; }
-.chat-user { align-self: flex-end; max-width: 760px; margin-left: auto; background: var(--accent-soft); border: 1px solid var(--line-2); padding: 9px 13px; border-radius: 12px 12px 3px 12px; }
-.chat-who { font-weight: 600; font-size: 12px; color: var(--muted); }
 .chat-code { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; margin: 8px 0 2px; color: var(--ink-2); }
-.chat-tool { font-size: 12px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); color: var(--ink-2); }
-.chat-tool summary { font-size: 12px; }
-.chat-tool code { color: var(--ink); }
-.chat-bad { border-color: var(--crit); } .chat-bad summary { color: var(--serious); }
 .chat-image { max-width: 100%; height: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; }
 .chat-end, .chat-unknown { font-size: 12px; color: var(--muted); }
 

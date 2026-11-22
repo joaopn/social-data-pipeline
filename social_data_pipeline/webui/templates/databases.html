@@ -10,7 +10,6 @@
 
 {% block shell %}
 <main class="main">
-<a class="btn sm subbar-action" href="/sources">Run a profile…</a>
 <div class="row wrap">
   <h1>{% if only %}{{ sections[0].row.title if sections else only }}{% else %}Databases{% endif %}</h1>
   {%- if only %}

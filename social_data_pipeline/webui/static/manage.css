@@ -3,8 +3,6 @@
 [hidden] { display: none !important; }
 
 /* The mock-up's "Run a profile…" at the right of the tab bar: the frame's tab bar has no slot for a page's own button, so the button sits in the page and is placed over the bar's right end. */
-.subbar-action { position: fixed; top: 55px; right: 16px; z-index: 5; }
-@media (max-width: 900px) { .subbar-action { display: none; } }
 
 /* Overview: "Needs attention" and "Right now" side by side, then the grid */
 .ov-top { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }

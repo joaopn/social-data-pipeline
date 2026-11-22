@@ -52,6 +52,16 @@
 a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-decoration: none; }
 .thumb .name { min-width: 0; overflow-wrap: anywhere; }
 .thumb .right { white-space: nowrap; }
+.thumb > a { color: inherit; } .thumb > a:hover { text-decoration: none; } .thumb > a.grow:hover .name { text-decoration: underline; }
+.thumb .tv { white-space: nowrap; color: var(--accent); }
+.thumb > .muted { white-space: nowrap; }
+.cw .rightp .mono { font-size: 12px; }
+
+/* the table view of a chat's CSV file */
+.table-head { margin-bottom: 12px; }
+.chat-table { overflow: auto; max-height: calc(100vh - 220px); padding: 0; }
+.chat-table table.t th { text-transform: none; letter-spacing: 0; position: sticky; top: 0; background: var(--surface); }
+.chat-table table.t td, .chat-table table.t th { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-width: 32rem; }
 
 /* the delete page */
 .chat-confirm { max-width: 640px; }

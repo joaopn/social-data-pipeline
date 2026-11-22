@@ -10,6 +10,8 @@ The contracts pinned here, each test naming the bug class it catches:
 - Bounds against a hostile runner: a reply over 1 MiB refused unread, one of more than 20,000 objects and lists unparsed, the largest honest replies passing; a page of events over 512 KiB of text refused, the units of a page's model capped (runs, blocks and items; later events a placeholder whose first links to a view starting at it, where an event too long alone is shown cut), a huge or odd number in every numeric field of every reply never an error of the page, downloads and images ending at short pieces and at their total time.
 - g. New, send, stop, delete: the exact requests; refused texts keep the text; the refusals' sentences; the delete page changes nothing; the guard refuses a POST without the form token or from another origin.
 - h. Files and images: the fixed headers and the reduced name; the image's type from its signature, anything else not found; a file that changes size; the size cap; two downloads at a time; no file opened by the web UI.
+- k. The plot card's buttons and the table view: a button only for a file of the chat's own list with the image's stem; a CSV's cells text, its rows, columns and bytes capped, a file that is not CSV a sentence.
+- l. The right column's queries: the broker asked before the runner and the scheduler; the ids only from this chat's tool calls and results, newest first, at most 20; only the assistant's jobs; a failure confined to its row.
 - j. The scans: no inline code in any page or part of the window, the guard's headers on every answer, HEAD refused, the navigation's first entry.
 - The real runner: a turn's events, its file downloaded byte for byte.
 
@@ -35,7 +37,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
 from test_webui_pages import inline_code
-from webui_helpers import CHAT_ID, GOOD_FOLDER, ORIGIN, Raw, an_event, form_token, log_in, main_html, refuse, wait_until
+from webui_helpers import CHAT_ID, GOOD_FOLDER, ORIGIN, Raw, a_job, an_event, form_token, log_in, main_html, refuse, wait_until
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.webui import assistant, chat, queue, words
@@ -163,7 +165,7 @@ def test_every_refusal_code_of_the_runner_has_a_sentence_and_shows_it(client, to
 
 ROUTES = [
     ("GET", "/chat"), ("GET", f"/chat/{CHAT_ID}"), ("GET", f"/chat/{CHAT_ID}/events?offset=0"), ("GET", f"/chat/{CHAT_ID}/delete"),
-    ("GET", f"/chat/{CHAT_ID}/file/a.png"), ("GET", f"/chat/{CHAT_ID}/image/a.png"),
+    ("GET", f"/chat/{CHAT_ID}/file/a.png"), ("GET", f"/chat/{CHAT_ID}/image/a.png"), ("GET", f"/chat/{CHAT_ID}/table/a.csv"), ("GET", f"/chat/{CHAT_ID}/queries"),
     ("POST", "/chat/new"), ("POST", f"/chat/{CHAT_ID}/send"), ("POST", f"/chat/{CHAT_ID}/stop"), ("POST", f"/chat/{CHAT_ID}/delete"),
 ]
 
@@ -1000,3 +1002,146 @@ def test_an_mcp_tool_is_labelled_by_its_server_and_tool(name, label):
     model = chat.event_model(an_event("tool", name=name, input="{}"), CHAT_ID)
     assert (model["server"], model["tool"]) == label
     assert model["name"] == (name if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name) else None)
+
+
+# ── k. the plot card's buttons and the table view ───────────────────────────
+
+
+def hrefs(page):
+    return re.findall(r'href="(/chat/[^"]+)"', page)
+
+
+def test_a_plot_cards_buttons_link_only_files_of_the_chats_list_with_its_stem():
+    """Bug class: a button guessed from the image's name (a CSV or a script the chat's folder does not hold, so a link to a file that is not there, or that the sandbox placed later), a near stem taken for the same one, or a link made where the chat's list could not be read."""
+    stems = chat.stems_of(["plot.png", "plot.CSV", "plot.py", "plotx.csv", "plot.png.csv", "other.parquet"])
+    labels = [(button["label"], button["href"].rsplit("/", 2)[1:]) for button in chat.file_buttons(CHAT_ID, "plot.png", stems)]
+    assert labels == [("PNG", ["file", "plot.png"]), ("Data (CSV)", ["file", "plot.CSV"]), ("Code", ["file", "plot.py"]), ("Table view", ["table", "plot.CSV"])]
+    assert [button["label"] for button in chat.file_buttons(CHAT_ID, "other.jpg", stems)] == ["JPEG", "Data (Parquet)"]
+    assert [button["label"] for button in chat.file_buttons(CHAT_ID, "plot.png", None)] == ["PNG"]
+    assert [button["label"] for button in chat.file_buttons(CHAT_ID, "x.csv", {})] == ["Download", "Table view"]
+
+
+def test_the_page_and_the_events_part_give_the_cards_buttons_from_the_listed_files(client, scripted):
+    """Bug class: the buttons made before the chat's files were read, or from a name the assistant wrote in its text (`hidden.csv` is named, never listed), or missing on a card that arrived through the events part."""
+    scripted.files = {"plot.png": PNG, "plot.csv": b"a,b\n1,2\n", "notes.txt": b"x"}
+    scripted.events = [an_event("text", n=0, text="see hidden.csv and plot.py"), an_event("file", n=1, name="plot.png", size=3), an_event("file", n=2, name="hidden.png", size=3)]
+    page = client.get(f"/chat/{CHAT_ID}").text
+    part = client.get(f"/chat/{CHAT_ID}/events?offset=1", headers=HX).text
+    for found in (hrefs(page), hrefs(part)):
+        assert f"/chat/{CHAT_ID}/file/plot.csv" in found and f"/chat/{CHAT_ID}/table/plot.csv" in found
+        assert not [href for href in found if "hidden.csv" in href or href.endswith(".py")]
+    assert scripted.ops().count("chat.files") == 2
+    assert re.search(rf'<a class="tv" href="/chat/{CHAT_ID}/table/plot.csv">Table view</a>', page) and "/table/notes.txt" not in page
+
+
+def table_page(client, scripted, data, name="t.csv"):
+    scripted.files[name] = data
+    return client.get(f"/chat/{CHAT_ID}/table/{name}")
+
+
+def test_the_table_view_shows_cells_as_text_and_caps_rows_columns_and_bytes(client, scripted):
+    """Bug class: a cell of the sandbox's file drawn as markup or with an invisible direction change, a table of any number of rows or columns, or a read of the whole file."""
+    rows = ["h1,h2", f'"{HOSTILE.replace(chr(34), chr(34) * 2)}",a\u202eb'] + [f"{index},x" for index in range(600)]
+    page = table_page(client, scripted, "\n".join(rows).encode("utf-8"))
+    assert page.status_code == 200 and not any(mark in page.text for mark in RAW_MARKS)
+    assert "&lt;script&gt;" in page.text and '<span class="escape" title="made visible">\\u202e</span>' in page.text
+    assert page.text.count("<tr>") == 1 + chat.TABLE_ROWS_MAX and "The first 500 rows under the header are shown." in page.text
+    wide = table_page(client, scripted, (",".join(f"c{index}" for index in range(60)) + "\n").encode())
+    assert wide.text.count("<th>") == chat.TABLE_COLUMNS_MAX and "c49" in wide.text and "c50" not in wide.text
+    big = table_page(client, scripted, b"a,b\n" + b"1,2\n" * 100000)
+    assert big.status_code == 200 and "only its first" in big.text
+    assert scripted.requests[-1]["limit"] == chat.TABLE_BYTES and big.text.count("<tr>") == 1 + chat.TABLE_ROWS_MAX
+
+
+@pytest.mark.parametrize("data, line", [(PNG + b"\x00\x00", chat.TABLE_NOT_CSV), (b'a,"b\n1,2\n', chat.TABLE_NOT_CSV), (b"x" * 200000, chat.TABLE_NOT_CSV), (b"", chat.TABLE_EMPTY)])
+def test_a_file_that_is_not_csv_is_a_sentence(client, scripted, data, line):
+    """Bug class: a binary file, a quote that never closes, a field over `csv`'s limit or an empty file making the table view an error of the page."""
+    page = table_page(client, scripted, data)
+    assert page.status_code == 200 and line in main_text(page.text) and "<table" not in page.text
+
+
+def test_the_table_view_is_only_for_a_csv_name_of_the_runners_rule(client, scripted):
+    """Bug class: the table view reading any file of the sandbox, or a name outside the runner's rule sent to it."""
+    for path in ("table/a.png", "table/a%2Fb.csv", "table/%2E%2E", "table/%E2%80%AEa.csv"):
+        assert client.get(f"/chat/{CHAT_ID}/{path}").status_code == 404
+    assert scripted.requests == []
+
+
+# ── l. the right column's queries ───────────────────────────────────────────
+
+
+def jid(index):
+    return f"sr_{index:08x}"
+
+
+def tool_result(n, text):
+    return an_event("tool_result", n=n, text=text, is_error=False)
+
+
+def queries(client):
+    return client.get(f"/chat/{CHAT_ID}/queries", headers=HX)
+
+
+def test_the_queries_part_asks_the_broker_before_the_runner_and_the_scheduler(client, scripted, broker, door, clock):
+    """Bug class: the scheduler (or the chat's events) asked for a session the broker has ended or could not confirm, as a Queue route that trusts the web UI's own session table would."""
+    door.add("pending", a_job(jid(1), submitted_by="assistant"))
+    scripted.events = [tool_result(0, f"queued {jid(1)}")]
+    assert jid(1) in queries(client).text
+    asked = [entry for entry in broker.timeline if entry[0] == "door" or entry[2] == "audit.list"]
+    assert asked[0] == ("broker", "call", "audit.list") and ("door", "job") in asked
+    door.requests.clear()
+    scripted.requests.clear()
+    clock.now += queue.SESSION_CHECK_SECONDS + 1
+    broker.answers["audit.list"] = broker_client.BrokerUnreachable(broker_client.NO_SOCKET)
+    assert words.REASON_SENTENCES[broker_client.NO_SOCKET] in html.unescape(queries(client).text)
+    broker.answers["audit.list"] = broker_client.BrokerError("session_ended", "x")
+    ended = queries(client)
+    assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended"
+    assert door.requests == [] and scripted.requests == []
+
+
+def test_the_queries_come_only_from_this_chats_tool_calls_newest_first_and_capped(client, scripted, door):
+    """Bug class: job ids taken from the operator's question or the assistant's prose (any id typed into the chat would be looked up), from a longer word, out of order, or without bound."""
+    for index in range(30):
+        door.add("pending", a_job(jid(index), submitted_by="assistant"))
+    scripted.events = [an_event("user", n=0, text=jid(29)), an_event("text", n=1, text=jid(28)), an_event("tool", n=2, name="mcp__jobs__query_status", input=f'{{"job_id": "{jid(0)}"}}')]
+    scripted.events += [tool_result(3 + index, f"submitted {jid(index)} and x{jid(27)} {jid(26)}0") for index in range(1, 25)]
+    scripted.events.append(tool_result(30, f"again {jid(3)}"))
+    asked = []
+    door.answers["job"] = lambda document: (asked.append(document["job_id"]), {"phase": "pending", "job": door.jobs[document["job_id"]][1], "digest": "0" * 64})[1]
+    text = main_text(queries(client).text)
+    assert asked == [jid(3)] + [jid(index) for index in range(24, 5, -1) if index != 3]
+    assert len(asked) == chat.QUERIES_MAX and jid(29) not in text and jid(28) not in text and "waiting for approval" in text
+
+
+def test_only_the_assistants_jobs_are_listed_and_a_failure_stays_in_its_row(client, scripted, door, make_app, make_client, chat_folder):
+    """Bug class: a job of the operator or of a stranger listed as the chat's, an unknown id shown, one failing lookup taking the whole list down, or a scheduler not set up asked anyway."""
+    door.add("running", a_job(jid(1), submitted_by="assistant"))
+    door.add("history", a_job(jid(2), submitted_by="assistant", status="done"))
+    door.add("pending", a_job(jid(3), submitted_by="web-1"))
+    door.add("pending", a_job(jid(4), submitted_by="assistant"))
+    door.too_large.add(jid(4))
+    scripted.events = [tool_result(index, jid(index)) for index in range(1, 6)]
+    part = queries(client).text
+    rows = re.findall(r'<a class="thumb row" href="/queue/(\w+)"><span class="dot ?(\w*)"></span><span class="mono">\w+</span><span class="right muted">([^<]+) →</span></a>', part)
+    assert rows == [(jid(4), "", chat.QUERY_NOT_READ), (jid(2), "ok", "finished"), (jid(1), "run", "running")]
+    unset = make_client(make_app(assistant=assistant.Assistant(scripted.path), scheduler=make_scheduler_none()))
+    log_in(unset)
+    scripted.requests.clear()
+    assert chat.QUERIES_NO_QUEUE in unset.get(f"/chat/{CHAT_ID}/queries", headers=HX).text and scripted.requests == []
+
+
+def make_scheduler_none():
+    from social_data_pipeline.webui import scheduler
+
+    return scheduler.Scheduler(None, None)
+
+
+def test_the_conversation_draws_the_queries_lazily_or_says_the_queue_is_not_attached(client, scripted, door):
+    """Bug class: the conversation page asking the scheduler while it renders (a slow scheduler would slow every chat), or a placeholder that asks for nothing when the sandbox has no queue."""
+    scripted.answers["hello"] = {"version": 1, "backend": "claude-code", "databases": [], "queue": True}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    assert f'hx-get="/chat/{CHAT_ID}/queries" hx-trigger="load"' in page and door.requests == []
+    scripted.answers["hello"] = {"version": 1, "backend": "claude-code", "databases": [], "queue": False}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    assert chat.QUERIES_DETACHED in main_text(page) and "/queries" not in page

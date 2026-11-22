@@ -1,4 +1,4 @@
-{#- The Chat window, as the mock-up draws it: three columns at full height, for `/chat` (no chat open: `chat_id` is none) and `/chat/<id>`. Left: a new chat, the chats (a pulsing dot on one whose turn runs, as of the page's load), the data in reach (from `hello`) and the window's note. Middle: the open chat's title and file count, the conversation (it scrolls; `app.js` keeps it at its newest event while the view is at the bottom) and the answer box pinned under it, with `#chat-controls` (the stop button while a turn runs) beside the send form, never inside it: a form inside a form is dropped by the parser, and the stop button would then send the question. Right: the sandbox (from `hello`; its failure is shown here only), the open chat's files and the way to delete it. Below 1150 px wide the side columns stack under the conversation (chat.css). Every text of the runner is drawn through `vis` and escaped; nothing of it becomes markup or an attribute but a checked file's address. -#}
+{#- The Chat window, as the mock-up draws it: three columns at full height, for `/chat` (no chat open: `chat_id` is none) and `/chat/<id>`. Left: a new chat, the chats (a pulsing dot on one whose turn runs, as of the page's load), the data in reach (from `hello`) and the window's note. Middle: the open chat's title and file count, the conversation (it scrolls; `app.js` keeps it at its newest event while the view is at the bottom) and the answer box pinned under it, with `#chat-controls` (the stop button while a turn runs) beside the send form, never inside it: a form inside a form is dropped by the parser, and the stop button would then send the question. Right: the sandbox (from `hello`; its failure is shown here only), the open chat's files (a CSV with its table view), the chat's queries in the queue (a part asked once the page has loaded, `_chat_queries.html`) and the way to delete it. Below 1150 px wide the side columns stack under the conversation (chat.css). Every text of the runner is drawn through `vis` and escaped; nothing of it becomes markup or an attribute but a checked file's address. -#}
 {% extends "frame.html" %}
 {% from "_queue_macros.html" import vis %}
 {% import "_chat_macros.html" as m %}
@@ -113,12 +113,20 @@
       <p class="small muted">The chat's folder holds no file.</p>
       {%- else %}
       {%- for entry in files %}
-      <a class="thumb row" href="{{ entry.href }}"><span aria-hidden="true">{{ entry.glyph }}</span><span class="name">{{ vis(entry.name) }}</span><span class="right muted">{{ entry.size }}</span></a>
+      <div class="thumb row"><a class="row grow" href="{{ entry.href }}"><span aria-hidden="true">{{ entry.glyph }}</span><span class="name">{{ vis(entry.name) }}</span></a>{% if entry.table %}<a class="tv" href="{{ entry.table }}">Table view</a>{% endif %}<span class="muted">{{ entry.size }}</span></div>
       {%- endfor %}
       {%- endif %}
       {%- if left_out %}<p class="small muted">{{ left_out }} names are not listed: the sandbox lists only names of letters, digits, spaces, dots, dashes and underscores.</p>{% endif %}
       {%- if more %}<p class="small muted">The folder holds more files than are listed.</p>{% endif %}
     </div>
+  </div>
+  <div>
+    <h4>This chat's queries in the queue</h4>
+    {%- if hello and not hello.queue %}
+    <div class="col mt"><p class="small muted">{{ queries_detached }}</p></div>
+    {%- else %}
+    {%- with queries = none %}{% include "_chat_queries.html" %}{% endwith %}
+    {%- endif %}
   </div>
   <div><a class="btn sm danger" href="/chat/{{ chat_id }}/delete">Delete this chat</a></div>
   {%- endif %}

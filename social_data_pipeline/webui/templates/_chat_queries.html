@@ -1,0 +1,13 @@
+{#- The right column's "This chat's queries in the queue". `queries` none: the placeholder the page draws, which asks `/chat/<id>/queries` once the page has loaded; else that part's answer (`chat.queries_model`), which replaces it and asks again every 60 seconds: one line instead of rows, or a row per job of the assistant (its dot, its id, its state in words), newest first, each a link to its page in the Queue. Nothing of a job's record is shown but the id the chat's own events wrote and the words chosen by its phase and status. -#}
+<div id="chat-queries" class="col mt" hx-get="/chat/{{ chat_id }}/queries" hx-trigger="{{ poll if queries else 'load' }}" hx-swap="outerHTML">
+{%- if not queries %}
+<p class="small muted">Looking for this chat's queries…</p>
+{%- elif queries.line %}
+<p class="small muted">{{ queries.line }}</p>
+{%- else %}
+{%- for row in queries.rows %}
+<a class="thumb row" href="{{ row.href }}"><span class="dot{{ ' ' ~ row.dot if row.dot else '' }}"></span><span class="mono">{{ row.id }}</span><span class="right muted">{{ row.state }} →</span></a>
+{%- endfor %}
+{%- endif %}
+{%- if queries %}{% for note in queries.notes %}<p class="small muted">{{ note }}</p>{% endfor %}{% endif %}
+</div>

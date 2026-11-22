@@ -117,6 +117,8 @@ class Limits:
     # The chat's runner: the calls of the Chat window's pages and changes, the downloads of its files (and the most they send), its images (and how long one waits for a place).
     chat_workers: int = 4
     chat_download_workers: int = 2
+    # The right column's queries of a chat (`/chat/<id>/queries`) have a bound of their own: one request reads up to ten pages of events and asks the scheduler up to 20 times.
+    chat_query_workers: int = 2
     chat_download_bytes: int = 1 << 30
     chat_image_bytes: int = 8 << 20
     chat_image_workers: int = 2

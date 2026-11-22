@@ -1,0 +1,23 @@
+{#- The table view of a chat's CSV file (`chat.table_model`): the way back to the chat, the file's name and download, then the header row and the rows as a table, or one sentence instead (not CSV, empty, or the runner's refusal). Every cell is drawn from its runs of `statements.visible` through `vis` and escaped; no cell becomes markup or an attribute. -#}
+{% extends "frame.html" %}
+{% from "_queue_macros.html" import vis %}
+{% block content %}
+<div class="row wrap table-head"><a href="/chat/{{ chat_id }}">← Back to the chat</a><span class="mono">{{ vis(file_name) }}</span>{% if size %}<span class="muted small">{{ size }}</span>{% endif %}<span class="grow"></span><a class="btn sm" href="{{ href }}">Download</a></div>
+{%- if failure %}
+<p class="notice notice-bad" role="alert">{{ failure }}</p>
+{%- elif line %}
+<p class="note">{{ line }}</p>
+{%- else %}
+{%- for note in notes %}<p class="small muted">{{ note }}</p>{% endfor %}
+<div class="card chat-table">
+<table class="t">
+<thead><tr>{% for cell in header %}<th>{{ vis(cell) }}</th>{% endfor %}</tr></thead>
+<tbody>
+{%- for row in body %}
+<tr>{% for cell in row %}<td>{{ vis(cell) }}</td>{% endfor %}</tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+{%- endif %}
+{% endblock %}

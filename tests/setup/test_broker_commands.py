@@ -141,14 +141,14 @@ class TestPasswd:
         assert answers[1] == ["  New management password: ", "  The same password again: "]
 
     def test_a_password_the_library_refuses_is_refused_with_its_line(self, root, answers, capsys):
-        """Bug class: a short password written anyway, or refused with a message that is not the library's."""
+        """Bug class: an empty password written anyway, or refused with a message that is not the library's."""
         folder, _ = root
-        answers[0].extend(["short", "short"])
+        answers[0].extend(["", ""])
 
         code = run_command("passwd")
 
         assert code == 1
-        assert capsys.readouterr().out == "\n  Error: the password must have at least 12 characters.\n\n"
+        assert capsys.readouterr().out == "\n  Error: the password must not be empty.\n\n"
         assert not (folder / ".sdp" / "broker" / "password.json").exists()
 
     def test_the_password_is_written_with_the_librarys_modes(self, root, answers, capsys):

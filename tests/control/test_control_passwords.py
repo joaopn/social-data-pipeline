@@ -114,8 +114,7 @@ REFUSED_PASSWORDS = [
     ("bytes", b"made-up-bytes-password", "password_not_text"),
     ("a list", ["made-up-pass", "word"], "password_not_text"),
     ("a lone surrogate", "made-up-pass\ud800word", "password_not_text"),
-    ("empty", "", "password_too_short"),
-    ("eleven characters", "made-up-pas", "password_too_short"),
+    ("empty", "", "password_empty"),
     ("1025 characters", "x" * 1025, "password_too_long"),
     ("a newline", "made-up-pass\nword", "password_has_control_character"),
     ("a carriage return", "made-up-pass\rword", "password_has_control_character"),
@@ -132,7 +131,7 @@ REFUSED_PASSWORDS = [
 class TestNewPassword:
     @pytest.mark.parametrize("password, code", [case[1:] for case in REFUSED_PASSWORDS], ids=[case[0] for case in REFUSED_PASSWORDS])
     def test_a_password_that_is_not_acceptable_is_refused_before_anything_happens(self, folder, password, code):
-        """Bug class: a password too short to resist guessing, one that cannot be typed again (a control character, a line break that a terminal or a form cuts off) or one that is not text at all being hashed and stored; and the refused password ending up in the error text."""
+        """Bug class: an empty password, one that cannot be typed again (a control character, a line break that a terminal or a form cuts off) or one that is not text at all being hashed and stored; and the refused password ending up in the error text."""
         scrypt = FakeScrypt()
 
         error = refusal_of(lambda: passwords.set_password(folder, password, scrypt=scrypt), passwords.PasswordRefused)
@@ -144,9 +143,9 @@ class TestNewPassword:
         assert scrypt.calls == []
         assert not folder.exists()
 
-    @pytest.mark.parametrize("password", ["made-up-pass", "x" * 1024, "made up pass word with spaces", "p\u00e4ssw\u00f6rt-\u043f\u0430\u0440\u043e\u043b\u044c-\u5bc6\u7801"], ids=["12", "1024", "spaces", "non-ascii"])
+    @pytest.mark.parametrize("password", ["x", "made-up-pas", "x" * 1024, "made up pass word with spaces", "p\u00e4ssw\u00f6rt-\u043f\u0430\u0440\u043e\u043b\u044c-\u5bc6\u7801"], ids=["1", "11", "1024", "spaces", "non-ascii"])
     def test_the_bounds_are_included_and_any_printable_text_is_accepted(self, folder, password):
-        """Bug class: an off-by-one that refuses a password of exactly 12 or 1024 characters, or a rule so narrow (ASCII only, no spaces) that it refuses a good passphrase."""
+        """Bug class: a minimum length coming back (a password of one character, or of eleven, refused), an off-by-one that refuses one of exactly 1024 characters, or a rule so narrow (ASCII only, no spaces) that it refuses a good passphrase."""
         scrypt = FakeScrypt()
 
         passwords.set_password(folder, password, scrypt=scrypt)

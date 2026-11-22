@@ -19,7 +19,6 @@ from social_data_pipeline.control.errors import ControlError
 
 FILE_NAME = "password.json"
 SCHEME = "scrypt"
-PASSWORD_MIN_CHARS = 12
 PASSWORD_MAX_CHARS = 1024
 
 # What a file is written with, and the only parameters a file is used with. With these, scrypt needs a little over 32 MiB, which is more than the default memory limit of `hashlib.scrypt` allows: the limit is always given explicitly.
@@ -49,9 +48,9 @@ class PasswordNotText(PasswordRefused):
     text = "the password must be well-formed text"
 
 
-class PasswordTooShort(PasswordRefused):
-    code = "password_too_short"
-    text = f"the password must have at least {PASSWORD_MIN_CHARS} characters"
+class PasswordEmpty(PasswordRefused):
+    code = "password_empty"
+    text = "the password must not be empty"
 
 
 class PasswordTooLong(PasswordRefused):
@@ -143,11 +142,11 @@ def _derive(scrypt, password, salt, n, r, p):
 
 
 def set_password(folder, password, *, random_bytes=secrets.token_bytes, scrypt=None):
-    """Check a new management password and write its file into the broker folder (a path, or a descriptor of the folder), which is created with mode 0700 when it is missing. The file is replaced in one step, so a reader sees the old password or the new one. Raises PasswordNotText, PasswordTooShort, PasswordTooLong or PasswordHasControlCharacter before anything is derived or written, PasswordNotDerivable when scrypt fails, and PasswordFileNotUsable when the folder or the file cannot be used (the old file is then left as it was)."""
+    """Check a new management password and write its file into the broker folder (a path, or a descriptor of the folder), which is created with mode 0700 when it is missing. The file is replaced in one step, so a reader sees the old password or the new one. Any password that is not empty is taken, whatever its length up to the maximum. Raises PasswordNotText, PasswordEmpty, PasswordTooLong or PasswordHasControlCharacter before anything is derived or written, PasswordNotDerivable when scrypt fails, and PasswordFileNotUsable when the folder or the file cannot be used (the old file is then left as it was)."""
     if not isinstance(password, str):
         raise PasswordNotText()
-    if len(password) < PASSWORD_MIN_CHARS:
-        raise PasswordTooShort()
+    if not password:
+        raise PasswordEmpty()
     if len(password) > PASSWORD_MAX_CHARS:
         raise PasswordTooLong()
     if names.has_line_break_or_control(password):

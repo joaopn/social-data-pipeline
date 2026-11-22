@@ -6,7 +6,7 @@ The broker is a process that runs on the host, next to the CLI, and listens on a
 
 | Command | What it does |
 |---------|--------------|
-| `sdp.py broker passwd` | Sets the management password, asked twice and not echoed (at least 12 characters). Works whether or not the broker runs; sessions that logged in with an older password end at their next request. |
+| `sdp.py broker passwd` | Sets the management password, asked twice and not echoed. Any password that is not empty is accepted (up to 1024 characters, no line break or control character); a short one is easier to guess within the login limits below. Works whether or not the broker runs; sessions that logged in with an older password end at their next request. |
 | `sdp.py broker start` | Starts the broker in the background and waits up to 10 seconds until it answers. Prints its pid, or that it runs already, or why it did not start (exit code 1); a broker that has not answered by then is ended. |
 | `sdp.py broker start --foreground` | Runs the broker in this terminal until Ctrl-C. |
 | `sdp.py broker stop` | Stops the broker. From then on it takes no new login and no new call (they are answered `stopping`); an action that changes something and is still running is waited for, without a time limit; the command says once that it waits. |

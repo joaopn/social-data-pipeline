@@ -7,7 +7,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - c. Approve: the pending page shows the statement with escapes (U+202E, U+2066, U+200B, U+0000, U+2028, a lone surrogate) and says so, the overwrite line, the two sentences and the hints; the socket gets exactly `{op, job_id, digest, by}` with the digest of the pending time and `by` the broker's session number; a job changed meanwhile is `changed`; `not_pending` with its phase; a job too large has no approve form and a posted approve for it keeps nothing; two confirms at once make one call.
 - d. Reject (the reason's bounds and characters, refused before the socket), kill (whether it ran), EXPLAIN (its sentence, the plan and the error as text, `explain_timeout` and `outcome_unknown`).
 - e. Auto-accept: switching on and raising the limit need the management password, checked before the socket (a wrong one keeps the action and sends nothing); switching off and lowering need none; an unknown target refused by the web UI; the sentence for on; a change that became a step-up meanwhile refused.
-- g. The pages: tabs, counts, paging with `more`, links only for job ids, the job page per phase, hostile text in every position, the running tab's poll and its `HX-Redirect`, the preview's table and its refusals.
+- g. The pages: tabs, counts, the tab bar's figures (`stats`, its failure confined to them, hostile figures left out), paging with `more`, links only for job ids, the job page per phase, hostile text in every position, the running tab's poll and its `HX-Redirect`, the preview's table and its refusals.
 - h. Downloads: byte for byte with fixed headers; not done, a foreign or malformed id, a part out of range: not found and nothing opened; a link, a FIFO, a folder named like a part, an output file name with `/`, a link in place of the job's folder: never served (a marker file is in no answer); at most two at a time; the descriptor closed after the answer and after a client that went away.
 - k. The scans: no inline code in any page or part of the window; the guard's headers on every answer, the download's included; HEAD of every route of the window is 405.
 - l. Whose query it is: a job whose record's `submitted_by` is exactly `"assistant"` labelled on every page that shows it; any other value shown as nothing and never echoed; the approval's extra sentence only for such a job, the approval sent unchanged; the auto-accept page's sentence.
@@ -314,7 +314,7 @@ def test_no_get_or_head_of_the_window_asks_the_socket_for_a_change(client, token
             assert client.get(route, headers=headers).status_code in (200, 404), route
             assert client.head(route, headers=headers).status_code == 405, route
     assert door.requests and set(door.ops()) <= READ_OPS and changes(door) == []
-    assert {"counts", "jobs", "job", "preview", "auto_accept"} <= set(door.ops())
+    assert {"counts", "stats", "jobs", "job", "preview", "auto_accept"} <= set(door.ops())
     # The only broker request of the window's reads is the session's check.
     assert {request["verb"] for request in broker.requests} - {"db.status", "source.list", "run.list"} == {"audit.list"}
     assert all(request["fields"] == {"limit": 1} for request in broker.requests if request["verb"] == "audit.list")
@@ -697,6 +697,62 @@ def test_the_pending_tab_shows_the_auto_accept_panel_and_its_failure_stays_in_it
     rows, panel = response.text.split('id="auto-accept"')
     assert response.status_code == 200 and f'href="/queue/{JOB_ID}"' in rows and 'value="queue.approve"' in rows
     assert words.DOOR_REASON_SENTENCES[broker_client.NO_REPLY] in main_text(panel) and words.DOOR_REASON_SENTENCES[broker_client.NO_REPLY] not in main_text(rows)
+
+
+def subbar_right(page):
+    return re.search(r'<span class="right row small ink2">(.*?)</span>\s*</nav>', page, re.DOTALL).group(1)
+
+
+def test_the_tab_bar_shows_the_schedulers_figures_after_the_brokers_check(client, door, broker, clock):
+    """Bug class: the mock-up's figures of the Queue bar missing or not the scheduler's (the busy count not its running jobs, "at least" lost for a cut walk, the dot green with every slot taken), or the scheduler asked for them before the broker said that the session lives."""
+    door.add("running", a_job(status="running"))
+    clock.now += queue.SESSION_CHECK_SECONDS + 1
+    broker.timeline.clear()
+    for route in ("/queue", "/queue?tab=running", "/queue?tab=history"):
+        bar = subbar_right(client.get(route).text)
+        assert bar == '<span>38.0 MiB used \u00b7 4.4 TiB free</span><span class="pill"><span class="dot ok"></span>5 slots \u00b7 1 busy</span>', route
+    events = [event for event in broker.timeline if event[0] == "broker" or event[1] == "stats"]
+    assert events[:2] == [("broker", "call", "audit.list"), ("door", "stats")]
+    door.stats_disk = {**door.stats_disk, "results_cut": True, "slots": 1}
+    bar = subbar_right(client.get("/queue").text)
+    assert bar == '<span>at least 38.0 MiB used \u00b7 4.4 TiB free</span><span class="pill"><span class="dot warn"></span>1 slot \u00b7 1 busy</span>'
+
+
+@pytest.mark.parametrize("error", [broker_client.BrokerUnreachable(broker_client.NO_REPLY), door_error("internal"), ["not", "a", "dict"], "text", {"results_bytes": True}])
+def test_a_failure_of_the_figures_stays_in_the_tab_bar(client, door, error):
+    """Bug class: the figures' read (a scheduler of an older image without `stats`, a slow walk, a reply of another shape) taking the page with it, or its failure said nowhere."""
+    door.add("pending", a_job())
+    door.answers["stats"] = error if isinstance(error, BaseException) else (lambda _request: error)
+    response = client.get("/queue")
+    assert response.status_code == 200 and f'href="/queue/{JOB_ID}"' in response.text and 'value="queue.approve"' in response.text
+    assert subbar_right(response.text) == '<span class="muted">figures unavailable</span>'
+    assert "notice-bad" not in main_html(response.text).split('id="auto-accept"')[0]
+
+
+@pytest.mark.parametrize("answer, disk, pill, dot", [
+    ({"results_bytes": -1, "free_bytes": 1024, "slots": 2, "busy": 0, "results_cut": False}, "1.0 KiB free", "2 slots \u00b7 0 busy", "ok"),
+    ({"results_bytes": 5, "free_bytes": True, "slots": 2.0, "busy": 3, "results_cut": False}, "5 B used", "3 busy", "ok"),
+    ({"results_bytes": 5, "free_bytes": None, "slots": 0, "busy": 0}, "at least 5 B used", "0 slots \u00b7 0 busy", "warn"),
+    ({"results_bytes": 5, "results_cut": "no", "slots": "5", "busy": -2}, "at least 5 B used", None, "ok"),
+    ({"slots": 2, "busy": 2}, None, "2 slots \u00b7 2 busy", "warn"),
+])
+def test_figures_of_odd_values_are_left_out(answer, disk, pill, dot):
+    """Bug class: a figure of the scheduler's reply that is not a whole number from 0 on (a boolean taken for 1, a negative, a float, a 400-digit integer) shown as a size or a count, or one raising while the page is drawn."""
+    made = queue.stats_model(answer)
+    if disk is not None:
+        assert made["disk"] == disk
+    if pill is not None:
+        assert made["slots"] == pill
+    assert made["dot"] == dot
+
+
+def test_figures_out_of_range_are_cut_and_a_reply_without_any_shows_none():
+    """Bug class: a 400-digit integer of a hand-made reply raising (`OverflowError`) or flooding the bar, or a reply with no usable figure drawn as an empty pill."""
+    huge = queue.stats_model({"results_bytes": 10 ** 400, "free_bytes": 0, "slots": 10 ** 40, "busy": 10 ** 40, "results_cut": False})
+    assert huge["disk"].endswith("PiB used \u00b7 0 B free") and "digits)" in huge["disk"] and len(huge["disk"]) < 120
+    assert huge["slots"] == f"{queue.rows_text(10 ** 40)} slots \u00b7 {queue.rows_text(10 ** 40)} busy" and "(41 digits)" in huge["slots"] and huge["dot"] == "warn"
+    for nothing in (None, [], "x", 5, {}, {"slots": True, "busy": -1, "results_bytes": 1.5}):
+        assert queue.stats_model(nothing) is None
 
 
 def test_the_preview_shows_a_table_of_text_and_its_refusals(client, door, results):

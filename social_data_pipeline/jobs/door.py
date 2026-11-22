@@ -12,6 +12,7 @@ The requests (`op`; every listed field is required, nothing else is taken; a job
 - `hello` -> `{"protocol": 1}`
 - `counts` -> `{"pending", "approved", "running"}`, the numbers on the page's tabs
 - `targets` -> `{"targets": [{"name", "backend", "database"}]}`
+- `stats` -> `{"results_bytes", "results_files", "results_cut", "free_bytes", "slots", "busy"}`, the figures of the Queue's tab bar: the sizes of the regular files below the results folder summed and counted (walked with `os.scandir` from descriptors opened without following links, at most 64 folders deep; the walk stops after 20,000 entries or one second, and `results_cut` is then true, as it is when a folder below could not be read: the figures are a lower bound), the space free for an unprivileged user on the results folder's file system (`statvfs`: `f_bavail * f_frsize`), `max_concurrent` of the scheduler's configuration and the number of running jobs (as `counts` counts them). `results_bytes` and `results_files` are null when the results folder itself cannot be opened, `free_bytes` when its file system cannot be asked: a file-system error is never an error of the reply. The walk runs on the door's own thread, not on the scheduler's loop.
 - `jobs` `{phase, limit, offset}` (phase `pending`, `approved`, `running` or `history`; limit 1 to 500; offset 0 to 100,000, the number of jobs to skip) -> `{"phase", "jobs": [<short view>], "more"}` (`more`: jobs follow after this page), in the page's order: the three queues oldest first (submission or approval order), the history newest first. The short view cuts `sql`, `description`, `error` and `reject_reason` to 2,000 characters and gives their full lengths as `<name>_length`; other text is cut to 256 characters. A job of the chat's assistant adds `"submitted_by": "assistant"` (left out for other jobs, as in the record).
 - `job` `{job_id}` -> `{"phase", "job": <the whole record>, "digest"}` (`too_large` for a record of more than 1 MiB as JSON). `digest` is the SHA-256, in hex, of the JSON of exactly `{target, backend, sql, output_filename, overwrite, collection, database}` with sorted keys, separators `,` and `:` and ASCII only.
 - `approve` `{job_id, digest, by}` -> `{}`; `not_pending` (with `phase`) unless pending; `changed` when the digest of the record as it is now differs or the record names another job id; `by` is written into the record in the same write as the approval.
@@ -78,6 +79,10 @@ PREVIEW_LISTING_MAX = 10000
 # How far below the results folder, and through how many entries, the data folder is looked for.
 RESULTS_SCAN_DEPTH = 3
 RESULTS_SCAN_ENTRIES = 10000
+# The bounds of the walk of `stats` through the results folder: entries seen, seconds, folder depth.
+STATS_ENTRIES_MAX = 20000
+STATS_SECONDS = 1.0
+STATS_DEPTH_MAX = 64
 # The largest uncompressed size of the first row group of a Parquet file that is previewed.
 PARQUET_ROW_GROUP_MAX = 64 * 1024 * 1024
 
@@ -94,6 +99,7 @@ OPS = {
     "hello": frozenset(),
     "counts": frozenset(),
     "targets": frozenset(),
+    "stats": frozenset(),
     "jobs": frozenset({"phase", "limit", "offset"}),
     "job": frozenset({"job_id"}),
     "approve": frozenset({"job_id", "digest", "by"}),
@@ -720,6 +726,16 @@ class Door:
 
         return self._on_loop(counts)
 
+    def _op_stats(self, request):
+        store = self.store
+
+        def running():
+            return len(list(store.running.glob("*.json")))
+
+        busy = self._on_loop(running)
+        used, files, cut = results_usage(store.results)
+        return {"results_bytes": used, "results_files": files, "results_cut": cut, "free_bytes": free_bytes(store.results), "slots": self.cfg.max_concurrent, "busy": busy}
+
     def _op_targets(self, request):
         return {"targets": [{"name": t.name, "backend": t.backend, "database": t.database} for t in self.cfg.targets.values()]}
 
@@ -918,6 +934,74 @@ def _phase_now(store, job_id):
 
 
 # ── preview ────────────────────────────────────────────────────────────────
+
+
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+
+
+def results_usage(root, *, clock=time.monotonic):
+    """(bytes, files, cut): the sizes of the regular files below `root` summed and counted, links neither followed nor counted, every folder below `root` opened by descriptor without following a link. `cut` is true when the walk stopped at one of its bounds (STATS_ENTRIES_MAX entries, STATS_SECONDS, STATS_DEPTH_MAX folders deep) or could not read a folder or an entry below `root`: the figures are then a lower bound. (None, None, False) when `root` itself cannot be opened or read. Never raises OSError."""
+    try:
+        # The configured folder itself is opened as configured (a mount in the container); nothing below it is followed.
+        root_fd = os.open(os.fspath(root), _DIRECTORY_FLAGS & ~os.O_NOFOLLOW)
+    except OSError:
+        return None, None, False
+    deadline = clock() + STATS_SECONDS
+    total = files = seen = 0
+    cut = False
+    # A stack of (descriptor, its listing); the listing of a folder holds its descriptor's place, so at most STATS_DEPTH_MAX + 1 descriptors are open.
+    stack = []
+    try:
+        try:
+            stack.append((root_fd, os.scandir(root_fd)))
+        except OSError:
+            os.close(root_fd)
+            return None, None, False
+        while stack:
+            fd, listing = stack[-1]
+            try:
+                entry = next(listing, None)
+            except OSError:
+                entry, cut = None, True
+            if entry is None:
+                stack.pop()
+                listing.close()
+                os.close(fd)
+                continue
+            seen += 1
+            if seen > STATS_ENTRIES_MAX or clock() > deadline:
+                cut = True
+                break
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if len(stack) > STATS_DEPTH_MAX:
+                        cut = True
+                        continue
+                    child = os.open(entry.name, _DIRECTORY_FLAGS, dir_fd=fd)
+                    try:
+                        stack.append((child, os.scandir(child)))
+                    except OSError:
+                        os.close(child)
+                        raise
+                elif entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
+                    files += 1
+            except OSError:
+                cut = True
+    finally:
+        for fd, listing in stack:
+            listing.close()
+            os.close(fd)
+    return total, files, cut
+
+
+def free_bytes(root):
+    """The bytes free for an unprivileged user on the file system of `root`, or None when it cannot be asked."""
+    try:
+        info = os.statvfs(os.fspath(root))
+    except OSError:
+        return None
+    return info.f_bavail * info.f_frsize
 
 
 def _part_names(names, output_filename):

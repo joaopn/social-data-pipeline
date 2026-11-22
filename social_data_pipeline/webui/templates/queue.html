@@ -1,6 +1,8 @@
 {#- A tab of the Queue window, as the mock-up draws it: its head (title and note) under the frame's tab bar, which shows the tabs' numbers (`subbar_counts`), then its lists (`_queue_rows.html`: Pending; Running holds "Approved, waiting to start" and "Running"; History), and on the Pending tab the auto-accept panel, whose failure is said in the panel alone. -#}
 {% extends "frame.html" %}
 {% import "_queue_macros.html" as q %}
+{#- The right end of the tab bar, as the mock-up draws it: the results folder's size and free space, then a pill with the slots and how many are busy (`queue.stats_model`). -#}
+{% block subbar_right %}{% if stats %}{% if stats.disk %}<span>{{ stats.disk }}</span>{% endif %}{% if stats.slots %}<span class="pill"><span class="dot {{ stats.dot }}"></span>{{ stats.slots }}</span>{% endif %}{% elif stats_failed %}<span class="muted">figures unavailable</span>{% endif %}{% endblock %}
 {% block shell %}
 <main class="main">
   <div class="qhead"><h1>{{ head_title }}</h1><span class="muted small">{{ head_note }}</span></div>

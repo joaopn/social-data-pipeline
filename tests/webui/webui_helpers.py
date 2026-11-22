@@ -230,7 +230,7 @@ def good_lstat(path):
     """What the folder check sees in a sound deployment: the control folder 0700 and its socket 0600, both of uid 1000."""
     return GOOD_SOCKET if str(path).endswith("door.sock") else GOOD_FOLDER
 CHANGING_OPS = {"approve", "reject", "kill", "explain", "auto_accept.set"}
-READ_OPS = {"hello", "counts", "targets", "jobs", "job", "preview", "auto_accept"}
+READ_OPS = {"hello", "counts", "stats", "targets", "jobs", "job", "preview", "auto_accept"}
 
 
 def a_job(job_id=JOB_ID, **fields):
@@ -253,7 +253,7 @@ def door_error(code, **details):
 
 
 class StandInDoor:
-    """Stands in for the scheduler's control socket. `requests` records every request document as sent (`op` and its fields), `timeouts` the time limit of each, and `timeline` (shared with the stand-in broker) the order of all calls. `jobs` maps a job id to `[phase, record]`; the requests are answered from it as the socket would (`counts`, `jobs` with its short view, `job` with the digest, `approve` comparing the digest with the record as it is now, `reject`, `kill`, `explain`, `preview`, `auto_accept`, `auto_accept.set`). `answers` maps an op to a reply to give instead: a result, an exception to raise or a function of the request. With `gate` set, a request of `gate_ops` waits for it. Every reply and every error's details pass through the real socket's `jobs.door._clean` (as its replies do: a lone surrogate becomes `?`), its short view is the real `short_view` and its digest the real `digest`, so that the pages see what they see in production."""
+    """Stands in for the scheduler's control socket. `requests` records every request document as sent (`op` and its fields), `timeouts` the time limit of each, and `timeline` (shared with the stand-in broker) the order of all calls. `jobs` maps a job id to `[phase, record]`; the requests are answered from it as the socket would (`counts`, `stats` with `stats_disk` for the results folder's figures and its running jobs as busy, `jobs` with its short view, `job` with the digest, `approve` comparing the digest with the record as it is now, `reject`, `kill`, `explain`, `preview`, `auto_accept`, `auto_accept.set`). `answers` maps an op to a reply to give instead: a result, an exception to raise or a function of the request. With `gate` set, a request of `gate_ops` waits for it. Every reply and every error's details pass through the real socket's `jobs.door._clean` (as its replies do: a lone surrogate becomes `?`), its short view is the real `short_view` and its digest the real `digest`, so that the pages see what they see in production."""
 
     def __init__(self, timeline=None):
         self.requests = []
@@ -266,6 +266,8 @@ class StandInDoor:
         self.auto = {"max_limit": 4, "targets": [{"name": "warehouse", "backend": "postgres", "database": "datasets", "enabled": False, "limit": 4}]}
         self.preview = {"format": "csv", "columns": ["a", "b"], "rows": [["1", "2"]], "parts": [{"name": "result.csv", "size": 8}], "parts_total": 1, "read_bytes": 8, "truncated": False}
         self.plan = "Result  (cost=0.00..0.01 rows=1 width=4)"
+        # The figures of `stats` but `busy`, which counts the running jobs of `jobs`: 38 MiB used, 4.4 TiB free, 5 slots, as the mock-up shows them.
+        self.stats_disk = {"results_bytes": 38 * 1024 ** 2, "results_files": 3, "results_cut": False, "free_bytes": 4_840_000_000_000, "slots": 5}
         self.gate = None
         self.gate_ops = None
 
@@ -320,6 +322,8 @@ class _DoorClient:
         if op == "counts":
             phases = [phase for phase, _record in door.jobs.values()]
             return {name: phases.count(name) for name in ("pending", "approved", "running")}
+        if op == "stats":
+            return {**door.stats_disk, "busy": [phase for phase, _record in door.jobs.values()].count("running")}
         if op == "jobs":
             listed = [record for phase, record in door.jobs.values() if phase == document["phase"]]
             end = document["offset"] + document["limit"]

@@ -1,6 +1,6 @@
 """Tests of the scheduler's control socket (`social_data_pipeline.jobs.door`) against a real unix socket in the temp folder, a real `Store` there, stand-ins for the runner and a recording auto-accept store, and a real asyncio event loop in a thread of its own that stands for the scheduler's loop. The kernel's peer credentials and the owner of the data folder are injected where a test needs "another user" or "root owns the data folder" without being root.
 
-The groups follow the properties: opening, peers, the shape of every op, `jobs` and `job`, `approve`, `reject` and `kill`, `explain`, `preview`, the bounds, the scheduler's start with a door that cannot be opened, the `Job` record.
+The groups follow the properties: opening, peers, the shape of every op, `jobs` and `job`, `approve`, `reject` and `kill`, `explain`, `preview`, `stats`, the bounds, the scheduler's start with a door that cannot be opened, the `Job` record.
 """
 
 from __future__ import annotations
@@ -521,6 +521,7 @@ class TestPeers:
 VALID = {
     "hello": {},
     "counts": {},
+    "stats": {},
     "targets": {},
     "jobs": {"phase": "pending", "limit": 10, "offset": 0},
     "job": {"job_id": JOB_ID},
@@ -548,6 +549,7 @@ BAD_IDS = ["../x", "PG_0123ABCD", "pg_0123ABCD", "pg_0123abcd0", "pg_0123abcd\n"
 class TestShapes:
     def test_every_op_answers_with_its_shape(self, opened):
         """Bug class: an op that answers with a shape the web UI does not expect, or not at all."""
+        assert set(VALID) == set(door_module.OPS)
         opened.submit()
         assert opened.result({"op": "hello"}) == {"protocol": 1}
         assert opened.result({"op": "counts"}) == {"pending": 1, "approved": 0, "running": 0}
@@ -1103,6 +1105,86 @@ class TestPreview:
         with open(folder / "out.parquet", "ab") as handle:
             handle.write(b"\0" * (2 * 1024 * 1024))
         assert opened.code({"op": "preview", "job_id": JOB_ID}) == "preview_not_available"
+
+
+# ── h2. stats ───────────────────────────────────────────────────────────────
+
+
+def running_job(rig, job_id):
+    """A job in the running phase, put there by the store's own transitions."""
+    Store.submit(rig.store, make_job(job_id))
+    Store.approve(rig.store, job_id)
+    return rig.store.claim_approved()
+
+
+class TestStats:
+    def test_stats_sums_the_results_and_counts_the_running_jobs(self, opened, tmp_path):
+        """Bug class: the Queue bar's figures wrong: a link counted (or followed out of the results folder), a folder below not entered, the slots not the configured cap, the running jobs not counted as `counts` counts them."""
+        results = opened.store.results
+        (results / JOB_ID).mkdir()
+        (results / JOB_ID / "out.csv").write_bytes(b"x" * 1000)
+        (results / JOB_ID / "deep").mkdir()
+        (results / JOB_ID / "deep" / "out_1.csv").write_bytes(b"y" * 24)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "big").write_bytes(b"z" * 5000)
+        (results / "link-to-file").symlink_to(outside / "big")
+        (results / "link-to-folder").symlink_to(outside)
+        os.mkfifo(results / "fifo")
+        running_job(opened, OTHER_ID)
+        opened.submit()
+        found = opened.result({"op": "stats"})
+        assert set(found) == {"results_bytes", "results_files", "results_cut", "free_bytes", "slots", "busy"}
+        assert (found["results_bytes"], found["results_files"], found["results_cut"]) == (1024, 2, False)
+        assert (found["slots"], found["busy"]) == (3, 1)
+        assert isinstance(found["free_bytes"], int) and found["free_bytes"] >= 0
+
+    def test_a_walk_at_its_bounds_is_cut_and_says_so(self, opened, monkeypatch):
+        """Bug class: a results folder with many files (or a deep one) costing the scheduler an unbounded walk for a figure of the web UI, or a cut walk given as the whole size."""
+        results = opened.store.results
+        for number in range(10):
+            (results / f"file{number}").write_bytes(b"x")
+        monkeypatch.setattr(door_module, "STATS_ENTRIES_MAX", 4)
+        found = opened.result({"op": "stats"})
+        assert found["results_cut"] is True and found["results_files"] <= 4 and found["results_bytes"] == found["results_files"]
+        monkeypatch.setattr(door_module, "STATS_ENTRIES_MAX", 20000)
+        assert opened.result({"op": "stats"})["results_cut"] is False
+        # Time: a clock past the deadline at the first entry.
+        ticks = iter(range(0, 1000, 5))
+        assert door_module.results_usage(results, clock=lambda: next(ticks)) == (0, 0, True)
+        # Depth: a file below the deepest folder that is entered is not counted.
+        monkeypatch.setattr(door_module, "STATS_DEPTH_MAX", 1)
+        (results / "a" / "b" / "c").mkdir(parents=True)
+        (results / "a" / "b" / "c" / "deep").write_bytes(b"x" * 7)
+        assert door_module.results_usage(results) == (10, 10, True)
+
+    def test_a_file_system_error_is_never_an_error_of_the_reply(self, opened, monkeypatch):
+        """Bug class: a results folder or file system the scheduler cannot read (a folder of the database servers' own mode, a mount gone away) answered `internal`, which leaves the bar without the slots too, or raised in the door's thread."""
+        results = opened.store.results
+        (results / "readable").write_bytes(b"x" * 3)
+        (results / "closed").mkdir()
+        (results / "closed" / "hidden").write_bytes(b"x" * 100)
+        os.chmod(results / "closed", 0)
+        try:
+            found = opened.result({"op": "stats"})
+        finally:
+            os.chmod(results / "closed", 0o755)
+        if os.getuid() != 0:
+            assert (found["results_bytes"], found["results_cut"]) == (3, True)
+
+        def refuse(path):
+            raise OSError(5, "made-up failure")
+
+        monkeypatch.setattr(door_module.os, "statvfs", refuse)
+        found = opened.result({"op": "stats"})
+        assert found["free_bytes"] is None and found["results_bytes"] == 103 and found["slots"] == 3
+        (results / "readable").unlink()
+        os.unlink(results / "closed" / "hidden")
+        os.rmdir(results / "closed")
+        os.rmdir(results)
+        found = opened.result({"op": "stats"})
+        assert (found["results_bytes"], found["results_files"], found["results_cut"], found["free_bytes"]) == (None, None, False, None)
+        assert found["busy"] == 0
 
 
 # ── i. bounds ───────────────────────────────────────────────────────────────

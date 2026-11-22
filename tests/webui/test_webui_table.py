@@ -237,7 +237,7 @@ def test_the_queue_entries_are_operations_of_the_scheduler_with_their_fields():
     entries = {action.name: action for action in actions.TABLE.values() if action.door is not None}
     assert set(entries) == set(actions.QUEUE_ENTRIES) and all(name.startswith("queue.") for name in entries)
     assert {name: action.door for name, action in entries.items()} == {
-        "queue.counts": "counts", "queue.jobs": "jobs", "queue.job": "job", "queue.preview": "preview", "queue.auto_accept_state": "auto_accept",
+        "queue.counts": "counts", "queue.stats": "stats", "queue.jobs": "jobs", "queue.job": "job", "queue.preview": "preview", "queue.auto_accept_state": "auto_accept",
         "queue.approve": "approve", "queue.reject": "reject", "queue.kill": "kill", "queue.explain": "explain", "queue.auto_accept": "auto_accept.set",
     }
     for name, action in entries.items():

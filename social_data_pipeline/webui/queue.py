@@ -2,7 +2,7 @@
 
 Pages, all GET (a HEAD is 405), each asking the socket in one worker of a bound of its own (`Limits.door_workers`, four places; "busy" when full), never on the event loop, and rendered in a worker too (a statement can be 1 MiB):
 
-- `GET /queue?tab=pending|approved|running|history&page=N`: three tabs, as the mock-up draws them, in the frame's tab bar (`QUEUE_PAGES`): Pending and Running with their numbers (`counts`; Running counts the approved and the running jobs), and History. Each list holds 50 jobs (`jobs` with `limit` and `offset`; a "more" link while the socket says `more`): when, the job, who submitted it, target, backend, output file, description and the actions its phase allows, with the statement as cut by the socket in a row of its own under the job (opened by "SQL", no script), and in the history the outcome, rows, size, error or rejection reason. The Running tab shows two lists, each with its own pages: "Approved, waiting to start" above "Running"; `tab=approved` is the Running tab with the approved list at page N, `tab=running` the same with the running list at page N. A job's id becomes a link to its page, and its row gets its forms (approve, reject, EXPLAIN, kill: the same `POST /pending` as on its page), only when it has the form of a job id. The Pending tab also shows the auto-accept panel (`auto_accept`, asked in the same worker after the same check of the broker; its failure is said in the panel alone). The running list asks for itself again every 5 seconds (`GET /queue/running-rows?page=N`, a part of the page, with the session's form token for its forms).
+- `GET /queue?tab=pending|approved|running|history&page=N`: three tabs, as the mock-up draws them, in the frame's tab bar (`QUEUE_PAGES`): Pending and Running with their numbers (`counts`; Running counts the approved and the running jobs), and History. At the bar's right end the results folder's size and free space and the scheduler's slots and how many are busy (`stats`, asked in the same worker after the counts; its failure leaves "figures unavailable" there and nothing else, and a figure that is not a whole number from 0 on is left out: `stats_model`). Each list holds 50 jobs (`jobs` with `limit` and `offset`; a "more" link while the socket says `more`): when, the job, who submitted it, target, backend, output file, description and the actions its phase allows, with the statement as cut by the socket in a row of its own under the job (opened by "SQL", no script), and in the history the outcome, rows, size, error or rejection reason. The Running tab shows two lists, each with its own pages: "Approved, waiting to start" above "Running"; `tab=approved` is the Running tab with the approved list at page N, `tab=running` the same with the running list at page N. A job's id becomes a link to its page, and its row gets its forms (approve, reject, EXPLAIN, kill: the same `POST /pending` as on its page), only when it has the form of a job id. The Pending tab also shows the auto-accept panel (`auto_accept`, asked in the same worker after the same check of the broker; its failure is said in the panel alone). The running list asks for itself again every 5 seconds (`GET /queue/running-rows?page=N`, a part of the page, with the session's form token for its forms).
 - `GET /queue/<job id>` (the id checked first, else not found): what the socket's `job` gives that the scheduler's page shows, the statement as stored with every invisible or control character shown as an escape (`statements.visible`), the hints (`statements.hints`), who approved, rejected or asked to kill; the buttons the job's phase allows (pending: approve, reject with a reason, EXPLAIN; running: kill); for a finished job a button for its preview (loaded at once when the address says `?preview=1`, as a History row's "Preview" link does) and one download link per part of its result (`results`). A job whose record is too large to send has no buttons: the page says to use the scheduler's own page.
 - `GET /queue/<job id>/preview`: a part of the page from the socket's `preview`: a table of text cells, the parts' names and sizes, "truncated" when the socket says so; its refusals as sentences.
 - `GET /queue/<job id>/download/<part>`: the part streamed from the web UI's read-only mount of the results folder (`results`), after the socket said the job is in the history as done; at most two at a time ("busy" beyond); anything else not found.
@@ -172,6 +172,32 @@ def size_text(value):
             tenths = value * 10 // 1024 ** power
             return f"{_digits(tenths // 10)}.{tenths % 10} {unit}"
     return "-"
+
+
+def stats_model(value):
+    """The figures of the tab bar from the socket's `stats` answer: {"disk": "<size> used · <size> free" or one of them, "at least" before the used size unless the answer says exactly that the walk was not cut; "slots": "N slots · M busy" or one of them; "dot": "warn" when every slot is busy, else "ok"}, each text None when its figures are not there. None when nothing could be shown. A figure that is not a whole number from 0 on (a boolean, a float, a negative, missing) is left out. Total over every JSON value."""
+    if not isinstance(value, dict):
+        return None
+
+    def figure(key):
+        found = value.get(key)
+        return found if _whole(found) and found >= 0 else None
+
+    used, free, slots, busy = figure("results_bytes"), figure("free_bytes"), figure("slots"), figure("busy")
+    disk = []
+    if used is not None:
+        disk.append(("" if value.get("results_cut") is False else "at least ") + size_text(used) + " used")
+    if free is not None:
+        disk.append(size_text(free) + " free")
+    pill = []
+    if slots is not None:
+        pill.append(rows_text(slots) + (" slot" if slots == 1 else " slots"))
+    if busy is not None:
+        pill.append(rows_text(busy) + " busy")
+    if not disk and not pill:
+        return None
+    full = slots is not None and busy is not None and busy >= slots
+    return {"disk": " \u00b7 ".join(disk) or None, "slots": " \u00b7 ".join(pill) or None, "dot": "warn" if full else "ok"}
 
 
 def rows_text(value):
@@ -471,7 +497,7 @@ def install(api, ctx):
         shown_tab = TAB_OF[tab]
         return {
             "tab": shown_tab, "page": page, "failure": failure, "head_title": LIST_TITLES[shown_tab], "head_note": HEAD_NOTES[shown_tab],
-            "counts": None, "counts_failure": None, "subbar_counts": {}, "lists": [], "auto_accept": None,
+            "counts": None, "counts_failure": None, "subbar_counts": {}, "lists": [], "auto_accept": None, "stats": None, "stats_failed": False,
         }
 
     def list_base(phase, page, failure=None):
@@ -517,6 +543,9 @@ def install(api, ctx):
                 model["subbar_counts"] = {"queue:pending": value["pending"], "queue:running": value["approved"] + value["running"]}
             else:
                 model["counts_failure"] = _failure(value)["sentence"] if kind == "error" else SHAPE
+            kind, value = ask("queue.stats")
+            model["stats"] = stats_model(value) if kind == "ok" else None
+            model["stats_failed"] = model["stats"] is None
             if model["tab"] == "pending":
                 model["auto_accept"] = auto_accept_model()
             model["lists"] = [ask_list(phase, page if phase == tab else 1) for phase in LISTS_OF[model["tab"]]]

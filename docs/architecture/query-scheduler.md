@@ -76,6 +76,7 @@ The web UI's Queue window uses it (see [The Queue window](../user-guide/webui.md
 | EXPLAIN | Runs EXPLAIN on an admin connection, like the page's EXPLAIN button |
 | Preview | A finished result |
 | Auto-accept | Change the auto-accept settings |
+| Figures | For the web UI's Queue bar: the size and number of the files in the results folder (counted for at most 20,000 entries or one second, then given as a lower bound), the space free on its file system, the number of queries that may run at a time (`max_concurrent`) and the number running |
 
 Who approved or rejected a job, and who asked to kill it, through the socket is kept in its record (`acted_by`). The kill's label names who asked: it is set on a job that may still finish by itself, and it is lost when the scheduler restarts before the job is retired. Every approval, rejection, kill, EXPLAIN and auto-accept change through the socket is logged twice, the attempt and its outcome. The scheduler's own page, its port and its password gate work as they do without the socket.
 

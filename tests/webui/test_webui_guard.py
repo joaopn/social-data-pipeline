@@ -3,10 +3,10 @@
 The contracts pinned here, each test naming the bug class it catches:
 
 - a. `Host`: every configured value is accepted (with the port; without it only when the port is 443), any other is refused with 400 and a constant body, on every route: pages, static files, the health check and error answers.
+- a2. With `SDP_WEBUI_ANY_HOST` (every address): any `Host` is answered (an unlisted address, an unlisted name, one without a port); a non-GET still needs `Origin: https://<that Host>` and the form token, and a login there is `remote`.
 - b. A request whose method is not GET or HEAD needs `Origin: https://<host>`, or no `Origin` and `Sec-Fetch-Site: same-origin`; anything else is 403 and reaches no broker.
 - c. A logged-in session's request that changes something needs the session's form token: missing, wrong and another session's tokens are 403; the token stays the same for the session's life and passes from the form field or the header.
 - j2. A body that has not arrived within ten seconds is 408 (the clock injected), also when it never comes.
-- a2. With the local host port (`SDP_WEBUI_LOCAL_HOST_PORT`, set when the operator listed every address): `127.0.0.1:<it>` and `localhost:<it>` are accepted on the local container port only, no other configured host with that port anywhere, and a post's same-origin check works there; without it `localhost:8444` stays refused (a).
 - f. Every response, of every route and status, has exactly the security headers, `no-store` (static files: cacheable), `charset=utf-8` on text, and no `Strict-Transport-Security` and no `Server`.
 - j. A body over 64 KiB is 413 before it is parsed (by its length, or as it streams); a JSON or multipart body is refused.
 """
@@ -18,7 +18,7 @@ import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
-from webui_helpers import GATEWAY, HOSTS, LOCAL_PORT, ORIGIN, PASSWORD, REMOTE, form_token, log_in
+from webui_helpers import GATEWAY, HOSTS, ORIGIN, PASSWORD, REMOTE, form_token, log_in
 
 from social_data_pipeline.webui import app as webapp
 from social_data_pipeline.webui import config, guard
@@ -84,41 +84,35 @@ def test_other_hosts_are_refused_for_every_method_and_reach_no_broker(client, br
     assert broker.calls == []
 
 
-# ── a2. The local host port ─────────────────────────────────────────────────
+# ── a2. Every address ───────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def wildcard_app(make_app):
-    """The application as `sdp webui start` makes it when 0.0.0.0 is listed: the page on 8443, 127.0.0.1 published to the local port on 8444."""
-    return make_app(settings=config.Settings(hosts=HOSTS, port=8443, socket_path="/run/sdp/broker.sock", gateway=GATEWAY, local_host_port=8444))
+def any_host_app(make_app):
+    """The application as `sdp webui start` makes it for every address: the any-host setting, the page on 8443 only."""
+    return make_app(settings=config.Settings(hosts=HOSTS, port=8443, socket_path="/run/sdp/broker.sock", gateway=GATEWAY, any_host=True))
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1:8444", "localhost:8444"])
-def test_the_local_host_port_is_accepted_on_the_local_port_only(wildcard_app, make_client, host):
-    """Bug class: the addresses printed for this machine refused (the operator cannot log in at the machine itself), or accepted on the other container port, where any client that sends that Host would be answered."""
-    assert make_client(wildcard_app, server_port=LOCAL_PORT).get("/healthz", headers={"host": host}).status_code == 200
-    assert unknown_host(make_client(wildcard_app).get("/healthz", headers={"host": host}))
+@pytest.mark.parametrize("host", ["198.51.100.20:8443", "unlisted.example:8443", "unlisted.example", "localhost:8443"])
+def test_with_every_address_any_host_is_answered(any_host_app, make_client, host):
+    """Bug class: the page opened at an address of the machine nobody listed refused ("not one the web UI answers on") although the operator chose every address."""
+    client = make_client(any_host_app)
+    for route in ("/healthz", "/login", "/static/app.css"):
+        response = client.get(route, headers={"host": host})
+        assert response.status_code == 200 and response.headers["content-security-policy"] == CSP, (route, host)
 
 
-@pytest.mark.parametrize("server_port", [8443, LOCAL_PORT])
-def test_no_other_host_is_accepted_with_the_local_host_port(wildcard_app, make_client, server_port):
-    """Bug class: every configured name accepted with the local host port too (a Host the page was never published under), or the configured ones refused on the page's port."""
-    client = make_client(wildcard_app, server_port=server_port)
-    for host in ("pipeline.example:8444", "[2001:db8::5]:8444", "127.0.0.1:8445", "localhost:8442"):
-        assert unknown_host(client.get("/healthz", headers={"host": host})), host
-    for host in ("localhost:8443", "127.0.0.1:8443", "pipeline.example:8443"):
-        assert client.get("/healthz", headers={"host": host}).status_code == 200, host
-
-
-def test_a_login_on_the_local_host_port_passes_the_origin_check_and_is_local(wildcard_app, make_client, broker):
-    """Bug class: a post from the page at https://127.0.0.1:<port+1>/ refused for its own Origin (no login at the machine itself), or one with the page port's Origin taken as same-origin there."""
-    client = make_client(wildcard_app, server_port=LOCAL_PORT)
-    sent = {"host": "127.0.0.1:8444"}
-    assert refused_with(client.post("/login", data={"password": PASSWORD}, headers={**sent, "origin": "https://127.0.0.1:8443"}), 403)
+def test_with_every_address_a_post_still_needs_its_own_origin_and_the_form_token(any_host_app, make_client, broker):
+    """Bug class: the Host check switched off taking the same-origin rule or the form token with it, so another page could post a login or an action; or a login at an unlisted address counted as one at the machine (its own budget of wrong passwords)."""
+    client = make_client(any_host_app)
+    sent = {"host": "198.51.100.20:8443"}
+    for origin in ("https://localhost:8443", "https://198.51.100.20:8444", "https://evil.example", "null"):
+        assert refused_with(client.post("/login", data={"password": PASSWORD}, headers={**sent, "origin": origin}), 403), origin
     assert broker.calls == []
-    assert client.post("/login", data={"password": PASSWORD}, headers={**sent, "origin": "https://127.0.0.1:8444"}).status_code == 303
-    assert client.post("/login", data={"password": PASSWORD}, headers={"host": "localhost:8444", "sec-fetch-site": "same-origin"}).status_code == 303
-    assert [call[1] for call in broker.calls if call[0] == "login"] == ["local", "local"]
+    assert client.post("/login", data={"password": PASSWORD}, headers={**sent, "origin": "https://198.51.100.20:8443"}).status_code == 303
+    assert [call[1] for call in broker.calls if call[0] == "login"] == ["remote"]
+    assert refused_with(client.post("/logout", data={}, headers={**sent, "origin": "https://198.51.100.20:8443"}), 403)
+    assert client.post("/logout", data={"form_token": form_token(client)}, headers={**sent, "origin": "https://198.51.100.20:8443"}).status_code == 303
 
 
 # ── b. Origin ───────────────────────────────────────────────────────────────

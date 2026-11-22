@@ -293,7 +293,7 @@ The broker is a host process on a unix socket through which a logged-in session 
 
 | Command | Description |
 |---------|-------------|
-| `sdp.py webui setup` | Ask the port, the listen addresses besides 127.0.0.1, the names and the certificate (generated or your own); build the image `sdp-webui`; print the certificate's fingerprint |
+| `sdp.py webui setup` | Ask the port, the addresses the page is opened at besides this machine (IP addresses and names, or `all` for every address) and the certificate (generated or your own); build the image `sdp-webui`; print the certificate's fingerprint |
 | `sdp.py webui start` | Start the web UI's container and say whether the broker answered from inside it |
 | `sdp.py webui stop` | Stop and remove the container (exit code 1 when it was not running) |
 | `sdp.py webui status` | Say whether it runs, where it answers and the certificate's fingerprint and end date (exit code 0 when it runs) |

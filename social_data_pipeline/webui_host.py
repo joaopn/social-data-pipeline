@@ -1,8 +1,8 @@
 """The host side of the web UI: `sdp webui setup`, `start`, `stop`, `status` and `unsetup` (the `cmd_*` functions; `sdp.py` only passes the deployment folder).
 
-What it keeps, in `<root>/.sdp/webui/` (0700): `config.json` (0600: the port, the listen addresses besides 127.0.0.1, the names, how the certificate came, its SHA-256 fingerprint and end date) and `tls/` (0700: `cert.pem` and `key.pem`, 0600), written by the broker's file rules (`control.files`). The container, the network and the image are all called `sdp-webui`.
+What it keeps, in `<root>/.sdp/webui/` (0700): `config.json` (0600: the port, the listen addresses besides 127.0.0.1 (`0.0.0.0` first for every address), the names, how the certificate came, its SHA-256 fingerprint and end date) and `tls/` (0700: `cert.pem` and `key.pem`, 0600), written by the broker's file rules (`control.files`). The container, the network and the image are all called `sdp-webui`.
 
-The container (`create_arguments`, one pure function) runs as the operator's uid and gid, read-only, without capabilities, without new privileges, with 256 processes, 512 MiB and a 16 MiB `/tmp` at most, on a network of its own without masquerading (so it reaches nothing outside the machine), with two read-only mounts: the broker's socket folder at `/run/sdp` and the certificate folder at `/tls`. Two more read-only mounts are added for the Queue window when their folders pass the checks of `_queue_mounts`: the query scheduler's control folder (`data/jobs/control`, made 0700 when missing) at `/run/sdp-jobs`, and its results folder (`JOBS_RESULT_ROOT` of `.env`, by default `./data/jobs/results`) at `/run/sdp-results`; a folder that does not pass is left out with one line saying why. One more read-only mount is added for the Chat window when `_chat_folder` passes it: the chat's socket folder (`.sdp/chat/socket`, a real folder of the operator without permission for others) at `/run/sdp-chat`, with the setting of the runner's socket; otherwise one line says why the Chat window will not be available. It listens on two ports: 127.0.0.1 of the host is published to the local port (8444) and each other listen address the operator named to 8443, so that the web UI tells a login from the machine itself by the port it arrived on and never by the client's address. The operator may name `0.0.0.0` (every IPv4 address) and `::` (every IPv6 address): each is published once and covers the other addresses of its family, and neither goes into the `Host` values or the certificate. With either of them, 127.0.0.1 is published on the next host port (Docker cannot publish one host port on 127.0.0.1 and on every IPv4 address at once; `::` follows the same rule), which the container gets as `SDP_WEBUI_LOCAL_HOST_PORT`, and the addresses printed for this machine are on that port. Docker without user-id mapping is required: rootless Docker and user-namespace remapping are refused (the broker checks the peer's uid, which must be the operator's).
+The container (`create_arguments`, one pure function) runs as the operator's uid and gid, read-only, without capabilities, without new privileges, with 256 processes, 512 MiB and a 16 MiB `/tmp` at most, on a network of its own without masquerading (so it reaches nothing outside the machine), with two read-only mounts: the broker's socket folder at `/run/sdp` and the certificate folder at `/tls`. Two more read-only mounts are added for the Queue window when their folders pass the checks of `_queue_mounts`: the query scheduler's control folder (`data/jobs/control`, made 0700 when missing) at `/run/sdp-jobs`, and its results folder (`JOBS_RESULT_ROOT` of `.env`, by default `./data/jobs/results`) at `/run/sdp-results`; a folder that does not pass is left out with one line saying why. One more read-only mount is added for the Chat window when `_chat_folder` passes it: the chat's socket folder (`.sdp/chat/socket`, a real folder of the operator without permission for others) at `/run/sdp-chat`, with the setting of the runner's socket; otherwise one line says why the Chat window will not be available. It listens on two ports: 127.0.0.1 of the host is published to the local port (8444) and each other listen address the operator named to 8443, so that the web UI tells a login from the machine itself by the port it arrived on and never by the client's address. When the operator answers `all`, the page's port is published once on every address instead (`-p <port>:8443`, which Docker binds on every IPv4 and IPv6 address), nothing is published to the local port (so every login counts as one from elsewhere), and the container gets `SDP_WEBUI_ANY_HOST=1`: the page answers under any `Host`. Docker without user-id mapping is required: rootless Docker and user-namespace remapping are refused (the broker checks the peer's uid, which must be the operator's).
 
 Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell; no secret is ever in an argument list (the key is a file in the mounted folder). Standard library and this package only; the setup prompts come from `social_data_pipeline.setup.utils`, imported when `setup` runs.
 """
@@ -61,17 +61,15 @@ LOCAL_NAME = "localhost"
 CERT_DAYS = 825
 PEM_MAX_BYTES = 64 * 1024
 CONFIG_MAX_BYTES = 64 * 1024
-# Words an operator may type for "every address": refused with the addresses to type instead.
+# Words an operator may type for "every address", beside the addresses 0.0.0.0 and :: (in any of their forms).
 ALL_ADDRESS_WORDS = ("*", "all", "any")
-# Every IPv4 address and every IPv6 address, in their short form.
-ALL_IPV4 = "0.0.0.0"
-ALL_IPV6 = "::"
-WILDCARDS = (ALL_IPV4, ALL_IPV6)
+# How the saved settings hold "every address": the first of their listen addresses. `::` there (an earlier version wrote it) means the same.
+EVERY_ADDRESS = "0.0.0.0"
+WILDCARDS = (EVERY_ADDRESS, "::")
+EVERY_WARNING = "Warning: every address includes networks you did not choose (a VPN, an interface added later, Docker's own networks). The page needs the management password everywhere."
 
 SETUP_FIRST = "  Set it up first: python sdp.py webui setup"
 LOOPBACK_REFUSED = "a loopback address is not a listen address: this machine itself is always served on 127.0.0.1"
-ALL_ADDRESS_WORDS_REFUSED = "to listen on every address, type 0.0.0.0 (every IPv4 address) and, for IPv6, :: (every IPv6 address)"
-NO_NEXT_PORT = "with 0.0.0.0 or :: this machine itself is served on the next port, and 65535 has none: leave 0.0.0.0 and :: out, or run the setup again with a lower port"
 PROBE_LINES = {
     "answered": "The broker answered from inside the container.",
     "no_socket": "The broker is not running (no socket in .sdp/socket): start it with `python sdp.py broker start`.",
@@ -95,11 +93,12 @@ class Refused(Exception):
 
 @dataclass(frozen=True)
 class WebuiConfig:
-    """The operator's answers: the port, the listen addresses besides 127.0.0.1 and the names, all checked."""
+    """The operator's answers: the port, the listen addresses besides 127.0.0.1 and the names, all checked; `every` when the page listens on every address and answers under any `Host` (`addresses` and `names` then only go into the certificate and the `Host` values)."""
 
     port: int
     addresses: tuple = ()
     names: tuple = ()
+    every: bool = False
 
 
 # ── the answers ─────────────────────────────────────────────────────────────
@@ -114,21 +113,19 @@ def parse_port(text):
 
 
 def parse_addresses(text):
-    """The listen addresses besides 127.0.0.1 from a comma-separated answer (empty for none), each in its short form; `0.0.0.0` and `::` (every IPv4, every IPv6 address) are addresses like the others. Raises Refused for anything but an IP address, for the words `all`, `any` and `*`, multicast, a link-local address with a zone, any loopback address (127.0.0.1, which is always there, `::1`, `127.0.0.2` and the like: the machine itself is served on 127.0.0.1 only) and an address named twice."""
+    """The listen addresses besides 127.0.0.1 from a comma-separated answer (empty for none), each in its short form. Raises Refused for anything but an IP address, for every address (0.0.0.0, ::), multicast, a link-local address with a zone, any loopback address (127.0.0.1, which is always there, `::1`, `127.0.0.2` and the like: the machine itself is served on 127.0.0.1 only) and an address named twice."""
     found = []
     for item in (part.strip() for part in str(text).split(",")):
         if not item:
             continue
-        if item.lower() in ALL_ADDRESS_WORDS:
-            raise Refused(ALL_ADDRESS_WORDS_REFUSED)
         if "%" in item:
             raise Refused(f"{item!r} has a zone (the part after %): a link-local address with a zone cannot be published; give an address without one")
         try:
             address = ipaddress.ip_address(item.removeprefix("[").removesuffix("]") if item.startswith("[") else item)
         except ValueError:
-            raise Refused(f"{item!r} is not an IP address (names go into the next question)") from None
-        if address.version == 6 and address.ipv4_mapped is not None and address.ipv4_mapped.is_unspecified:
-            raise Refused(f"{item!r} is 0.0.0.0 in IPv6 form: type 0.0.0.0 for every IPv4 address")
+            raise Refused(f"{item!r} is not an IP address") from None
+        if address.is_unspecified:
+            raise Refused(f"{item!r} stands for every address: type all")
         if address.is_multicast:
             raise Refused(f"{item!r} is a multicast address, which nothing can listen on")
         canonical = str(address)
@@ -157,65 +154,60 @@ def parse_names(text):
     return tuple(found)
 
 
-def _named_addresses(cfg):
-    """The listen addresses but 0.0.0.0 and ::, which are no address a browser is sent to."""
-    return [address for address in cfg.addresses if address not in WILDCARDS]
+def _as_address(item):
+    """The IP address `item` stands for (brackets allowed), or None when it is not one."""
+    try:
+        return ipaddress.ip_address(item.removeprefix("[").removesuffix("]") if item.startswith("[") else item)
+    except ValueError:
+        return None
 
 
-def _has_wildcard(cfg):
-    return any(address in WILDCARDS for address in cfg.addresses)
+def parse_reach(text, port):
+    """The answer to the one question (IP addresses and names, comma-separated, mixed; empty for none) as a WebuiConfig of `port`: `all`, `any`, `*`, 0.0.0.0 and :: (in any form) stand for every address, alone or beside other entries; each other entry is an address when it reads as one (or holds a zone), else a name, and passes the checks of `parse_addresses` or `parse_names`. Raises Refused naming the entry."""
+    every, addresses, names = False, [], []
+    for item in (part.strip() for part in str(text).split(",")):
+        if not item:
+            continue
+        address = _as_address(item)
+        if item.lower() in ALL_ADDRESS_WORDS or (address is not None and address.is_unspecified):
+            every = True
+        elif address is not None or "%" in item:
+            addresses.append(item)
+        else:
+            names.append(item)
+    return WebuiConfig(port=port, addresses=parse_addresses(",".join(addresses)), names=parse_names(",".join(names)), every=every)
 
 
-def local_host_port(cfg):
-    """The host port 127.0.0.1 is published on to the local port: the next port when 0.0.0.0 or :: is listed (Docker cannot publish one host port on 127.0.0.1 and on every IPv4 address at once; :: follows the same rule), else None (127.0.0.1 is published on the port itself)."""
-    return cfg.port + 1 if _has_wildcard(cfg) else None
+def reach_answer(cfg):
+    """The answer to the one question that gives `cfg` again: `all` first when it listens on every address, then the addresses and the names."""
+    return ", ".join([*(["all"] if cfg.every else []), *cfg.addresses, *cfg.names])
 
 
-def check_ports(cfg):
-    """`cfg` when its port leaves a next port for 0.0.0.0 and ::. Raises Refused otherwise."""
-    if _has_wildcard(cfg) and cfg.port >= 65535:
-        raise Refused(NO_NEXT_PORT)
-    return cfg
-
-
-def wildcard_lines(cfg):
-    """What to say of 0.0.0.0 and :: when they are listed: the warning, and where the logins at this machine have their own budget. What the page's own port does on 127.0.0.1 differs: with 0.0.0.0 it answers through the every-address publication and a login there counts as one from elsewhere; with :: alone nothing is published there by this module (a Docker whose IPv6 publication also takes IPv4 would answer, as from elsewhere). Empty when neither is listed."""
-    chosen = [address for address in WILDCARDS if address in cfg.addresses]
-    if not chosen:
-        return []
-    families = " and ".join("IPv4" if address == ALL_IPV4 else "IPv6" for address in chosen)
-    local = local_host_port(cfg)
-    plain = f"https://{LOCAL_ADDRESS}:{cfg.port}/"
-    there = f"a login at {plain} counts as one from elsewhere" if ALL_IPV4 in cfg.addresses else f"{plain} may not answer, and a login there counts as one from elsewhere"
-    return [
-        f"Warning: {' and '.join(chosen)} {'publishes' if len(chosen) == 1 else 'publish'} the page on every {families} address of this machine, so it also answers on networks you did not choose: a VPN, an interface added later, and Docker's own networks (other containers on this machine reach the page there). It still answers only under the names and addresses listed, and needs the management password.",
-        f"At this machine, logins at https://{LOCAL_ADDRESS}:{local}/ (or https://{LOCAL_NAME}:{local}/) have their own budget of wrong passwords; {there}.",
-    ]
+def every_lines(cfg):
+    """Where the page answers when it listens on every address, and the warning."""
+    return [f"The page answers on every address of this machine, port {cfg.port}: https://<address or name>:{cfg.port}/", EVERY_WARNING]
 
 
 def host_values(cfg):
-    """The names and addresses the page answers to, in their `Host` form: localhost, 127.0.0.1, the listen addresses but 0.0.0.0 and ::, the names."""
-    return [LOCAL_NAME, LOCAL_ADDRESS, *(webui_config.host_value(address) for address in _named_addresses(cfg)), *cfg.names]
+    """The names and addresses the page answers to, in their `Host` form: localhost, 127.0.0.1, the listen addresses, the names."""
+    return [LOCAL_NAME, LOCAL_ADDRESS, *(webui_config.host_value(address) for address in cfg.addresses), *cfg.names]
 
 
 def page_addresses(cfg):
-    """The addresses a browser opens the page at: localhost and 127.0.0.1 first, on the next port when 0.0.0.0 or :: is listed, then the listen addresses and the names."""
-    local = local_host_port(cfg)
-    return [f"https://{host}:{cfg.port if local is None else local}/" for host in (LOCAL_NAME, LOCAL_ADDRESS)] + [f"https://{host}:{cfg.port}/" for host in host_values(cfg)[2:]]
+    """The addresses a browser opens the page at."""
+    return [f"https://{host}:{cfg.port}/" for host in host_values(cfg)]
 
 
-def address_lines(cfg):
-    """The lines that list the addresses of the page, indented: one per address, and with 0.0.0.0 or :: under two headings (this machine's own on the next port, the names and addresses listed)."""
-    shown = page_addresses(cfg)
-    if local_host_port(cfg) is None:
-        return [f"    {address}" for address in shown]
-    others = [f"      {address}" for address in shown[2:]] or ["      none: from another machine every request is refused. Add the address or name you will type (python sdp.py webui setup)"]
-    return ["    At this machine:", *(f"      {address}" for address in shown[:2]), "    Under the names and addresses listed:", *others]
+def address_lines(cfg, heading):
+    """The lines that say where the page answers: `heading` (when there is one) and one indented line per address, or with every address the line of `every_lines` and the warning."""
+    if cfg.every:
+        return [f"  {line}" for line in every_lines(cfg)]
+    return [*([heading] if heading else []), *(f"    {address}" for address in page_addresses(cfg))]
 
 
 def subject_alt_names(cfg):
     """The certificate's subject alternative names, in openssl's form."""
-    return ",".join([f"DNS:{LOCAL_NAME}", f"IP:{LOCAL_ADDRESS}", *(f"IP:{address}" for address in _named_addresses(cfg)), *(f"DNS:{name}" for name in cfg.names)])
+    return ",".join([f"DNS:{LOCAL_NAME}", f"IP:{LOCAL_ADDRESS}", *(f"IP:{address}" for address in cfg.addresses), *(f"DNS:{name}" for name in cfg.names)])
 
 
 # ── argument lists ──────────────────────────────────────────────────────────
@@ -231,7 +223,7 @@ def _publish(address, port, container_port):
 
 
 def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_folder=None, chat_folder=None):
-    """The `docker create` argument list of the web UI's container. `root` is the deployment folder (an absolute path without a comma), `gateway` the IPv4 address of the network's gateway; `queue_folder` and `results_folder` are the scheduler's control folder and results folder (absolute paths without a comma) to mount for the Queue window, `chat_folder` the chat's socket folder for the Chat window, each None when it is left out. 127.0.0.1 is published to the local port (on the next host port when 0.0.0.0 or :: is listed, see `local_host_port`), every other listen address to the other one; 0.0.0.0 and :: are published once each and cover the other listen addresses of their family, which are then not published apart (Docker refuses one host port twice)."""
+    """The `docker create` argument list of the web UI's container. `root` is the deployment folder (an absolute path without a comma), `gateway` the IPv4 address of the network's gateway; `queue_folder` and `results_folder` are the scheduler's control folder and results folder (absolute paths without a comma) to mount for the Queue window, `chat_folder` the chat's socket folder for the Chat window, each None when it is left out. With `cfg.every` the page's port is published once on every address and nothing to the local port. 127.0.0.1 is published to the local port, every other listen address to the other one."""
     arguments = [
         "docker", "create",
         "--name", CONTAINER,
@@ -254,11 +246,11 @@ def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_fo
         arguments += ["--mount", _mount(results_folder, RESULTS_MOUNT)]
     if chat_folder is not None:
         arguments += ["--mount", _mount(chat_folder, CHAT_MOUNT)]
-    local = local_host_port(cfg)
-    arguments += ["-p", _publish(LOCAL_ADDRESS, local if local is not None else cfg.port, LOCAL_PORT)]
-    covered = {ipaddress.ip_address(address).version for address in cfg.addresses if address in WILDCARDS}
-    for address in cfg.addresses:
-        if address in WILDCARDS or ipaddress.ip_address(address).version not in covered:
+    if cfg.every:
+        arguments += ["-p", f"{cfg.port}:{LISTEN_PORT}"]
+    else:
+        arguments += ["-p", _publish(LOCAL_ADDRESS, cfg.port, LOCAL_PORT)]
+        for address in cfg.addresses:
             arguments += ["-p", _publish(address, cfg.port, LISTEN_PORT)]
     arguments += [
         "-e", f"{webui_config.ENV_HOSTS}={','.join(host_values(cfg))}",
@@ -266,8 +258,8 @@ def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_fo
         "-e", f"{webui_config.ENV_SOCKET}={SOCKET_IN_CONTAINER}",
         "-e", f"{webui_config.ENV_GATEWAY}={gateway}",
     ]
-    if local is not None:
-        arguments += ["-e", f"{webui_config.ENV_LOCAL_HOST_PORT}={local}"]
+    if cfg.every:
+        arguments += ["-e", f"{webui_config.ENV_ANY_HOST}=1"]
     if queue_folder is not None:
         arguments += ["-e", f"{webui_config.ENV_QUEUE_SOCKET}={webui_config.QUEUE_SOCKET_IN_CONTAINER}"]
     if results_folder is not None:
@@ -401,7 +393,7 @@ def _folders(root, *, create):
 
 
 def _config_payload(cfg, certificate, fingerprint, not_after):
-    return (json.dumps({"port": cfg.port, "addresses": list(cfg.addresses), "names": list(cfg.names), "certificate": certificate, "fingerprint": fingerprint, "not_after": not_after}, indent=2) + "\n").encode("utf-8")
+    return (json.dumps({"port": cfg.port, "addresses": [*([EVERY_ADDRESS] if cfg.every else []), *cfg.addresses], "names": list(cfg.names), "certificate": certificate, "fingerprint": fingerprint, "not_after": not_after}, indent=2) + "\n").encode("utf-8")
 
 
 def read_config(root):
@@ -426,8 +418,9 @@ def read_config(root):
         if any(_is_loopback(item) for item in saved["addresses"]):
             loopback = True
             raise ValueError()
-        cfg = check_ports(WebuiConfig(port=parse_port(str(saved["port"])), addresses=parse_addresses(",".join(saved["addresses"])), names=parse_names(",".join(saved["names"]))))
-        if list(cfg.addresses) != saved["addresses"] or list(cfg.names) != saved["names"]:
+        listed = [item for item in saved["addresses"] if item not in WILDCARDS]
+        cfg = WebuiConfig(port=parse_port(str(saved["port"])), addresses=parse_addresses(",".join(listed)), names=parse_names(",".join(saved["names"])), every=len(listed) != len(saved["addresses"]))
+        if list(cfg.addresses) != listed or list(cfg.names) != saved["names"]:
             raise ValueError()
     except (ValueError, Refused):
         if loopback:
@@ -546,11 +539,7 @@ def _setup(root, ask, ask_choice, uid, gid):
 
     print()
     port = _ask_valid(ask, parse_port, "Port of the web UI (1024-65535)", old.port, tag="webui_port")
-    addresses = _ask_valid(ask, lambda text: check_ports(WebuiConfig(port=port, addresses=parse_addresses(text))).addresses, "Listen addresses besides 127.0.0.1 (IP addresses, comma-separated; empty for none)", ", ".join(old.addresses), tag="webui_addresses")
-    for line in wildcard_lines(WebuiConfig(port=port, addresses=addresses))[:1]:
-        print(f"    {line}")
-    names = _ask_valid(ask, parse_names, "Names the page is reached by besides localhost (comma-separated; empty for none)", ", ".join(old.names), tag="webui_names")
-    cfg = WebuiConfig(port=port, addresses=addresses, names=names)
+    cfg = _ask_valid(ask, lambda text: parse_reach(text, port), "Addresses the page is opened at besides this machine (IP addresses or names, comma-separated; all for every address; empty for none)", reach_answer(old), tag="webui_addresses")
     choice = ask_choice("Certificate", ["generate", "own"], default="generate", tag="webui_certificate")
     own = None
     if choice == "own":
@@ -597,16 +586,17 @@ def _setup(root, ask, ask_choice, uid, gid):
     print("\n  The web UI is set up.")
     print(f"  Certificate SHA-256 fingerprint: {fingerprint}")
     print(f"  Valid until: {not_after}")
-    print("  Once started (python sdp.py webui start), the page answers on:")
-    for line in address_lines(cfg):
+    if cfg.every:
+        print("  Once started (python sdp.py webui start):")
+    for line in address_lines(cfg, "  Once started (python sdp.py webui start), the page answers on:"):
         print(line)
-    for line in wildcard_lines(cfg)[1:]:
-        print(f"  {line}")
+    if cfg.every and choice == "generate":
+        print(f"  The certificate is for {', '.join(host_values(cfg))}: opened under another address, the browser shows its certificate warning; accept it only when the fingerprint it shows is the one above.")
     return 0
 
 
 def cmd_setup(root):
-    """`sdp webui setup`: ask the port, the listen addresses, the names and the certificate; build the image; make or copy the certificate. Exit code 0, or 1 with one line."""
+    """`sdp webui setup`: ask the port, the addresses and names the page is opened at, and the certificate; build the image; make or copy the certificate. Exit code 0, or 1 with one line."""
     from social_data_pipeline.setup.utils import ask, ask_choice
 
     try:
@@ -812,8 +802,7 @@ def _start(root, uid, gid):
         if result.returncode != 0:
             _remove_container()
             print(f"  Error: the web UI did not start. Docker said: {_last_line(result)}")
-            ports = f"the ports {cfg.port} and {local_host_port(cfg)} are" if local_host_port(cfg) is not None else "the port is"
-            print(f"  Check that every listen address is an address of this machine and that {ports} not in use.")
+            print("  Check that every listen address is an address of this machine and that the port is not in use.")
             return 1
     probe = _docker(["docker", "exec", CONTAINER, "python", "-m", "social_data_pipeline.webui.probe"], timeout=60)
     word = probe.stdout.strip().splitlines()[-1] if probe.stdout.strip() else ""
@@ -830,11 +819,8 @@ def _start(root, uid, gid):
     print("  The web UI is started.")
     print(f"  Broker: {PROBE_LINES.get(word, 'the broker could not be asked from inside the container.')}")
     print(f"  Certificate SHA-256 fingerprint: {loaded[1].get('fingerprint', '-')}")
-    print("  The page answers on:")
-    for line in address_lines(cfg):
+    for line in address_lines(cfg, "  The page answers on:"):
         print(line)
-    for line in wildcard_lines(cfg):
-        print(f"  {line}")
     return 0
 
 
@@ -915,10 +901,14 @@ def cmd_status(root):
         return 0 if running else 1
     cfg, saved = loaded
     print("  Set up: yes")
-    local = local_host_port(cfg)
-    print(f"  Port: {cfg.port}" + ("" if local is None else f" ({LOCAL_ADDRESS} and {LOCAL_NAME}: {local})"))
-    print(f"  Listen addresses: {', '.join([LOCAL_ADDRESS if local is None else f'{LOCAL_ADDRESS} (on port {local})', *cfg.addresses])}")
-    print(f"  Names: {', '.join([LOCAL_NAME, *cfg.names])}")
+    print(f"  Port: {cfg.port}")
+    if cfg.every:
+        print("  Listen addresses: all")
+        if saved.get("certificate") == "generate":
+            print(f"  In the certificate: {', '.join(host_values(cfg))}")
+    else:
+        print(f"  Listen addresses: {', '.join([LOCAL_ADDRESS, *cfg.addresses])}")
+        print(f"  Names: {', '.join([LOCAL_NAME, *cfg.names])}")
     try:
         pem = _read_tls_file(root, CERT_NAME)
         fingerprint = certificate_fingerprint(pem) if pem is not None else "missing"
@@ -926,10 +916,8 @@ def cmd_status(root):
         fingerprint = refusal.message
     print(f"  Certificate SHA-256 fingerprint: {fingerprint}")
     print(f"  Certificate valid until: {saved.get('not_after') if isinstance(saved.get('not_after'), str) else '-'}")
-    for line in address_lines(cfg):
+    for line in address_lines(cfg, None):
         print(line)
-    for line in wildcard_lines(cfg):
-        print(f"  {line}")
     return 0 if running else 1
 
 

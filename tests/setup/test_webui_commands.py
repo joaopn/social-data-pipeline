@@ -2,9 +2,8 @@
 
 The contracts pinned here, each test naming the bug class it catches:
 
-- The answers: every refused form of a listen address (the words for every address with the addresses to type instead, 0.0.0.0 in IPv6 form, multicast, a zone, 127.0.0.1 again, a duplicate, anything but an IP address) and of a name (a wildcard, upper case, a trailing dot, an empty or over-long label, an over-long name, a number as last label, localhost again, a duplicate); the port's range.
-- The `docker create` argument list, pinned literally for a setting with two addresses and two names; the certificate's `openssl` argument list, with every value its own argument.
-- Every address (`0.0.0.0`, `::`): accepted in its short form, never a `Host` value or a name of the certificate; one publication per family that covers the family's other addresses; 127.0.0.1 then on the next host port with its setting (the lists without them unchanged); port 65535 refused with them at setup and in saved settings; the warning at setup, start and status, and the addresses printed for this machine on the next port; the saved settings read back and offered again.
+- The answers: the one question's answer sorted into addresses and names, `all` and its other spellings (alone or beside other entries) as every address, and a refused entry named; every refused form of a listen address (multicast, a zone, 127.0.0.1 again, a duplicate, anything but an IP address) and of a name (a wildcard, upper case, a trailing dot, an empty or over-long label, an over-long name, a number as last label, localhost again, a duplicate); the port's range.
+- The `docker create` argument list, pinned literally for a setting with two addresses and two names and for every address (one publication on every address, `SDP_WEBUI_ANY_HOST=1`); what setup, start and status print in both modes; a saved setting of every address (`0.0.0.0` or `::`) read back, and offered again as the default; the certificate's `openssl` argument list, with every value its own argument.
 - `start`: refused when not set up, under rootless Docker or user-namespace remapping, for a container of another deployment; "already running" with exit code 0; a failed create or start removes the container and returns 1 with Docker's last line; a server that ends right after its start is reported with its last log lines, removed, and the command returns 1; the broker is asked from inside the container. 127.0.0.1 is published to the local port 8444, every other listen address (IPv6 ones included) to 8443.
 - `unsetup` removes nothing through a symbolic link: a linked `.sdp` is refused and what it points at stays.
 - The Queue window's mounts (`_queue_mounts`): the `docker create` list pinned with none, one and both; `start` makes `data/jobs/control` 0700 whatever the umask; a linked or foreign control folder, a missing or linked `data/jobs`: no mount and the line; the results folder from `.env` (by its key), its default, a comma in its path, `data/jobs` itself, a folder above it (through a link too), a folder inside the control folder: each with its line and the right mounts; `.env` is never printed; `status` says which are mounted.
@@ -175,7 +174,7 @@ def scripted(answers):
 
 def set_up(root, docker, answers=None):
     set_management_password(root)
-    ask, ask_choice, _ = scripted(list(answers if answers is not None else ["8443", "192.0.2.10, 2001:db8::5", "pipeline.example, ops.example", "generate"]))
+    ask, ask_choice, _ = scripted(list(answers if answers is not None else ["8443", "192.0.2.10, 2001:db8::5, pipeline.example, ops.example", "generate"]))
     return host._setup(str(root), ask, ask_choice, UID, GID)
 
 
@@ -183,8 +182,7 @@ def set_up(root, docker, answers=None):
 
 
 @pytest.mark.parametrize("answer, says", [
-    ("*", "type 0.0.0.0"), ("all", "type 0.0.0.0"), ("ANY", "type 0.0.0.0"), ("::ffff:0.0.0.0", "type 0.0.0.0"),
-    ("0.0.0.0, 0.0.0.0", "twice"), (":: , [::]", "twice"), ("::, 0::0", "twice"),
+    ("0.0.0.0", "every address"), ("::", "every address"),
     ("224.0.0.1", "multicast"), ("ff02::1", "multicast"),
     ("fe80::1%eth0", "zone"),
     ("127.0.0.1", "always served on 127.0.0.1"), ("::1", "always served on 127.0.0.1"), ("127.0.0.2", "always served on 127.0.0.1"), ("127.255.0.9", "always served on 127.0.0.1"), ("[::1]", "always served on 127.0.0.1"), ("::ffff:127.0.0.1", "always served on 127.0.0.1"),
@@ -192,24 +190,35 @@ def set_up(root, docker, answers=None):
     ("pipeline.example", "not an IP address"), ("192.0.2.0/24", "not an IP address"), ("192.0.2.256", "not an IP address"), ("010.0.0.1", "not an IP address"),
 ])
 def test_refused_listen_addresses(answer, says):
-    """Bug class: a word for every address taken as a name of something, 0.0.0.0 in an IPv6 form that slips past the wildcard rules, one Docker cannot publish (a zone, multicast) or a duplicate, accepted and found out only when the container fails to start, or never."""
+    """Bug class: a listen address that publishes the page on every network (0.0.0.0, ::), one Docker cannot publish (a zone, multicast) or a duplicate, accepted and found out only when the container fails to start, or never."""
     with pytest.raises(host.Refused) as caught:
         host.parse_addresses(answer)
     assert says in caught.value.message
 
 
-def test_the_words_for_every_address_say_what_to_type():
-    """Bug class: "all" refused without saying how every address is chosen, so the operator tries the next spelling of it."""
+def test_the_one_answer_is_sorted_into_addresses_and_names():
+    """Bug class: a name taken for an address or the reverse (published, or left out of the certificate), or the order of the `Host` values changed."""
+    assert host.parse_reach(" 192.0.2.10, pipeline.example ,[2001:db8::5],, ops.example", 8443) == host.WebuiConfig(port=8443, addresses=("192.0.2.10", "2001:db8::5"), names=("pipeline.example", "ops.example"))
+    assert host.parse_reach("", 9443) == host.WebuiConfig(port=9443)
+
+
+@pytest.mark.parametrize("word", ["all", "ALL", "any", "*", "0.0.0.0", "::", "[::]", "0:0::0"])
+def test_each_word_for_every_address_is_every_address(word):
+    """Bug class: one spelling of "every address" refused or published as an address, or the entries beside it lost."""
+    assert host.parse_reach(word, 8443) == host.WebuiConfig(port=8443, every=True)
+    assert host.parse_reach(f"192.0.2.10, {word}, pipeline.example", 8443) == host.WebuiConfig(port=8443, addresses=("192.0.2.10",), names=("pipeline.example",), every=True)
+
+
+@pytest.mark.parametrize("answer, says", [
+    ("under_score.example", "'under_score.example'"), ("192.0.2.300", "'192.0.2.300'"), ("Pipeline.example", "'Pipeline.example'"), ("fe80::1%eth0", "'fe80::1%eth0'"),
+    ("224.0.0.1", "'224.0.0.1'"), ("pipeline.example, 192.0.2.1, pipeline.example", "'pipeline.example' is named twice"), ("192.0.2.1, all, 192.0.2.1", "'192.0.2.1' is named twice"),
+    ("localhost", "localhost is always there"), ("all, 127.0.0.1", "always served on 127.0.0.1"),
+])
+def test_a_refused_entry_of_the_one_answer_is_named(answer, says):
+    """Bug class: an entry that is neither an address, a name nor every address accepted, or refused without saying which."""
     with pytest.raises(host.Refused) as caught:
-        host.parse_addresses("all")
-    assert caught.value.message == host.ALL_ADDRESS_WORDS_REFUSED and "0.0.0.0" in caught.value.message and "::" in caught.value.message
-
-
-def test_every_address_is_accepted_in_its_short_form():
-    """Bug class: 0.0.0.0 or :: refused, or kept as typed (`[::]`, `0::0`), which then matches none of the checks that leave it out of the Host values, the certificate and the publications."""
-    assert host.parse_addresses("0.0.0.0") == ("0.0.0.0",)
-    assert host.parse_addresses("[::]") == ("::",) and host.parse_addresses("0:0::0") == ("::",)
-    assert host.parse_addresses("0.0.0.0, 192.0.2.5, ::, 2001:db8::5") == ("0.0.0.0", "192.0.2.5", "::", "2001:db8::5")
+        host.parse_reach(answer, 8443)
+    assert says in caught.value.message
 
 
 def test_listen_addresses_are_read_in_their_short_form():
@@ -346,6 +355,22 @@ def test_only_127_0_0_1_is_published_to_the_local_port(address):
     published = [arguments[index + 1] for index, word in enumerate(arguments) if word == "-p"]
     shown = f"[{address}]" if ":" in address else address
     assert published == ["127.0.0.1:9443:8444", f"{shown}:9443:8443"]
+
+
+def test_the_create_argument_list_for_every_address_is_pinned():
+    """Bug class: every address published beside a publication of 127.0.0.1 (Docker refuses the port twice) or on a second port, the any-host setting missing (the page refuses every address it was not told), or the addresses listed beside `all` published apart."""
+    cfg = host.WebuiConfig(port=8443, addresses=("192.0.2.10",), names=("pipeline.example",), every=True)
+    assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1") == [
+        *PINNED_START,
+        "-p", "8443:8443",
+        "-e", "SDP_WEBUI_HOSTS=localhost,127.0.0.1,192.0.2.10,pipeline.example",
+        "-e", "SDP_WEBUI_PORT=8443",
+        "-e", "SDP_WEBUI_SOCKET=/run/sdp/broker.sock",
+        "-e", "SDP_WEBUI_GATEWAY=172.30.0.1",
+        "-e", "SDP_WEBUI_ANY_HOST=1",
+        "sdp-webui",
+    ]
+    assert host.subject_alt_names(cfg) == "DNS:localhost,IP:127.0.0.1,IP:192.0.2.10,DNS:pipeline.example"
 
 
 def test_the_certificate_argument_list_passes_each_value_as_one_argument():
@@ -605,12 +630,26 @@ def test_setup_writes_private_files_and_prints_the_fingerprint(root, docker, cap
     assert ["docker", "build", "-f", os.path.join(str(root), "Dockerfile.webui"), "-t", "sdp-webui", str(root)] in docker.calls
 
 
+def test_with_the_operators_certificate_nothing_is_said_about_the_names_in_it(root, docker, tmp_path, capsys):
+    """Bug class: in the every-address mode, setup and status listing the names of a certificate they did not make (the operator's own may hold other names, and then no browser warning comes)."""
+    certificate, key = tmp_path / "mine.crt", tmp_path / "mine.key"
+    certificate.write_bytes(CERT_PEM)
+    key.write_bytes(KEY_PEM)
+    assert set_up(root, docker, ["9443", "all", "own", str(certificate), str(key)]) == 0
+    out = capsys.readouterr().out
+    assert "The page answers on every address of this machine, port 9443" in out
+    assert "The certificate is for" not in out
+    assert host.cmd_status(root) in (0, 1)
+    status = capsys.readouterr().out
+    assert "Listen addresses: all" in status and "In the certificate" not in status
+
+
 def test_setup_with_the_operators_certificate_copies_it_and_puts_no_secret_on_a_command_line(root, docker, tmp_path):
     """Bug class: the operator's key passed to Docker or openssl as an argument (visible in the process list), linked instead of copied (so the container mounts a file outside the state folder), or a key that does not belong to the certificate accepted."""
     certificate, key = tmp_path / "mine.crt", tmp_path / "mine.key"
     certificate.write_bytes(CERT_PEM)
     key.write_bytes(KEY_PEM)
-    assert set_up(root, docker, ["9443", "", "", "own", str(certificate), str(key)]) == 0
+    assert set_up(root, docker, ["9443", "", "own", str(certificate), str(key)]) == 0
     tls = root / ".sdp" / "webui" / "tls"
     assert (tls / "key.pem").read_bytes() == KEY_PEM and not (tls / "key.pem").is_symlink()
     assert stat.S_IMODE((tls / "key.pem").stat().st_mode) == 0o600
@@ -633,7 +672,7 @@ def test_setup_with_a_key_of_another_certificate_is_refused(root, docker, tmp_pa
 
     monkeypatch.setattr(docker, "openssl", mismatched)
     with pytest.raises(host.Refused) as caught:
-        set_up(root, docker, ["9443", "", "", "own", str(certificate), str(key)])
+        set_up(root, docker, ["9443", "", "own", str(certificate), str(key)])
     assert "not the key of the certificate" in caught.value.message
     assert not (root / ".sdp" / "webui" / "config.json").exists()
 
@@ -643,14 +682,14 @@ def test_every_setup_prompt_has_a_tag_listed_in_the_questions(root, docker, monk
     set_management_password(root)
     monkeypatch.setattr(sdp, "ROOT", root)
     monkeypatch.setenv("SDP_TAGGED_MODE", "1")
-    answers = iter(["8443", "", "", "1"])
+    answers = iter(["8443", "", "1"])
     prompts = []
     monkeypatch.setattr("builtins.input", lambda text="": prompts.append(text) or next(answers))
     args = sdp.build_parser().parse_args(["webui", "setup"])
     assert args.func(args) == 0
     shown = capsys.readouterr().out + "".join(prompts)
     questions = yaml.safe_load((REPO_ROOT / "tests" / "e2e" / "questions.yaml").read_text())
-    for tag in ("webui_port", "webui_addresses", "webui_names", "webui_certificate"):
+    for tag in ("webui_port", "webui_addresses", "webui_certificate"):
         assert f"[{tag}]" in shown and tag in questions
     for tag in ("webui_cert_path", "webui_key_path", "webui_unsetup_confirm"):
         assert tag in questions
@@ -658,9 +697,10 @@ def test_every_setup_prompt_has_a_tag_listed_in_the_questions(root, docker, monk
 
 def test_setup_asks_again_after_a_refused_answer(root, docker, capsys):
     """Bug class: a refused answer ending the setup (the operator starts over) or taken anyway."""
-    assert set_up(root, docker, ["80", "8443", "all", "", "*.example", "", "generate"]) == 0
+    assert set_up(root, docker, ["80", "8443", "*.example", "192.0.2.300, all", "all", "generate"]) == 0
     out = capsys.readouterr().out
-    assert "1024 to 65535" in out and "type 0.0.0.0" in out and "wildcard" in out
+    assert "1024 to 65535" in out and "wildcard" in out and "'192.0.2.300'" in out
+    assert host.read_config(str(root))[0] == host.WebuiConfig(port=8443, every=True)
 
 
 def test_setup_refuses_while_the_container_exists(root, docker):
@@ -999,128 +1039,62 @@ def test_status_says_whether_the_chats_folder_is_mounted(deployment, docker, cap
     assert "Chat: the chat's socket folder is mounted" in capsys.readouterr().out
 
 
-# ── every address (0.0.0.0, ::) ─────────────────────────────────────────────
+# ── what setup, start and status print, in both modes ──────────────────────
 
 
-def wildcard_ports(*published, local=None):
-    """The ports and settings of a create list without optional mounts: 127.0.0.1 to the local port, then `published` to 8443, then the settings (with the local host port when given)."""
-    return [
-        "-p", f"127.0.0.1:{local or 8443}:8444",
-        *[word for address in published for word in ("-p", f"{address}:8443:8443")],
-        "-e", "SDP_WEBUI_HOSTS=localhost,127.0.0.1",
-        "-e", "SDP_WEBUI_PORT=8443",
-        "-e", "SDP_WEBUI_SOCKET=/run/sdp/broker.sock",
-        "-e", "SDP_WEBUI_GATEWAY=172.30.0.1",
-        *(["-e", f"SDP_WEBUI_LOCAL_HOST_PORT={local}"] if local else []),
-    ]
-
-
-@pytest.mark.parametrize("addresses, published", [
-    (("0.0.0.0",), ["0.0.0.0"]),
-    (("::",), ["[::]"]),
-    (("0.0.0.0", "::"), ["0.0.0.0", "[::]"]),
-])
-def test_every_address_is_published_once_and_moves_127_0_0_1_to_the_next_port(addresses, published):
-    """Bug class: 127.0.0.1 and every address published on one host port (Docker refuses the start), the local port's host port not passed to the container (its Host refused there), or an every-address form reaching the Host values."""
-    cfg = host.WebuiConfig(port=8443, addresses=addresses)
-    assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1") == [*PINNED_START, *wildcard_ports(*published, local=8444), "sdp-webui"]
-
-
-def test_every_address_covers_the_other_addresses_of_its_family():
-    """Bug class: an IPv4 address published beside 0.0.0.0 on the same host port (Docker refuses it), or an IPv6 address dropped because 0.0.0.0 covers IPv4 only; a listed address missing from the Host values or the certificate."""
-    cfg = host.WebuiConfig(port=8443, addresses=("0.0.0.0", "192.0.2.10", "2001:db8::5"), names=("pipeline.example",))
-    arguments = host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1")
-    assert arguments == [
-        *PINNED_START,
-        "-p", "127.0.0.1:8444:8444",
-        "-p", "0.0.0.0:8443:8443",
-        "-p", "[2001:db8::5]:8443:8443",
-        "-e", "SDP_WEBUI_HOSTS=localhost,127.0.0.1,192.0.2.10,[2001:db8::5],pipeline.example",
-        "-e", "SDP_WEBUI_PORT=8443",
-        "-e", "SDP_WEBUI_SOCKET=/run/sdp/broker.sock",
-        "-e", "SDP_WEBUI_GATEWAY=172.30.0.1",
-        "-e", "SDP_WEBUI_LOCAL_HOST_PORT=8444",
-        "sdp-webui",
-    ]
-    both = host.WebuiConfig(port=9443, addresses=("2001:db8::5", "::", "0.0.0.0", "192.0.2.10"))
-    listed = host.create_arguments("/srv/deploy", 1000, 1001, both, "172.30.0.1")
-    published = [listed[index + 1] for index, word in enumerate(listed) if word == "-p"]
-    assert published == ["127.0.0.1:9444:8444", "[::]:9443:8443", "0.0.0.0:9443:8443"]
-
-
-def test_every_address_is_no_host_value_and_no_name_of_the_certificate():
-    """Bug class: `0.0.0.0` or `[::]` accepted as a Host (a client could send it), or written into the certificate as an address it vouches for."""
-    cfg = host.WebuiConfig(port=8443, addresses=("0.0.0.0", "192.0.2.5", "::", "2001:db8::5"), names=("pipeline.example",))
-    assert host.host_values(cfg) == ["localhost", "127.0.0.1", "192.0.2.5", "[2001:db8::5]", "pipeline.example"]
-    assert host.subject_alt_names(cfg) == "DNS:localhost,IP:127.0.0.1,IP:192.0.2.5,IP:2001:db8::5,DNS:pipeline.example"
-
-
-WARNING = "Warning: 0.0.0.0 publishes the page on every IPv4 address of this machine, so it also answers on networks you did not choose: a VPN, an interface added later, and Docker's own networks (other containers on this machine reach the page there). It still answers only under the names and addresses listed, and needs the management password."
-LOCAL_LINE = "At this machine, logins at https://127.0.0.1:8444/ (or https://localhost:8444/) have their own budget of wrong passwords; a login at https://127.0.0.1:8443/ counts as one from elsewhere."
-WILDCARD_ADDRESSES = "    At this machine:\n      https://localhost:8444/\n      https://127.0.0.1:8444/\n    Under the names and addresses listed:\n      https://192.0.2.10:8443/\n      https://pipeline.example:8443/\n"
-
-
-def test_the_warnings_name_both_wildcards():
-    """Bug class: the warning naming IPv4 when :: was chosen, or missing for one of the two."""
-    lines = host.wildcard_lines(host.WebuiConfig(port=8443, addresses=("::", "0.0.0.0")))
-    assert lines[0].startswith("Warning: 0.0.0.0 and :: publish the page on every IPv4 and IPv6 address of this machine,")
-    assert host.wildcard_lines(host.WebuiConfig(port=8443, addresses=("192.0.2.10",))) == []
-    # With :: alone nothing is published on 127.0.0.1 at the page's own port: the line must not say that a login there works.
-    only_ipv6 = host.wildcard_lines(host.WebuiConfig(port=8443, addresses=("::",)))
-    assert only_ipv6[1] == "At this machine, logins at https://127.0.0.1:8444/ (or https://localhost:8444/) have their own budget of wrong passwords; https://127.0.0.1:8443/ may not answer, and a login there counts as one from elsewhere."
-
-
-def test_setup_start_and_status_warn_and_send_this_machine_to_the_next_port(root, docker, capsys):
-    """Bug class: every address chosen without a word about the networks it opens, or the operator sent to https://127.0.0.1:<port>/ at this machine, where a login counts as from elsewhere and shares a limit with every client Docker shows as the gateway."""
-    assert set_up(root, docker, ["8443", "0.0.0.0, 192.0.2.10", "pipeline.example", "generate"]) == 0
-    out = capsys.readouterr().out
-    assert f"    {WARNING}\n" in out and out.index(WARNING) < out.index("Building the image")
-    assert WILDCARD_ADDRESSES + f"  {LOCAL_LINE}\n" in out and "https://127.0.0.1:8443/" not in out.replace(LOCAL_LINE, "")
-    assert host._start(str(root), UID, GID) == 0
-    out = capsys.readouterr().out
-    assert WILDCARD_ADDRESSES + f"  {WARNING}\n  {LOCAL_LINE}\n" in out and "https://127.0.0.1:8443/" not in out.replace(LOCAL_LINE, "")
-    assert host.cmd_status(root) == 0
-    out = capsys.readouterr().out
-    assert "  Port: 8443 (127.0.0.1 and localhost: 8444)\n" in out and "  Listen addresses: 127.0.0.1 (on port 8444), 0.0.0.0, 192.0.2.10\n" in out
-    assert WILDCARD_ADDRESSES + f"  {WARNING}\n  {LOCAL_LINE}\n" in out and "https://127.0.0.1:8443/" not in out.replace(LOCAL_LINE, "")
-
-
-def test_every_address_alone_says_that_nothing_answers_from_elsewhere():
-    """Bug class: 0.0.0.0 chosen without any address or name, and the operator not told that every request from another machine is then refused for its Host."""
-    assert host.address_lines(host.WebuiConfig(port=8443, addresses=("::",)))[-1].startswith("      none: from another machine every request is refused. Add the address or name")
-
-
-def test_a_failed_start_with_every_address_names_both_ports(root, docker, capsys):
-    """Bug class: a start refused because the next port is in use, with a hint that names only the page's port."""
-    set_up(root, docker, ["8443", "::", "", "generate"])
-    docker.fail["create"] = "Error response from daemon: port is already allocated"
+def printed(root, docker, capsys, answers):
+    """What setup, start and status print after their first lines: (setup's lines from "The web UI is set up.", start's from "The web UI is started.", status's from "Set up: yes")."""
     capsys.readouterr()
-    assert host._start(str(root), UID, GID) == 1
-    assert "that the ports 8443 and 8444 are not in use." in capsys.readouterr().out
+    assert set_up(root, docker, answers) == 0
+    setup = capsys.readouterr().out
+    assert host._start(str(root), UID, GID) == 0
+    start = capsys.readouterr().out
+    assert host.cmd_status(root) == 0
+    status = capsys.readouterr().out
+    return setup[setup.index("  The web UI is set up."):], start[start.index("  The web UI is started."):], status[status.index("  Set up: yes"):]
 
 
-def test_port_65535_with_every_address_is_refused_at_setup_and_in_saved_settings(root, docker, capsys):
-    """Bug class: 127.0.0.1 published on port 65536 (Docker refuses the start), from the setup or from a settings file edited by hand."""
-    assert set_up(root, docker, ["65535", "0.0.0.0", "", "", "generate"]) == 0
-    assert host.NO_NEXT_PORT in capsys.readouterr().out
-    assert host.read_config(str(root))[0].addresses == ()
+def test_what_a_list_of_addresses_prints(root, docker, capsys):
+    """Bug class: an address the page answers on missing from what the operator is told, or a line of the every-address mode in the list mode."""
+    fingerprint = host.certificate_fingerprint(CERT_PEM)
+    addresses = "    https://localhost:9443/\n    https://127.0.0.1:9443/\n    https://192.0.2.10:9443/\n    https://pipeline.example:9443/\n"
+    setup, start, status = printed(root, docker, capsys, ["9443", "pipeline.example, 192.0.2.10", "generate"])
+    assert setup == f"  The web UI is set up.\n  Certificate SHA-256 fingerprint: {fingerprint}\n  Valid until: Feb 23 19:43:49 2029 GMT\n  Once started (python sdp.py webui start), the page answers on:\n" + addresses
+    assert start == f"  The web UI is started.\n  Broker: {host.PROBE_LINES['answered']}\n  Certificate SHA-256 fingerprint: {fingerprint}\n  The page answers on:\n" + addresses
+    assert status == f"  Set up: yes\n  Port: 9443\n  Listen addresses: 127.0.0.1, 192.0.2.10\n  Names: localhost, pipeline.example\n  Certificate SHA-256 fingerprint: {fingerprint}\n  Certificate valid until: Feb 23 19:43:49 2029 GMT\n" + addresses
+
+
+def test_what_every_address_prints(root, docker, capsys):
+    """Bug class: the operator told of addresses or ports the page does not answer on, not warned that every address includes networks not chosen, or not told why the browser warns about the certificate under another address."""
+    fingerprint = host.certificate_fingerprint(CERT_PEM)
+    every = f"  The page answers on every address of this machine, port 9443: https://<address or name>:9443/\n  {host.EVERY_WARNING}\n"
+    setup, start, status = printed(root, docker, capsys, ["9443", "all, pipeline.example", "generate"])
+    assert host.EVERY_WARNING == "Warning: every address includes networks you did not choose (a VPN, an interface added later, Docker's own networks). The page needs the management password everywhere."
+    assert setup == f"  The web UI is set up.\n  Certificate SHA-256 fingerprint: {fingerprint}\n  Valid until: Feb 23 19:43:49 2029 GMT\n  Once started (python sdp.py webui start):\n" + every + "  The certificate is for localhost, 127.0.0.1, pipeline.example: opened under another address, the browser shows its certificate warning; accept it only when the fingerprint it shows is the one above.\n"
+    assert start == f"  The web UI is started.\n  Broker: {host.PROBE_LINES['answered']}\n  Certificate SHA-256 fingerprint: {fingerprint}\n" + every
+    assert status == f"  Set up: yes\n  Port: 9443\n  Listen addresses: all\n  In the certificate: localhost, 127.0.0.1, pipeline.example\n  Certificate SHA-256 fingerprint: {fingerprint}\n  Certificate valid until: Feb 23 19:43:49 2029 GMT\n" + every
+    saved = json.loads((root / ".sdp" / "webui" / "config.json").read_text())
+    assert saved["addresses"] == ["0.0.0.0"] and saved["names"] == ["pipeline.example"]
+    created = next(call for call in docker.calls if call[1] == "create")
+    assert [created[index + 1] for index, word in enumerate(created) if word == "-p"] == ["9443:8443"] and "SDP_WEBUI_ANY_HOST=1" in created
+
+
+@pytest.mark.parametrize("addresses", [["0.0.0.0", "192.0.2.10"], ["::"], ["192.0.2.10", "0.0.0.0", "::"]])
+def test_a_saved_every_address_of_the_previous_version_reads_as_every_address(root, docker, addresses):
+    """Bug class: a settings file of the version that published 0.0.0.0 and :: as addresses refused at start, or read as a list (the page then refuses every address it was not told)."""
+    set_up(root, docker)
     path = root / ".sdp" / "webui" / "config.json"
     saved = json.loads(path.read_text())
-    saved["addresses"] = ["::"]
+    saved["addresses"] = addresses
     path.write_text(json.dumps(saved))
-    with pytest.raises(host.Refused) as caught:
-        host.read_config(str(root))
-    assert "cannot be used" in caught.value.message
-    saved["port"] = 65534
-    path.write_text(json.dumps(saved))
-    assert host.read_config(str(root))[0] == host.WebuiConfig(port=65534, addresses=("::",))
+    cfg = host.read_config(str(root))[0]
+    assert cfg.every and cfg.addresses == tuple(address for address in addresses if address not in ("0.0.0.0", "::"))
 
 
-def test_saved_wildcards_are_read_back_and_offered_again(root, docker):
-    """Bug class: a settings file with 0.0.0.0 or :: refused at start, or a second setup that drops them from the defaults it offers."""
-    assert set_up(root, docker, ["8443", "0.0.0.0, ::, 192.0.2.10", "", "generate"]) == 0
-    assert json.loads((root / ".sdp" / "webui" / "config.json").read_text())["addresses"] == ["0.0.0.0", "::", "192.0.2.10"]
-    assert host.read_config(str(root))[0] == host.WebuiConfig(port=8443, addresses=("0.0.0.0", "::", "192.0.2.10"))
+@pytest.mark.parametrize("answer, default", [("192.0.2.10, pipeline.example, 2001:db8::5", "192.0.2.10, 2001:db8::5, pipeline.example"), ("pipeline.example, any", "all, pipeline.example"), ("", "")])
+def test_a_second_setup_offers_the_previous_answer(root, docker, answer, default):
+    """Bug class: a second setup that offers an empty answer (accepting it drops every address and name), or offers `0.0.0.0` where the operator typed `all`."""
+    set_up(root, docker, ["8443", answer, "generate"])
     defaults = {}
 
     def ask(prompt, default=None, tag=None):
@@ -1128,5 +1102,5 @@ def test_saved_wildcards_are_read_back_and_offered_again(root, docker):
         return "" if default is None else str(default)
 
     assert host._setup(str(root), ask, lambda prompt, options, default=None, tag=None: default, UID, GID) == 0
-    assert defaults["webui_addresses"] == "0.0.0.0, ::, 192.0.2.10"
-    assert host.read_config(str(root))[0].addresses == ("0.0.0.0", "::", "192.0.2.10")
+    assert defaults["webui_addresses"] == default
+    assert host.reach_answer(host.read_config(str(root))[0]) == default

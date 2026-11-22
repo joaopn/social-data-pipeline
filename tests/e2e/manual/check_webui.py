@@ -3,7 +3,7 @@
 
 It is not collected by pytest. It builds a throwaway deployment in a temp folder: a copy of the CLI, the package, `Dockerfile.webui` and `requirements-webui.txt`, and one source `demo`. The image, the container and the network get throwaway names (`sdp-webui-check-<hex>`), set on the host module before it is used. What it shows:
 
-1. `sdp.py broker passwd` and `sdp.py broker start` through the CLI; then the host module's setup with scripted answers (a free port, the gateway address of Docker's default `bridge` network as the one other listen address, one name, a generated certificate): the image is built, the files of `.sdp/webui` are private, the certificate's fingerprint is the SHA-256 of the certificate.
+1. `sdp.py broker passwd` and `sdp.py broker start` through the CLI; then the host module's setup with scripted answers (a free port, the gateway address of Docker's default `bridge` network and one name as the one answer of addresses and names, a generated certificate): the image is built, the files of `.sdp/webui` are private, the certificate's fingerprint is the SHA-256 of the certificate.
 2. The host module's start: the container is created and started and the broker answers from inside it.
 3. Over HTTPS, with the generated certificate as the only trust root: `/healthz`; a foreign `Host` refused; the login page's headers; a wrong and a right login (a form post with the right `Origin`); the Overview lists the source `demo`; a POST with a foreign `Origin` refused. Then the actions, through the pages as a browser's forms send them: a run of the profile `parse` of `demo` (the deployment's compose file runs a program that prints a line every second and exits with code 3 on an interrupt) chosen, shown on its pending page with its command, confirmed and linked from its outcome; its output followed through the output view until it holds the program's lines; the run cancelled through its pending page, and its output view then stopping with the line of the interrupt; `db.stop` confirmed; a database admin password kept for the session; `db.unsetup_jobs` (a step-up verb) refused with a wrong management password, the pending action kept, and run with the right one; the audit view listing those calls; and no password and no token of 43 characters but the page's own form token in any page. With `--browser PYTHON`, `check_webui_browser.py` is run with that interpreter (one with Playwright) against the running page. Then the logout (the old cookie no longer works).
 4. The channel of a login needs both signs of the machine itself (the local port, and the gateway's address, as which Docker shows a client on 127.0.0.1): wrong logins through 127.0.0.1 until the web UI's own limit refuses them, after which the broker's `local` budget is empty (a login sent straight to the broker's socket on `local` is `throttled`, on `remote` it is not), and a right login through the bridge address (the other port, which Docker reaches through its proxy) still succeeds: it was sent as `remote`.
@@ -11,7 +11,7 @@ It is not collected by pytest. It builds a throwaway deployment in a temp folder
 6. From inside the container: the broker's socket answers `hello`; a name on the internet does not resolve and an address on it cannot be reached; nothing can be written to `/run/sdp`, `/tls` or the root.
 7. The container's log has one line per request with the method, the path and the status only, and no password.
 8. The host module's stop; the container is gone. Then a key that cannot be read: start says the server ended, prints its last log lines (which hold nothing of the key file), removes the container and returns 1.
-9. Every IPv4 address: the broker restarted (its budgets whole again), then setup again on a new free port with `0.0.0.0` and the bridge address as listen addresses, and start. The page answers on 127.0.0.1 and on the bridge address (covered by `0.0.0.0`) with the name and with the address in `Host`; a `Host` that is not listed is refused, and so is `127.0.0.1:<port+1>` on the page's port; `https://127.0.0.1:<port+1>/` answers, but not under the name. Wrong logins through `127.0.0.1:<port+1>` until the web UI's own limit refuses them empty the broker's `local` budget, while a right login through `127.0.0.1:<port>` (the ordinary container port) still succeeds. `docker port` shows exactly the two publications (127.0.0.1 on the next port to 8444, `0.0.0.0` to 8443). The stop.
+9. Every address: setup again on a new free port with `all` typed alone, and start. The page answers at `https://127.0.0.1:<port>/` and, with that address as `Host` and an unlisted name as `Host`, at the bridge address, which nothing listed (the certificate's name not checked there, its chain still is); a login through the bridge address succeeds. `docker port` shows the one publication on every address, and neither the next port nor the local port. The stop.
 
 Clean-up, also when the check is interrupted: the container, the network and the image of the throwaway names are removed, so are the containers and the network of the deployment's compose project, the broker and every process of the deployment are killed, and the temp folder is deleted. What stays: the base image `python:3.13-slim` and Docker's build cache.
 """
@@ -182,7 +182,7 @@ def check_setup(deployment):
     check(code == 0, "`broker passwd` sets the management password")
     code, text = deployment.cli("broker", "start")
     check(code == 0 and "started" in text, "`broker start`: " + text.strip())
-    answers = [str(deployment.port), deployment.bridge, NAME, "generate"]
+    answers = [str(deployment.port), f"{deployment.bridge}, {NAME}", "generate"]
 
     def ask(prompt, default=None, tag=None):
         return answers.pop(0)
@@ -457,18 +457,6 @@ def check_stop(deployment):
     check(deployment.docker("ps", "-a", "-q", "--filter", f"name={deployment.name}").stdout.strip() == "", "the container was removed")
 
 
-def free_pair():
-    """A free port P of this machine with P + 1 free too."""
-    while True:
-        port = free_port()
-        try:
-            with socket.socket() as probe:
-                probe.bind(("127.0.0.1", port + 1))
-            return port
-        except OSError:
-            continue
-
-
 def wait_for(port):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -479,58 +467,34 @@ def wait_for(port):
 
 
 def check_every_address(deployment):
-    print("9. every IPv4 address (0.0.0.0)")
-    code, text = deployment.cli("broker", "stop")
-    check(code == 0, "`broker stop`: " + text.strip().splitlines()[-1])
-    code, text = deployment.cli("broker", "start")
-    check(code == 0 and "started" in text, "`broker start` again, so that its budgets are whole: " + text.strip())
-    port = free_pair()
-    local = port + 1
-    answers = [str(port), f"0.0.0.0, {deployment.bridge}", NAME, "generate"]
+    print("9. every address (all, typed alone)")
+    port = free_port()
+    answers = [str(port), "all", "generate"]
     shown = io.StringIO()
     with contextlib.redirect_stdout(shown):
         code = host._setup(str(deployment.root), lambda prompt, default=None, tag=None: answers.pop(0), lambda prompt, options, default=None, tag=None: answers.pop(0), os.getuid(), os.getgid())
     text = shown.getvalue()
-    check(code == 0 and "Warning: 0.0.0.0 publishes the page on every IPv4 address" in text and f"logins at https://127.0.0.1:{local}/" in text, f"setup on port {port} with 0.0.0.0 and {deployment.bridge}: it warns and names the local port {local}")
-    cafile = deployment.root / ".sdp" / "webui" / "tls" / "cert.pem"
+    check(code == 0 and f"every address of this machine, port {port}:" in text and host.EVERY_WARNING in text, f"setup on port {port} with `all` alone: it says where the page answers and warns")
     shown = io.StringIO()
     with contextlib.redirect_stdout(shown):
         code = host._start(str(deployment.root), os.getuid(), os.getgid())
     text = shown.getvalue()
-    print("\n".join("  | " + line for line in text.splitlines() if "Warning" in line or "At this machine" in line or "https://" in line))
-    check(code == 0 and f"https://127.0.0.1:{local}/" in text, "start created and started the container")
+    print("\n".join("  | " + line for line in text.splitlines() if "every address" in line))
+    check(code == 0, "start created and started the container")
     wait_for(port)
-    wait_for(local)
     time.sleep(1)
-    ordinary = Page(port, cafile)
-    check(ordinary.request("GET", "/healthz")[0] == 200, f"the page answers on 127.0.0.1:{port} (through 0.0.0.0)")
-    bridge = Page(port, cafile, deployment.bridge)
-    for name in (f"{NAME}:{port}", f"{deployment.bridge}:{port}"):
-        check(bridge.request("GET", "/healthz", host=name)[0] == 200, f"through {deployment.bridge} (an address of this machine, covered by 0.0.0.0) it answers with Host {name}")
-    for name in (f"evil.example:{port}", f"127.0.0.1:{local}", f"0.0.0.0:{port}"):
-        check(bridge.request("GET", "/healthz", host=name)[0] == 400, f"a Host that is not listed is refused on the page's port: {name}")
-    machine = Page(local, cafile)
-    check(machine.request("GET", "/healthz")[0] == 200 and machine.request("GET", "/healthz", host=f"localhost:{local}")[0] == 200, f"https://127.0.0.1:{local}/ answers (Host 127.0.0.1 and localhost)")
-    check(machine.request("GET", "/healthz", host=f"{NAME}:{local}")[0] == 400, f"but not under the name ({NAME}:{local})")
-    refused_at = None
-    for attempt in range(1, 7):
-        status, _, text, _ = machine.request("POST", "/login", headers=machine.origin, form={"password": "a-wrong-made-up-password"})
-        if status == 429:
-            refused_at = attempt
-            break
-        check(status == 403, f"wrong login {attempt} through 127.0.0.1:{local} refused by the broker")
-    check(refused_at is not None, f"the web UI's own limit refuses the next one (attempt {refused_at})")
-    socket_path = str(deployment.root / ".sdp" / "socket" / "broker.sock")
-    try:
-        broker_client.Client(socket_path, timeout=30).login(MANAGEMENT, channel="local")
-        throttled = False
-    except broker_client.BrokerError as error:
-        throttled = error.code == "throttled"
-    check(throttled, f"the broker's local budget is empty: the logins through 127.0.0.1:{local} were sent as `local`")
-    status, _, _, cookies = ordinary.request("POST", "/login", headers=ordinary.origin, form={"password": MANAGEMENT})
-    check(status == 303 and cookies, f"a right login through 127.0.0.1:{port} still succeeds: it arrived on the ordinary container port and was sent as `remote`")
-    published = sorted(deployment.docker("port", deployment.name).stdout.split("\n"))
-    check(published == ["", f"8443/tcp -> 0.0.0.0:{port}", f"8444/tcp -> 127.0.0.1:{local}"], f"docker port: {[line for line in published if line]}")
+    cafile = deployment.root / ".sdp" / "webui" / "tls" / "cert.pem"
+    check(Page(port, cafile).request("GET", "/healthz")[0] == 200, f"the page answers at https://127.0.0.1:{port}/")
+    other = Page(port, cafile, deployment.bridge)
+    # The certificate names only localhost and 127.0.0.1: its chain is checked against it, its name is not (what the operator clears by the fingerprint).
+    other.context.check_hostname = False
+    for name in (f"{deployment.bridge}:{port}", f"unlisted.example:{port}"):
+        check(other.request("GET", "/healthz", host=name)[0] == 200, f"through {deployment.bridge} (another address of this machine, not listed) it answers with Host {name}")
+    status, _, _, cookies = other.request("POST", "/login", headers=other.origin, form={"password": MANAGEMENT})
+    check(status == 303 and cookies, f"a login through https://{deployment.bridge}:{port}/ succeeds")
+    published = [line for line in deployment.docker("port", deployment.name).stdout.split("\n") if line]
+    check(f"8443/tcp -> 0.0.0.0:{port}" in published and all(line.startswith("8443/tcp -> ") and line.endswith(f":{port}") for line in published), f"docker port: the one publication on every address: {published}")
+    check(not any(str(port + 1) in line or "8444" in line for line in published), f"port {port + 1} is not published, nor the local port")
     check(host.cmd_stop(str(deployment.root)) == 0, "stop stops and removes the container")
 
 

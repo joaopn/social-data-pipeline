@@ -191,7 +191,7 @@ def check_start(deployment):
     wait_for("the scheduler's page", lambda: deployment.scheduler_page("/pending") == 200)
     wait_for("the control socket", lambda: os.path.exists(deployment.socket_path), 60)
     check(deployment.ask({"op": "hello"}) == {"protocol": 1}, "the scheduler's control socket answers hello")
-    answers = [str(deployment.webui_port), "", "", "generate"]
+    answers = [str(deployment.webui_port), "", "generate"]
     started = time.monotonic()
     code = host._setup(str(deployment.root), lambda *a, **k: answers.pop(0), lambda *a, **k: answers.pop(0), os.getuid(), os.getgid())
     check(code == 0, f"the web UI's setup built its image and made the certificate in {time.monotonic() - started:.0f} s")

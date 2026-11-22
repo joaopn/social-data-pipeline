@@ -729,20 +729,14 @@ mcp_write_files:
 webui_port:
   prompt: "Port of the web UI (1024-65535)"
   explain: >
-    The port the page is published on, on 127.0.0.1 and on each listen address. The container itself listens on 8443.
+    The port the page is published on, on 127.0.0.1 and on each address listed (or on every address). The container itself listens on 8443.
   default: "8443"
 
 webui_addresses:
-  prompt: "Listen addresses besides 127.0.0.1 (IP addresses, comma-separated; empty for none)"
+  prompt: "Addresses the page is opened at besides this machine (IP addresses or names, comma-separated; all for every address; empty for none)"
   explain: >
-    Addresses of this machine on which the page should also answer, for another machine or a tailnet to reach it; 0.0.0.0 and :: for every IPv4 and IPv6 address (with a warning, and 127.0.0.1 then on the next port). The words all, any and *, multicast, a link-local address with a zone and loopback addresses are refused.
+    The addresses and names another machine opens the page at. Each IP address is published on the page's port; each address and name goes into the certificate and the Host check. all (or 0.0.0.0, ::, any, *), alone or beside other entries: the page is published on every address of this machine and answers under any address or name. Loopback addresses, multicast, a link-local address with a zone, localhost and an entry given twice are refused. A second setup offers the previous answer.
   default: "(empty: this machine only)"
-
-webui_names:
-  prompt: "Names the page is reached by besides localhost (comma-separated; empty for none)"
-  explain: >
-    Host names a browser uses to reach the page. They go into the certificate and the Host check. Lower-case letters, digits, hyphens and dots; no wildcard, no trailing dot.
-  default: "(empty)"
 
 webui_certificate:
   prompt: "Certificate"

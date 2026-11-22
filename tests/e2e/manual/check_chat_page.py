@@ -116,7 +116,7 @@ class Deployment(runner_check.Check):
 def start_webui(d):
     print("1. the broker and the web UI, with the chat's socket folder")
     check(d.cli("broker", "passwd", stdin=f"{MANAGEMENT}\n{MANAGEMENT}\n")[0] == 0 and d.cli("broker", "start")[0] == 0, "`broker passwd` and `broker start`")
-    answers = [str(d.port), "", "", "generate"]
+    answers = [str(d.port), "", "generate"]
     # The image's build log goes to this process's own output: it is dropped.
     sys.stdout.flush()
     kept = [os.dup(1), os.dup(2)]

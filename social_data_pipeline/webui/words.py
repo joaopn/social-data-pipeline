@@ -142,7 +142,6 @@ CHAT_CODE_SENTENCES = {
     "over_cap": "The chat's work folder is over its soft cap: delete chats to make room.",
     "chat_full": "This chat's log is full: start a new chat.",
     "too_many_chats": "There are 200 chats already: delete one first.",
-    "backend_not_available": "The chat's back end is not available in this version, so no question can be sent.",
     "too_large": "The sandbox's answer was too large to send.",
     "not_usable": "The chat's folder in the sandbox cannot be used.",
     "unavailable": "The chat's sandbox is stopping and takes no new request.",

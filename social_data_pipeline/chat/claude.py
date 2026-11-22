@@ -77,6 +77,11 @@ def environment(home, config, tmp, gateway):
     }
 
 
+def user_line(text):
+    """The user's text as the one stream-json line given on standard input."""
+    return (json.dumps({"type": "user", "message": {"role": "user", "content": text}}, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def _cut(text, limit=TOOL_CUT):
     return text if len(text) <= limit else text[:limit]
 
@@ -377,7 +382,6 @@ class ClaudeCode:
                 os.close(fd)
         finally:
             os.close(home_fd)
-        line = (json.dumps({"type": "user", "message": {"role": "user", "content": text}}, ensure_ascii=False) + "\n").encode("utf-8")
         argv = command(self.executable, config, session, resume, self.databases)
-        process = Process(argv, environment(home, config, tmp, self.gateway), files, line, chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
+        process = Process(argv, environment(home, config, tmp, self.gateway), files, user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
         return process, Translator()

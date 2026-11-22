@@ -215,7 +215,7 @@ def test_setup_saves_the_answers_and_prints_the_summary(root, docker, capsys):
     saved = json.loads((root / CHAT / "config.json").read_text())
     assert saved == {"backend": "openai-compatible", "upstream": "https://openrouter.ai/api/v1", "model": "vendor/model-1.5", "work_cap_gib": 25, "claude_code_version": host.CLAUDE_CODE_VERSION}
     out = capsys.readouterr().out
-    for text in ("openai-compatible", "https://openrouter.ai/api/v1", "vendor/model-1.5", "25 GiB", "Set up. Start the chat with `python sdp.py chat start` (the Chat page itself is not part of this version yet)."):
+    for text in ("openai-compatible", "https://openrouter.ai/api/v1", "vendor/model-1.5", "25 GiB", "Set up. Start the chat with `python sdp.py chat start`.", host.CHAT_WINDOW):
         assert text in out
     assert set_up(root, ["claude-code", False, "10"])[0] == 0
     assert json.loads((root / CHAT / "config.json").read_text()) == {"backend": "claude-code", "work_cap_gib": 10, "claude_code_version": host.CLAUDE_CODE_VERSION}

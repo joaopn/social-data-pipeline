@@ -34,7 +34,8 @@ def gone(pid):
     try:
         with open(f"/proc/{pid}/stat") as f:
             return f.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # It can vanish between the open and the read.
         return True
 
 
@@ -120,14 +121,6 @@ def test_connections_over_the_limit_are_closed_and_requests_and_replies_are_boun
     for _ in range(6):
         r.new()
     assert error_of(r.call("chat.list")) == "too_large"
-
-
-def test_openai_compatible_answers_hello_and_list_and_refuses_send(chat_runner):
-    r = chat_runner(backend=False)
-    assert r.call("hello")["result"]["backend"] == "openai-compatible"
-    chat = r.new()
-    assert r.call("chat.list")["result"]["chats"][0]["id"] == chat
-    assert error_of(r.call("chat.send", chat=chat, text="hi")) == "backend_not_available"
 
 
 # ── a turn ────────────────────────────────────────────────────────────────

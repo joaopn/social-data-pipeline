@@ -6,3 +6,5 @@ pandas>=2.2.0
 numpy>=2.0.0
 matplotlib>=3.9.0
 pyarrow>=17.0.0
+# The MCP client of the OpenAI-compatible back end's agent (chat/agent.py): its streamable-HTTP and SSE clients
+mcp>=2.3.0

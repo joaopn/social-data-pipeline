@@ -147,7 +147,7 @@ def runner_codes():
 def test_every_refusal_code_of_the_runner_has_a_sentence_and_shows_it(client, token, scripted):
     """Bug class: a refusal of the runner shown as a vague fallback, or its message (text the sandbox can choose) shown in the page."""
     codes = runner_codes()
-    assert len(codes) >= 14 and set(codes) <= set(words.CHAT_CODE_SENTENCES)
+    assert len(codes) >= 13 and set(codes) <= set(words.CHAT_CODE_SENTENCES)
     for code in codes:
         scripted.answers["chat.new"] = {"ok": False, "error": {"code": code, "message": MARK}}
         page = post(client, "/chat/new", token)
@@ -411,7 +411,7 @@ def test_a_text_is_checked_and_a_refused_one_is_kept(client, token, scripted, te
         assert html.unescape(re.search(r"<textarea[^>]*>\n(.*?)</textarea>", answer.text, re.DOTALL).group(1)) == text.replace("\r\n", "\n")
 
 
-@pytest.mark.parametrize("code", ["busy", "too_many", "over_cap", "chat_full", "backend_not_available"])
+@pytest.mark.parametrize("code", ["busy", "too_many", "over_cap", "chat_full"])
 def test_a_refused_question_says_why_and_keeps_the_text(client, token, scripted, code):
     """Bug class: a refusal of the runner shown without its reason, or the question typed lost."""
     scripted.answers["chat.send"] = refuse(code)

@@ -13,7 +13,7 @@ from social_data_pipeline.chat import claude, runner
 
 @pytest.fixture
 def chat_runner(tmp_path):
-    """`chat_runner(limits=..., backend=True, databases=..., cap=...)`: a started runner; `.call(op, **fields)`, `.plan(steps)`, `.records()`, `.wait(chat)`."""
+    """`chat_runner(limits=..., backend=..., databases=..., cap=...)`: a started runner (with the stand-in `claude` unless another back end object is given); `.call(op, **fields)`, `.plan(steps)`, `.records()`, `.wait(chat)`."""
     made = []
     script = tmp_path / "claude"
     plan_path = tmp_path / "plan.json"
@@ -21,12 +21,12 @@ def chat_runner(tmp_path):
     script.write_text(f"#!{sys.executable}\nPLAN = {str(plan_path)!r}\n" + STANDIN)
     script.chmod(0o755)
 
-    def make(limits=None, backend=True, databases=("mongo",), cap=1 << 30):
+    def make(limits=None, backend=None, databases=("mongo",), cap=1 << 30):
         work, tmp = tmp_path / "work", tmp_path / "tmp"
         work.mkdir(exist_ok=True)
         tmp.mkdir(exist_ok=True)
-        back = claude.ClaudeCode("127.0.0.1", databases, executable=str(script), grace=0.5, join=0.5) if backend else None
-        chats = runner.Runner(str(work), back, "claude-code" if backend else "openai-compatible", list(databases), cap, tmp=str(tmp), limits=limits or runner.Limits())
+        back = backend or claude.ClaudeCode("127.0.0.1", databases, executable=str(script), grace=0.5, join=0.5)
+        chats = runner.Runner(str(work), back, back.name, list(databases), cap, tmp=str(tmp), limits=limits or runner.Limits())
         socket_path = str(tmp_path / "runner.sock")
         server = runner.Server(chats, socket_path)
         server.start()

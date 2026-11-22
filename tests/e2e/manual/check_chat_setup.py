@@ -86,7 +86,7 @@ def check_setup(deployment):
     code, text = deployment.cli("chat", "setup", stdin=f"1\n{TOKEN}\n\n")
     check(code == 0, "`chat setup` returned 0")
     check(TOKEN not in text and str(len(TOKEN)) not in own_lines(text), "the token is in none of the output (Docker's included), nor its length in the command's own lines")
-    check(host.NOT_STARTED in text and "claude setup-token" in text and "under the vendor's terms" in text, "the summary and the two lines of the subscription login are printed")
+    check(host.NOT_STARTED in text and host.CHAT_WINDOW in text and "claude setup-token" in text and "under the vendor's terms" in text, "the summary and the two lines of the subscription login are printed")
     check(deployment.image_exists(deployment.gateway) and deployment.image_exists(deployment.sandbox), "both images are built")
     check(modes(deployment) == EXPECTED_MODES, f"the modes: {modes(deployment)}")
     chat = deployment.root / ".sdp" / "chat"

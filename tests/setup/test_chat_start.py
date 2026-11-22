@@ -251,9 +251,10 @@ def test_the_gateway_argument_list_is_pinned():
     ]
 
 
-def test_the_sandbox_argument_list_is_pinned():
-    """Bug class: the sandbox given the credential, the broker's or Docker's socket, the data folder, a second network, a published port, or a secret in its environment."""
-    assert host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", "claude-code", ["mongo", "starrocks"], 7) == [
+@pytest.mark.parametrize("backend, model, extra", [("claude-code", None, []), ("openai-compatible", "vendor/model-1:free", ["-e", "SDP_CHAT_MODEL=vendor/model-1:free"])])
+def test_the_sandbox_argument_list_is_pinned(backend, model, extra):
+    """Bug class: the sandbox given the credential, the broker's or Docker's socket, the data folder, a second network, a published port, or a secret in its environment; the OpenAI-compatible agent not told its model."""
+    assert host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", backend, ["mongo", "starrocks"], 7, model) == [
         "docker", "create", "--name", "sdp-sandbox", "--label", "sdp.chat.root=/srv/d", "--restart", "no",
         "--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
@@ -261,7 +262,7 @@ def test_the_sandbox_argument_list_is_pinned():
         "--mount", "type=bind,source=/srv/d/.sdp/chat/work,target=/work",
         "--mount", "type=bind,source=/srv/d/.sdp/chat/socket,target=/run/sdp-chat",
         "-e", "SDP_CHAT_GATEWAY=10.201.0.2", "-e", "HOME=/work",
-        "-e", "SDP_CHAT_BACKEND=claude-code", "-e", "SDP_CHAT_DATABASES=mongo,starrocks", "-e", "SDP_CHAT_CAP_GIB=7",
+        "-e", f"SDP_CHAT_BACKEND={backend}", "-e", "SDP_CHAT_DATABASES=mongo,starrocks", "-e", "SDP_CHAT_CAP_GIB=7", *extra,
         "sdp-sandbox",
     ]
 
@@ -359,7 +360,7 @@ def test_start_attaches_the_database_with_a_read_only_user(root, docker, capsys)
     out = capsys.readouterr().out
     assert "The chat is started." in out and "Back end: claude-code" in out and "The chat can read: mongo" in out
     assert "postgres: left out: its MCP server is not on a read-only user" in out and "starrocks: left out: its MCP server does not run" in out
-    assert "The Chat page itself is not part of this version yet." in out
+    assert host.CHAT_WINDOW in out
 
 
 def test_a_database_without_the_read_only_user_key_is_never_attached(root, docker):
@@ -493,6 +494,7 @@ def test_the_token_is_in_no_output_argument_or_environment(root, docker, capsys,
     assert host.cmd_stop(root) == 0
     assert MARKER not in capsys.readouterr().out
     assert all(MARKER not in word for call in docker.calls for word in call)
+    assert [word for call in docker.calls for word in call if word.startswith("SDP_CHAT_MODEL=")] == (["SDP_CHAT_MODEL=vendor/model-1"] if backend == "openai-compatible" else [])
     assert MARKER not in json.dumps(host.gateway_config("10.201.0.2", host._settings_or_refuse(str(root)), list(host.DATABASES)))
 
 

@@ -53,7 +53,8 @@ _VISIBLE = re.compile(r"[\x21-\x7e]+")
 # The temporary files `control.files.replace_file` leaves when it is killed between its creation and the rename.
 _CONFIG_LEFTOVER = re.compile(r"config\.json\.[0-9a-f]{8}\.tmp")
 _TOKEN_LEFTOVER = re.compile(r"model\.token\.[0-9a-f]{8}\.tmp")
-NOT_STARTED = "Set up. Start the chat with `python sdp.py chat start` (the Chat page itself is not part of this version yet)."
+NOT_STARTED = "Set up. Start the chat with `python sdp.py chat start`."
+CHAT_WINDOW = "The Chat window is in the web UI: start it, or restart it, with `python sdp.py webui start` once the chat runs."
 
 
 class Refused(Exception):
@@ -347,6 +348,7 @@ def _setup(root, ask, ask_choice, ask_bool, ask_secret):
     print(f"  Soft cap of the work folder: {cap} GiB")
     print(f"  Credential: {'saved' if replaced else 'kept'} in {TOKEN_PATH}, readable by you only")
     print(f"  {NOT_STARTED}")
+    print(f"  {CHAT_WINDOW}")
     return 0
 
 
@@ -699,8 +701,8 @@ def gateway_arguments(root, uid, gid, address):
     ]
 
 
-def sandbox_arguments(root, uid, gid, address, backend, databases, cap):
-    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`) and the work folder's soft cap in GiB, none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
+def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None):
+    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB and, for `openai-compatible`, the model's name (`model`), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
     return [
         *_confined(SANDBOX_CONTAINER, root, uid, gid),
         "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
@@ -709,6 +711,7 @@ def sandbox_arguments(root, uid, gid, address, backend, databases, cap):
         "--mount", f"type=bind,source={os.path.join(root, CHAT_FOLDER, SOCKET_NAME)},target={SOCKET_MOUNT}",
         "-e", f"{GATEWAY_ENV}={address}", "-e", f"HOME={WORK_MOUNT}",
         "-e", f"SDP_CHAT_BACKEND={backend}", "-e", f"SDP_CHAT_DATABASES={','.join(databases)}", "-e", f"SDP_CHAT_CAP_GIB={cap}",
+        *(["-e", f"SDP_CHAT_MODEL={model}"] if backend == OPENAI_COMPATIBLE else []),
         SANDBOX_IMAGE,
     ]
 
@@ -1005,7 +1008,7 @@ def _start(root, uid, gid):
         _wait_for_gateway(1 + len(attached))
         for db, container in attached:
             _step(["docker", "network", "connect", "--alias", db.alias, UP_NETWORK, container], f"the MCP server of {db.name} could not be attached")
-        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"]), "the sandbox's container could not be created")
+        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"], settings.get("model")), "the sandbox's container could not be created")
         made.append(SANDBOX_CONTAINER)
         _step(["docker", "start", SANDBOX_CONTAINER], "the sandbox did not start")
         after = _state(SANDBOX_CONTAINER)
@@ -1026,7 +1029,7 @@ def _start(root, uid, gid):
         print(f"    {db.name}: left out: {why}")
     if left:
         print(f"  {DATABASE_FIX}")
-    print("  The Chat page itself is not part of this version yet.")
+    print(f"  {CHAT_WINDOW}")
     return 0
 
 

@@ -1,22 +1,25 @@
 """Run the chat's runner: `python -m social_data_pipeline.chat`, configured by the environment `sdp chat start` gives the sandbox; serves until SIGTERM or SIGINT, then returns 0. A setting that cannot be used ends it with one line and exit code 2.
 
-- `SDP_CHAT_BACKEND`: `claude-code` or `openai-compatible` (the latter answers `hello` and `chat.list` and refuses `chat.send`: it is not available in this version).
+- `SDP_CHAT_BACKEND`: `claude-code` (`chat.claude`) or `openai-compatible` (`chat.openai`).
 - `SDP_CHAT_DATABASES`: the attached databases, a comma list of `postgres`, `mongo`, `starrocks`.
 - `SDP_CHAT_CAP_GIB`: the work folder's soft cap in GiB, 1 to 10000.
-- `SDP_CHAT_GATEWAY`: the gateway's IP address (for `claude-code`).
+- `SDP_CHAT_GATEWAY`: the gateway's IPv4 address.
+- `SDP_CHAT_MODEL`: the model (for `openai-compatible`, required): 1 to 200 visible ASCII characters, without spaces (the rule of `chat_host.parse_model`).
 - `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), `SDP_CHAT_WORK` (default `/work`), `SDP_CHAT_TURN_SECONDS` (default 1800).
 """
 
 import ipaddress
 import os
+import re
 import signal
 import sys
 import threading
 
-from . import claude, runner
+from . import claude, openai, runner
 
 BACKENDS = ("claude-code", "openai-compatible")
 CAP_MAX_GIB = 10000
+MODEL = re.compile(r"[\x21-\x7e]{1,200}")
 
 
 class SettingError(Exception):
@@ -38,12 +41,14 @@ def settings(environ):
     if not (seconds.isascii() and seconds.isdigit() and len(seconds) <= 6 and int(seconds) >= 1):
         raise SettingError("SDP_CHAT_TURN_SECONDS must be a whole number of seconds from 1")
     gateway = environ.get("SDP_CHAT_GATEWAY", "")
-    if backend == "claude-code":
-        try:
-            ipaddress.IPv4Address(gateway)
-        except ValueError:
-            raise SettingError("SDP_CHAT_GATEWAY must be the gateway's IPv4 address") from None
-    return {"backend": backend, "databases": names, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
+    try:
+        ipaddress.IPv4Address(gateway)
+    except ValueError:
+        raise SettingError("SDP_CHAT_GATEWAY must be the gateway's IPv4 address") from None
+    model = environ.get("SDP_CHAT_MODEL", "")
+    if backend == "openai-compatible" and not MODEL.fullmatch(model):
+        raise SettingError("SDP_CHAT_MODEL must be the model's name: 1 to 200 visible ASCII characters, without spaces")
+    return {"backend": backend, "databases": names, "model": model, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
 
 
 def main(environ=None):
@@ -53,7 +58,10 @@ def main(environ=None):
     except SettingError as error:
         print(f"runner: refusing to start: {error}", file=sys.stderr)
         return 2
-    backend = claude.ClaudeCode(found["gateway"], found["databases"]) if found["backend"] == "claude-code" else None
+    if found["backend"] == "claude-code":
+        backend = claude.ClaudeCode(found["gateway"], found["databases"])
+    else:
+        backend = openai.OpenAICompatible(found["gateway"], found["model"], found["databases"])
     limits = runner.Limits(turn_seconds=found["turn_seconds"])
     try:
         chats = runner.Runner(found["work"], backend, found["backend"], found["databases"], found["cap_bytes"], limits=limits)

@@ -34,7 +34,7 @@ RUN case "$(dpkg --print-architecture)" in \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
-# The chat's runner (standard library only) and the two modules of the control package it uses for the frames of its socket.
+# The chat's runner (standard library only), the agent of its OpenAI-compatible back end (which uses the mcp package of requirements-sandbox.txt), and the two modules of the control package the runner uses for the frames of its socket.
 WORKDIR /app
 COPY social_data_pipeline/__init__.py /app/social_data_pipeline/__init__.py
 COPY social_data_pipeline/control/__init__.py social_data_pipeline/control/errors.py social_data_pipeline/control/framing.py /app/social_data_pipeline/control/

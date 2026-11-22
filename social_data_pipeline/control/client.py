@@ -121,6 +121,10 @@ class Client:
         """Keep a database password in the session; `step_up` is the management password again."""
         return self.request({"op": "session.set_db_password", "token": self.token, "step_up": step_up, "password": password})
 
+    def check_password(self, step_up):
+        """Check the management password again (`step_up`) and do nothing else; `{}` when it is right. A wrong one is refused `step_up_failed`, and the fifth wrong one in the session's life ends the session (`session_ended`), as with any second check."""
+        return self.request({"op": "session.check_password", "token": self.token, "step_up": step_up})
+
     def clear_db_password(self):
         """Forget the session's database password."""
         return self.request({"op": "session.clear_db_password", "token": self.token})

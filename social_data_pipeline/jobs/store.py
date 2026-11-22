@@ -65,18 +65,34 @@ class Job:
     backend_pid: int | None = None
     connection_id: int | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+    # Who approved or rejected the job, or asked to kill it, through the scheduler's control socket: at most the keys "approved", "rejected", "killed", each a label such as "web-12". "killed" names who asked to kill: it is set on a job that may then finish by itself, and it is lost when the scheduler restarts before the job is retired. Left out of the record while empty, so a record without labels is written byte for byte as before.
+    acted_by: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if not d["acted_by"]:
+            del d["acted_by"]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Job":
         known = {f for f in cls.__dataclass_fields__}
         kwargs = {k: v for k, v in d.items() if k in known}
         extras = {k: v for k, v in d.items() if k not in known}
+        # Labels of another shape (a hand-edited record) are kept as they were, but not as labels: the transitions add to them.
+        if "acted_by" in kwargs and not _is_acted_by(kwargs["acted_by"]):
+            extras["acted_by"] = kwargs.pop("acted_by")
         if extras:
             kwargs.setdefault("extras", {}).update(extras)
         return cls(**kwargs)
+
+
+ACTED_BY_KEYS: frozenset[str] = frozenset({"approved", "rejected", "killed"})
+
+
+def _is_acted_by(value: Any) -> bool:
+    """Whether a record's `acted_by` has the shape the scheduler writes: a dict of at most the three known keys, each with a text value."""
+    return isinstance(value, dict) and set(value) <= ACTED_BY_KEYS and all(isinstance(label, str) for label in value.values())
 
 
 class Store:
@@ -114,15 +130,19 @@ class Store:
     # ------------------------------------------------------------------
     # transitions
 
-    def approve(self, job_id: str) -> Job:
+    def approve(self, job_id: str, *, by: str | None = None) -> Job:
         job = self._require(self.pending, job_id)
+        if by is not None:
+            job.acted_by = {**job.acted_by, "approved": by}
         job.status = "approved"
         job.approved_at = time.time()
         self._move(self.pending, self.approved, job)
         return job
 
-    def reject(self, job_id: str, reason: str | None = None) -> Job:
+    def reject(self, job_id: str, reason: str | None = None, *, by: str | None = None) -> Job:
         job = self._require(self.pending, job_id)
+        if by is not None:
+            job.acted_by = {**job.acted_by, "rejected": by}
         job.status = "rejected"
         job.reject_reason = reason
         job.finished_at = time.time()

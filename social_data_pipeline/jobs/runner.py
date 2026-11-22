@@ -44,6 +44,8 @@ class Runner:
         self._lock = threading.Lock()
         # job_id -> (Future, cancel_requested_flag)
         self._active: dict[str, tuple[Future, threading.Event]] = {}
+        # job_id -> the Job object its worker runs, so that `request_cancel(by=...)` can label the record the worker retires
+        self._held: dict[str, Job] = {}
         self._backends: dict[str, Backend] = self._build_backends()
 
     # ------------------------------------------------------------------
@@ -166,11 +168,13 @@ class Runner:
             fut = self._pool.submit(self._run_job, job, cancel_flag)
             with self._lock:
                 self._active[job.job_id] = (fut, cancel_flag)
+                self._held[job.job_id] = job
             fut.add_done_callback(lambda _f, jid=job.job_id: self._deregister(jid))
 
     def _deregister(self, job_id: str) -> None:
         with self._lock:
             self._active.pop(job_id, None)
+            self._held.pop(job_id, None)
 
     # ------------------------------------------------------------------
 
@@ -256,12 +260,14 @@ class Runner:
     # ------------------------------------------------------------------
     # Cancel API (called from web handlers)
 
-    def request_cancel(self, job_id: str) -> bool:
+    def request_cancel(self, job_id: str, by: str | None = None) -> bool:
         """Signal cancellation of a currently-running job.
 
         Opens a separate admin connection and terminates the backend query, so
         the execute() call in the worker thread raises and the runner marks
         the job cancelled. Returns True if the job was running.
+
+        ``by`` (a label such as "web-12", from the control socket) is set as ``acted_by["killed"]`` on the job the worker holds, before the cancel is signalled, so that the record the worker retires carries it; it names who asked to kill (the job may still finish by itself). Setting it is guarded: nothing about the label can stop the kill. Without it nothing else differs.
         """
         with self._lock:
             active = self._active.get(job_id)
@@ -274,6 +280,15 @@ class Runner:
             return False
         _phase, job = located
 
+        if by is not None:
+            try:
+                with self._lock:
+                    held = self._held.get(job_id)
+                    if held is not None:
+                        labels = held.acted_by if isinstance(held.acted_by, dict) else {}
+                        held.acted_by = {**labels, "killed": by}
+            except Exception:
+                log.warning("kill of %s: who asked could not be recorded", job_id)
         flag.set()
         try:
             backend = self._backend_for(job)

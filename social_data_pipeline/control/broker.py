@@ -74,6 +74,7 @@ OPS = {
     "logout": frozenset({"token"}),
     "session.set_db_password": frozenset({"token", "step_up", "password"}),
     "session.clear_db_password": frozenset({"token"}),
+    "session.check_password": frozenset({"token", "step_up"}),
     "call": frozenset({"token", "verb", "fields"}),
 }
 OPTIONAL_KEYS = {"call": frozenset({"step_up"}), "login": frozenset({"channel"})}
@@ -85,7 +86,7 @@ UNLOCKED_VERBS = frozenset({"run.cancel"})
 # The verb that takes the write lock shared: several runs can be started at once, never while a state-changing child runs, and no destructive verb looks for live runs while one is being started.
 SHARED_LOCK_VERBS = frozenset({"run.start"})
 # What is refused once a stop was asked; a request that is already being answered finishes.
-REFUSED_WHILE_STOPPING = frozenset({"login", "call", "session.set_db_password", "session.clear_db_password"})
+REFUSED_WHILE_STOPPING = frozenset({"login", "call", "session.set_db_password", "session.clear_db_password", "session.check_password"})
 # The verbs to which the session's database password is added when the request has none.
 DB_PASSWORD_VERBS = frozenset({"run.start", "db.start"})
 DB_PASSWORD_FIELD = "admin_password"
@@ -1030,6 +1031,11 @@ class Broker:
             return _ok({})
         if op == "session.set_db_password":
             return self._set_db_password(token, info, request, password_file)
+        if op == "session.check_password":
+            # The management password again and nothing else: counted and audited like any second check, its fifth failure ending the session; a right one is audited too.
+            self._step_up(token, info, request["step_up"], password_file)
+            self.audit.password_checked(info.number)
+            return _ok({})
         return self._call(token, info, request, password_file)
 
     def _login(self, candidate, channel):

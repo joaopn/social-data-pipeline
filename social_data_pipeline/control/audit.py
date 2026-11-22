@@ -32,7 +32,7 @@ LINE_MAX_BYTES = 65536
 COUNTS_SECONDS = 60
 SECRET_MARK = "<secret>"
 
-EVENTS = ("broker_start", "broker_stop", "login", "logout", "session_end", "call_accepted", "call_ended", "call_refused", "step_up_failed", "counts", "tail_changed", "repaired")
+EVENTS = ("broker_start", "broker_stop", "login", "logout", "session_end", "call_accepted", "call_ended", "call_refused", "step_up_failed", "password_checked", "counts", "tail_changed", "repaired")
 SESSION_END_REASONS = ("expired", "password_changed", "step_up_failures", "superseded")
 DB_PASSWORD_FROM = ("fields", "session", "none")
 
@@ -47,6 +47,7 @@ EVENT_FIELDS = {
     "call_ended": ("verb", "fields", "db_password_from", "outcome", "exit_code"),
     "call_refused": ("verb", "code", "field"),
     "step_up_failed": (),
+    "password_checked": (),
     "counts": ("failed_logins", "unauthenticated", "reads", "reads_other", "lost"),
     "tail_changed": (),
     "repaired": ("after",),
@@ -486,6 +487,11 @@ class AuditLog:
     def step_up_failed(self, session):
         with self._lock:
             return self._append("step_up_failed", session)
+
+    def password_checked(self, session):
+        """The management password was given again and found right, with no action (`session.check_password`)."""
+        with self._lock:
+            return self._append("password_checked", session)
 
     def _call(self, event, session, verb, validated_fields, db_password_from, **more):
         with self._lock:

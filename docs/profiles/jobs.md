@@ -151,6 +151,29 @@ When `auth: true` (toggleable in `setup-jobs`), the UI prompts for the database 
 > [!IMPORTANT]
 > UI auth is independent from MCP. The MCP endpoint at `/mcp` is not gated by the UI password — anything that can reach `JOBS_PORT` on the network can submit jobs. Treat the network boundary as the trust boundary, the same way you would for the per-DB MCP servers.
 
+## Control socket
+
+When its data folder (`data/jobs` on the host) belongs to a user other than root, the scheduler opens a unix socket at `data/jobs/control/door.sock` for that user, the operator. The folder is made with mode 0700 and the socket with mode 0600, both given to the owner of `data/jobs`; a connection from any other user (root included) is closed without a reply. It is meant for the web UI's Queue window, which does not exist yet: nothing uses the socket yet apart from tests. Through it a program of the operator can list the jobs of each tab, read one job with a digest of what it runs, approve it (only when that digest still matches the job as it is at that moment), reject it with a reason, kill it, run EXPLAIN on it (on an admin connection, like the EXPLAIN button), preview a finished result and change the auto-accept settings. Who approved or rejected a job, and who asked to kill it, through the socket is kept in its record (`acted_by`). The kill's label names who asked: it is set on a job that may still finish by itself, and it is lost when the scheduler restarts before the job is retired. Every approval, rejection, kill, EXPLAIN and auto-accept change through the socket is logged twice, the attempt and its outcome. The page, its port and its password gate are unchanged.
+
+`sdp db setup-jobs` makes `data/jobs` as the operator. If Docker made it instead (a `db start jobs` before setup), it belongs to root and the socket stays closed. Each reason the socket stays closed is one line in the scheduler's log (`docker logs <jobs container>`), beginning with "the control socket stays closed:":
+
+| Reason in the log | What to do |
+|---|---|
+| the data folder cannot be opened | Check that `data/jobs` exists and is a folder |
+| the data folder belongs to root | `sudo chown <you>:<your group> data/jobs`, then restart the scheduler |
+| others may write into the data folder | `chmod o-w data/jobs`, then restart the scheduler; anyone could otherwise move the control folder away. Write for the folder's group is accepted (a private group of your own is the common default) |
+| the results folder is the data folder or contains it | Set `JOBS_RESULT_ROOT` (`python sdp.py db setup-jobs`) to a folder that is not `data/jobs` and does not contain it: the database servers can write into the results folder |
+| the results folder lies inside the control folder | Set `JOBS_RESULT_ROOT` to a folder outside `data/jobs/control` |
+| the results folder cannot be looked at | Check that the results folder exists; it also stays closed when the folders up to three levels below the results folder (job folders aside) hold more than 10,000 entries |
+| the control folder is not a real folder | Remove the link or file at `data/jobs/control`; the scheduler makes the folder at its next start |
+| the control folder belongs to another user than the data folder | `sudo chown <owner of data/jobs> data/jobs/control` |
+| the control folder is open to the group or to others | `chmod 700 data/jobs/control` |
+| the control folder could not be made or given to the data folder's owner, or cannot be used | Check the permissions of `data/jobs` |
+| something other than a socket is in the place of door.sock | Remove `data/jobs/control/door.sock` |
+| the socket could not be made, or its thread could not be started | Restart the scheduler; a socket left by a scheduler that was killed is replaced by itself |
+
+The scheduler never deletes or re-creates `data/jobs/control` itself. The socket is removed when the scheduler stops. The scheduler's code is in its image, so `python sdp.py db start jobs` (which rebuilds the image) is what brings the socket to a running deployment.
+
 ## Concurrency and resume
 
 - `max_concurrent` (default 20) caps how many jobs run in parallel — each gets one thread from a `ThreadPoolExecutor`. Submissions beyond the cap stay in `approved/` until a slot frees up.

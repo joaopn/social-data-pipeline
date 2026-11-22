@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from pathlib import Path
@@ -22,6 +23,30 @@ log = logging.getLogger(__name__)
 
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _open_door(cfg, store, runner, auto_accept, loop):
+    """Open the control socket (`door.py`) for the scheduler's lifetime, or return None. Nothing the door does or lacks stops the scheduler: its import (a missing `control` package included) and every error of its opening are caught here and logged by the name of their kind only; a door that stays closed for a known reason has logged that reason itself."""
+    try:
+        from .door import open_door
+
+        door = open_door(cfg, store, runner, auto_accept, loop)
+    except Exception as error:
+        log.warning("the control socket stays closed: it could not be opened (%s)", type(error).__name__)
+        return None
+    if door is not None:
+        log.info("the control socket is open")
+    return door
+
+
+def _close_door(door):
+    """Close the control socket opened by `_open_door`; an error is logged by the name of its kind and changes nothing else."""
+    if door is None:
+        return
+    try:
+        door.close()
+    except Exception as error:
+        log.warning("the control socket could not be closed cleanly (%s)", type(error).__name__)
 
 
 def build_app(cfg: JobsConfig | None = None) -> FastAPI:
@@ -49,9 +74,11 @@ def build_app(cfg: JobsConfig | None = None) -> FastAPI:
         # the ASGI application.
         async with mcp.session_manager.run():
             runner.start()
+            door = _open_door(cfg, store, runner, auto_accept, asyncio.get_running_loop())
             try:
                 yield
             finally:
+                _close_door(door)
                 runner.stop()
 
     app = FastAPI(title="SDP Jobs", lifespan=lifespan)

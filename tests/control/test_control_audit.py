@@ -149,6 +149,7 @@ class TestLines:
         log.call_refused(None, "run.start", "unauthorized")
         log.call_refused(4, "run.start", "bad_input", "profile")
         log.step_up_failed(4)
+        log.password_checked(4)
         log.logout(4)
         log.count_read(4)
         log.broker_stop()
@@ -165,15 +166,16 @@ class TestLines:
             ["n", "t", "session", "event", "verb", "code", "field", "prev"],
             ["n", "t", "session", "event", "prev"],
             ["n", "t", "session", "event", "prev"],
+            ["n", "t", "session", "event", "prev"],
             ["n", "t", "session", "event", "failed_logins", "unauthenticated", "reads", "reads_other", "lost", "prev"],
             ["n", "t", "session", "event", "prev"],
         ]
-        assert [record["event"] for record in records] == ["broker_start", "login", "session_end", "call_accepted", "call_ended", "call_ended", "call_refused", "call_refused", "step_up_failed", "logout", "counts", "broker_stop"]
-        assert [record["n"] for record in records] == list(range(1, 13))
-        assert [record["session"] for record in records] == [None, 3, 3, 4, 4, 4, None, 4, 4, 4, None, None]
+        assert [record["event"] for record in records] == ["broker_start", "login", "session_end", "call_accepted", "call_ended", "call_ended", "call_refused", "call_refused", "step_up_failed", "password_checked", "logout", "counts", "broker_stop"]
+        assert [record["n"] for record in records] == list(range(1, 14))
+        assert [record["session"] for record in records] == [None, 3, 3, 4, 4, 4, None, 4, 4, 4, 4, None, None]
         assert records[4] == {**records[4], "verb": "test.verb", "fields": {"source": "demo"}, "db_password_from": "session", "outcome": "finished", "exit_code": 0}
         assert records[5]["exit_code"] is None and records[6]["field"] is None and records[7]["field"] == "profile"
-        assert set(audit.EVENTS) == set(audit.EVENT_FIELDS) and len(audit.EVENTS) == 12
+        assert set(audit.EVENTS) == set(audit.EVENT_FIELDS) and len(audit.EVENTS) == 13
 
     def test_each_line_names_the_hash_of_the_line_before_it(self, log, path):
         """Bug class: a chain in name only (a constant, the hash of something else), which no later check can hold a line against."""

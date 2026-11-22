@@ -7,6 +7,7 @@ real threads. Backends are replaced with in-memory fakes that record calls.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -541,3 +542,119 @@ class TestAutoApproveEligible:
         # First failed (KeyError swallowed), second succeeded.
         assert n == 1
         assert calls["n"] == 2
+
+
+# ── request_cancel(by=...): who killed a job ────────────────────────────────
+
+
+class BlockingBackend(FakeBackend):
+    """Runs until it is cancelled: `execute` waits for `cancel`, then fails as a server-side cancel does."""
+
+    def __init__(self):
+        super().__init__()
+        self.started = threading.Event()
+        self.stop = threading.Event()
+
+    def execute(self, job: Job, timeout_seconds: int, on_handle):
+        on_handle(ExecutionHandle(backend_pid=1234))
+        self.executed.append(job)
+        self.started.set()
+        assert self.stop.wait(15), "never cancelled"
+        raise BackendError("query cancelled")
+
+    def cancel(self, handle: ExecutionHandle, job: Job | None = None):
+        self.cancelled.append(handle)
+        self.stop.set()
+
+
+class TestRequestCancelLabel:
+    @pytest.mark.parametrize("by", ["web-7", None])
+    def test_the_label_reaches_the_record_the_worker_retires(self, tmp_path, by):
+        """Bug class: who killed a job set on a copy of the record (the one `request_cancel` reads from the store) while the worker retires its own, so the history never says who; or a kill without a label writing one."""
+        runner, store, fakes = _runner_with_fake_backends(tmp_path)
+        backend = BlockingBackend()
+        runner._backends["postgres:warehouse"] = backend
+        job = _job(job_id="pg_0000beef")
+        store.submit(job)
+        store.approve(job.job_id)
+        try:
+            runner._drain_once()
+            assert backend.started.wait(10)
+            assert runner.request_cancel(job.job_id, by=by) is True
+            end = time.monotonic() + 10
+            while not store.iter_history() and time.monotonic() < end:
+                time.sleep(0.01)
+        finally:
+            backend.stop.set()
+            runner.stop()
+        retired = store.iter_history()[0]
+        assert retired.status == "cancelled"
+        assert retired.acted_by == ({"killed": by} if by else {})
+        assert ("acted_by" in store.history.read_text()) == (by is not None)
+        assert len(backend.cancelled) == 1
+        assert runner.active_job_ids() == [] and runner._held == {}
+
+
+WRONG_ACTED_BY = ["x", ["web-1"], None, 5, {"approved": 1}, {"other": "web-1"}, {"killed": None}]
+
+
+class TestWrongLabelsNeverStopAKill:
+    @pytest.mark.parametrize("wrong", WRONG_ACTED_BY, ids=repr)
+    @pytest.mark.parametrize("by", ["web-7", None])
+    def test_a_record_with_labels_of_another_shape_can_still_be_killed(self, tmp_path, wrong, by):
+        """Bug class: a hand-placed record whose `acted_by` is not a dict of labels (a string, a list, null) making `request_cancel` raise while it adds the kill's label, before the cancel is signalled, so the job cannot be killed through the door (or, with `by=None`, the page)."""
+        runner, store, _fakes = _runner_with_fake_backends(tmp_path)
+        backend = BlockingBackend()
+        runner._backends["postgres:warehouse"] = backend
+        record = {**_job(job_id="pg_0000beef").to_dict(), "acted_by": wrong, "status": "approved"}
+        (store.approved / "pg_0000beef.json").write_text(json.dumps(record))
+        try:
+            runner._drain_once()
+            assert backend.started.wait(10)
+            assert runner.request_cancel("pg_0000beef", by=by) is True
+            end = time.monotonic() + 10
+            while not store.iter_history() and time.monotonic() < end:
+                time.sleep(0.01)
+        finally:
+            backend.stop.set()
+            runner.stop()
+        retired = store.iter_history()[0]
+        assert retired.status == "cancelled" and len(backend.cancelled) == 1
+        assert retired.acted_by == ({"killed": by} if by else {})
+        assert retired.extras == {"acted_by": wrong}
+
+    @pytest.mark.parametrize("by", ["web-7", None])
+    def test_a_label_that_cannot_be_added_never_stops_the_kill(self, tmp_path, by):
+        """Bug class: anything about the label (here a held job whose labels were replaced by something else after it was loaded) raising before the cancel is signalled."""
+        runner, store, _fakes = _runner_with_fake_backends(tmp_path)
+        backend = BlockingBackend()
+        runner._backends["postgres:warehouse"] = backend
+        store.submit(_job(job_id="pg_0000beef"))
+        store.approve("pg_0000beef")
+        try:
+            runner._drain_once()
+            assert backend.started.wait(10)
+            runner._held["pg_0000beef"].acted_by = "x"
+            assert runner.request_cancel("pg_0000beef", by=by) is True
+            end = time.monotonic() + 10
+            while not store.iter_history() and time.monotonic() < end:
+                time.sleep(0.01)
+        finally:
+            backend.stop.set()
+            runner.stop()
+        assert store.iter_history()[0].status == "cancelled" and len(backend.cancelled) == 1
+
+
+class TestLabelsOfAnotherShapeLoad:
+    @pytest.mark.parametrize("wrong", WRONG_ACTED_BY, ids=repr)
+    def test_they_are_kept_in_extras_and_not_taken_as_labels(self, wrong):
+        """Bug class: `acted_by` of another shape passed through to the transitions, which add to it (`{**acted_by, ...}`) and raise."""
+        job = Job.from_dict({**_job().to_dict(), "acted_by": wrong})
+        assert job.acted_by == {} and job.extras == {"acted_by": wrong}
+        assert Job.from_dict(job.to_dict()) == job
+
+    def test_labels_of_the_known_shape_are_kept(self):
+        """Bug class: a check so strict that the scheduler's own labels are moved away."""
+        labels = {"approved": "web-1", "rejected": "web-2", "killed": "web-3"}
+        job = Job.from_dict({**_job().to_dict(), "acted_by": labels})
+        assert job.acted_by == labels and job.extras == {}

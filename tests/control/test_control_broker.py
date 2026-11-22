@@ -2183,3 +2183,86 @@ def test_the_broker_and_its_client_load_neither_the_cli_nor_a_child_module(modul
     result = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env={"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ── session.check_password: the management password again, and nothing else ──
+
+
+class TestCheckPassword:
+    def test_a_right_and_a_wrong_password_and_the_audit_lines(self, rig):
+        """Bug class: a check that accepts a wrong password, changes anything on a right one, or leaves no audit line for either (a guesser with a stolen token would go unseen, and a right check could not be told from no check)."""
+        rig.start()
+        session = rig.login()
+        before = rig.audit_lines()
+
+        assert session.check_password(PASSWORD) == {}
+        after_right = rig.audit_lines()
+        wrong = code_of(lambda: session.check_password("wrong-password-1"))
+
+        assert after_right[:len(before)] == before and [(line["event"], line["session"]) for line in after_right[len(before):]] == [("password_checked", 1)]
+        assert list(after_right[-1]) == ["n", "t", "session", "event", "prev"]
+        assert wrong.code == "step_up_failed"
+        assert [line["session"] for line in rig.events("step_up_failed")] == [1]
+        assert rig.audit_lines()[:len(after_right)] == after_right and len(rig.audit_lines()) == len(after_right) + 1
+        assert session.check_password(PASSWORD) == {}
+        assert len(rig.events("password_checked")) == 2
+
+    def test_the_fifth_failure_ends_the_session(self, rig):
+        """Bug class: the check counted apart from the other second checks (or not at all), so a stolen token can guess the management password without end."""
+        rig.start()
+        session = rig.login()
+        code_of(lambda: session.call("db.unsetup_jobs", step_up="wrong-password-1"))
+        codes = [code_of(lambda: session.check_password("wrong-password-1")).code for _ in range(4)]
+
+        assert codes == ["step_up_failed"] * 3 + ["session_ended"]
+        assert [line["reason"] for line in rig.events("session_end")] == ["step_up_failures"]
+        assert len(rig.events("step_up_failed")) == 5
+        assert code_of(lambda: session.check_password(PASSWORD)).code == "unauthorized"
+
+    @pytest.mark.parametrize("token", [None, "a-made-up-token-that-names-no-session"])
+    def test_no_valid_token_is_unauthorized_and_nothing_is_verified(self, rig, token):
+        """Bug class: the password checked for whoever asks, which makes the socket an oracle for the management password without a session."""
+        rig.start()
+        rig.login()
+        session = rig.client(token=token)
+        if token is None:
+            reply = decoded_reply(raw_exchange(rig.socket_path, frame(json.dumps({"op": "session.check_password", "step_up": PASSWORD}))))
+            assert reply["error"]["code"] == "unauthorized"
+        assert code_of(lambda: session.check_password(PASSWORD)).code == "unauthorized"
+        assert rig.events("step_up_failed") == [] and rig.events("password_checked") == []
+
+    @pytest.mark.parametrize("document", [{"op": "session.check_password"}, {"op": "session.check_password", "step_up": PASSWORD, "extra": 1}])
+    def test_a_missing_or_an_unknown_field_is_refused(self, rig, document):
+        """Bug class: a check without a password taken for a failed one (counted towards the end of the session), or a field the op does not list taken."""
+        rig.start()
+        session = rig.login()
+        reply = decoded_reply(raw_exchange(rig.socket_path, frame(json.dumps({**document, "token": session.token}))))
+        assert reply["error"]["code"] == "bad_request"
+        assert rig.events("step_up_failed") == []
+
+    def test_refused_while_stopping(self, rig):
+        """Bug class: a check accepted once a stop was asked, unlike every other op that needs a session."""
+        rig.start()
+        gate = rig.out / "gate"
+        rig.behave("db.stop", wait_for=str(gate))
+        session = rig.login()
+        caller = threading.Thread(target=lambda: session.call("db.stop", {}))
+        caller.start()
+        wait_for("the child", lambda: rig.calls("db.stop"))
+        pending = raw_exchange(rig.socket_path, b"", read=False)
+        wait_for("the handler", lambda: len(rig.broker._connections) == 2)
+        rig.broker.request_stop()
+        wait_for("the listener to close", lambda: rig.broker._listener is None)
+        pending.sendall(frame(json.dumps({"op": "session.check_password", "token": session.token, "step_up": PASSWORD})))
+        received = b""
+        while True:
+            chunk = pending.recv(65536)
+            if not chunk:
+                break
+            received += chunk
+        pending.close()
+        gate.touch()
+        caller.join(15)
+        server, thread = rig.running.pop()
+        thread.join(30)
+        assert decoded_reply(received)["error"]["code"] == "stopping"

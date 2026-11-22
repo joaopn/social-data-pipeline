@@ -1,3 +1,8 @@
+---
+title: "Language detection and classifiers"
+parent: "User guide"
+nav_order: 4
+---
 # Classification Profiles
 
 The `lingua` and `ml` profiles run classifiers on parsed files (Parquet or CSV). The `lingua` profile runs CPU-based Lingua language detection, while the `ml` profile runs GPU-based transformer classifiers. Classifiers detect file format from the extension and produce output in the same format.
@@ -238,4 +243,4 @@ Set `watch_interval` to a value > 0 in pipeline.yaml to continuously check for n
 
 ### Adding Custom Classifiers
 
-See [Custom Classifiers Guide](../guides/custom-classifiers.md) for config-only and Python approaches.
+See [Custom Classifiers Guide](custom-classifiers.md) for config-only and Python approaches.

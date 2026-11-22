@@ -1,3 +1,8 @@
+---
+title: "Platforms"
+parent: "Architecture"
+nav_order: 1
+---
 # Adding New Platforms
 
 Social Data Pipeline supports two ways to add new platforms:
@@ -17,7 +22,7 @@ python sdp.py source add <name>
 
 Select `custom` as the platform type. The interactive setup generates `config/sources/<name>/platform.yaml` with file patterns, fields, types, and indexes.
 
-See [Custom Platforms](custom.md) for full details.
+See [Custom Platforms](../user-guide/custom-data.md) for full details.
 
 ---
 

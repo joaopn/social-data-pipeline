@@ -1,6 +1,11 @@
+---
+title: "Web UI"
+parent: "User guide"
+nav_order: 8
+---
 # The web UI
 
-The web UI is a page in your browser for the pipeline of one deployment. It runs in a container of its own and does everything through the [broker](broker.md) and, for its Queue window, through the [query scheduler](../profiles/jobs.md)'s control socket: it holds no database password, no Docker access and no file of the deployment, only the broker's socket folder, its own certificate and, when they are there, the scheduler's control folder and results folder and the chat's socket folder. After the login you get the Management window: the **Overview** (the databases and whether they run, the configured sources with their profiles, the pipeline runs that are alive now, and standing notices for a database without authentication and for ports open beyond this machine) and the pages **Sources**, **Databases**, **Runs** and **System**, described below. The **Queue** window is the scheduler's queue and the **Chat** window the chat's assistant (both below). Reading a page changes nothing; every action is shown with its `sdp` command (or, in the Queue, with the query it acts on) and runs only once you confirm it.
+The web UI is a page in your browser for the pipeline of one deployment. It runs in a container of its own and does everything through the [broker](broker.md) and, for its Queue window, through the [query scheduler](query-scheduler.md)'s control socket: it holds no database password, no Docker access and no file of the deployment, only the broker's socket folder, its own certificate and, when they are there, the scheduler's control folder and results folder and the chat's socket folder. After the login you get the Management window: the **Overview** (the databases and whether they run, the configured sources with their profiles, the pipeline runs that are alive now, and standing notices for a database without authentication and for ports open beyond this machine) and the pages **Sources**, **Databases**, **Runs** and **System**, described below. The **Queue** window is the scheduler's queue and the **Chat** window the chat's assistant (both below). Reading a page changes nothing; every action is shown with its `sdp` command (or, in the Queue, with the query it acts on) and runs only once you confirm it.
 
 It needs Linux and a Docker without user-id mapping: rootless Docker and `userns-remap` are refused, because the broker accepts connections only from the operator's own user id, and under such a mapping the container's connections arrive as another one.
 

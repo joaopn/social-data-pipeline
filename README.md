@@ -174,9 +174,9 @@ python sdp.py source add reddit     # Add a data source (interactive setup)
 
 `db setup` walks you through database selection, data paths, port choices, optional authentication, and per-DB tuning (PGTune for PostgreSQL, FE/BE memory split for StarRocks). Run `db setup --add <db>` to add a new database later without reconfiguring existing ones. `source add` walks you through data types, file patterns, fields, indexes, and classifier configuration — generating per-source config in `config/sources/<name>/`.
 
-`setup-mcp` and `setup-jobs` are optional but recommended for agentic workflows; they layer on top of `db setup` and reuse its read-only credentials. For details on each, see the [Database Profiles (MCP)](docs/profiles/database.md#mcp-servers) and [Jobs Scheduler](docs/profiles/jobs.md) docs. `setup-llm` bundles both.
+`setup-mcp` and `setup-jobs` are optional but recommended for agentic workflows; they layer on top of `db setup` and reuse its read-only credentials. For details on each, see the [Database Profiles (MCP)](docs/user-guide/databases.md#mcp-servers) and [Jobs Scheduler](docs/user-guide/query-scheduler.md) docs. `setup-llm` bundles both.
 
-For Reddit, download the data dumps from [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift/blob/master/download_links.md) and place them in the dumps directory configured during setup. For Hugging Face datasets, see [Platform Support](#-platform-support). Or check the [interactive Codespaces demo](https://codespaces.new/joaopn/social-data-pipeline?ref=main) — same pipeline, zero install. For full configuration details, see the [Configuration Reference](docs/configuration.md).
+For Reddit, download the data dumps from [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift/blob/master/download_links.md) and place them in the dumps directory configured during setup. For Hugging Face datasets, see [Platform Support](#-platform-support). Or check the [interactive Codespaces demo](https://codespaces.new/joaopn/social-data-pipeline?ref=main) — same pipeline, zero install. For full configuration details, see the [Configuration Reference](docs/user-guide/configuration.md).
 
 #### 3. Run
 
@@ -192,7 +192,7 @@ python sdp.py run sr_ml --source reddit         # Optional: ingest classifier ou
 `db start` brings up everything `db setup`/`setup-mcp`/`setup-jobs` configured. The `--source` flag is optional when only one source is configured.
 
 > [!NOTE]
-> **Ordering for optional steps:** run `lingua` before `*_ingest` so language columns fold into the main table; `ml` can run any time after `parse` (independent output files); `*_ml` must run **after** its `*_ingest` counterpart (classifier tables foreign-key into the main table). See [Classification Profiles](docs/profiles/classification.md) for tuning.
+> **Ordering for optional steps:** run `lingua` before `*_ingest` so language columns fold into the main table; `ml` can run any time after `parse` (independent output files); `*_ml` must run **after** its `*_ingest` counterpart (classifier tables foreign-key into the main table). See [Classification Profiles](docs/user-guide/classifiers.md) for tuning.
 
 #### 4. Query
 
@@ -203,11 +203,11 @@ Three ways to use the data:
 - **StarRocks**: any MySQL client (`mysql -h 127.0.0.1 -P 9030 -u root`), or from a growing list of [IDEs with official support](https://docs.starrocks.io/docs/cover_pages/ide_tools/)
 - **MongoDB**: `mongosh`, [MongoDB Compass](https://www.mongodb.com/products/tools/compass)
 
-**Agentic discovery (read-only MCP)** — short, ad-hoc Q&A from an AI agent. The per-DB MCP servers (started automatically alongside their database) expose read-only access to agentic clients like Claude Code, Codex, and Cursor. Best for quick queries to explore the dataset and schema and help the AI agent craft complex data analysis queries. Configured via `db setup-mcp`; see [Database Profiles → MCP Servers](docs/profiles/database.md#mcp-servers).
+**Agentic discovery (read-only MCP)** — short, ad-hoc Q&A from an AI agent. The per-DB MCP servers (started automatically alongside their database) expose read-only access to agentic clients like Claude Code, Codex, and Cursor. Best for quick queries to explore the dataset and schema and help the AI agent craft complex data analysis queries. Configured via `db setup-mcp`; see [Database Profiles → MCP Servers](docs/user-guide/databases.md#mcp-servers).
 
-**Agentic execution (jobs scheduler)** — human-approved queries that produce result files. Agents submit queries over the jobs MCP at `http://localhost:8050/mcp`; the WebUI at `http://localhost:8050/` lets you approve / reject / kill pending jobs, EXPLAIN against the live backend, and preview completed results inline with one-click download. Result files (Parquet / CSV / NDJSON) land in `JOBS_RESULT_ROOT/<job_id>/`, keeping long-running aggregations out of the agent's context. An opt-in per-target auto-accept switch (with FIFO cap) is available for trusted workloads. Configured via `db setup-jobs`; see the [Jobs Scheduler doc](docs/profiles/jobs.md).
+**Agentic execution (jobs scheduler)** — human-approved queries that produce result files. Agents submit queries over the jobs MCP at `http://localhost:8050/mcp`; the WebUI at `http://localhost:8050/` lets you approve / reject / kill pending jobs, EXPLAIN against the live backend, and preview completed results inline with one-click download. Result files (Parquet / CSV / NDJSON) land in `JOBS_RESULT_ROOT/<job_id>/`, keeping long-running aggregations out of the agent's context. An opt-in per-target auto-accept switch (with FIFO cap) is available for trusted workloads. Configured via `db setup-jobs`; see the [Jobs Scheduler doc](docs/user-guide/query-scheduler.md).
 
-![Jobs scheduler WebUI — pending queue with agent-submitted queries awaiting approval](docs/jobs-scheduler.png)
+![Jobs scheduler WebUI — pending queue with agent-submitted queries awaiting approval](docs/assets/jobs-scheduler.png)
 
 ---
 
@@ -287,7 +287,7 @@ Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mong
 | `sdp.py broker status` | Say whether the broker runs, its pid, since when, and whether a password is set |
 | `sdp.py broker audit [--limit N] [--verify] [--json]` | Print the newest lines of the broker's audit log, or check its chain with `--verify` |
 
-The broker is a host process on a unix socket through which a logged-in session can run a fixed list of typed actions. The web UI uses it. See [The broker](docs/guides/broker.md).
+The broker is a host process on a unix socket through which a logged-in session can run a fixed list of typed actions. The web UI uses it. See [The broker](docs/user-guide/broker.md).
 
 ### Web UI (`sdp.py webui`)
 
@@ -299,7 +299,7 @@ The broker is a host process on a unix socket through which a logged-in session 
 | `sdp.py webui status` | Say whether it runs, where it answers and the certificate's fingerprint and end date (exit code 0 when it runs) |
 | `sdp.py webui unsetup` | After a confirmation, remove the container, the network, the image and `.sdp/webui/` |
 
-The web UI is a page served over HTTPS from a container that holds only the broker's socket folder, its certificate and, for its Queue window, the query scheduler's control and results folders and, for its Chat window, the chat's socket folder. It has a login, an Overview (databases, sources, runs alive now, notices for databases without authentication and ports open beyond the machine) and the Management pages for sources, databases, runs and the broker, from which you start and cancel runs, follow their output, start and stop services and reset or remove databases and sources; every action shows its `sdp` command and runs only once you confirm it (with the management password again for a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, removing a source, and keeping the database admin password for the session; starting or cancelling a run and stopping services need none), a Queue window with the scheduler's queue, where queries are approved, rejected, killed, EXPLAINed and previewed and auto-accept is set, and a Chat window where you ask the chat's assistant questions about the data and get its answers, tool calls, files and plots (everything from the sandbox shown as text). Linux, and a Docker without user-id mapping. See [The web UI](docs/guides/webui.md).
+The web UI is a page served over HTTPS from a container that holds only the broker's socket folder, its certificate and, for its Queue window, the query scheduler's control and results folders and, for its Chat window, the chat's socket folder. It has a login, an Overview (databases, sources, runs alive now, notices for databases without authentication and ports open beyond the machine) and the Management pages for sources, databases, runs and the broker, from which you start and cancel runs, follow their output, start and stop services and reset or remove databases and sources; every action shows its `sdp` command and runs only once you confirm it (with the management password again for a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, removing a source, and keeping the database admin password for the session; starting or cancelling a run and stopping services need none), a Queue window with the scheduler's queue, where queries are approved, rejected, killed, EXPLAINed and previewed and auto-accept is set, and a Chat window where you ask the chat's assistant questions about the data and get its answers, tool calls, files and plots (everything from the sandbox shown as text). Linux, and a Docker without user-id mapping. See [The web UI](docs/user-guide/webui.md).
 
 ### Chat (`sdp.py chat`)
 
@@ -311,7 +311,7 @@ The web UI is a page served over HTTPS from a container that holds only the brok
 | `sdp.py chat status` | Say whether each container runs, the back end, which databases the chat can read now (and which dropped out since the start) and the work folder's size against its soft cap (exit code 0 when it runs) |
 | `sdp.py chat unsetup` | After a confirmation, remove the two images and the chat's settings and credential; after a second one, also all chats and their files (`.sdp/chat/work`). Refused while the chat's containers exist |
 
-The chat is an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential and reaches the model and the databases' MCP servers for it. You ask it in the web UI's Chat window (start the web UI after `chat start`). See [The chat](docs/guides/chat.md).
+The chat is an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential and reaches the model and the databases' MCP servers for it. You ask it in the web UI's Chat window (start the web UI after `chat start`). See [The chat](docs/user-guide/chat.md).
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 
@@ -338,16 +338,16 @@ The chat is an AI assistant in a sandbox container whose only network peer is a 
 > GPU profile requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html). All profiles track progress and resume automatically — rerun any profile safely without reprocessing completed files.
 
 For detailed configuration and algorithm documentation, see the per-profile docs:
-- [Parse Profile](docs/profiles/parse.md)
-- [Classification Profiles (lingua / ml)](docs/profiles/classification.md)
-- [Database Profiles (postgres / postgres_ingest / postgres_ml / mongo / mongo_ingest / starrocks / sr_ingest / sr_ml)](docs/profiles/database.md)
-- [Jobs Scheduler (jobs)](docs/profiles/jobs.md)
+- [Parse Profile](docs/user-guide/parsing.md)
+- [Classification Profiles (lingua / ml)](docs/user-guide/classifiers.md)
+- [Database Profiles (postgres / postgres_ingest / postgres_ml / mongo / mongo_ingest / starrocks / sr_ingest / sr_ml)](docs/user-guide/databases.md)
+- [Jobs Scheduler (jobs)](docs/user-guide/query-scheduler.md)
 
 ## ◾ Platform Support
 
 | Platform | Description |
 |----------|-------------|
-| `reddit` | Specialized Reddit features: waterfall deletion detection, id deduplication, base-36 ID conversion, [schema conversion](docs/platforms/reddit.md) (handles dump format drift across years — field renames, missing fields, lowercasing) |
+| `reddit` | Specialized Reddit features: waterfall deletion detection, id deduplication, base-36 ID conversion, [schema conversion](docs/user-guide/reddit.md) (handles dump format drift across years — field renames, missing fields, lowercasing) |
 | `<name>` | JSON, CSV, and Parquet parsing for arbitrary data: dot-notation, array indexing, type enforcement |
 
 Platform is determined by source name: `sdp.py source add reddit` uses the Reddit platform, any other name uses the generic `<name>`. To process arbitrary JSON/NDJSON, CSV, or Parquet data, use any name other than `reddit` and configure your platform interactively.
@@ -365,14 +365,14 @@ python sdp.py run mongo_ingest --source mydata            # Ingest raw parquet i
 
 HF configs are grouped interactively into data types (e.g. yearly configs into `comments` and `submissions`). `source download` mirrors the HF repo to `data/dumps/` and organizes files into `data/extracted/` by data type. From there everything flows through the standard pipeline — `parse` handles column selection and type enforcement, `mongo_ingest` ingests raw parquet directly. 
 
-- [Reddit Platform Reference](docs/platforms/reddit.md)
-- [Custom Platform Setup](docs/platforms/custom.md)
+- [Reddit Platform Reference](docs/user-guide/reddit.md)
+- [Custom Platform Setup](docs/user-guide/custom-data.md)
 
 ### Extending functionality
 
-- **Add new platforms**: Create config files and an optional custom parser. See [Adding Platforms](docs/platforms/adding-platforms.md).
-- **Add custom classifiers**: Config-only (add a HuggingFace model via YAML) or custom Python. See [Custom Classifiers](docs/guides/custom-classifiers.md).
-- **Full configuration reference**: All environment variables, YAML files, and the source override system. See [Configuration](docs/configuration.md).
+- **Add new platforms**: Create config files and an optional custom parser. See [Adding Platforms](docs/architecture/platforms.md).
+- **Add custom classifiers**: Config-only (add a HuggingFace model via YAML) or custom Python. See [Custom Classifiers](docs/user-guide/custom-classifiers.md).
+- **Full configuration reference**: All environment variables, YAML files, and the source override system. See [Configuration](docs/user-guide/configuration.md).
 
 ## ◾ FAQ and Troubleshooting
 
@@ -404,14 +404,14 @@ Yes! Use `python sdp.py run lingua` or `python sdp.py run ml` independently. The
 <details>
 <summary><strong>Can I use this for non-Reddit data?</strong></summary>
 
-Yes! Use a not-reserved (not `reddit`) name during `python sdp.py source add <name>` to process arbitrary NDJSON, CSV, or Parquet data. For Hugging Face datasets, use `python sdp.py source add <name> --hf <dataset_id>` to fetch metadata and pre-populate setup defaults. See the [Custom Platform](docs/platforms/custom.md) setup guide.
+Yes! Use a not-reserved (not `reddit`) name during `python sdp.py source add <name>` to process arbitrary NDJSON, CSV, or Parquet data. For Hugging Face datasets, use `python sdp.py source add <name> --hf <dataset_id>` to fetch metadata and pre-populate setup defaults. See the [Custom Platform](docs/user-guide/custom-data.md) setup guide.
 
 </details>
 
 <details>
 <summary><strong>How do I add custom support for a new platform?</strong></summary>
 
-See [Adding New Platforms](docs/platforms/adding-platforms.md). Create a platform template in `config/templates/` and optionally a custom parser.
+See [Adding New Platforms](docs/architecture/platforms.md). Create a platform template in `config/templates/` and optionally a custom parser.
 
 </details>
 
@@ -464,7 +464,7 @@ docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
 
 ## AI disclaimer
 
-Most of the orchestration and dockerization glue code was written by LLMs, under human planning, code review, and [extensive testing](docs/guides/testing.md). The algorithms and ingestion structure are a merge of a number of private repos developed over a period of almost 4 years.
+Most of the orchestration and dockerization glue code was written by LLMs, under human planning, code review, and [extensive testing](docs/architecture/testing.md). The algorithms and ingestion structure are a merge of a number of private repos developed over a period of almost 4 years.
 
 ## License
 

@@ -1,3 +1,8 @@
+---
+title: "Configuration reference"
+parent: "User guide"
+nav_order: 11
+---
 # Configuration Reference
 
 This document is the master configuration reference for Social Data Pipeline. It covers every environment variable, configuration file, and tunable setting across all profiles.
@@ -6,10 +11,10 @@ This document is the master configuration reference for Social Data Pipeline. It
 > Run `python sdp.py db setup` to configure databases, then `python sdp.py source add <name>` to add sources. The scripts auto-detect your hardware, walk you through every setting with sensible defaults, and generate `.env`, `config/db/*.yaml`, per-source config in `config/sources/<name>/`, and `postgresql.local.conf`. To add a database later without reconfiguring existing ones, use `python sdp.py db setup --add <db>`. The reference below documents what each setting does.
 
 For profile-specific usage and workflows, see:
-- [Parse Profile](profiles/parse.md)
-- [Classification Profiles](profiles/classification.md)
-- [Database Profiles](profiles/database.md)
-- [Jobs Scheduler](profiles/jobs.md)
+- [Parse Profile](parsing.md)
+- [Classification Profiles](classifiers.md)
+- [Database Profiles](databases.md)
+- [Jobs Scheduler](query-scheduler.md)
 
 ---
 
@@ -205,7 +210,7 @@ processing:
 | `cleanup_temp` | Delete intermediate files (extracted JSON) after processing. | `false` |
 | `watch_interval` | Poll for new files every N minutes. `0` means run once and exit. | `0` |
 
-See also: [Parse Profile guide](profiles/parse.md)
+See also: [Parse Profile guide](parsing.md)
 
 ---
 
@@ -267,7 +272,7 @@ cpu_classifiers:            # CPU classifiers to run
 - **Tier 4 (Indian Regional):** Bengali, Tamil, Telugu, Marathi, Gujarati, Punjabi, Urdu
 - **Tier 5 (Low volume):** Commented out by default — uncomment in `cpu_classifiers.yaml` to enable (Afrikaans, Albanian, Armenian, Azerbaijani, Basque, Belarusian, Catalan, Esperanto, and others)
 
-See also: [Classification Profile guide](profiles/classification.md)
+See also: [Classification Profile guide](classifiers.md)
 
 ---
 
@@ -351,7 +356,7 @@ gpu_classifiers:
 
 Output columns are auto-derived from the model's `config.id2label` mapping.
 
-See also: [Classification Profile guide](profiles/classification.md)
+See also: [Classification Profile guide](classifiers.md)
 
 ---
 
@@ -408,7 +413,7 @@ indexes: {}                  # Per-data-type index fields (set via source platfo
 
 </details>
 
-See [Tablespaces](profiles/database.md#tablespaces) for details on multi-disk setups.
+See [Tablespaces](databases.md#tablespaces) for details on multi-disk setups.
 
 #### ML Table Ingestion: `config/postgres_ml/pipeline.yaml`
 
@@ -480,7 +485,7 @@ classifiers:
 
 `suffix` is **not** an ingestion override — it lives in the ml/lingua profile (so the ML run and the ingestion always agree on file names). Column types are auto-inferred from data unless `column_overrides` is set.
 
-See also: [Database Profile guide](profiles/database.md)
+See also: [Database Profile guide](databases.md)
 
 ---
 
@@ -588,11 +593,11 @@ sr_indexes: {}             # Per-data-type index fields (set via platform config
 | **processing.index_poll_interval** | Seconds between `SHOW ALTER TABLE COLUMN` polls while waiting for an index build to finish. | `10` |
 | **processing.prefer_lingua** | Prefer lingua-enriched files over original parsed files. | `true` |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
-| **sr_indexes** | Index fields per data type. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. Falls back to `indexes` from platform config, which is read list-only since postgres_ingest shares it. See [Choosing a StarRocks Index Type](profiles/database.md#choosing-a-starrocks-index-type). | `{}` |
+| **sr_indexes** | Index fields per data type. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. Falls back to `indexes` from platform config, which is read list-only since postgres_ingest shares it. See [Choosing a StarRocks Index Type](databases.md#choosing-a-starrocks-index-type). | `{}` |
 
 StarRocks uses database-per-source (database name = source name). Tables are Primary Key tables with `DISTRIBUTED BY HASH(pk)` and `enable_persistent_index = true` when the platform defines a `primary_key`. Custom platforms (e.g. HF datasets) can leave `primary_key` unset; tables then use the Duplicate Key model with `DISTRIBUTED BY RANDOM`, re-runs append rows, and `check_duplicates` is forced off so no `merge_condition` is emitted.
 
-**Table compression.** New tables are created with the global `compression` codec from `config/db/starrocks.yaml` (default `ZSTD`; see [starrocks Profile → Table Compression](profiles/database.md#table-compression)). Override per source under `pipeline.database.compression` in the source's `starrocks.yaml` / `sr_ml.yaml`.
+**Table compression.** New tables are created with the global `compression` codec from `config/db/starrocks.yaml` (default `ZSTD`; see [starrocks Profile → Table Compression](databases.md#table-compression)). Override per source under `pipeline.database.compression` in the source's `starrocks.yaml` / `sr_ml.yaml`.
 
 **Index builds.** `sr_ingest`, `sr_ml`, and `sdp db create-indexes` handle two mechanisms. Bitmap indexes are submitted as `CREATE INDEX … USING BITMAP` and polled via `SHOW ALTER TABLE COLUMN` until each alter job reaches `FINISHED`, so progress reflects the actual build rather than the submission. Bloom filters are a table property, applied as one `ALTER TABLE … SET ("bloom_filter_columns" = …)` per table; because that statement replaces the whole list, the current value is always read from `SHOW CREATE TABLE` and merged first, and the property is re-read afterwards to confirm the change took effect — an unreadable current value aborts rather than risk dropping existing bloom columns. Which `SHOW ALTER TABLE` view reports a bloom filter change is unverified, so for bloom filters the poll is best-effort progress reporting and the re-read is what decides success. Different tables run in parallel, because StarRocks' "one schema change per table" constraint is per-table — but indexes within a single table run serially. `sr_ml` caps its client-side fan-out at 8 concurrent tables, since its plan spans data types × classifiers rather than data types alone. BE-side parallelism is capped by `alter_tablet_worker_count` in `config/starrocks/be.conf` (set at `sdp db setup` based on hardware). Each worker buffers bitmaps while it runs, so raising the count speeds up builds at the cost of BE memory — high-cardinality columns (e.g. `author`) can push the BE past its memory limit if the pool is too large.
 
@@ -640,7 +645,7 @@ Classifier tables (e.g., `submissions_lingua`, `comments_toxicity_en`) are creat
 
 ### Jobs Scheduler
 
-Configured via `sdp db setup-jobs`. Reference is in [profiles/jobs.md](profiles/jobs.md) — covers `config/jobs/config.yaml` (committed defaults) merged with `config/jobs/config.local.yaml` (gitignored override): targets, port, per-backend timeouts, history retention, and the optional UI auth toggle.
+Configured via `sdp db setup-jobs`. Reference is in [query-scheduler.md](query-scheduler.md) — covers `config/jobs/config.yaml` (committed defaults) merged with `config/jobs/config.local.yaml` (gitignored override): targets, port, per-backend timeouts, history retention, and the optional UI auth toggle.
 
 ---
 
@@ -796,4 +801,4 @@ fields:
 
 Run `python sdp.py source add <name>` to generate the config interactively.
 
-See [Custom Platforms](platforms/custom.md) for a complete setup guide.
+See [Custom Platforms](custom-data.md) for a complete setup guide.

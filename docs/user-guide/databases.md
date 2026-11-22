@@ -1,3 +1,8 @@
+---
+title: "Databases"
+parent: "User guide"
+nav_order: 6
+---
 # Database Profiles
 
 Social Data Pipeline supports three database destinations:

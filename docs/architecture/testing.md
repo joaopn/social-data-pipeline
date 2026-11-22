@@ -1,3 +1,8 @@
+---
+title: "Testing"
+parent: "Architecture"
+nav_order: 2
+---
 # Testing
 
 This is the backend / developer reference for the test suite. The pipeline is mostly LLM-written orchestration glue, so tests are the load-bearing way to catch regressions — every commit class with non-trivial behavior has at least one pinning test.

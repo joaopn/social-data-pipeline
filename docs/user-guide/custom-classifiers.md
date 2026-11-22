@@ -1,3 +1,8 @@
+---
+title: "Custom classifiers"
+parent: "User guide"
+nav_order: 5
+---
 # Adding Custom Classifiers
 
 Social Data Pipeline supports two approaches for adding custom classifiers: config-only (for HuggingFace transformer models) and custom Python (for any classification logic).
@@ -77,7 +82,7 @@ classifiers:
 
 ### Available Options
 
-See the full [Transformer Options Reference](../profiles/classification.md#transformer-options-reference) for all per-classifier options.
+See the full [Transformer Options Reference](classifiers.md#transformer-options-reference) for all per-classifier options.
 
 ---
 

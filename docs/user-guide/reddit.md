@@ -1,3 +1,8 @@
+---
+title: "Reddit dumps"
+parent: "User guide"
+nav_order: 1
+---
 # Reddit Platform
 
 The Reddit platform (`PLATFORM=reddit`) is the default and includes specialized features for processing Reddit data dumps from [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift).
@@ -46,7 +51,7 @@ The parser sets `retrieved_utc` from multiple sources, in this priority:
 3. **New format** (2023-11+): uses `_meta.retrieved_2nd_on` when available (second retrieval is more reliable)
 4. **Pre-2010 Arctic Shift dumps**: no retrieval metadata exists — column ingests as NULL
 
-The DB column is nullable because pre-2010 dumps genuinely lack retrieval timestamps; forcing `NOT NULL` would make every row from those dumps fail COPY. Dedup logic treats NULL as smallest, so a real timestamp always wins over NULL when the same id appears across mixed-era dumps. See [database.md](../profiles/database.md#fast-initial-load-new-tables) for the full ORDER BY.
+The DB column is nullable because pre-2010 dumps genuinely lack retrieval timestamps; forcing `NOT NULL` would make every row from those dumps fail COPY. Dedup logic treats NULL as smallest, so a real timestamp always wins over NULL when the same id appears across mixed-era dumps. See [databases.md](databases.md#fast-initial-load-new-tables) for the full ORDER BY.
 
 ---
 
@@ -188,4 +193,4 @@ sr_ml_indexes:
 
 There is no fallback from these to `indexes`, because the base fields name columns the classifier tables do not have. `python sdp.py db create-indexes` writes to the right set automatically.
 
-For StarRocks, a plain list means a bitmap index; use `{bitmap: [...], bloomfilter: [...]}` to pick per column. See [Choosing a StarRocks Index Type](../profiles/database.md#choosing-a-starrocks-index-type).
+For StarRocks, a plain list means a bitmap index; use `{bitmap: [...], bloomfilter: [...]}` to pick per column. See [Choosing a StarRocks Index Type](databases.md#choosing-a-starrocks-index-type).

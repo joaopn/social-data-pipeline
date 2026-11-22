@@ -1,3 +1,8 @@
+---
+title: "Your own data and Hugging Face"
+parent: "User guide"
+nav_order: 2
+---
 # Custom Platforms
 
 Custom platforms (`PLATFORM=custom/<name>`) provide JSON, CSV, and Parquet parsing to structured files (Parquet or CSV) for arbitrary data sources, without platform-specific logic. Each custom source gets a `platform.yaml` in `config/sources/<name>/`. Hugging Face datasets are supported natively via `--hf`.

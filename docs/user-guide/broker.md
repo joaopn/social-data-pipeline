@@ -1,3 +1,8 @@
+---
+title: "The broker"
+parent: "User guide"
+nav_order: 9
+---
 # The broker
 
 The broker is a process that runs on the host, next to the CLI, and listens on a unix socket in the deployment folder. Through that socket a logged-in session can run a fixed list of actions of the CLI: the status commands, starting, listing, reading and cancelling pipeline runs, starting and stopping databases, and a few removals. It is the piece the [web UI](webui.md) talks to: the web UI runs in a container as the operator's user, holding nothing but the socket's folder, while the broker does the work on the host. Its client is `social_data_pipeline/control/client.py`. It runs on Linux only.

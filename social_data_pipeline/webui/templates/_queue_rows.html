@@ -28,7 +28,7 @@
       {%- for row in jobs %}
       <tr>
         <td>{% if tab == "history" %}{{ row.submitted }}<br><span class="muted">{{ row.finished }}</span>{% elif tab == "approved" %}{{ row.approved }}{% elif tab == "running" %}{{ row.started }}{% else %}{{ row.submitted }}{% endif %}</td>
-        <td>{% if row.href %}<a href="{{ row.href }}"><code>{{ q.vis(row.id) }}</code></a>{% else %}<code>{{ q.vis(row.id) }}</code>{% endif %}</td>
+        <td>{% if row.href %}<a href="{{ row.href }}"><code>{{ q.vis(row.id) }}</code></a>{% else %}<code>{{ q.vis(row.id) }}</code>{% endif %}{% if row.assistant %}<br><span class="tag">{{ row.assistant }}</span>{% endif %}</td>
         <td>{{ q.vis(row.target) }}<br><span class="muted">{{ q.vis(row.backend) }}</span></td>
         {%- if tab == "history" %}
         <td>{{ q.vis(row.status) }}{% if row.error %}<pre class="output">

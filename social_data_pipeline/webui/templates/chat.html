@@ -7,7 +7,7 @@
 <section class="card" aria-labelledby="sandbox-title">
   <h2 id="sandbox-title">The assistant</h2>
   {%- if hello %}
-  <dl class="facts"><dt>Back end</dt><dd>{{ hello.backend }}</dd><dt>Databases it can read</dt><dd>{{ hello.databases }}</dd></dl>
+  <dl class="facts"><dt>Back end</dt><dd>{{ hello.backend }}</dd><dt>Databases it can read</dt><dd>{{ hello.databases }}</dd><dt>Query queue</dt><dd>{{ hello.queue }}</dd></dl>
   {%- else %}
   <p class="notice">{{ hello_failure }}</p>
   {%- endif %}

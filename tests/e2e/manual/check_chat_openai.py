@@ -3,7 +3,7 @@
 
 It is not collected by pytest. The gateway's config is written as `sdp chat start` writes it for `openai-compatible` (`chat_host.gateway_config`, with `https://openrouter.ai/api/v1` as the address, never reached) and with the MCP servers of postgres and mongo; the gateway container runs the gateway package with its model upstream replaced by a loopback `http://` address (its test-only `test_upstream` allows that) and its MCP upstreams pointed at loopback, where a STAND-IN runs in its network namespace: `tests/chat/standins.py` (mounted read-only) as a chat-completions endpoint and as one MCP server for both databases (SSE for postgres, streamable HTTP for mongo), recording every request. The sandbox is created by `chat_host.sandbox_arguments`, so it runs the runner and its agent as `sdp chat start` would. What it shows:
 
-1. `hello` names the back end and both databases; a question whose first reply asks for `run_shell` writing `plot.png` and whose second is text gives the events `user`, `tool`, `tool_result`, `text`, `file`, `end`.
+1. `hello` names the back end and both databases and says the query queue is not attached; a question whose first reply asks for `run_shell` writing `plot.png` and whose second is text gives the events `user`, `tool`, `tool_result`, `text`, `file`, `end`.
 2. A second question resumes the history (the stand-in sees the first question in its first request) and calls `mongo__ping` through the gateway; the tools offered hold `run_shell` and the tools of both databases.
 3. `chat.stop` on a turn whose shell command waits leaves no process of the turn in the sandbox (`docker top`).
 4. The gateway refused nothing; every model request carried the configured model and reached the stand-in with the made-up key the gateway holds, and no MCP request carried an `Authorization` header. The `mcp` package's version in the image and the MCP requests' paths and header names as the gateway forwarded them are printed. `chat.delete` removes the chat's folder.
@@ -104,7 +104,7 @@ def start(c):
 def check_turns(c, client):
     print("1. hello, a new chat, a turn that writes a plot")
     hello = client.request({"op": "hello"})
-    check(hello == {"version": 1, "backend": "openai-compatible", "databases": ["postgres", "mongo"]}, f"hello: {hello}")
+    check(hello == {"version": 1, "backend": "openai-compatible", "databases": ["postgres", "mongo"], "queue": False}, f"hello: {hello}")
     chat = client.request({"op": "chat.new"})["chat"]
     client.request({"op": "chat.send", "chat": chat, "text": "PLOT-TURN draw the counts"})
     events = wait(client, chat)

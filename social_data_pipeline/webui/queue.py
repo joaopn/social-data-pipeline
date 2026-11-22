@@ -6,9 +6,11 @@ Pages, all GET (a HEAD is 405), each asking the socket in one worker of a bound 
 - `GET /queue/<job id>` (the id checked first, else not found): what the socket's `job` gives that the scheduler's page shows, the statement as stored with every invisible or control character shown as an escape (`statements.visible`), the hints (`statements.hints`), who approved, rejected or asked to kill; the buttons the job's phase allows (pending: approve, reject with a reason, EXPLAIN; running: kill); for a finished job a button for its preview and one download link per part of its result (`results`). A job whose record is too large to send has no buttons: the page says to use the scheduler's own page.
 - `GET /queue/<job id>/preview`: a part of the page from the socket's `preview`: a table of text cells, the parts' names and sizes, "truncated" when the socket says so; its refusals as sentences.
 - `GET /queue/<job id>/download/<part>`: the part streamed from the web UI's read-only mount of the results folder (`results`), after the socket said the job is in the history as done; at most two at a time ("busy" beyond); anything else not found.
-- `GET /queue/auto-accept`: the targets with their auto-accept settings (`auto_accept`) and a form for each.
+- `GET /queue/auto-accept`: the targets with their auto-accept settings (`auto_accept`) and a form for each, and that the assistant's queries are never auto-accepted.
 
-The actions (`queue.approve`, `queue.reject`, `queue.kill`, `queue.explain`, `queue.auto_accept`) are entries of the web UI's table and take the Management window's way (`management`): `POST /pending` keeps a pending action (an approval fetches the job from the socket first and keeps its whole record and its digest; a reason is checked; a change of auto-accept is compared with the target's settings, and switching it on or raising its limit makes the confirmation need the management password), `GET /pending/<id>` shows it, `POST /pending/<id>/confirm` takes it out and starts a thread, which first asks the broker whether the session still lives (`audit.list` with `limit` 1) and, for a step-up, checks the management password (`session.check_password`), and only then asks the socket, with `by` set to `web-<the broker's number of the session>`; `GET /actions/<id>` shows the outcome. A session the broker ended goes to the login and nothing reaches the socket; a broker that cannot be reached refuses the action. Standard library, FastAPI and this package only.
+Wherever a job is shown (the rows of every tab, its page, the confirm pages of its actions), a job whose record's `submitted_by` is exactly `"assistant"` is labelled as submitted by the chat's assistant (`assistant_label`); any other value of the field is shown as nothing. The approval of such a job also says that the assistant wrote it and to read it as one from a stranger, its EXPLAIN that an EXPLAIN of it runs before any approval (and that it may be the assistant's, when that could not be read).
+
+The actions (`queue.approve`, `queue.reject`, `queue.kill`, `queue.explain`, `queue.auto_accept`) are entries of the web UI's table and take the Management window's way (`management`): `POST /pending` keeps a pending action (an approval fetches the job from the socket first and keeps its whole record and its digest; a reject, kill or EXPLAIN reads it too, after the broker's check (a session the broker ended goes to the login, nothing read), and keeps only whether the assistant submitted it, or that this could not be read, which its page then says; a reason is checked; a change of auto-accept is compared with the target's settings, and switching it on or raising its limit makes the confirmation need the management password), `GET /pending/<id>` shows it, `POST /pending/<id>/confirm` takes it out and starts a thread, which first asks the broker whether the session still lives (`audit.list` with `limit` 1) and, for a step-up, checks the management password (`session.check_password`), and only then asks the socket, with `by` set to `web-<the broker's number of the session>`; `GET /actions/<id>` shows the outcome. A session the broker ended goes to the login and nothing reaches the socket; a broker that cannot be reached refuses the action. Standard library, FastAPI and this package only.
 """
 
 import json
@@ -72,6 +74,14 @@ NOTHING_TO_CHANGE = "The settings chosen are the target's settings already: noth
 LIMIT_REFUSED = "The limit is a whole number from 0 to {max_limit}, the scheduler's largest limit."
 AUTO_ON_SENTENCE = "Every query submitted to the target {target} is then approved by the scheduler itself and runs with the database's admin login without anyone looking at it, up to {limit} of the target's queries approved or running at a time."
 STEP_UP_NOTE = "Switching auto-accept on, or raising its limit, needs the management password again; switching it off or lowering the limit does not."
+# A job of the chat's assistant: its record's `submitted_by` is exactly this mark (`jobs.store.ASSISTANT`); any other value, which only a hand-edited record can have, is shown as nothing.
+ASSISTANT_MARK = "assistant"
+ASSISTANT_LABEL = "Submitted by the chat's assistant"
+ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the data it read can steer what it writes: read the statement as carefully as one from a stranger."
+ASSISTANT_UNKNOWN = "Whether the chat's assistant submitted this query could not be read."
+EXPLAIN_ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
+EXPLAIN_MAYBE_SENTENCE = "This query may have been written by the chat's assistant, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
+NEVER_AUTO_SENTENCE = "Queries submitted by the chat's assistant are never auto-accepted, whatever the target's setting: each one waits until a person approves it."
 PHASE_WORDS = {"pending": "pending", "approved": "approved and waiting to run", "running": "running", "history": "in the history", "gone": "gone"}
 
 
@@ -175,6 +185,12 @@ def job_href(job_id):
     return "/queue/" + job_id if actions.is_job_id(job_id) else None
 
 
+def assistant_label(record):
+    """ASSISTANT_LABEL for a record (or a list's short view) whose `submitted_by` is exactly the assistant's mark, else None: the field's value is never shown."""
+    value = record.get("submitted_by")
+    return ASSISTANT_LABEL if isinstance(value, str) and value == ASSISTANT_MARK else None
+
+
 def row_model(job):
     """One job of a list (the socket's short view) as a row; raises ValueError for one that is not an object."""
     if not isinstance(job, dict):
@@ -184,6 +200,7 @@ def row_model(job):
     return {
         "id": shown(job.get("job_id")),
         "href": job_href(job.get("job_id")),
+        "assistant": assistant_label(job),
         "target": shown(job.get("target")),
         "backend": shown(job.get("backend")),
         "status": shown(job.get("status")),
@@ -245,6 +262,7 @@ def job_model(phase, record):
         "job_id": record.get("job_id"),
         "phase": phase,
         "phase_text": PHASE_WORDS.get(phase, "-"),
+        "assistant": assistant_label(record),
         "target": shown(record.get("target")),
         "backend": shown(backend),
         "mongo": backend == "mongodb",
@@ -508,12 +526,12 @@ def install(api, ctx):
     def auto_accept_work(session):
         kind, value = ask("queue.auto_accept_state")
         if kind == "error":
-            return {"failure": _failure(value), "rows": None, "max_limit": None, "step_up_note": STEP_UP_NOTE}
+            return {"failure": _failure(value), "rows": None, "max_limit": None, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
         try:
             max_limit, rows = _auto_accept_reply(value)
         except ValueError:
-            return {"failure": {"sentence": SHAPE, "code": "shape"}, "rows": None, "max_limit": None, "step_up_note": STEP_UP_NOTE}
-        return {"failure": None, "rows": rows, "max_limit": max_limit, "step_up_note": STEP_UP_NOTE}
+            return {"failure": {"sentence": SHAPE, "code": "shape"}, "rows": None, "max_limit": None, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
+        return {"failure": None, "rows": rows, "max_limit": max_limit, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
 
     @api.get("/queue/auto-accept")
     async def auto_accept_page(request: Request):
@@ -659,7 +677,11 @@ def install(api, ctx):
             back = ("/queue/" + job_id, "Back to the job")
             if name != "queue.approve":
                 fields = {"job_id": job_id, "by": by}
-                pending = session.work.add_pending(name, fields, now(), shown={"model": build_pending_model(name, fields, {})})
+                mark, answer = await assistant_mark(request, session, job_id, back)
+                if answer is not None:
+                    return answer
+                kept = {"assistant": mark}
+                pending = session.work.add_pending(name, fields, now(), shown={"model": build_pending_model(name, fields, kept)})
                 return RedirectResponse(f"/pending/{pending.id}", status_code=303)
             answer = await ctx.door.run(lambda: checked(session, lambda _session: ask("queue.job", {"job_id": job_id})))
             if answer is BUSY_GATE:
@@ -691,11 +713,28 @@ def install(api, ctx):
             if not actions.is_reason(reason):
                 return refused(session, REASON_REFUSED, 400, ("/queue/" + job_id, "Back to the job"))
             fields = {"job_id": job_id, "reason": reason, "by": by}
-            pending = session.work.add_pending(name, fields, now(), shown={"model": build_pending_model(name, fields, {})})
+            mark, answer = await assistant_mark(request, session, job_id, ("/queue/" + job_id, "Back to the job"))
+            if answer is not None:
+                return answer
+            kept = {"assistant": mark}
+            pending = session.work.add_pending(name, fields, now(), shown={"model": build_pending_model(name, fields, kept)})
             return RedirectResponse(f"/pending/{pending.id}", status_code=303)
         if name == "queue.auto_accept":
             return await make_auto_accept(request, session, form, by)
         return refused(session, words_refused())
+
+    async def assistant_mark(request, session, job_id, back):
+        """(mark, answer) for a reject, kill or EXPLAIN page: whether the job's record carries the assistant's mark (True or False; None when it could not be read: the web UI's bound busy, the socket's refusal or failure, another shape), read from the socket only after the broker confirmed the session; `answer` is the page to give instead when the broker did not (the login for an ended session, else its sentence), and nothing is kept then. Nothing of the record but the mark is kept."""
+        answer = await ctx.door.run(lambda: checked(session, lambda _session: ask("queue.job", {"job_id": job_id})))
+        if isinstance(answer, _BrokerRefused):
+            return None, refusal_of(request, request.scope.get("sdp.session_id"), answer.error) or refused(session, words.sentence(answer.error), 503, back)
+        if answer is BUSY_GATE or answer[0] != "ok":
+            return None, None
+        try:
+            _phase, record, _digest = _job_reply(answer[1], job_id)
+        except ValueError:
+            return None, None
+        return assistant_label(record) is not None, None
 
     def words_refused():
         return "The action was not taken: a field of the form was refused. Nothing was sent to the scheduler."
@@ -814,11 +853,16 @@ def build_pending_model(name, fields, kept):
         "queue": True, "title": action.title, "verb": action.name, "kind": name.split(".", 1)[1],
         "command": None, "no_command": None, "inputs": [], "destroys": None, "terminal_asks": "", "note": "", "also": None,
         "job_id": job_id, "job_href": job_href(job_id), "sentences": [], "job": None, "reason": None, "auto_accept": None,
+        "assistant": ASSISTANT_LABEL if kept.get("assistant") is True else None, "assistant_sentence": None,
+        # Kept for a reject, kill or EXPLAIN: True, False, or None when the job could not be read.
+        "assistant_unknown": ASSISTANT_UNKNOWN if "assistant" in kept and kept["assistant"] is None else None,
         "hints_label": HINTS_LABEL, "hints_note": HINTS_NOTE, "no_hints": NO_HINTS, "escaped_sentence": ESCAPED_SENTENCE, "overwrite_sentence": OVERWRITE_SENTENCE,
         "leave_href": job_href(job_id) or "/queue",
     }
     if name == "queue.approve" and isinstance(kept.get("record"), dict):
         model["job"] = job_model("pending", kept["record"])
+        model["assistant"] = model["job"]["assistant"]
+        model["assistant_sentence"] = ASSISTANT_SENTENCE if model["assistant"] else None
         model["sentences"] = [ADMIN_SENTENCE, NO_CHECK_SENTENCE]
     elif name == "queue.reject":
         model["reason"] = shown(fields.get("reason") or "(none)")
@@ -827,6 +871,10 @@ def build_pending_model(name, fields, kept):
         model["sentences"] = [KILL_SENTENCE]
     elif name == "queue.explain":
         model["sentences"] = [EXPLAIN_SENTENCE]
+        if model["assistant"]:
+            model["sentences"].insert(0, EXPLAIN_ASSISTANT_SENTENCE)
+        elif model["assistant_unknown"]:
+            model["sentences"].insert(0, EXPLAIN_MAYBE_SENTENCE)
     elif name == "queue.auto_accept":
         current_enabled, current_limit = kept.get("current", (False, 0))
         enabled = fields.get("enabled")

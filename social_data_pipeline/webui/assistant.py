@@ -237,12 +237,15 @@ class Assistant:
         return self._connect(self.socket_path, timeout).request({"op": op, **(fields or {})})
 
     def hello(self):
-        """`{"backend", "databases"}` of `hello`."""
-        found = _exactly(self._ask("hello"), ("version", "backend", "databases"))
+        """`{"backend", "databases", "queue"}` of `hello`. A runner from before the field `queue` answers without it: that shape is taken too and read as without the queue, so that a web UI and a sandbox image of different versions do not refuse each other; with the field, it must be a flag."""
+        found = self._ask("hello")
+        found = _exactly(found, ("version", "backend", "databases", "queue") if isinstance(found, dict) and "queue" in found else ("version", "backend", "databases"))
+        queue = found.get("queue", False)
+        _require(isinstance(queue, bool))
         databases = found["databases"]
         _require(is_whole(found["version"], 1, 1000) and isinstance(found["backend"], str) and NAME.fullmatch(found["backend"]) is not None)
         _require(isinstance(databases, list) and len(databases) <= DATABASES_MAX and all(isinstance(name, str) and NAME.fullmatch(name) for name in databases))
-        return {"backend": found["backend"], "databases": list(databases)}
+        return {"backend": found["backend"], "databases": list(databases), "queue": queue}
 
     def chats(self):
         """The chats of `chat.list`, newest first: `[{"id", "title", "created", "running"}]`."""

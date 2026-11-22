@@ -2,7 +2,7 @@
 
 The process gets an environment built from scratch (`environment`): never the runner's own. Its credential is a fixed placeholder (`PLACEHOLDER_TOKEN`); the gateway puts the real token in. The flags (`command`) were measured with the pinned Claude Code 2.1.328 against a stand-in API, in an empty home:
 
-- Permissions: without a permission flag, and with `--permission-mode dontAsk` alone, a Bash call is denied (`permission_denied`); `--permission-mode bypassPermissions` runs it, and so does `dontAsk` with `--allowedTools` naming the tools. The runner uses the latter: the six tools and `mcp__<server>` of each database are allowed, anything else is denied without a prompt.
+- Permissions: without a permission flag, and with `--permission-mode dontAsk` alone, a Bash call is denied (`permission_denied`); `--permission-mode bypassPermissions` runs it, and so does `dontAsk` with `--allowedTools` naming the tools. The runner uses the latter: the six tools and `mcp__<server>` of each database (and `mcp__jobs` with the query queue) are allowed, anything else is denied without a prompt.
 - Settings: with the default setting sources a `.claude/settings.json` planted in the working folder or the home ran its hooks and a planted skill was loaded; `--setting-sources ""` loaded neither. The three plugins built into the binary loaded in every case until `--settings` disabled them (`SETTINGS`, given inline, so no file of the chat can change it; it also switches hooks off). `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` turned the auto-memory folder off (`memory_paths` null). A planted `CLAUDE.md` in either folder reached no request in any variant measured. MCP and the token worked with all of these.
 - The home: with `HOME` the chat's `home/`, a `.bashrc` and a `.bash_profile` planted there ran in the next turn's Bash tool (a marker file written, a variable set); `.profile` did not. Agents, commands, output styles, skills and a `settings.json` planted in `CLAUDE_CONFIG_DIR`, in `$HOME/.claude` or in the working folder's `.claude/` were not loaded with `--setting-sources ""` (the `init` line's lists and the requests unchanged). So `HOME` is a fresh empty folder in the chat's scratch folder, made anew for every turn, while `CLAUDE_CONFIG_DIR` stays the chat's `home/`, where the session files live; measured again, nothing planted took effect and the session still resumed.
 """
@@ -29,6 +29,19 @@ PATH = "/usr/local/bin:/usr/bin:/bin"
 BUILTIN_PLUGINS = ("cc-plugin-agents-md@builtin", "cc-plugin-privacy@builtin", "cc-plugin-plugin-authoring@builtin")
 SETTINGS = json.dumps({"disableAllHooks": True, "enabledPlugins": {name: False for name in BUILTIN_PLUGINS}}, separators=(",", ":"))
 ROLE = "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only. When you make a plot, save it as a PNG file in the current folder and name the file in your answer. You cannot reach the internet."
+# The query queue (`SDP_CHAT_QUEUE=1`): the scheduler's assistant endpoint, reached through the gateway's port for it, as the MCP server of this name; its results under QUEUE_RESULTS.
+QUEUE_SERVER = "jobs"
+QUEUE_PORT = 8004
+QUEUE_PATH = "/assistant/mcp"
+QUEUE_RESULTS = "/assistant/results"
+# The paragraph added to the role text with the queue: fixed parts only. The sandbox image has no curl (measured with `command -v` in the built image).
+QUEUE_ROLE = (
+    f"The operator's query scheduler is attached as the MCP server `{QUEUE_SERVER}`. Send long or heavy queries to it with its submit tools rather than through the databases' own tools; `list_targets` names its targets. "
+    "A person approves each submitted query in the Queue window of the web UI before it runs, and you cannot approve it: after a submission, tell the operator the job id and that the query waits for their approval in the Queue window, and end your turn instead of waiting for it. "
+    "`query_status` tells where a query stands, and `query_cancel` withdraws one of yours while it is still pending. "
+    f"When a query is done, the parts of its result are listed at http://<gateway>:{QUEUE_PORT}{QUEUE_RESULTS}/<job id> (JSON) and each part is at http://<gateway>:{QUEUE_PORT}{QUEUE_RESULTS}/<job id>/<part number>, where <gateway> is the address in the environment variable SDP_CHAT_GATEWAY: "
+    "fetch them from the shell with Python's urllib (curl is not installed) and save them in the current folder. Only your own queries are visible there."
+)
 MCP_NAME = "mcp.json"
 STDERR_NAME = "backend.log"
 STDERR_MAX_BYTES = 1024 * 1024
@@ -42,31 +55,43 @@ _POLL_SECONDS = 0.2
 MODEL_NOT_REACHED = "the model could not be reached"
 
 
-def mcp_config(databases, gateway):
-    """The `--mcp-config` document: one server per database, reached through the gateway's port for it."""
+def role(queue):
+    """The role text: ROLE, and with the query queue its paragraph."""
+    return f"{ROLE}\n\n{QUEUE_ROLE}" if queue else ROLE
+
+
+def queue_url(gateway):
+    return f"http://{gateway}:{QUEUE_PORT}{QUEUE_PATH}"
+
+
+def mcp_config(databases, gateway, queue=False):
+    """The `--mcp-config` document: one server per database, reached through the gateway's port for it, and with `queue` the server `jobs` (streamable HTTP)."""
     servers = {}
     for name in databases:
         port, kind, path = DATABASES[name]
         servers[name] = {"type": kind, "url": f"http://{gateway}:{port}{path}"}
+    if queue:
+        servers[QUEUE_SERVER] = {"type": "http", "url": queue_url(gateway)}
     return {"mcpServers": servers}
 
 
-def command(executable, home, session, resume, databases):
-    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards."""
-    allowed = ",".join([*TOOLS, *(f"mcp__{name}" for name in databases)])
+def command(executable, home, session, resume, databases, queue=False):
+    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has its paragraph."""
+    allowed = ",".join([*TOOLS, *(f"mcp__{name}" for name in databases), *([f"mcp__{QUEUE_SERVER}"] if queue else [])])
     return [
         executable, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
         "--mcp-config", os.path.join(home, MCP_NAME), "--strict-mcp-config", "--tools", ",".join(TOOLS),
         "--permission-mode", "dontAsk", "--allowedTools", allowed,
         "--setting-sources", "", "--settings", SETTINGS,
-        "--append-system-prompt", ROLE,
+        "--append-system-prompt", role(queue),
         "--resume" if resume else "--session-id", session,
     ]
 
 
-def environment(home, config, tmp, gateway):
-    """The whole environment of the process, built from scratch: `home` is the turn's fresh `HOME`, `config` the chat's `home/` (Claude Code's settings and session files)."""
+def environment(home, config, tmp, gateway, queue=False):
+    """The whole environment of the process, built from scratch: `home` is the turn's fresh `HOME`, `config` the chat's `home/` (Claude Code's settings and session files); with `queue` also `SDP_CHAT_GATEWAY`, which the role text names for fetching results."""
     return {
+        **({"SDP_CHAT_GATEWAY": gateway} if queue else {}),
         "HOME": home, "CLAUDE_CONFIG_DIR": config,
         "CLAUDE_CODE_TMPDIR": tmp, "TMPDIR": tmp, "MPLCONFIGDIR": os.path.join(tmp, "matplotlib"),
         "PATH": PATH,
@@ -360,17 +385,17 @@ class Process:
 
 
 class ClaudeCode:
-    """The back end: `gateway` is the gateway's address, `databases` the names of the attached databases."""
+    """The back end: `gateway` is the gateway's address, `databases` the names of the attached databases, `queue` whether the query queue is attached."""
 
     name = "claude-code"
 
-    def __init__(self, gateway, databases, *, executable=EXECUTABLE, line_max=LINE_MAX_BYTES, grace=STOP_GRACE_SECONDS, stderr_max=STDERR_MAX_BYTES, join=JOIN_SECONDS):
-        self.gateway, self.databases, self.executable = gateway, tuple(databases), executable
+    def __init__(self, gateway, databases, *, queue=False, executable=EXECUTABLE, line_max=LINE_MAX_BYTES, grace=STOP_GRACE_SECONDS, stderr_max=STDERR_MAX_BYTES, join=JOIN_SECONDS):
+        self.gateway, self.databases, self.queue, self.executable = gateway, tuple(databases), queue, executable
         self.line_max, self.grace, self.stderr_max, self.join = line_max, grace, stderr_max, join
 
     def turn(self, chat_fd, config, home, files, tmp, text, session, resume):
         """A `Process` for one turn (not started) and its `Translator`. `config` is the chat's `home/`, into which `mcp.json` is written again first; `home` the turn's fresh `HOME`."""
-        payload = json.dumps(mcp_config(self.databases, self.gateway), indent=2).encode("utf-8")
+        payload = json.dumps(mcp_config(self.databases, self.gateway, self.queue), indent=2).encode("utf-8")
         home_fd = os.open("home", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=chat_fd)
         try:
             with contextlib.suppress(FileNotFoundError):
@@ -382,6 +407,6 @@ class ClaudeCode:
                 os.close(fd)
         finally:
             os.close(home_fd)
-        argv = command(self.executable, config, session, resume, self.databases)
-        process = Process(argv, environment(home, config, tmp, self.gateway), files, user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
+        argv = command(self.executable, config, session, resume, self.databases, self.queue)
+        process = Process(argv, environment(home, config, tmp, self.gateway, self.queue), files, user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
         return process, Translator()

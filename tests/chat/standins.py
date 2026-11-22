@@ -103,7 +103,7 @@ class Mcp(_Quiet):
             if "id" in doc:
                 self.server.sessions[session].put(self.answer(doc))
             return self.send(202, b"Accepted", "text/plain")
-        if self.path != "/mcp":
+        if self.path not in ("/mcp", "/assistant/mcp"):
             return self.send(404)
         if "id" not in doc:
             return self.send(202)

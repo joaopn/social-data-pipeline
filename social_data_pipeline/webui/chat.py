@@ -2,7 +2,7 @@
 
 Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule, and nothing of an answer reaches a header or a script.
 
-- `GET /chat`: the chats, newest first (title, whether a turn runs), the back end and the databases the chat can read (`hello`), and a button for a new chat. `POST /chat/new` makes one (`chat.new`) and leads to it.
+- `GET /chat`: the chats, newest first (title, whether a turn runs), the back end, the databases the chat can read and whether the assistant can submit to the query queue (`hello`), and a button for a new chat. `POST /chat/new` makes one (`chat.new`) and leads to it.
 - `GET /chat/<id>` (an id of the runner's form, else not found): the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`) with their download links, the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
 - `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
 - `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. The web UI opens no file for either: the bytes come only through the socket.
@@ -27,6 +27,9 @@ from social_data_pipeline.webui.calls import BUSY_GATE
 log = logging.getLogger("social_data_pipeline.webui")
 
 CHAT_PAGES = (("chat:list", "Chats", "/chat"),)
+# Whether the assistant can submit to the query queue, as `hello` says.
+QUEUE_ON = "Attached: the assistant can submit queries to the scheduler, and each one waits until a person approves it in the Queue window."
+QUEUE_OFF = "Not attached: the assistant cannot submit queries to the scheduler."
 EVENTS_PAGE = 200
 POLL = "load delay:2s"
 NOW = "load"
@@ -290,7 +293,7 @@ def install(api, ctx):
             model["failure"] = words.chat_sentence(hello)
             return model
         if kind == "ok":
-            model["hello"] = {"backend": hello["backend"], "databases": ", ".join(hello["databases"]) or "none"}
+            model["hello"] = {"backend": hello["backend"], "databases": ", ".join(hello["databases"]) or "none", "queue": QUEUE_ON if hello["queue"] else QUEUE_OFF}
         else:
             model["hello_failure"] = words.chat_sentence(hello)
         kind, chats = _ask(runner.chats)

@@ -8,6 +8,9 @@
 {%- else %}
 <section class="card" aria-labelledby="job-title">
   <h2 id="job-title">The job <small>{{ job.phase_text }}</small></h2>
+  {%- if job.assistant %}
+  <p><span class="tag">{{ job.assistant }}</span></p>
+  {%- endif %}
   <dl class="facts">
     <dt>Status</dt><dd>{{ q.vis(job.status) }}</dd>
     <dt>Target</dt><dd>{{ q.vis(job.target) }} <span class="muted">({{ q.vis(job.backend) }})</span></dd>

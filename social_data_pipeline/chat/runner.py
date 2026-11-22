@@ -3,7 +3,7 @@
 - Where: `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), mode 0600; a leftover socket in its place is removed, anything else there refuses the start.
 - How much: at most 8 connections at a time (the rest closed at once); one request and one reply per connection, each a `control.framing` frame; a request of at most 64 KiB within 10 seconds; a reply of at most 1 MiB (else `too_large`). A reply is `{"ok": true, "result": ...}` or `{"ok": false, "error": {"code", "message"}}` with a constant message. An unexpected exception is logged by the name of its kind only and answered `internal`.
 - The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `session`, `turns`, `resume`). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
-- The requests (`op`; every listed field is required, nothing else is taken): `hello` -> `{"version", "backend", "databases"}`; `chat.list` -> `{"chats": [{"id", "title", "created", "running"}]}`, newest first; `chat.new` -> `{"chat"}`; `chat.send {chat, text}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "more"}`; `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}`.
+- The requests (`op`; every listed field is required, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue"}` (`queue`: whether the query queue is attached); `chat.list` -> `{"chats": [{"id", "title", "created", "running"}]}`, newest first; `chat.new` -> `{"chat"}`; `chat.send {chat, text}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "more"}`; `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}`.
 - The events (one JSON object per line, each at most 64 KiB, the log at most 16 MiB and 1 line per 32 bytes of that, then one `error` event says the chat is full and the turn's `end` follows): `user {text}`, `text {text}`, `tool {name, input}`, `tool_result {text, is_error}`, `file {name, size}`, `end {is_error, cost_usd, duration_ms, turns}`, `error {message}`; each has `n` (its index) and `t` (seconds since the epoch). Every turn ends with exactly one `end`.
 
 Standard library and `control.framing`/`errors` only. The runner is not a security boundary: it keeps itself useful and bounded against what the sandbox may do to its folders.
@@ -434,15 +434,16 @@ def _checked_meta(data, title_max):
 
 
 class Runner:
-    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap."""
+    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap, `queue` whether the query queue is attached (for `hello`)."""
 
-    def __init__(self, work, backend, backend_name, databases, cap_bytes, *, tmp=TMP_DEFAULT, limits=None):
+    def __init__(self, work, backend, backend_name, databases, cap_bytes, *, queue=False, tmp=TMP_DEFAULT, limits=None):
         self.limits = limits or Limits()
         self.work = os.path.abspath(work)
         self.tmp = tmp
         self.backend = backend
         self.backend_name = backend_name
         self.databases = list(databases)
+        self.queue = bool(queue)
         self.cap_bytes = cap_bytes
         self.work_fd = os.open(self.work, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         self._lock = threading.Lock()
@@ -876,7 +877,7 @@ class Runner:
         return value
 
     def _op_hello(self, request):
-        return {"version": PROTOCOL, "backend": self.backend_name, "databases": list(self.databases)}
+        return {"version": PROTOCOL, "backend": self.backend_name, "databases": list(self.databases), "queue": self.queue}
 
     def _op_chat_list(self, request):
         with self._lock:

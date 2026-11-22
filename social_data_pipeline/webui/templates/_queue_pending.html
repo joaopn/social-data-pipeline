@@ -3,7 +3,7 @@
 <dl class="facts">
   <dt>Action</dt><dd>{{ pending.title }}</dd>
   {%- if pending.job_id %}
-  <dt>Job</dt><dd>{% if pending.job_href %}<a href="{{ pending.job_href }}"><code>{{ pending.job_id }}</code></a>{% else %}<code>{{ pending.job_id }}</code>{% endif %}</dd>
+  <dt>Job</dt><dd>{% if pending.job_href %}<a href="{{ pending.job_href }}"><code>{{ pending.job_id }}</code></a>{% else %}<code>{{ pending.job_id }}</code>{% endif %}{% if pending.assistant %} <span class="tag">{{ pending.assistant }}</span>{% endif %}{% if pending.assistant_unknown %} <span class="muted">{{ pending.assistant_unknown }}</span>{% endif %}</dd>
   {%- endif %}
   {%- if pending.job %}
   {%- set job = pending.job %}
@@ -28,6 +28,9 @@
 {%- if pending.job %}
 {%- if pending.job.overwrite %}
 <p class="notice notice-warn">{{ pending.overwrite_sentence }}{% if pending.job.overwrite_raw %} <span class="muted">(overwrite: {{ q.vis(pending.job.overwrite_raw) }})</span>{% endif %}</p>
+{%- endif %}
+{%- if pending.assistant_sentence %}
+<p class="notice notice-warn">{{ pending.assistant_sentence }}</p>
 {%- endif %}
 <h3>{% if pending.job.mongo %}Pipeline{% else %}Statement{% endif %}</h3>
 {%- with job = pending.job, whole = true %}{% include "_queue_statement.html" %}{% endwith %}

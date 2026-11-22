@@ -4,7 +4,7 @@ The contracts pinned here, each test naming the bug class it catches:
 
 - a. Reachability: no setting, a socket folder or socket that fails its check (injected `lstat`), no socket, a socket nobody listens on: each its sentence and nothing sent; every refusal code of the runner has a sentence and is shown with it.
 - b. The session: every Chat route (GET and POST) of a session the broker ended leads to the login and the runner hears nothing; an unreachable broker: no runner call; a download and an image never use the broker's earlier yes.
-- c. Hostile replies: wrong types, missing and extra fields, ids of another shape, over-long lists and strings, a `next` that goes back, deep nesting, NaN, huge numbers, lone surrogates, unknown events: the sentence or the line, and nothing of the reply in the page.
+- c. Hostile replies: a `hello` with a `queue` that is not a flag (and the shape without the field, of a runner from before it, taken as without the queue), wrong types, missing and extra fields, ids of another shape, over-long lists and strings, a `next` that goes back, deep nesting, NaN, huge numbers, lone surrogates, unknown events: the sentence or the line, and nothing of the reply in the page.
 - d. Hostile text in well-formed replies is text in element and attribute positions, invisible characters as escapes; a file name outside the runner's rule gets no link and no image.
 - f. The events part: paging by offset, the poll only while a turn runs, `HX-Redirect` for an ended session, an offset that is not a number refused; at most 2,000 events per view, then a link to continue (`from`, checked).
 - Bounds against a hostile runner: a reply over 1 MiB refused unread, one of more than 20,000 objects and lists unparsed, the largest honest replies passing; a page of events over 512 KiB of text refused, the units of a page's model capped (runs, blocks and items; later events a placeholder whose first links to a view starting at it, where an event too long alone is shown cut), a huge or odd number in every numeric field of every reply never an error of the page, downloads and images ending at short pieces and at their total time.
@@ -264,6 +264,34 @@ def test_a_hello_of_another_shape_is_not_shown(client, scripted, hello):
     scripted.answers["hello"] = hello
     page = client.get("/chat")
     assert NOT_UNDERSTOOD in main_text(page.text) and MARK not in page.text.upper()
+
+
+@pytest.mark.parametrize("hello", [
+    {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": "true", "m": MARK},
+    {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": 1, "m": MARK},
+    {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": None, "m": MARK},
+    {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": [True], "m": MARK},
+])
+def test_a_hello_whose_queue_is_not_a_flag_is_not_understood(client, scripted, hello):
+    """Bug class: a hostile runner's `queue` taken as true by its truthiness (a string, a number), so that the page says the assistant can submit to the queue."""
+    scripted.answers["hello"] = hello
+    text = main_text(client.get("/chat").text)
+    assert NOT_UNDERSTOOD in text and chat.QUEUE_ON not in text and chat.QUEUE_OFF not in text
+
+
+@pytest.mark.parametrize("hello, line", [
+    ({"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": True}, "on"),
+    ({"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": False}, "off"),
+    # The shape of a runner from before the field: a sandbox image older than the web UI is read as without the queue.
+    ({"version": 1, "backend": "claude-code", "databases": ["mongo"]}, "off"),
+])
+def test_the_page_says_whether_the_assistant_can_submit_to_the_queue(client, scripted, hello, line):
+    """Bug class: the page saying the assistant can submit to the queue when it cannot (or the reverse), or a web UI refusing the hello of a sandbox image of the other version."""
+    scripted.answers["hello"] = hello
+    text = main_text(client.get("/chat").text)
+    assert NOT_UNDERSTOOD not in text and "mongo" in text
+    assert (chat.QUEUE_ON in text) is (line == "on") and (chat.QUEUE_OFF in text) is (line == "off")
+    assert assistant.Assistant(scripted.path).hello() == {"backend": "claude-code", "databases": ["mongo"], "queue": line == "on"}
 
 
 @pytest.mark.parametrize("reply", [

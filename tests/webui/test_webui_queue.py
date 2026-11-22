@@ -10,6 +10,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - g. The pages: tabs, counts, paging with `more`, links only for job ids, the job page per phase, hostile text in every position, the running tab's poll and its `HX-Redirect`, the preview's table and its refusals.
 - h. Downloads: byte for byte with fixed headers; not done, a foreign or malformed id, a part out of range: not found and nothing opened; a link, a FIFO, a folder named like a part, an output file name with `/`, a link in place of the job's folder: never served (a marker file is in no answer); at most two at a time; the descriptor closed after the answer and after a client that went away.
 - k. The scans: no inline code in any page or part of the window; the guard's headers on every answer, the download's included; HEAD of every route of the window is 405.
+- l. Whose query it is: a job whose record's `submitted_by` is exactly `"assistant"` labelled on every page that shows it; any other value shown as nothing and never echoed; the approval's extra sentence only for such a job, the approval sent unchanged; the auto-accept page's sentence.
 
 Every special character in this file is written as an escape.
 """
@@ -455,7 +456,8 @@ def test_a_reason_is_checked_before_anything_is_sent(client, token, door, app, r
         assert door.requests == []
         return
     path = pending_path(response)
-    assert door.requests == []
+    # Only the job is read (whether the assistant submitted it, for the page's label).
+    assert door.ops() == ["job"]
     follow(client, confirm(client, path, token))
     assert changes(door) == [{"op": "reject", "job_id": JOB_ID, "reason": reason, "by": "web-37"}]
 
@@ -1272,3 +1274,99 @@ def test_only_the_changing_request_itself_may_be_worded_as_possibly_done(name):
     after.finish("error", broker_client.BrokerUnreachable(broker_client.NO_REPLY), from_door=True, sent=True)
     assert words.DOOR_NO_ANSWER not in before.sentence and before.sentence == words.DOOR_REASON_SENTENCES[broker_client.NO_REPLY]
     assert after.sentence == words.door_no_answer_sentence(name)
+
+
+# ── l. whose query it is ────────────────────────────────────────────────────
+
+ABSENT = object()
+PHASE_IDS = {"pending": JOB_ID, "approved": "pg_0000a001", "running": "pg_0000a002", "history": "pg_0000a003"}
+HOSTILE_MARK = "made-up-mark-of-a-hand-edited-record-5d1e"
+
+
+def pages_of_the_jobs(client, token, door, value):
+    """Every page that shows a job, for jobs whose record's `submitted_by` is `value` (left out for ABSENT): the list of each tab, each job's page, and the confirm pages of approve, reject, EXPLAIN and kill."""
+    fields = {} if value is ABSENT else {"submitted_by": value}
+    for phase, job_id in PHASE_IDS.items():
+        door.add(phase, a_job(job_id, status="failed" if phase == "history" else phase, **fields))
+    pages = {f"tab {phase}": client.get(f"/queue?tab={phase}") for phase in PHASE_IDS}
+    pages.update({f"job {phase}": client.get(f"/queue/{job_id}") for phase, job_id in PHASE_IDS.items()})
+    for name, job_id, form in (("queue.approve", JOB_ID, {}), ("queue.reject", JOB_ID, {"reason": "no"}), ("queue.explain", JOB_ID, {}), ("queue.kill", PHASE_IDS["running"], {})):
+        pages[name] = client.get(pending_path(choose(client, name, token, job_id=job_id, **form)))
+    assert all(page.status_code == 200 for page in pages.values()), {key: page.status_code for key, page in pages.items()}
+    return {key: page.text for key, page in pages.items()}
+
+
+def test_a_query_of_the_assistant_is_labelled_on_every_page_that_shows_it(client, token, door):
+    """Bug class: a page where a person approves, rejects, EXPLAINs or kills a query without seeing that the chat's assistant wrote it."""
+    pages = pages_of_the_jobs(client, token, door, "assistant")
+    for key, page in pages.items():
+        assert queue.ASSISTANT_LABEL in main_text(page), key
+    assert main_text(pages["tab pending"]).count(queue.ASSISTANT_LABEL) == 1
+
+
+@pytest.mark.parametrize("value", [ABSENT, "", "Assistant", "assistant ", HOSTILE_MARK, HOSTILE, ["assistant"], {"assistant": True}, 1, True, None])
+def test_any_other_mark_is_shown_as_nothing_and_never_echoed(client, token, door, value):
+    """Bug class: a hand-edited record's `submitted_by` (another name, markup, a list) echoed into the page, or taken as the assistant's mark by its truthiness or a loose compare."""
+    pages = pages_of_the_jobs(client, token, door, value)
+    for key, page in pages.items():
+        text = main_text(page)
+        assert queue.ASSISTANT_LABEL not in text and queue.ASSISTANT_SENTENCE not in text and queue.EXPLAIN_ASSISTANT_SENTENCE not in text and queue.ASSISTANT_UNKNOWN not in text, key
+        assert HOSTILE_MARK not in page and not [mark for mark in RAW_MARKS if mark in page], key
+
+
+@pytest.mark.parametrize("value, said", [("assistant", True), (ABSENT, False), ("other", False)])
+def test_the_approval_of_an_assistants_query_warns_above_the_statement_and_sends_the_same(client, token, door, value, said):
+    """Bug class: an approval of a statement the assistant wrote (text in the data it read can steer it) shown like any other, or the warning changing what is sent (the digest, the fields)."""
+    record = door.add("pending", a_job(**({} if value is ABSENT else {"submitted_by": value})))
+    path = pending_path(choose(client, "queue.approve", token, job_id=JOB_ID))
+    page = client.get(path).text
+    text = main_text(page)
+    assert (queue.ASSISTANT_SENTENCE in text) is said
+    if said:
+        assert text.index(queue.ASSISTANT_SENTENCE) < text.index("Statement") < text.index(queue.ADMIN_SENTENCE)
+    assert queue.ASSISTANT_SENTENCE not in main_text(client.get(pending_path(choose(client, "queue.reject", token, job_id=JOB_ID, reason="no"))).text)
+    # An EXPLAIN runs before any approval: a marked job's page says so above the EXPLAIN sentence.
+    explain = main_text(client.get(pending_path(choose(client, "queue.explain", token, job_id=JOB_ID))).text)
+    assert queue.ASSISTANT_SENTENCE not in explain and (queue.EXPLAIN_ASSISTANT_SENTENCE in explain) is said
+    if said:
+        assert explain.index(queue.EXPLAIN_ASSISTANT_SENTENCE) < explain.index(queue.EXPLAIN_SENTENCE)
+    follow(client, confirm(client, path, token))
+    assert changes(door) == [{"op": "approve", "job_id": JOB_ID, "digest": digest_of(record), "by": "web-37"}]
+
+
+def test_the_auto_accept_page_says_once_that_the_assistants_queries_are_never_auto_accepted(client):
+    """Bug class: an operator switching auto-accept on in the belief that it also runs the assistant's queries unseen, or the reverse."""
+    text = main_text(client.get("/queue/auto-accept").text)
+    assert text.count(queue.NEVER_AUTO_SENTENCE) == 1
+
+
+LABELLED_ACTIONS = [("queue.reject", JOB_ID, {"reason": "no"}), ("queue.kill", PHASE_IDS["running"], {}), ("queue.explain", JOB_ID, {})]
+
+
+@pytest.mark.parametrize("name, job_id, form", LABELLED_ACTIONS)
+def test_a_session_the_broker_ended_reads_no_job_for_the_label(client, token, door, broker, app, name, job_id, form):
+    """Bug class: the label's read of a job's record (the scheduler's socket) made for a session the broker has ended, before its check."""
+    door.add("pending", a_job())
+    door.add("running", a_job(PHASE_IDS["running"], status="running"))
+    the_session(app, client).work.broker_checked_at = None
+    broker.answers["audit.list"] = broker_client.BrokerError("session_ended", "x")
+    response = choose(client, name, token, job_id=job_id, **form)
+    assert response.status_code == 303 and response.headers["location"] == "/login?why=ended"
+    assert door.requests == [] and the_session(app, client) is None
+
+
+@pytest.mark.parametrize("failure", ["busy", "unreachable", "shape"])
+@pytest.mark.parametrize("name, job_id, form", LABELLED_ACTIONS)
+def test_a_label_that_could_not_be_read_is_said_and_the_action_still_goes(client, token, door, name, job_id, form, failure):
+    """Bug class: a job whose mark could not be read (the scheduler busy or unreachable, a reply of another shape) shown as one that is not the assistant's, or the action refused for it."""
+    door.add("pending", a_job(submitted_by="assistant"))
+    door.add("running", a_job(PHASE_IDS["running"], status="running", submitted_by="assistant"))
+    door.answers["job"] = {"phase": "pending", "job": "not a record", "digest": "0" * 64} if failure == "shape" else door_error(failure)
+    path = pending_path(choose(client, name, token, job_id=job_id, **form))
+    text = main_text(client.get(path).text)
+    assert queue.ASSISTANT_UNKNOWN in text and queue.ASSISTANT_LABEL not in text
+    assert (queue.EXPLAIN_MAYBE_SENTENCE in text) is (name == "queue.explain") and queue.EXPLAIN_ASSISTANT_SENTENCE not in text
+    if name == "queue.explain":
+        assert text.index(queue.EXPLAIN_MAYBE_SENTENCE) < text.index(queue.EXPLAIN_SENTENCE)
+    follow(client, confirm(client, path, token))
+    assert [request["op"] for request in changes(door)] == [name.split(".", 1)[1]]

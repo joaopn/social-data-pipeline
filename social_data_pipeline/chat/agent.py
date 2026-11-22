@@ -1,6 +1,6 @@
 """The agent of the OpenAI-compatible back end: one process per turn, `python -P -s -m social_data_pipeline.chat.agent --home <chat's home/> --files <chat's files/>`, started by `chat.openai`.
 
-It reads the user's text as one stream-json line on standard input and prints its progress as stream-json lines that `claude.Translator` understands (an `assistant` line with `text` and `tool_use` blocks, a `user` line with a `tool_result` block, a last `result` line without a cost). The loop: the role text of `claude.ROLE`, the chat's history and the question go to the gateway's model port (`http://<SDP_CHAT_GATEWAY>:8080/chat/completions`, no streaming, no credential: the gateway puts it in) with the tools `run_shell` and `<db>__<tool>` of each attached database's MCP server (`SDP_CHAT_DATABASES`, reached through the gateway's port for it); each reply's tool calls are run in order and answered, a reply without tool calls is the answer; at most 40 model calls a turn. Every reply is untrusted: its size, its types, the tool names and the arguments are checked, and what cannot be used ends the turn or is answered to the model as a tool error; a refusal (any status but 200) ends the turn with a message naming the status only, never the body.
+It reads the user's text as one stream-json line on standard input and prints its progress as stream-json lines that `claude.Translator` understands (an `assistant` line with `text` and `tool_use` blocks, a `user` line with a `tool_result` block, a last `result` line without a cost). The loop: the role text of `claude.ROLE`, the chat's history and the question go to the gateway's model port (`http://<SDP_CHAT_GATEWAY>:8080/chat/completions`, no streaming, no credential: the gateway puts it in) with the tools `run_shell` and `<db>__<tool>` of each attached database's MCP server (`SDP_CHAT_DATABASES`, reached through the gateway's port for it), and with the query queue (`SDP_CHAT_QUEUE=1`) `jobs__<tool>` of the scheduler's assistant endpoint (`claude.queue_url`) and the role text's paragraph about it; each reply's tool calls are run in order and answered, a reply without tool calls is the answer; at most 40 model calls a turn. Every reply is untrusted: its size, its types, the tool names and the arguments are checked, and what cannot be used ends the turn or is answered to the model as a tool error; a refusal (any status but 200) ends the turn with a message naming the status only, never the body.
 
 The history is kept in `<home>/openai-session.json` (0600, replaced whole): the messages of the earlier turns, tool outputs cut, cut to a character budget by dropping the oldest turns whole (the newest is always kept, cut further when it alone is over). A file of another shape is taken as empty. Within a turn the request is budgeted too (`squeezed`), and an endpoint that refuses a request with earlier turns as too large (400, 413) is asked once more without them. On SIGTERM the running shell command's process group is killed and the agent ends at once (the turn is not added to the history).
 """
@@ -362,17 +362,19 @@ class Server:
             await asyncio.wait_for(self._task, seconds)
 
 
-async def open_servers(databases, gateway):
-    """The `Server` of each attached database that could be connected and listed; one that could not is left out for the turn with a line on stderr (and so is every database when the `mcp` package cannot be imported)."""
-    if not databases:
+async def open_servers(databases, gateway, queue=False):
+    """The `Server` of each attached database that could be connected and listed, and with `queue` the queue's (`jobs`, after them); one that could not is left out for the turn with a line on stderr (and so is every database when the `mcp` package cannot be imported)."""
+    if not databases and not queue:
         return []
     if importlib.util.find_spec("mcp") is None:
         _log("the mcp package cannot be imported: no database is offered")
         return []
     servers = []
-    for database in databases:
-        port, kind, path = claude.DATABASES[database]
-        server = Server(database, f"http://{gateway}:{port}{path}", kind)
+    wanted = [(database, f"http://{gateway}:{port}{path}", kind) for database, (port, kind, path) in ((name, claude.DATABASES[name]) for name in databases)]
+    if queue:
+        wanted.append((claude.QUEUE_SERVER, claude.queue_url(gateway), "http"))
+    for database, url, kind in wanted:
+        server = Server(database, url, kind)
         try:
             await server.open()
         except Exception as error:
@@ -668,7 +670,7 @@ def parse_reply(data, offered):
 class Agent:
     """One turn's loop. `host`/`port` reach the model, `servers` are the open `Server`s, `env` is the shell commands' environment; `emit` prints a stream-json line."""
 
-    def __init__(self, host, port, model, files, env, servers=(), *, emit=emit, calls_max=CALLS_MAX, shell_seconds=SHELL_SECONDS):
+    def __init__(self, host, port, model, files, env, servers=(), *, queue=False, emit=emit, calls_max=CALLS_MAX, shell_seconds=SHELL_SECONDS):
         self.host, self.port, self.model, self.files, self.env = host, port, model, files, env
         self.emit, self.calls_max, self.shell_seconds = emit, calls_max, shell_seconds
         self.routes = {}
@@ -686,7 +688,7 @@ class Agent:
             _log(f"{left_out} tools of the databases are left out: their schemas together hold more than {TOOLS_CONTAINERS} objects and lists")
         self.specs = specs
         self.offered = {SHELL_TOOL, *self.routes}
-        self.system = {"role": "system", "content": claude.ROLE}
+        self.system = {"role": "system", "content": claude.role(queue)}
 
     def body(self, earlier, current):
         """The request's bytes and the earlier turns it holds: the current turn squeezed to `TURN_BUDGET`, the newest earlier turns that fit with it into the history's budget."""
@@ -782,7 +784,7 @@ class _Ended(Exception):
 
 
 def settings(environ):
-    """(gateway, model, databases) from the environment `chat.openai` gives; raises ValueError naming the variable."""
+    """(gateway, model, databases, queue) from the environment `chat.openai` gives; raises ValueError naming the variable."""
     try:
         gateway = str(ipaddress.IPv4Address(environ.get("SDP_CHAT_GATEWAY", "")))
     except ValueError:
@@ -793,7 +795,10 @@ def settings(environ):
     databases = [name for name in environ.get("SDP_CHAT_DATABASES", "").split(",") if name]
     if any(name not in claude.DATABASES for name in databases) or len(set(databases)) != len(databases):
         raise ValueError("SDP_CHAT_DATABASES must be a comma list of the databases")
-    return gateway, model, databases
+    queue = environ.get("SDP_CHAT_QUEUE", "0")
+    if queue not in ("0", "1"):
+        raise ValueError("SDP_CHAT_QUEUE must be 0 or 1")
+    return gateway, model, databases, queue == "1"
 
 
 def question_of(data):
@@ -806,11 +811,11 @@ def question_of(data):
     return content if isinstance(content, str) and content else None
 
 
-async def _run(gateway, model, databases, home, files, question):
+async def _run(gateway, model, databases, home, files, question, queue=False):
     started = time.monotonic()
-    servers = await open_servers(databases, gateway)
+    servers = await open_servers(databases, gateway, queue)
     try:
-        agent = Agent(gateway, claude.MODEL_PORT, model, files, dict(os.environ), servers)
+        agent = Agent(gateway, claude.MODEL_PORT, model, files, dict(os.environ), servers, queue=queue)
         turns, result = await agent.turn(load_history(home), question)
     finally:
         for server in servers:
@@ -827,7 +832,7 @@ def main(argv=None, environ=None):
     arguments = parser.parse_args(argv)
     started = time.monotonic()
     try:
-        gateway, model, databases = settings(os.environ if environ is None else environ)
+        gateway, model, databases, queue = settings(os.environ if environ is None else environ)
     except ValueError as error:
         _log(f"refusing to run: {error}")
         emit({"type": "result", "subtype": "error", "is_error": True, "result": str(error), "duration_ms": 0, "num_turns": 0})
@@ -837,7 +842,7 @@ def main(argv=None, environ=None):
         _log("standard input holds no question")
         emit({"type": "result", "subtype": "error", "is_error": True, "result": "no question", "duration_ms": int((time.monotonic() - started) * 1000), "num_turns": 0})
         return 2
-    emit(asyncio.run(_run(gateway, model, databases, arguments.home, arguments.files, question)))
+    emit(asyncio.run(_run(gateway, model, databases, arguments.home, arguments.files, question, queue)))
     return 0
 
 

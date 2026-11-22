@@ -3,7 +3,7 @@
 
 It is not collected by pytest. It builds the gateway and sandbox images under throwaway names, makes the chat's two networks under throwaway names (`chat_host._make_networks`) and writes the gateway's config as `sdp chat start` does (`chat_host.gateway_config`, so the measured `anthropic-beta` values and tool types are the deployment's), with a made-up credential. The gateway's model upstream is fixed to the vendor's API, so the gateway container runs the gateway package with its test-only `test_upstream` (a loopback address) and a STAND-IN API runs in the gateway's network namespace: a small Messages-API server on loopback (a `tool_use` of `Bash` writing `plot.png` for a first message, a `tool_use` of the mongo MCP tool for a second, a reply held open for a third, a final text after a `tool_result`) and a small MCP server for mongo, both recording every request. The sandbox is created by `chat_host.sandbox_arguments`, so it runs the runner as `sdp chat start` would. A helper speaks the framed protocol on the runner's socket from this machine, through the mounted socket folder. What it shows:
 
-1. `hello` names the back end and mongo. `chat.new`, then a `chat.send` whose turn ends with the events `user`, `tool` (Bash), `tool_result` (the marker the command printed), `text`, `file` (`plot.png`) and `end` without error; `chat.files` lists `plot.png` and `chat.file` returns its bytes.
+1. `hello` names the back end and mongo and says the query queue is not attached. `chat.new`, then a `chat.send` whose turn ends with the events `user`, `tool` (Bash), `tool_result` (the marker the command printed), `text`, `file` (`plot.png`) and `end` without error; `chat.files` lists `plot.png` and `chat.file` returns its bytes.
 2. A second `chat.send` resumes the session (the stand-in sees the first turn's message in the second turn's first request) and calls the mongo tool through the gateway's MCP port.
 3. `chat.stop` on a turn whose reply is held open ends it with the stopped `error` event, and no process of the turn is left in the sandbox (`docker top`).
 4. Every request the stand-in saw passed the gateway (its log: status 200 and nothing refused); the measured body keys, tool names and types and `anthropic-beta` values are printed; the stand-in saw the made-up credential of this check, never the sandbox's placeholder. `chat.delete` removes the chat's folder.
@@ -222,7 +222,7 @@ def wait(client, chat, seconds=120):
 def check_turns(c, client):
     print("1. hello, a new chat, a turn that writes a plot")
     hello = client.request({"op": "hello"})
-    check(hello == {"version": 1, "backend": "claude-code", "databases": ["mongo"]}, f"hello: {hello}")
+    check(hello == {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": False}, f"hello: {hello}")
     chat = client.request({"op": "chat.new"})["chat"]
     check(client.request({"op": "chat.send", "chat": chat, "text": "PLOT-TURN draw the counts"}) == {"offset": 0}, f"chat.send on {chat}")
     events = wait(client, chat)

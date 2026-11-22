@@ -4,6 +4,7 @@
 - `SDP_CHAT_DATABASES`: the attached databases, a comma list of `postgres`, `mongo`, `starrocks`.
 - `SDP_CHAT_CAP_GIB`: the work folder's soft cap in GiB, 1 to 10000.
 - `SDP_CHAT_GATEWAY`: the gateway's IPv4 address.
+- `SDP_CHAT_QUEUE`: `1` when the query queue is attached (the gateway's port 8004 reaches the scheduler's assistant endpoint), `0` or absent when not.
 - `SDP_CHAT_MODEL`: the model (for `openai-compatible`, required): 1 to 200 visible ASCII characters, without spaces (the rule of `chat_host.parse_model`).
 - `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), `SDP_CHAT_WORK` (default `/work`), `SDP_CHAT_TURN_SECONDS` (default 1800).
 """
@@ -48,7 +49,10 @@ def settings(environ):
     model = environ.get("SDP_CHAT_MODEL", "")
     if backend == "openai-compatible" and not MODEL.fullmatch(model):
         raise SettingError("SDP_CHAT_MODEL must be the model's name: 1 to 200 visible ASCII characters, without spaces")
-    return {"backend": backend, "databases": names, "model": model, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
+    queue = environ.get("SDP_CHAT_QUEUE", "0")
+    if queue not in ("0", "1"):
+        raise SettingError("SDP_CHAT_QUEUE must be 1 (the query queue is attached) or 0")
+    return {"backend": backend, "databases": names, "queue": queue == "1", "model": model, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
 
 
 def main(environ=None):
@@ -59,12 +63,12 @@ def main(environ=None):
         print(f"runner: refusing to start: {error}", file=sys.stderr)
         return 2
     if found["backend"] == "claude-code":
-        backend = claude.ClaudeCode(found["gateway"], found["databases"])
+        backend = claude.ClaudeCode(found["gateway"], found["databases"], queue=found["queue"])
     else:
-        backend = openai.OpenAICompatible(found["gateway"], found["model"], found["databases"])
+        backend = openai.OpenAICompatible(found["gateway"], found["model"], found["databases"], queue=found["queue"])
     limits = runner.Limits(turn_seconds=found["turn_seconds"])
     try:
-        chats = runner.Runner(found["work"], backend, found["backend"], found["databases"], found["cap_bytes"], limits=limits)
+        chats = runner.Runner(found["work"], backend, found["backend"], found["databases"], found["cap_bytes"], queue=found["queue"], limits=limits)
     except OSError:
         print("runner: refusing to start: the work folder cannot be opened", file=sys.stderr)
         return 2
@@ -78,7 +82,7 @@ def main(environ=None):
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     server.start()
-    print(f"runner: listening (back end {found['backend']}, databases {', '.join(found['databases']) or 'none'})", flush=True)
+    print(f"runner: listening (back end {found['backend']}, databases {', '.join(found['databases']) or 'none'}, query queue {'attached' if found['queue'] else 'not attached'})", flush=True)
     stop.wait()
     server.close()
     chats.close()

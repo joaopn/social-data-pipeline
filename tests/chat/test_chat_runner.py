@@ -113,7 +113,7 @@ def test_connections_over_the_limit_are_closed_and_requests_and_replies_are_boun
         for s in held:
             s.close()
         time.sleep(0.2)
-        assert r.call("hello")["result"] == {"version": 1, "backend": "claude-code", "databases": ["mongo"]}
+        assert r.call("hello")["result"] == {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": False}
     finally:
         os.close(folder_fd)
     big = json.dumps({"op": "hello", "pad": "x" * (64 * 1024)}).encode()

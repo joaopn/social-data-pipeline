@@ -24,7 +24,7 @@ import threading
 
 from social_data_pipeline import runstore
 from social_data_pipeline.control import errors, tasks, verbs
-from social_data_pipeline.control.types import Name, SecretValue
+from social_data_pipeline.control.types import Name, reveal
 
 RUN_VERB = "run.start"
 SUPERVISOR_ARGV = (sys.executable, "-m", "social_data_pipeline.control.supervise")
@@ -124,7 +124,7 @@ def start_run(root, fields, *, started_by):
 
     inputs = verbs.VERBS[RUN_VERB].socket_inputs
     flags = {name: value for name, value in validated.items() if not inputs[name].type.is_secret and name not in ("profile", "source")}
-    plain = {name: value.reveal() if isinstance(value, SecretValue) else value for name, value in validated.items()}
+    plain = reveal(validated)
 
     record = {"profile": validated["profile"], "source": validated["source"], "flags": flags, "started_by": started_by}
     return _create_and_spawn(root, record, lambda: _refuse_a_second_run(root, service_profiles, validated["profile"], validated["source"]), lambda run_id: {"verb": RUN_VERB, "fields": plain, "run_id": run_id})
@@ -202,6 +202,6 @@ def start_task(root, verb_name, fields, *, started_by):
         raise errors.RunNotStarted(TASK_NOT_USABLE, "task_not_usable")
     key = tasks.key_values(task, validated)
     flags = {name: value for name, value in validated.items() if not inputs[name].type.is_secret and name != "source"}
-    plain = {name: value.reveal() if isinstance(value, SecretValue) else value for name, value in validated.items()}
+    plain = reveal(validated)
     record = {"profile": None, "task": verb_name, "label": tasks.label_of(task, key), "source": validated.get("source"), "flags": flags, "started_by": started_by}
     return _create_and_spawn(root, record, lambda: _refuse_a_second_task(root, verb_name, key), lambda run_id: {"verb": verb_name, "fields": plain})

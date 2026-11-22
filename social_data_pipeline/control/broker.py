@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 from social_data_pipeline.control import REQUEST_MAX_BYTES, audit, environ, errors, files, framing, passwords, redact, tasks, verbs
 from social_data_pipeline.control import sessions as session_table
-from social_data_pipeline.control.types import reveal, secrets_in
+from social_data_pipeline.control.types import SecretValue, reveal, secrets_in
 
 PROTOCOL = 1
 CHILD_ARGV = (sys.executable, "-u", "-m", "social_data_pipeline.control.child")

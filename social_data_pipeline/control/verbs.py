@@ -1,6 +1,6 @@
 """The verb registry and `validate_request`, the one function a request passes before anything acts on it.
 
-A verb names one subcommand of the host CLI. `socket_inputs` is the deny-by-default list of typed fields the socket accepts for it, narrower than what the CLI takes (`cli_inputs`) and asks (`prompted_inputs`): a field that is not listed is refused, so a new CLI flag stays unreachable until someone lists it here with a type from `control.types`.
+A verb names one subcommand of the host CLI. `socket_inputs` is the deny-by-default list of typed fields the socket accepts for it, narrower than what the CLI takes (`cli_inputs`) and asks (`prompted_inputs`): a field that is not listed is refused, so a new CLI flag stays unreachable until someone lists it here with a type from `control.types`. A field may be a container (`ListOf`, `MapOf`, `Record`): it validates what it holds itself, refuses unknown keys at every level and wraps nested secrets, and its errors name the place inside it ("field 'targets' item 2 key 'name' is required").
 
 The CLI is a top-level script module and is never imported here (that would be an import cycle for the CLI and would pull the whole CLI into any process that only validates requests). The choices it shares with the registry are written out as literals below.
 """
@@ -11,11 +11,12 @@ from types import MappingProxyType
 from typing import Callable, Mapping
 
 from social_data_pipeline.control.errors import InputError, UnknownVerb, VerbNotAvailable
+# `Field` lives in `types` (a Record's keys are Fields too) and is used here as `verbs.Field`.
 from social_data_pipeline.control.types import (
-    INPUT_TYPES,
     Bool,
     ConfiguredSource,
     Enum,
+    Field,
     FileFilter,
     IntRange,
     Name,
@@ -53,18 +54,6 @@ VALID_PROFILES = ("parse", "lingua", "ml", "postgres_ingest", "postgres_ml", "mo
 DATABASES = ("postgres", "mongo", "starrocks")
 SERVICES = ("postgres", "mongo", "starrocks", "postgres-mcp", "mongo-mcp", "starrocks-mcp", "jobs")
 ERROR_LOG_PROFILES = ("postgres_ingest", "postgres_ml", "mongo_ingest")
-
-
-@dataclass(frozen=True)
-class Field:
-    """One socket input: its type and whether a request must carry it."""
-
-    type: object
-    required: bool = False
-
-    def __post_init__(self):
-        if type(self.type) not in INPUT_TYPES:
-            raise TypeError("a socket input needs an instance of one of the types in control.types")
 
 
 class FieldRefused(ValueError):

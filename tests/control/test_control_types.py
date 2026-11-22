@@ -268,6 +268,12 @@ class TestStringLayers:
             "ConfiguredSource": (True, False),
             "RunId": (True, False),
             "Secret": (True, True),
+            "Path": (True, False),
+            "Port": (False, False),
+            "Text": (False, False),
+            "ListOf": (False, False),
+            "MapOf": (False, False),
+            "Record": (False, False),
         }
 
 
@@ -342,3 +348,227 @@ class TestSecretValue:
             assert "hunter2-ZQX" not in shown
         assert repr(wrapped) == "<secret>"
         assert wrapped.reveal() == "hunter2-ZQX"
+
+
+# ── the wide types and the containers ───────────────────────────────────────
+
+# A marker that must never show in a refusal: the refused values below carry it.
+MARK = "ZQX9marker"
+TARGET = types.Record({"name": types.Field(types.Name(), required=True), "database": types.Field(types.Enum(("postgres", "starrocks")), required=True), "timeout_hours": types.Field(types.IntRange(1, 72))})
+WITH_SECRET = types.Record({"user": types.Field(types.Name(), required=True), "password": types.Field(types.Secret(max_len=16))})
+
+
+class TestPath:
+    @pytest.mark.parametrize("value, expected", [
+        ("/mnt/bulk/dumps", "/mnt/bulk/dumps"),
+        ("/mnt/bulk/dumps/", "/mnt/bulk/dumps"),
+        ("data/./dumps//reddit/../hf", "data/dumps/hf"),
+        ("data", "data"),
+        ("../elsewhere", "../elsewhere"),
+        ("/mnt/caf\u00e9 space", "/mnt/caf\u00e9 space"),
+    ])
+    def test_accepts_and_normalizes_a_path_without_looking_at_the_disk(self, value, expected):
+        """Bug class: two spellings of one folder taken as two (a duplicate mount, a folder check that a `..` walks around), or a relative path refused when the deployment's relative paths are what setup writes."""
+        assert types.Path().validate(value) == expected
+
+    @pytest.mark.parametrize("value", ["", None, 5, ["/x"], "/x\n", "/x\ty", "/x\x00y", "/x\ry", "/x\u2028y", "/x\x85y", "/x\ud800"])
+    def test_refuses_what_no_path_setting_can_hold(self, value):
+        """Bug class: a path with a line break that writes a second setting into .env or docker-compose.override.yml, a NUL that cuts it at the system call, an empty path read as the working directory."""
+        with pytest.raises(ValueError):
+            types.Path().validate(value)
+
+    def test_the_byte_bound_counts_utf8_bytes(self):
+        """Bug class: a bound counted in characters, which lets a path of multi-byte characters past the size the type promises."""
+        assert types.Path(max_bytes=4).validate("\u00e9\u00e9") == "\u00e9\u00e9"
+        with pytest.raises(ValueError, match="at most 4 bytes"):
+            types.Path(max_bytes=4).validate("\u00e9\u00e9a")
+        assert types.Path().validate("/" + "a" * 4095) == "/" + "a" * 4095
+        with pytest.raises(ValueError):
+            types.Path().validate("/" + "a" * 4096)
+
+
+class TestPort:
+    @pytest.mark.parametrize("value", [1024, 8080, 65535])
+    def test_accepts_an_unprivileged_port(self, value):
+        assert types.Port().validate(value) == value
+
+    @pytest.mark.parametrize("value", [1023, 0, -1, 65536, True, "8080", 8080.0, None])
+    def test_refuses_a_privileged_or_impossible_port_and_every_other_json_type(self, value):
+        """Bug class: a port below 1024 (needs root on the host), past 65535, or a coerced string or float that the compose file would read differently."""
+        with pytest.raises(ValueError):
+            types.Port().validate(value)
+
+
+class TestText:
+    def test_accepts_lines_and_tabs_when_multiline(self):
+        """Bug class: PGTune's output (several lines, maybe tabs) refused, or an empty paste refused although it means "none"."""
+        text = "# PGTune\nshared_buffers = 4GB\n\twork_mem = 16MB\n"
+        assert types.Text(1024).validate(text) == text
+        assert types.Text(1024).validate("") == ""
+
+    @pytest.mark.parametrize("value", ["a\rb", "a\r\nb", "a\x00b", "a\x1bb", "a\u2028b", "a\x85b", "a\x0bb", "a\ud800", 5, None, ["a"]])
+    def test_refuses_other_control_characters(self, value):
+        """Bug class: a carriage return, an escape sequence or a separator inside text that is later written into a configuration file or shown in a terminal."""
+        with pytest.raises(ValueError):
+            types.Text(1024).validate(value)
+
+    def test_one_line_refuses_a_line_break_and_the_bound_counts_bytes(self):
+        """Bug class: a one-line text that writes a second line, or a bound counted in characters."""
+        with pytest.raises(ValueError, match="line break"):
+            types.Text(64, multiline=False).validate("a\nb")
+        assert types.Text(64, multiline=False).validate("a\tb") == "a\tb"
+        assert types.Text(4).validate("\u00e9\u00e9") == "\u00e9\u00e9"
+        with pytest.raises(ValueError, match="at most 4 bytes"):
+            types.Text(4).validate("\u00e9\u00e9a")
+
+
+class TestContainers:
+    def test_a_list_keeps_its_order_and_checks_each_item(self):
+        """Bug class: a list whose items skip validation (a container that trusts what it holds), or whose order is lost (the scheduler's targets are ordered)."""
+        kind = types.ListOf(types.Name(), 4)
+        assert kind.validate(["b", "a", "c"]) == ["b", "a", "c"]
+        assert kind.validate([]) == []
+        with pytest.raises(ValueError, match="item 2 must start"):
+            kind.validate(["a", "../x"])
+
+    def test_a_unique_list_compares_values_after_validation(self):
+        """Bug class: two spellings of one folder accepted as two items of a list that must not repeat."""
+        kind = types.ListOf(types.Path(), 4, unique=True)
+        assert kind.validate(["/a", "/b"]) == ["/a", "/b"]
+        with pytest.raises(ValueError, match="item 2 repeats"):
+            kind.validate(["/a/b", "/a/./b"])
+
+    def test_a_list_of_records(self):
+        """Bug class: a per-item object that takes a key it does not list, misses a required one, or reports its error without saying where."""
+        kind = types.ListOf(TARGET, 8)
+        assert kind.validate([{"name": "warehouse", "database": "starrocks", "timeout_hours": 4}, {"database": "postgres", "name": "pg"}]) == [{"name": "warehouse", "database": "starrocks", "timeout_hours": 4}, {"name": "pg", "database": "postgres"}]
+        for value, reason in [
+            ([{"name": "w", "database": "starrocks", "extra": 1}], "item 1 key 'extra' is not accepted"),
+            ([{"name": "w", "database": "starrocks", "Extra Key": 1}], "item 1 has a key that is not accepted"),
+            ([{"name": "w"}], "item 1 key 'database' is required"),
+            ([{"name": "w", "database": "starrocks", "timeout_hours": None}], "item 1 key 'timeout_hours' must be a whole number"),
+            ([{"name": "w", "database": "starrocks"}, {"name": "x", "database": "mongo"}], "item 2 key 'database' must be one of"),
+            ([["name", "w"]], "item 1 must be an object"),
+        ]:
+            with pytest.raises(ValueError) as exc:
+                kind.validate(value)
+            assert str(exc.value).startswith(reason), value
+
+    def test_a_map_checks_every_key_before_any_value(self):
+        """Bug class: a map key that is a path or holds a line break (a data type becomes a folder name), or a value checked before its key so that a refusal quotes a hostile key."""
+        kind = types.MapOf(types.Name(), types.ListOf(types.Name(), 8), 4)
+        assert kind.validate({"submissions": ["id", "title"], "comments": []}) == {"submissions": ["id", "title"], "comments": []}
+        with pytest.raises(ValueError) as exc:
+            kind.validate({"submissions": [MARK + "\n"], "../" + MARK: []})
+        assert str(exc.value).startswith("has a key that") and MARK not in str(exc.value)
+        with pytest.raises(ValueError, match="key 'submissions' item 1"):
+            kind.validate({"submissions": ["a b"]})
+        with pytest.raises(ValueError, match="must be an object"):
+            kind.validate([["submissions", []]])
+
+    @pytest.mark.parametrize("kind, value", [
+        (types.ListOf(types.Name(), 3), ["a", "b", "c", "d"]),
+        (types.MapOf(types.Name(), types.Bool(), 2), {"a": True, "b": True, "c": True}),
+        (types.ListOf(types.ListOf(types.Name(), 2), 2), [["a"], ["a", "b", "c"]]),
+    ])
+    def test_too_many_items_are_refused_before_any_is_looked_at(self, kind, value):
+        """Bug class: a container that validates (and copies) every item of a huge list before it counts them."""
+        with pytest.raises(ValueError, match="at most"):
+            kind.validate(value)
+
+    def test_the_size_is_counted_before_the_items(self, monkeypatch):
+        """Bug class: as above, counted by steps: with one item too many, no item is validated."""
+        seen = []
+        kind = types.ListOf(types.Name(), 2)
+        monkeypatch.setattr(types.Name, "validate", lambda self, value: seen.append(value) or value)
+        with pytest.raises(ValueError):
+            kind.validate(["a", "b", "c"])
+        assert seen == []
+
+    def test_nested_secrets_are_wrapped_and_never_echoed(self):
+        """Bug class: a secret inside a list or a record returned as plain text (it then shows in a repr, a log or an audit line), or a refusal of one that quotes it."""
+        kind = types.ListOf(WITH_SECRET, 4)
+        clean = kind.validate([{"user": "ro", "password": "s3cret-" + MARK[:6]}])
+        assert isinstance(clean[0]["password"], types.SecretValue) and MARK[:6] not in repr(clean)
+        assert types.reveal(clean) == [{"user": "ro", "password": "s3cret-" + MARK[:6]}]
+        assert [secret.reveal() for secret in types.secrets_in({"a": clean, "b": types.SecretValue("x")})] == ["s3cret-" + MARK[:6], "x"]
+        mapped = types.MapOf(types.Name(), types.Secret(), 2).validate({"hf": "tok"})
+        assert isinstance(mapped["hf"], types.SecretValue)
+        for refused in ([{"user": "ro", "password": MARK * 3}], [{"user": "ro", "password": MARK + "\n"}], [{"user": MARK + " x", "password": MARK}]):
+            with pytest.raises(ValueError) as exc:
+                kind.validate(refused)
+            assert MARK not in str(exc.value) and MARK not in repr(exc.value)
+
+    @pytest.mark.parametrize("build", [
+        lambda: types.ListOf(types.Name(), 0),
+        lambda: types.ListOf(types.Name(), 1025),
+        lambda: types.ListOf(types.Name(), True),
+        lambda: types.ListOf("name", 4),
+        lambda: types.ListOf(types.Secret(), 4, unique=True),
+        lambda: types.ListOf(types.ListOf(types.Name(), 2), 2, unique=True),
+        lambda: types.ListOf(types.ListOf(types.Name(), 1000), 1000),
+        lambda: types.ListOf(types.ListOf(types.ListOf(types.ListOf(types.ListOf(types.Name(), 1), 1), 1), 1), 1),
+        lambda: types.MapOf(types.Path(), types.Name(), 4),
+        lambda: types.MapOf(types.Secret(), types.Name(), 4),
+        lambda: types.MapOf(types.Name(), object(), 4),
+        lambda: types.Record({}),
+        lambda: types.Record({"Name": types.Field(types.Name())}),
+        lambda: types.Record({"name": types.Name()}),
+        lambda: types.Path(max_bytes=0),
+        lambda: types.Path(max_bytes=4097),
+        lambda: types.Text(0),
+        lambda: types.Text(65537),
+        lambda: types.Text(10, multiline=1),
+    ])
+    def test_a_malformed_container_or_wide_type_is_refused_when_it_is_built(self, build):
+        """Bug class: a registry typo that declares an unbounded shape (a container of a million items, nesting deeper than any form), a map keyed by a path or a secret (a key is quoted in errors), or a record whose keys cannot be quoted safely."""
+        with pytest.raises((TypeError, ValueError)):
+            build()
+
+    def test_a_record_cannot_be_widened_after_it_is_built(self):
+        """Bug class: a Record shared by several verbs whose list of keys is changed at run time."""
+        fields = {"name": types.Field(types.Name())}
+        kind = types.Record(fields)
+        fields["extra"] = types.Field(types.Name())
+        with pytest.raises(ValueError, match="'extra' is not accepted"):
+            kind.validate({"extra": "x"})
+        with pytest.raises(TypeError):
+            kind.fields["extra"] = types.Field(types.Name())
+
+
+class TestNestedRequests:
+    """`validate_request` with container fields, through a verb made for the test (no registered verb uses a container yet)."""
+
+    @pytest.fixture
+    def nested_verb(self, monkeypatch):
+        from social_data_pipeline.control import verbs
+
+        verb = verbs.Verb(name="test.nested", cls="step_up", cli=("test",), socket_enabled=True, socket_inputs={
+            "targets": verbs.Field(types.ListOf(TARGET, 4), required=True),
+            "users": verbs.Field(types.ListOf(WITH_SECRET, 2)),
+            "folder": verbs.Field(types.Path()),
+        })
+        monkeypatch.setattr(verbs, "VERBS", {**verbs.VERBS, "test.nested": verb})
+        return verbs
+
+    def test_a_nested_refusal_names_the_field_and_the_place(self, nested_verb):
+        """Bug class: an error inside a container that names no field (the page cannot say which input was refused) or that quotes the value."""
+        from social_data_pipeline.control import errors
+
+        with pytest.raises(errors.InputError) as exc:
+            nested_verb.validate_request("test.nested", {"targets": [{"name": "w", "database": "starrocks"}, {"name": "w", "database": "starrocks", "zz": MARK}]})
+        assert exc.value.field == "targets"
+        assert str(exc.value) == "test.nested: field 'targets' item 2 key 'zz' is not accepted."
+        with pytest.raises(errors.InputError) as exc:
+            nested_verb.validate_request("test.nested", {"targets": [], "users": [{"user": "ro", "password": MARK * 2}]})
+        assert exc.value.field == "users" and MARK not in str(exc.value)
+
+    def test_nested_secrets_come_back_wrapped(self, nested_verb):
+        """Bug class: a secret in a container returned unwrapped by the boundary, so the broker's redaction and the audit's masking (both keyed on SecretValue) miss it."""
+        from social_data_pipeline.control import audit
+
+        validated = nested_verb.validate_request("test.nested", {"targets": [], "users": [{"user": "ro", "password": "pw-" + MARK[:4]}], "folder": "data/./x"})
+        assert validated["folder"] == "data/x"
+        assert isinstance(validated["users"][0]["password"], types.SecretValue)
+        shown = audit.fields_for_audit(nested_verb.VERBS["test.nested"], validated)
+        assert MARK[:4] not in repr(shown) and shown["users"] == [{"user": "ro", "password": audit.SECRET_MARK}]

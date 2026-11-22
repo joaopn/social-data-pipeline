@@ -1,10 +1,17 @@
 """The closed set of input types a verb may accept over the socket.
 
-Each type is a small immutable object whose `validate(value)` returns the accepted value or raises ValueError with a reason that never contains the value. A value is refused, never coerced. There is on purpose no type for a host path, a port or free text: an input that needs one of those stays terminal-only until it has a narrower type.
+Each type is a small immutable object whose `validate(value)` returns the accepted value or raises ValueError with a reason that never contains the value. A value is refused, never coerced (two exceptions, both normalizations of text: `Path` returns its value through `os.path.normpath`, and nothing else changes a value).
+
+The scalar types are `Bool`, `IntRange`, `Enum`, `Name`, `FileFilter`, `ConfiguredSource`, `RunId`, `Secret`, and the three wide ones the setup verbs need (decided by the maintainer: any path and any port with the management password): `Path` (a host path as text, never looked up here), `Port` (1024 to 65535; whether another service uses it is the action's check) and `Text` (free text, such as PGTune's output). A wide type is reachable only through the inputs listed in the registry test's allow-list of wide inputs.
+
+The containers are `ListOf`, `MapOf` and `Record`. They refuse unknown keys at every level, check their size before they look at any item, and wrap every nested secret in `SecretValue` themselves; `reveal` and `secrets_in` walk a validated value for the broker. Each type has a `capacity` (the most values it can hold, counted leaf by leaf) and a `depth`; a container whose capacity is over ITEMS_MAX or whose depth is over DEPTH_MAX is refused when it is built, so no declared shape can cost more than that, whatever a request holds (a request frame is at most 64 KiB, `control.REQUEST_MAX_BYTES`).
 """
 
+import os
 import re
+import unicodedata
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from social_data_pipeline.control import names
 
@@ -32,12 +39,27 @@ def _only_dots(value):
     return value.strip(".") == ""
 
 
+# The most values a declared type may hold in all (leaves counted, a map's keys included), and the most containers nested in one another.
+ITEMS_MAX = 10000
+DEPTH_MAX = 4
+# The bounds of a container's own size and of a text's bytes, so that a typo in the registry cannot declare a huge one.
+CONTAINER_ITEMS_MAX = 1024
+PATH_MAX_BYTES = 4096
+TEXT_MAX_BYTES = 65536
+PORT_MIN = 1024
+PORT_MAX = 65535
+# The names a Record's keys may have: lower-case identifiers, which are also safe to quote in an error.
+RECORD_KEY_PATTERN = r"[a-z][a-z0-9_]{0,63}"
+
+
 @dataclass(frozen=True)
 class Bool:
     """A JSON boolean. 0, 1 and "true" are refused: a coerced flag is how a stray string switches something on."""
 
     is_string = False
     is_secret = False
+    capacity = 1
+    depth = 0
 
     def validate(self, value):
         if not isinstance(value, bool):
@@ -54,6 +76,8 @@ class IntRange:
 
     is_string = False
     is_secret = False
+    capacity = 1
+    depth = 0
 
     def __post_init__(self):
         if not _is_int(self.lo) or not _is_int(self.hi):
@@ -77,6 +101,8 @@ class Enum:
 
     is_string = True
     is_secret = False
+    capacity = 1
+    depth = 0
 
     def __post_init__(self):
         # A bare string would be read as a list of its characters.
@@ -115,6 +141,8 @@ class Name:
 
     is_string = True
     is_secret = False
+    capacity = 1
+    depth = 0
 
     def validate(self, value):
         value = _checked_string(value)
@@ -129,6 +157,8 @@ class FileFilter:
 
     is_string = True
     is_secret = False
+    capacity = 1
+    depth = 0
 
     def validate(self, value):
         value = _checked_string(value)
@@ -148,6 +178,8 @@ class ConfiguredSource:
 
     is_string = True
     is_secret = False
+    capacity = 1
+    depth = 0
 
     def validate(self, value):
         value = _checked_string(value)
@@ -177,6 +209,8 @@ class RunId:
 
     is_string = True
     is_secret = False
+    capacity = 1
+    depth = 0
 
     def validate(self, value):
         value = _checked_string(value)
@@ -193,6 +227,8 @@ class Secret:
 
     is_string = True
     is_secret = True
+    capacity = 1
+    depth = 0
 
     def __post_init__(self):
         if not _is_int(self.max_len) or self.max_len < 1:
@@ -222,5 +258,278 @@ class SecretValue:
     __str__ = __repr__
 
 
+def _bounded_int(value, lo, hi, what):
+    if not _is_int(value) or not lo <= value <= hi:
+        raise ValueError(f"{what} must be a whole number from {lo} to {hi}")
+
+
+def _utf8_length(value):
+    """The length of a text in UTF-8 bytes. Raises ValueError for a lone surrogate, which no file, environment variable or log can hold."""
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise ValueError("must be well-formed text") from None
+
+
+@dataclass(frozen=True)
+class Path:
+    """A host path as text: 1 to max_bytes bytes of UTF-8, no control character (a tab or a line break included) and no line or paragraph separator, absolute or relative (a relative path is to the deployment). Returned through `os.path.normpath`; nothing on disk is looked at, so whether it exists, where a link leads and whether it belongs to someone else are the action's checks, made when it acts."""
+
+    max_bytes: int = PATH_MAX_BYTES
+
+    is_string = True
+    is_secret = False
+    capacity = 1
+    depth = 0
+
+    def __post_init__(self):
+        _bounded_int(self.max_bytes, 1, PATH_MAX_BYTES, "Path max_bytes")
+
+    def validate(self, value):
+        value = _checked_string(value)
+        if not value:
+            raise ValueError("must not be empty")
+        if _utf8_length(value) > self.max_bytes:
+            raise ValueError(f"must be at most {self.max_bytes} bytes long")
+        return os.path.normpath(value)
+
+
+@dataclass(frozen=True)
+class Port:
+    """A TCP port from 1024 to 65535 (below 1024 needs root on the host). Whether another service of the deployment already uses it is not a property of the value: the verb's check or its action decides that."""
+
+    is_string = False
+    is_secret = False
+    capacity = 1
+    depth = 0
+
+    def validate(self, value):
+        return IntRange(PORT_MIN, PORT_MAX).validate(value)
+
+
+@dataclass(frozen=True)
+class Text:
+    """Free text of 0 to max_bytes bytes of UTF-8, such as a configuration pasted whole. A tab is allowed; with multiline the line break `\\n` is too (and only it: a `\\r` is refused, so a caller that takes text from a browser turns `\\r\\n` into `\\n` first). Every other control character and the line and paragraph separators are refused. Not a one-line string (`is_string` is false): a value may hold line breaks, so it must never be written into .env, a command line or a log line as it is."""
+
+    max_bytes: int
+    multiline: bool = True
+
+    is_string = False
+    is_secret = False
+    capacity = 1
+    depth = 0
+
+    def __post_init__(self):
+        _bounded_int(self.max_bytes, 1, TEXT_MAX_BYTES, "Text max_bytes")
+        if not isinstance(self.multiline, bool):
+            raise TypeError("Text multiline must be true or false")
+
+    def validate(self, value):
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        allowed = ("\t", "\n") if self.multiline else ("\t",)
+        for character in value:
+            if character not in allowed and unicodedata.category(character) in ("Cc", "Zl", "Zp"):
+                raise ValueError("must not contain a control character" + ("" if self.multiline else " or a line break"))
+        if _utf8_length(value) > self.max_bytes:
+            raise ValueError(f"must be at most {self.max_bytes} bytes long")
+        return value
+
+
+def _wrapped(kind, value):
+    """The clean value of `value` under `kind`, a secret wrapped in SecretValue."""
+    clean = kind.validate(value)
+    return SecretValue(clean) if kind.is_secret else clean
+
+
+def _check_inner(kind, what):
+    if type(kind) not in INPUT_TYPES:
+        raise TypeError(f"{what} needs an instance of one of the types in control.types")
+
+
+def _check_shape(capacity, depth):
+    if capacity > ITEMS_MAX:
+        raise ValueError(f"a container may hold at most {ITEMS_MAX} values in all")
+    if depth > DEPTH_MAX:
+        raise ValueError(f"containers may be nested at most {DEPTH_MAX} deep")
+
+
+@dataclass(frozen=True)
+class ListOf:
+    """A JSON list of 0 to max_items items, each validated by item_type, returned as a new list in the same order. With unique, an item equal to an earlier one (after validation, so two spellings of one path are equal) is refused; unique is allowed for scalar items that are not secrets only."""
+
+    item_type: object
+    max_items: int
+    unique: bool = False
+
+    is_string = False
+    is_secret = False
+
+    def __post_init__(self):
+        _check_inner(self.item_type, "ListOf")
+        _bounded_int(self.max_items, 1, CONTAINER_ITEMS_MAX, "ListOf max_items")
+        if not isinstance(self.unique, bool):
+            raise TypeError("ListOf unique must be true or false")
+        if self.unique and (self.item_type.depth > 0 or self.item_type.is_secret):
+            raise ValueError("ListOf unique needs items that are scalars and not secrets")
+        _check_shape(self.capacity, self.depth)
+
+    @property
+    def capacity(self):
+        return self.max_items * self.item_type.capacity
+
+    @property
+    def depth(self):
+        return 1 + self.item_type.depth
+
+    def validate(self, value):
+        if not isinstance(value, list):
+            raise ValueError("must be a list")
+        if len(value) > self.max_items:
+            raise ValueError(f"must hold at most {self.max_items} items")
+        clean = []
+        seen = set()
+        for number, item in enumerate(value, start=1):
+            try:
+                checked = _wrapped(self.item_type, item)
+            except ValueError as exc:
+                raise ValueError(f"item {number} {exc}") from None
+            if self.unique:
+                if checked in seen:
+                    raise ValueError(f"item {number} repeats an earlier item")
+                seen.add(checked)
+            clean.append(checked)
+        return clean
+
+
+@dataclass(frozen=True)
+class MapOf:
+    """A JSON object of 0 to max_items entries whose keys pass key_type (a Name or an Enum, so a key is safe to quote in an error) and whose values pass value_type, returned as a new dict. Every key is checked before any value."""
+
+    key_type: object
+    value_type: object
+    max_items: int
+
+    is_string = False
+    is_secret = False
+
+    def __post_init__(self):
+        if type(self.key_type) not in (Name, Enum):
+            raise TypeError("MapOf keys must be a Name or an Enum")
+        _check_inner(self.value_type, "MapOf")
+        _bounded_int(self.max_items, 1, CONTAINER_ITEMS_MAX, "MapOf max_items")
+        _check_shape(self.capacity, self.depth)
+
+    @property
+    def capacity(self):
+        return self.max_items * (1 + self.value_type.capacity)
+
+    @property
+    def depth(self):
+        return 1 + self.value_type.depth
+
+    def validate(self, value):
+        if not isinstance(value, dict):
+            raise ValueError("must be an object")
+        if len(value) > self.max_items:
+            raise ValueError(f"must hold at most {self.max_items} entries")
+        for key in value:
+            try:
+                self.key_type.validate(key)
+            except ValueError as exc:
+                raise ValueError(f"has a key that {exc}") from None
+        clean = {}
+        for key, item in value.items():
+            try:
+                clean[key] = _wrapped(self.value_type, item)
+            except ValueError as exc:
+                raise ValueError(f"key '{key}' {exc}") from None
+        return clean
+
+
+@dataclass(frozen=True)
+class Field:
+    """One input: its type and whether a request must carry it. A verb's socket inputs are Fields, and so are the keys of a Record."""
+
+    type: object
+    required: bool = False
+
+    def __post_init__(self):
+        if type(self.type) not in INPUT_TYPES:
+            raise TypeError("a socket input needs an instance of one of the types in control.types")
+
+
+@dataclass(frozen=True)
+class Record:
+    """A JSON object with fixed keys, each a Field (its type, and whether the object must carry it), such as one target of the scheduler {name, database, timeout_hours}. A key that is not listed is refused before any value is looked at; an optional key that is absent stays absent, and None is a refused value. Returned as a new dict in the order of `fields`."""
+
+    fields: object
+
+    is_string = False
+    is_secret = False
+
+    def __post_init__(self):
+        if not isinstance(self.fields, dict) or not self.fields:
+            raise TypeError("Record needs a dict of at least one Field")
+        for key, spec in self.fields.items():
+            if not isinstance(key, str) or re.fullmatch(RECORD_KEY_PATTERN, key) is None:
+                raise ValueError("Record keys must be lower-case identifiers of at most 64 characters")
+            if not isinstance(spec, Field):
+                raise TypeError("each key of a Record needs a Field")
+        object.__setattr__(self, "fields", MappingProxyType(dict(self.fields)))
+        _check_shape(self.capacity, self.depth)
+
+    @property
+    def capacity(self):
+        return sum(spec.type.capacity for spec in self.fields.values())
+
+    @property
+    def depth(self):
+        return 1 + max(spec.type.depth for spec in self.fields.values())
+
+    def validate(self, value):
+        if not isinstance(value, dict):
+            raise ValueError("must be an object")
+        for key in value:
+            if key not in self.fields:
+                quoted = key if isinstance(key, str) and re.fullmatch(RECORD_KEY_PATTERN, key) else None
+                raise ValueError(f"key '{quoted}' is not accepted" if quoted else "has a key that is not accepted")
+        clean = {}
+        for key, spec in self.fields.items():
+            if key not in value:
+                if spec.required:
+                    raise ValueError(f"key '{key}' is required")
+                continue
+            try:
+                clean[key] = _wrapped(spec.type, value[key])
+            except ValueError as exc:
+                raise ValueError(f"key '{key}' {exc}") from None
+        return clean
+
+
+def reveal(value):
+    """A copy of a validated value with every SecretValue in it, at any depth, replaced by its text: what an action is called with."""
+    if isinstance(value, SecretValue):
+        return value.reveal()
+    if isinstance(value, list):
+        return [reveal(item) for item in value]
+    if isinstance(value, dict):
+        return {key: reveal(item) for key, item in value.items()}
+    return value
+
+
+def secrets_in(value):
+    """Every SecretValue in a validated value, at any depth, in order: what the broker redacts from a reply."""
+    if isinstance(value, SecretValue):
+        return [value]
+    if isinstance(value, list):
+        return [secret for item in value for secret in secrets_in(item)]
+    if isinstance(value, dict):
+        return [secret for item in value.values() for secret in secrets_in(item)]
+    return []
+
+
 # The whole set. A socket input whose type is not one of these classes is refused when the registry is built.
-INPUT_TYPES = (Bool, IntRange, Enum, Name, FileFilter, ConfiguredSource, RunId, Secret)
+INPUT_TYPES = (Bool, IntRange, Enum, Name, FileFilter, ConfiguredSource, RunId, Secret, Path, Port, Text, ListOf, MapOf, Record)
+# The types that accept a host path, any port or free text: each input of one of them (also nested in a container) is a decision, listed in the registry test.
+WIDE_TYPES = (Path, Port, Text)

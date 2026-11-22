@@ -91,3 +91,13 @@ h2 + p.small, .main h2 + .muted.small { margin-top: 4px; }
 .svc .action-form label.f { width: 16rem; flex: none; }
 .svc .action-form > p { order: 2; flex-basis: 100%; margin: 0; }
 h1 .mono { font-size: inherit; }
+
+/* The setup forms (_forms.html `field` and the macros of each kind): the mock-up's two-column .form (.wide spans both), a fieldset holding one list, map or record, and a list's rows (one item each, its Remove box at the end). */
+.form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; max-width: 820px; } .form .wide { grid-column: 1 / -1; } @media (max-width: 800px) { .form { grid-template-columns: 1fr; } }
+fieldset.f-group { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+fieldset.f-group > legend { padding: 0; margin-bottom: 2px; font-size: 12px; color: var(--ink-2); }
+.f-rows { display: flex; flex-direction: column; gap: 6px; }
+.f-row { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.f-row > label.f, .f-row > input, .f-row > select { flex: 1; min-width: 8rem; }
+.f-row > label.f-remove { flex: none; padding-bottom: 7px; }
+textarea.mono { line-height: 1.5; }

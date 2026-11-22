@@ -24,7 +24,10 @@ from social_data_pipeline.control import errors, types, verbs
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The type classes a socket input may use, written out here on purpose: adding a type to the package does not widen this set.
-ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "ConfiguredSource", "RunId", "Secret"}
+ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "ConfiguredSource", "RunId", "Secret", "Path", "Port", "Text", "ListOf", "MapOf", "Record"}
+# The wide types (a host path, any port, free text), and every (verb, field) that uses one, also nested in a container. Each entry is a decision of the maintainer (any path and any port with the management password); a setup unit adds its own here when it lists the input.
+WIDE_TYPE_NAMES = {"Path", "Port", "Text"}
+WIDE_INPUTS = set()
 
 # The security classification of every verb: (class, accepted over the socket). Changing one is a decision, so it is made in two places.
 CLASSIFICATION = {
@@ -115,11 +118,20 @@ def _valid_value(kind):
         types.ConfiguredSource: "ok",
         types.RunId: "r20261121T101500-0a1b2c",
         types.Secret: "correct horse",
+        types.Path: "data/x",
+        types.Port: 8080,
+        types.Text: "x",
     }
     if isinstance(kind, types.Enum):
         return kind.choices[0]
     if isinstance(kind, types.IntRange):
         return kind.lo
+    if isinstance(kind, types.ListOf):
+        return []
+    if isinstance(kind, types.MapOf):
+        return {}
+    if isinstance(kind, types.Record):
+        return {key: _valid_value(spec.type) for key, spec in kind.fields.items() if spec.required}
     return samples[type(kind)]
 
 
@@ -143,7 +155,8 @@ def _inputs(only_strings=False, only_plain_strings=False):
         for field, spec in verbs.VERBS[name].socket_inputs.items():
             if only_strings and not spec.type.is_string:
                 continue
-            if only_plain_strings and not (spec.type.is_string and not spec.type.is_secret):
+            # A path is a string that is meant to address the file system: the path sweep is for the other strings.
+            if only_plain_strings and not (spec.type.is_string and not spec.type.is_secret and not isinstance(spec.type, types.Path)):
                 continue
             pairs.append((name, field))
     return pairs
@@ -227,9 +240,21 @@ class TestSocketInputsAreNarrowerThanTheCli:
         assert verbs.VERBS["run.start"].socket_inputs["profile"].type.choices == tuple(sdp.VALID_PROFILES)
         assert verbs.VALID_PROFILES == tuple(sdp.VALID_PROFILES)
 
-    def test_no_type_for_a_path_a_port_or_free_text(self):
-        """Bug class: a type that accepts a host path, a port or arbitrary text entering the registry, which turns an ordinary verb into root on the host. The set of type classes is closed and compared with the list in this file."""
-        used = {type(spec.type) for verb in verbs.VERBS.values() for spec in verb.socket_inputs.values()}
+    def test_a_path_a_port_or_free_text_only_where_listed(self):
+        """Bug class: a type that accepts a host path, a port or arbitrary text reaching a verb nobody decided on, which turns an ordinary verb into root on the host. The set of type classes is closed and compared with the list in this file, and every input that uses a wide type, at any depth inside a container, is listed in WIDE_INPUTS."""
+        def inner(kind):
+            yield kind
+            if isinstance(kind, types.ListOf):
+                yield from inner(kind.item_type)
+            elif isinstance(kind, types.MapOf):
+                yield from inner(kind.key_type)
+                yield from inner(kind.value_type)
+            elif isinstance(kind, types.Record):
+                for spec in kind.fields.values():
+                    yield from inner(spec.type)
+
+        used = {type(kind) for verb in verbs.VERBS.values() for spec in verb.socket_inputs.values() for kind in inner(spec.type)}
+        wide = {(verb.name, name) for verb in verbs.VERBS.values() for name, spec in verb.socket_inputs.items() if any(type(kind).__name__ in WIDE_TYPE_NAMES for kind in inner(spec.type))}
         defined = {
             name for name, obj in vars(types).items()
             if isinstance(obj, type) and obj.__module__ == types.__name__ and hasattr(obj, "validate")
@@ -237,8 +262,12 @@ class TestSocketInputsAreNarrowerThanTheCli:
 
         assert {kind.__name__ for kind in types.INPUT_TYPES} == ALLOWED_TYPE_NAMES
         assert defined == ALLOWED_TYPE_NAMES
+        assert {kind.__name__ for kind in types.WIDE_TYPES} == WIDE_TYPE_NAMES
         assert used <= set(types.INPUT_TYPES)
-        for name in ALLOWED_TYPE_NAMES:
+        assert wide == WIDE_INPUTS
+        # Decided with the maintainer: a path or a port from the browser needs the management password again.
+        assert all(verbs.VERBS[name].cls == "step_up" for name, _ in WIDE_INPUTS)
+        for name in ALLOWED_TYPE_NAMES - WIDE_TYPE_NAMES:
             assert not any(word in name.lower() for word in ("path", "dir", "port", "host", "url", "text", "string", "raw", "any"))
 
     def test_a_field_refuses_a_type_from_outside_the_set(self):

@@ -2,7 +2,7 @@
 
 The contracts pinned here, each test naming the bug class it catches:
 
-- a. The table against the registry (`control.verbs`): every verb with the registry's class, enabled on the socket, inputs a subset of the registry's socket inputs with the same kinds and choices, the patterns and choice lists literal copies; the two places where the web side is stricter on purpose; `call` refusing anything outside the table before anything is sent. (The `broker` fixture of `conftest.py` checks every call of every route test against the table.)
+- a. The table against the registry (`control.verbs`): every verb with the registry's class, enabled on the socket, inputs a subset of the registry's socket inputs with the same kinds and choices (inside a list, a map or a record too: `assert_input_matches`), the patterns, bounds and choice lists literal copies; the two places where the web side is stricter on purpose; `call` refusing anything outside the table before anything is sent. (The `broker` fixture of `conftest.py` checks every call of every route test against the table.)
 - b. The command shown, against the CLI's parser: split with `shlex.split` and parsed with `sdp.build_parser()`, it gives the subcommand of the registry and exactly the inputs; no secret in it.
 """
 
@@ -18,7 +18,36 @@ from social_data_pipeline.control import types, verbs
 from social_data_pipeline.webui import actions
 
 SECRET = "made-up-db-admin-pw-77e1"
-KIND_OF_TYPE = {types.Enum: "enum", types.Bool: "bool", types.Name: "name", types.ConfiguredSource: "source", types.FileFilter: "filter", types.Secret: "secret", types.RunId: "run_id", types.IntRange: "int"}
+KIND_OF_TYPE = {
+    types.Enum: "enum", types.Bool: "bool", types.Name: "name", types.ConfiguredSource: "source", types.FileFilter: "filter", types.Secret: "secret", types.RunId: "run_id", types.IntRange: "int",
+    types.Path: "path", types.Port: "port", types.Text: "text", types.ListOf: "list", types.MapOf: "map", types.Record: "record",
+}
+
+
+def assert_input_matches(registered, spec, where):
+    """That the table's Input `spec` takes nothing the registry's type `registered` refuses, at any depth: the same kind, the same choices, bounds within the registry's, a nested input for each nested type, a required key where the registry requires one."""
+    assert KIND_OF_TYPE[type(registered)] == spec.kind, where
+    if spec.kind == "enum":
+        assert spec.choices == registered.choices, where
+    if spec.kind == "int":
+        assert registered.lo <= spec.lo <= spec.hi <= registered.hi, where
+    if spec.kind in ("path", "text"):
+        assert 1 <= spec.max_bytes <= registered.max_bytes, where
+    if spec.kind == "text":
+        assert spec.multiline == registered.multiline, where
+    if spec.kind == "list":
+        assert 1 <= spec.max_items <= registered.max_items and (spec.unique or not registered.unique), where
+        assert_input_matches(registered.item_type, spec.item, where + ("item",))
+    if spec.kind == "map":
+        assert 1 <= spec.max_items <= registered.max_items, where
+        assert_input_matches(registered.key_type, spec.key, where + ("key",))
+        assert_input_matches(registered.value_type, spec.item, where + ("value",))
+    if spec.kind == "record":
+        assert set(spec.fields) <= set(registered.fields), where
+        for key, sub in spec.fields.items():
+            assert_input_matches(registered.fields[key].type, sub, where + (key,))
+            if registered.fields[key].required:
+                assert sub.required, where + (key,)
 
 
 # ── a. the table against the registry ───────────────────────────────────────
@@ -37,11 +66,7 @@ def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
         assert set(action.inputs) <= set(verb.socket_inputs), action.name
         for name, spec in action.inputs.items():
             registered = verb.socket_inputs[name]
-            assert KIND_OF_TYPE[type(registered.type)] == spec.kind, (action.name, name)
-            if spec.kind == "enum":
-                assert spec.choices == registered.type.choices, (action.name, name)
-            if spec.kind == "int":
-                assert registered.type.lo <= spec.lo <= spec.hi <= registered.type.hi, (action.name, name)
+            assert_input_matches(registered.type, spec, (action.name, name))
             if registered.required:
                 assert spec.required, (action.name, name)
         if action.state_changing:
@@ -81,6 +106,44 @@ def test_the_patterns_and_choices_are_the_registrys():
     assert actions.RUN_ID_PATTERN == types.RUN_ID_PATTERN
     assert (actions.VALID_PROFILES, actions.DATABASES, actions.SERVICES, actions.ERROR_LOG_PROFILES) == (verbs.VALID_PROFILES, verbs.DATABASES, verbs.SERVICES, verbs.ERROR_LOG_PROFILES)
     assert actions.RUN_LOGS_MIN_LIMIT == broker_server.redact.MIN_PIECE_BYTES
+    assert (actions.PATH_MAX_BYTES, actions.TEXT_MAX_BYTES, actions.PORT_MIN, actions.PORT_MAX, actions.CONTAINER_ITEMS_MAX, actions.RECORD_KEY_PATTERN) == (types.PATH_MAX_BYTES, types.TEXT_MAX_BYTES, types.PORT_MIN, types.PORT_MAX, types.CONTAINER_ITEMS_MAX, types.RECORD_KEY_PATTERN)
+
+
+def _target_type():
+    return types.ListOf(types.Record({"name": types.Field(types.Name(), required=True), "database": types.Field(types.Enum(("postgres", "starrocks"))), "timeout_hours": types.Field(types.IntRange(1, 72)), "folder": types.Field(types.Path(max_bytes=1024))}), 8)
+
+
+def _target_input(name=None, database=None, timeout=None, folder=None, max_items=8):
+    return actions.Input("list", "Targets", max_items=max_items, item=actions.Input("record", "Target", fields={
+        "name": name or actions.Input("name", "Name", required=True),
+        "database": database or actions.Input("enum", "Database", choices=("postgres", "starrocks")),
+        "timeout_hours": timeout or actions.Input("int", "Hours", lo=1, hi=72),
+        "folder": folder or actions.Input("path", "Folder", max_bytes=1024),
+    }))
+
+
+def test_the_comparison_with_the_registry_covers_the_setup_kinds():
+    """Bug class: a setup input of the table that drifted from the registry's type inside a container (a nested enum with another choice, a list longer than the broker takes, a path bound above the broker's, a key the record does not have, a required key made optional), which the comparison of top-level kinds alone would not see: the operator confirms and the broker refuses."""
+    assert_input_matches(_target_type(), _target_input(), ("t",))
+    assert_input_matches(types.MapOf(types.Name(), types.ListOf(types.Name(), 32), 4), actions.Input("map", "Fields", key=actions.Input("name", "Data type"), item=actions.Input("list", "F", item=actions.Input("name", "Field"), max_items=32), max_items=4), ("m",))
+    assert_input_matches(types.Text(4096), actions.Input("text", "PGTune", max_bytes=4096, multiline=True), ("x",))
+    assert_input_matches(types.Port(), actions.Input("port", "Port"), ("p",))
+    drifted = [
+        (_target_type(), _target_input(max_items=9)),
+        (types.ListOf(types.Path(), 4, unique=True), actions.Input("list", "Folders", item=actions.Input("path", "Folder"), max_items=4)),
+        (_target_type(), _target_input(name=actions.Input("name", "Name"))),
+        (_target_type(), _target_input(database=actions.Input("enum", "Database", choices=("postgres", "mongo")))),
+        (_target_type(), _target_input(timeout=actions.Input("int", "Hours", lo=0, hi=72))),
+        (_target_type(), _target_input(folder=actions.Input("path", "Folder", max_bytes=2048))),
+        (_target_type(), _target_input(folder=actions.Input("text", "Folder", max_bytes=1024))),
+        (_target_type(), actions.Input("list", "Targets", max_items=8, item=actions.Input("record", "Target", fields={"name": actions.Input("name", "Name", required=True), "extra": actions.Input("name", "X")}))),
+        (types.MapOf(types.Name(), types.Bool(), 4), actions.Input("map", "M", key=actions.Input("enum", "K", choices=("a",)), item=actions.Input("bool", "B"), max_items=4)),
+        (types.Text(4096), actions.Input("text", "PGTune", max_bytes=4096, multiline=False)),
+        (types.Port(), actions.Input("int", "Port", lo=1024, hi=65535)),
+    ]
+    for registered, spec in drifted:
+        with pytest.raises(AssertionError):
+            assert_input_matches(registered, spec, ("drifted",))
 
 
 class RecordingClient:

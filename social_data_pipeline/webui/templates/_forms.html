@@ -33,3 +33,106 @@
 </label>
 <p class="muted small">{% if kept %}A database admin password is kept for this session: it is used when this field is empty.{% else %}No database admin password is kept for this session: give it here when the database has authentication on.{% endif %}</p>
 {%- endmacro %}
+
+{#- The inputs of the setup verbs, one macro per kind of the table (`actions.Input`), in the mock-up's look: `name` is the form name (nested names as `actions.form_name` makes them: `targets[2][name]`), `spec` the table's Input, `value` the current value (none: empty). `field` picks the macro of a kind. A secret's value is never written into the page. `bare` leaves out the label around the input (a row of a list of plain values, whose label is the list's): the input then carries it as aria-label. Inside a list or a map no input is marked required, so an empty row never blocks the form. -#}
+{% macro field(name, spec, value=none, hint="", bare=False, inner=False, label="") -%}
+{%- if spec.kind == "list" %}{{ list_input(name, spec, value, label=label) }}
+{%- elif spec.kind == "map" %}{{ map_input(name, spec, value, label=label) }}
+{%- elif spec.kind == "record" %}{{ record_input(name, spec, value, inner=inner, label=label) }}
+{%- elif spec.kind == "path" %}{{ path_input(name, spec, value, hint=hint, bare=bare, inner=inner, label=label) }}
+{%- elif spec.kind == "port" %}{{ port_input(name, spec, value, bare=bare, inner=inner, label=label) }}
+{%- elif spec.kind == "text" %}{{ text_input(name, spec, value, hint=hint, inner=inner, label=label) }}
+{%- elif spec.kind == "bool" %}<label class="row small ink2"><input type="checkbox" name="{{ name }}" value="yes"{% if value %} checked{% endif %}> {{ label or spec.label }}</label>
+{%- else %}{{ plain_input(name, spec, value, bare=bare, inner=inner, label=label) }}
+{%- endif %}
+{%- endmacro %}
+
+{#- A label.f around an input, or the input alone with aria-label when bare. -#}
+{% macro _labelled(label, bare, hint="") -%}
+{%- if bare %}{{ caller() }}{% else %}<label class="f">{{ label }}{{ caller() }}{% if hint %}<span class="muted small">{{ hint }}</span>{% endif %}</label>{% endif %}
+{%- endmacro %}
+
+{#- An enum (a select), a secret (a password box, always empty), an int (a number box) or a one-line text of another kind (a name, a source, a file filter). -#}
+{% macro plain_input(name, spec, value=none, bare=False, inner=False, label="") -%}
+{%- call _labelled(label or spec.label, bare) -%}
+{%- if spec.kind == "enum" %}<select name="{{ name }}"{% if bare %} aria-label="{{ label or spec.label }}"{% endif %}>{% if not spec.required or inner %}<option value=""{% if value is none %} selected{% endif %}>—</option>{% endif %}{% for choice in spec.choices %}<option value="{{ choice }}"{% if choice == value %} selected{% endif %}>{{ choice }}</option>{% endfor %}</select>
+{%- elif spec.kind == "secret" %}<input type="password" name="{{ name }}" autocomplete="off" maxlength="1024"{% if bare %} aria-label="{{ label or spec.label }}"{% endif %}{% if spec.required and not inner %} required{% endif %}>
+{%- elif spec.kind == "int" %}<input type="number" name="{{ name }}" min="{{ spec.lo }}" max="{{ spec.hi }}" step="1" inputmode="numeric" value="{{ '' if value is none else value }}"{% if bare %} aria-label="{{ label or spec.label }}"{% endif %}{% if spec.required and not inner %} required{% endif %}>
+{%- else %}<input type="text" name="{{ name }}" value="{{ '' if value is none else value }}" autocomplete="off" spellcheck="false"{% if bare %} aria-label="{{ label or spec.label }}"{% endif %}{% if spec.required and not inner %} required{% endif %}>
+{%- endif %}
+{%- endcall %}
+{%- endmacro %}
+
+{#- A host path: monospaced, with a muted hint under it. -#}
+{% macro path_input(name, spec, value=none, hint="", bare=False, inner=False, label="") -%}
+{%- call _labelled(label or spec.label, bare, hint or "Absolute, or relative to the deployment folder.") -%}
+<input type="text" class="mono" name="{{ name }}" value="{{ '' if value is none else value }}" maxlength="{{ spec.max_bytes }}" autocomplete="off" spellcheck="false"{% if bare %} aria-label="{{ label or spec.label }}"{% endif %}{% if spec.required and not inner %} required{% endif %}>
+{%- endcall %}
+{%- endmacro %}
+
+{% macro port_input(name, spec, value=none, bare=False, inner=False, label="") -%}
+{%- call _labelled(label or spec.label, bare) -%}
+<input type="number" name="{{ name }}" min="1024" max="65535" step="1" inputmode="numeric" value="{{ '' if value is none else value }}"{% if bare %} aria-label="{{ label or spec.label }}"{% endif %}{% if spec.required and not inner %} required{% endif %}>
+{%- endcall %}
+{%- endmacro %}
+
+{#- Free text: a textarea when multiline (the newline after its tag keeps a value's own first newline, which the parser would drop), else a one-line box. -#}
+{% macro text_input(name, spec, value=none, hint="", rows=8, inner=False, label="") -%}
+<label class="f wide">{{ label or spec.label }}
+{%- if spec.multiline %}<textarea class="mono" name="{{ name }}" rows="{{ rows }}" spellcheck="false"{% if spec.required and not inner %} required{% endif %}>
+{{ '' if value is none else value }}</textarea>
+{%- else %}<input type="text" name="{{ name }}" value="{{ '' if value is none else value }}" spellcheck="false"{% if spec.required and not inner %} required{% endif %}>
+{%- endif %}{% if hint %}<span class="muted small">{{ hint }}</span>{% endif %}</label>
+{%- endmacro %}
+
+{#- A list: one row per item, then `blank` empty rows (fill one to add an item), up to the list's max_items; each filled row has a Remove box (`<name>[-remove][<i>]`). `more_href` is a link that reloads the page with more empty rows (no script). -#}
+{% macro list_input(name, spec, value=none, blank=1, more_href="", label="") -%}
+{%- set items = value or [] %}
+{%- set count = [items|length + blank, spec.max_items]|min %}
+<fieldset class="f-group wide">
+  <legend>{{ label or spec.label }}</legend>
+  <div class="f-rows">
+  {%- for i in range(count) %}
+    <div class="f-row">
+      {{ field(name ~ "[" ~ i ~ "]", spec.item, items[i] if i < items|length else none, bare=spec.item.kind not in ("record", "list", "map", "bool"), inner=True) }}
+      {%- if i < items|length %}
+      <label class="f-remove small ink2"><input type="checkbox" name="{{ name }}[-remove][{{ i }}]" value="yes"> Remove</label>
+      {%- endif %}
+    </div>
+  {%- endfor %}
+  </div>
+  <p class="muted small">Fill an empty row to add one{% if items %}; tick Remove to drop one{% endif %}. At most {{ spec.max_items }}.{% if more_href and count < spec.max_items %} <a href="{{ more_href }}">More rows</a>{% endif %}</p>
+</fieldset>
+{%- endmacro %}
+
+{#- A map: one input per key, the keys the page names (`keys`), then any other key of the value. -#}
+{% macro map_input(name, spec, value=none, keys=[], label="") -%}
+{%- set entries = value or {} %}
+<fieldset class="f-group wide">
+  <legend>{{ label or spec.label }}</legend>
+  <div class="form">
+  {%- for key in keys + (entries.keys()|reject("in", keys)|list) %}
+    {{ field(name ~ "[" ~ key ~ "]", spec.item, entries.get(key), inner=True, label=key) }}
+  {%- endfor %}
+  </div>
+</fieldset>
+{%- endmacro %}
+
+{#- A record: its keys in the table's order; in a list's row they sit on one line. -#}
+{% macro record_input(name, spec, value=none, inner=False, label="") -%}
+{%- set values = value or {} %}
+{%- if inner %}
+{%- for key, sub in spec.fields.items() %}
+      {{ field(name ~ "[" ~ key ~ "]", sub, values.get(key), inner=True) }}
+{%- endfor %}
+{%- else %}
+<fieldset class="f-group wide">
+  <legend>{{ label or spec.label }}</legend>
+  <div class="form">
+  {%- for key, sub in spec.fields.items() %}
+    {{ field(name ~ "[" ~ key ~ "]", sub, values.get(key)) }}
+  {%- endfor %}
+  </div>
+</fieldset>
+{%- endif %}
+{%- endmacro %}

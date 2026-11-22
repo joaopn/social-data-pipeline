@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 from social_data_pipeline.control import REQUEST_MAX_BYTES, audit, environ, errors, files, framing, passwords, redact, verbs
 from social_data_pipeline.control import sessions as session_table
-from social_data_pipeline.control.types import SecretValue
+from social_data_pipeline.control.types import reveal, secrets_in
 
 PROTOCOL = 1
 CHILD_ARGV = (sys.executable, "-u", "-m", "social_data_pipeline.control.child")
@@ -1100,7 +1100,8 @@ class Broker:
         except errors.InputError as error:
             raise self._refuse(number, verb_name, "invalid_input", error.field) from None
         verb = verbs.VERBS[verb_name]
-        request_secrets = [value for value in validated.values() if isinstance(value, SecretValue)]
+        # A container's secrets are nested in it: `secrets_in` finds them at any depth.
+        request_secrets = secrets_in(validated)
         if isinstance(request.get("step_up"), str):
             request_secrets.append(request["step_up"])
 
@@ -1110,7 +1111,7 @@ class Broker:
                 raise self._refuse(number, verb_name, "step_up_required")
             self._step_up(token, info, request["step_up"], password_file, verb_name)
 
-        plain = {name: value.reveal() if isinstance(value, SecretValue) else value for name, value in validated.items()}
+        plain = reveal(validated)
         db_password_from = "none"
         if verb_name in DB_PASSWORD_VERBS:
             if DB_PASSWORD_FIELD in validated:

@@ -4,9 +4,19 @@ The image holds no registry (`control.verbs`), so the table is written out here:
 
 A second kind of entry is the query scheduler's control socket (`jobs/door.py`), whose entries are named `queue.*` and carry the name of the socket's operation in `door`: the reads `queue.counts`, `queue.stats`, `queue.jobs`, `queue.job`, `queue.preview` and `queue.auto_accept_state`, and the changes `queue.approve`, `queue.reject`, `queue.kill`, `queue.explain` and `queue.auto_accept` (`auto_accept.set`). The socket takes every listed field of an operation and nothing else, so every input of a `queue.*` entry is required (`opt_bool` and `opt_int` take None, which the socket reads as "leave it as it is"). A test compares them with the socket's own list of operations and fields.
 
-`parse_form` turns what a form posted into the fields of an action, checked by the table (closed choices, the plain-name pattern for source and classifier names, the file-filter pattern, the cross-field rules of `run.start`, unknown fields refused); `check_fields` checks fields a page made itself, and `call` checks again before it sends anything, so that no page can make the broker receive a verb, a field or a value outside this table. A secret is held in `Hidden`, which no `repr`, `str` or format shows. Standard library and this package only.
+`parse_form` turns what a form posted into the fields of an action, checked by the table (closed choices, the plain-name pattern for source and classifier names, the file-filter pattern, the cross-field rules of `run.start`, unknown fields refused); `check_fields` checks fields a page made itself, and `call` checks again before it sends anything, so that no page can make the broker receive a verb, a field or a value outside this table. A secret is held in `Hidden`, which no `repr`, `str` or format shows, at any depth. Standard library and this package only.
+
+The setup verbs' kinds mirror the registry's wide types and containers (`control.types`): `path` (`Path`), `port` (`Port`), `text` (`Text`), `list` (`ListOf`), `map` (`MapOf`) and `record` (`Record`), with the same bounds. A form posts a nested value under bracketed names, the one scheme of this module (`parse_form`, `form_name`):
+
+- a list's item i (0, 1, ... in order, no gap, no leading zero, below its `max_items`): `<name>[<i>]`; a row is dropped when every one of its texts is empty or when the box `<name>[-remove][<i>]` is ticked, and the rows left keep their order;
+- a map's value for a key (a plain name or a choice, which never holds a bracket): `<name>[<key>]`;
+- a record's key (a lower-case identifier): `<name>[<key>]`;
+- these nest: the field `name` of row 2 of the list `targets` is `targets[2][name]`, the second field of the data type `comments` is `fields[comments][1]`.
+
+A text left empty is an absent value, a record or a row with nothing in it is absent too (a required one is then refused), a ticked box posts `yes`, an `int` or a `port` is plain decimal digits, and a `text` has its `\r\n` turned into `\n` (browsers send a textarea's lines so). Anything else, a name posted twice included (the guard refuses that already, with more than 64 fields), is refused with the name of the top-level input.
 """
 
+import posixpath
 import re
 import shlex
 import unicodedata
@@ -54,6 +64,26 @@ SECRET_DOTS = "\u2022" * 8
 
 CLASSES = ("read", "write", "step_up")
 
+# Literal copies of the registry's bounds of the wide types and containers (`control.types`): a test compares them.
+PATH_MAX_BYTES = 4096
+TEXT_MAX_BYTES = 65536
+PORT_MIN = 1024
+PORT_MAX = 65535
+CONTAINER_ITEMS_MAX = 1024
+RECORD_KEY_PATTERN = r"[a-z][a-z0-9_]{0,63}"
+# The kinds that hold other inputs, and the key kinds a map may have.
+CONTAINER_KINDS = ("list", "map", "record")
+MAP_KEY_KINDS = ("name", "enum")
+# The kinds whose value a form posts as one text (the others are containers, or a box: `bool`).
+TEXT_KINDS = ("enum", "name", "source", "filter", "secret", "run_id", "path", "text")
+# A form name: a top-level input and its bracketed segments (at most five: a container's depth is at most four, and a list's remove box adds one).
+FORM_NAME = re.compile(r"([a-z][a-z0-9_]{0,63})((?:\[[^\[\]]{1,64}\]){1,5})")
+FORM_SEGMENT = re.compile(r"\[([^\[\]]{1,64})\]")
+INDEX_PATTERN = r"0|[1-9][0-9]{0,3}"
+REMOVE_SEGMENT = "-remove"
+# Plain decimal digits, for an `int` or a `port` typed in a form (a sign only for an `int` whose bounds go below zero).
+FORM_INT_PATTERN = r"-?(?:0|[1-9][0-9]{0,17})"
+
 
 class Refused(ValueError):
     """A field of a form or of a page's request was refused. `field` is the name of the field when it is one of the action's inputs, else None; the message holds no value."""
@@ -89,7 +119,10 @@ class Hidden:
 
 @dataclass(frozen=True)
 class Input:
-    """One input of an action: its kind (`enum`, `bool`, `name`, `source`, `filter`, `secret`, `run_id`, `int`; for the scheduler's entries also `job_id`, `digest`, `by`, `reason`, `target`, `opt_bool` and `opt_int`), whether a request must carry it, the choices of an `enum`, the bounds of an `int`, the label a page shows, and what the input left out means when that is worth saying."""
+    """One input of an action: its kind (`enum`, `bool`, `name`, `source`, `filter`, `secret`, `run_id`, `int`; for the setup verbs `path`, `port`, `text`, `list`, `map` and `record`; for the scheduler's entries also `job_id`, `digest`, `by`, `reason`, `target`, `opt_bool` and `opt_int`), whether a request must carry it, the choices of an `enum`, the bounds of an `int`, the label a page shows, and what the input left out means when that is worth saying.
+
+    The setup kinds take: `path` max_bytes (UTF-8 bytes, default 4096); `port` nothing (1024 to 65535); `text` max_bytes and multiline; `list` item (an Input), max_items and unique; `map` key (an Input of kind `name` or `enum`), item (the values' Input) and max_items; `record` fields (a dict of a lower-case identifier to an Input, each with its own `required`). A malformed one raises when the table is built.
+    """
 
     kind: str
     label: str
@@ -99,6 +132,30 @@ class Input:
     hi: int = 0
     # What an optional input left out means, shown as its value on the pending page (None: the row is left out).
     absent: str | None = None
+    max_bytes: int = 0
+    multiline: bool = False
+    item: "Input | None" = None
+    key: "Input | None" = None
+    max_items: int = 0
+    unique: bool = False
+    fields: object = None
+
+    def __post_init__(self):
+        if self.kind == "path" and self.max_bytes == 0:
+            object.__setattr__(self, "max_bytes", PATH_MAX_BYTES)
+        if self.kind in ("path", "text") and not 1 <= self.max_bytes <= (PATH_MAX_BYTES if self.kind == "path" else TEXT_MAX_BYTES):
+            raise ValueError("a path or a text needs max_bytes within the registry's bound")
+        if self.kind in ("list", "map"):
+            if not isinstance(self.item, Input) or not 1 <= self.max_items <= CONTAINER_ITEMS_MAX:
+                raise ValueError("a list or a map needs an item Input and 1 to 1024 items")
+        if self.kind == "list" and self.unique and (self.item.kind in CONTAINER_KINDS or self.item.secret):
+            raise ValueError("a unique list needs items that are not containers or secrets")
+        if self.kind == "map" and (not isinstance(self.key, Input) or self.key.kind not in MAP_KEY_KINDS):
+            raise ValueError("a map needs a key Input of kind name or enum")
+        if self.kind == "record":
+            if not isinstance(self.fields, dict) or not self.fields or not all(isinstance(name, str) and re.fullmatch(RECORD_KEY_PATTERN, name) and isinstance(spec, Input) for name, spec in self.fields.items()):
+                raise ValueError("a record needs a dict of lower-case identifiers to Inputs")
+            object.__setattr__(self, "fields", MappingProxyType(dict(self.fields)))
 
     @property
     def secret(self):
@@ -394,8 +451,51 @@ def is_reason(value):
     return isinstance(value, str) and len(value) <= REASON_MAX and not has_control_character(value)
 
 
+def _is_whole(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _utf8_length(value):
+    """The UTF-8 length of a text, or None for a lone surrogate (which the registry refuses)."""
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+
+
+def _is_text(spec, value):
+    """The registry's `Text`: a tab, and with multiline `\\n`, are the only control characters allowed."""
+    allowed = ("\t", "\n") if spec.multiline else ("\t",)
+    if any(character not in allowed and unicodedata.category(character) in ("Cc", "Zl", "Zp") for character in value):
+        return False
+    length = _utf8_length(value)
+    return length is not None and length <= spec.max_bytes
+
+
+def _container_is_valid(spec, value):
+    kind = spec.kind
+    if kind == "list":
+        if not isinstance(value, list) or len(value) > spec.max_items or not all(_value_is_valid(spec.item, item) for item in value):
+            return False
+        return not spec.unique or len(set(value)) == len(value)
+    if kind == "map":
+        if not isinstance(value, dict) or len(value) > spec.max_items:
+            return False
+        return all(_value_is_valid(spec.key, key) for key in value) and all(_value_is_valid(spec.item, item) for item in value.values())
+    # record
+    if not isinstance(value, dict) or not all(key in spec.fields for key in value):
+        return False
+    if any(sub.required and key not in value for key, sub in spec.fields.items()):
+        return False
+    return all(_value_is_valid(spec.fields[key], item) for key, item in value.items())
+
+
 def _value_is_valid(spec, value):
     kind = spec.kind
+    if kind in CONTAINER_KINDS:
+        return _container_is_valid(spec, value)
+    if kind == "port":
+        return _is_whole(value) and PORT_MIN <= value <= PORT_MAX
     if kind == "bool":
         return isinstance(value, bool)
     if kind == "int":
@@ -429,6 +529,11 @@ def _value_is_valid(spec, value):
         return is_reason(value)
     if kind == "target":
         return 1 <= len(value) <= TARGET_MAX_CHARS and not has_control_character(value)
+    if kind == "path":
+        length = _utf8_length(value)
+        return length is not None and 1 <= length <= spec.max_bytes and not has_control_character(value)
+    if kind == "text":
+        return _is_text(spec, value)
     return False
 
 
@@ -450,27 +555,126 @@ def check_fields(action, fields):
     return fields
 
 
+def form_name(name, *segments):
+    """The form name of a value nested in the input `name`: `form_name("targets", 2, "name")` is `targets[2][name]` (see the module's docstring)."""
+    return name + "".join(f"[{segment}]" for segment in segments)
+
+
+# What `_from_form` returns for a value the form left empty.
+_ABSENT = object()
+
+
+def _leaf_from_form(spec, text):
+    """One posted text as the value of a scalar input, or _ABSENT. Raises ValueError for a text that cannot be one."""
+    if not isinstance(text, str):
+        raise ValueError("a branch where a value was expected")
+    if spec.kind == "bool":
+        if text != CHECKED:
+            raise ValueError("a box posts yes or nothing")
+        return True
+    if text == "":
+        return _ABSENT
+    if spec.kind in ("int", "port"):
+        if re.fullmatch(FORM_INT_PATTERN, text) is None or (text.startswith("-") and spec.kind == "port"):
+            raise ValueError("not a whole number")
+        return int(text)
+    if spec.kind == "secret":
+        return Hidden(text)
+    if spec.kind == "path":
+        return posixpath.normpath(text) if not has_control_character(text) else text
+    if spec.kind == "text":
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+    if spec.kind in TEXT_KINDS:
+        return text
+    raise ValueError("a kind a form cannot post")
+
+
+def _from_form(spec, node):
+    """The value of the input `spec` from its part of the posted names (a text, or a dict of segment to part), or _ABSENT. Raises ValueError for a shape the scheme does not have."""
+    if spec.kind not in CONTAINER_KINDS:
+        return _leaf_from_form(spec, node)
+    if not isinstance(node, dict):
+        raise ValueError("a value where a branch was expected")
+    if spec.kind == "list":
+        removed = node.get(REMOVE_SEGMENT, {})
+        if not isinstance(removed, dict) or not all(re.fullmatch(INDEX_PATTERN, index) and text == CHECKED for index, text in removed.items()):
+            raise ValueError("a remove box that is not one")
+        indexes = [segment for segment in node if segment != REMOVE_SEGMENT]
+        if not all(re.fullmatch(INDEX_PATTERN, index) for index in indexes):
+            raise ValueError("a row that is not numbered")
+        numbers = sorted(int(index) for index in indexes)
+        if numbers != list(range(len(numbers))) or len(numbers) > spec.max_items or any(int(index) >= len(numbers) for index in removed):
+            raise ValueError("rows missing or too many")
+        items = []
+        for number in numbers:
+            value = _from_form(spec.item, node[str(number)])
+            if value is not _ABSENT and str(number) not in removed:
+                items.append(value)
+        return items if items else _ABSENT
+    if spec.kind == "map":
+        if len(node) > spec.max_items:
+            raise ValueError("too many entries")
+        entries = {}
+        for key, part in node.items():
+            if not _value_is_valid(spec.key, key):
+                raise ValueError("a key the map does not take")
+            value = _from_form(spec.item, part)
+            if value is not _ABSENT:
+                entries[key] = value
+        return entries if entries else _ABSENT
+    # record
+    values = {}
+    for key, part in node.items():
+        if key not in spec.fields:
+            raise ValueError("a key the record does not have")
+        value = _from_form(spec.fields[key], part)
+        if value is not _ABSENT:
+            values[key] = value
+    return values if values else _ABSENT
+
+
+def _posted_tree(action, form):
+    """The posted names grouped by input: a text for a plain name, a dict of segment to part for a bracketed one. Raises Refused for a name the scheme does not have."""
+    tree = {}
+    for name, text in form.items():
+        if not isinstance(name, str) or not isinstance(text, str):
+            raise Refused()
+        if "[" not in name:
+            if name not in action.inputs or name in tree:
+                raise Refused()
+            tree[name] = text
+            continue
+        match = FORM_NAME.fullmatch(name)
+        if match is None or match.group(1) not in action.inputs or action.inputs[match.group(1)].kind not in CONTAINER_KINDS:
+            raise Refused()
+        top = match.group(1)
+        segments = FORM_SEGMENT.findall(match.group(2))
+        node = tree.setdefault(top, {})
+        if not isinstance(node, dict):
+            raise Refused(top)
+        for segment in segments[:-1]:
+            node = node.setdefault(segment, {})
+            if not isinstance(node, dict):
+                raise Refused(top)
+        if segments[-1] in node:
+            # A value and a branch at one place.
+            raise Refused(top)
+        node[segments[-1]] = text
+    return tree
+
+
 def parse_form(action, form):
-    """The fields of a state-changing action from the fields a form posted (every value text): an empty text is an absent field, a checked box is `yes`, a secret is wrapped in `Hidden`; then `check_fields`. Raises Refused for a field the action does not take, a value it refuses, a missing required one and a broken cross-field rule; nothing is asked of the broker. The scheduler's entries are not made from a form here (see `queue`)."""
+    """The fields of a state-changing action from the fields a form posted (every value text, nested values under the bracketed names of the module's docstring): an empty text is an absent field, a checked box is `yes`, a secret is wrapped in `Hidden`, an `int` or a `port` is decimal digits, a `path` is normalized, a `text` has its line ends made `\\n`; then `check_fields`. Raises Refused for a field the action does not take, a value it refuses, a name or a shape outside the scheme, a missing required one and a broken cross-field rule; nothing is asked of the broker. The scheduler's entries are not made from a form here (see `queue`)."""
     if not action.state_changing or action.door is not None:
         raise Refused()
     fields = {}
-    for name, text in form.items():
-        spec = action.inputs.get(name)
-        if spec is None or not isinstance(text, str):
-            raise Refused()
-        if spec.kind == "bool":
-            if text != CHECKED:
-                raise Refused(name)
-            fields[name] = True
-        elif text == "":
-            continue
-        elif spec.kind == "secret":
-            fields[name] = Hidden(text)
-        elif spec.kind == "int":
-            raise Refused(name)
-        else:
-            fields[name] = text
+    for name, node in _posted_tree(action, form).items():
+        try:
+            value = _from_form(action.inputs[name], node)
+        except ValueError:
+            raise Refused(name) from None
+        if value is not _ABSENT:
+            fields[name] = value
     return check_fields(action, fields)
 
 
@@ -482,14 +686,34 @@ def shown_inputs(action, fields):
             if spec.absent is not None:
                 shown.append((spec.label, spec.absent))
             continue
-        value = fields[name]
-        if spec.secret:
-            shown.append((spec.label, SECRET_DOTS))
-        elif spec.kind == "bool":
-            shown.append((spec.label, "yes" if value else "no"))
-        else:
-            shown.append((spec.label, str(value)))
+        shown.append((spec.label, shown_value(spec, fields[name])))
     return shown
+
+
+def shown_value(spec, value):
+    """The text of one value on the pending page: a secret as dots, a box as yes or no, a list as its items joined by `, ` (`none` when empty), a map or a record as `key: value` joined by `; `, at any depth."""
+    if spec.secret:
+        return SECRET_DOTS
+    if spec.kind == "bool":
+        return "yes" if value else "no"
+    if spec.kind == "list":
+        return ", ".join(shown_value(spec.item, item) for item in value) if value else "none"
+    if spec.kind == "map":
+        return "; ".join(f"{key}: {shown_value(spec.item, item)}" for key, item in value.items()) if value else "none"
+    if spec.kind == "record":
+        return "; ".join(f"{spec.fields[key].label}: {shown_value(spec.fields[key], item)}" for key, item in value.items())
+    return str(value)
+
+
+def revealed(value):
+    """A copy of a value with every `Hidden` in it, at any depth, replaced by its text: what is sent."""
+    if isinstance(value, Hidden):
+        return value.reveal()
+    if isinstance(value, list):
+        return [revealed(item) for item in value]
+    if isinstance(value, dict):
+        return {key: revealed(item) for key, item in value.items()}
+    return value
 
 
 def call(client, name, fields=None, step_up=None):
@@ -504,7 +728,7 @@ def call(client, name, fields=None, step_up=None):
         raise NotInTable("the page asked with fields the table refuses") from None
     if (action.cls == "step_up") != isinstance(step_up, str):
         raise NotInTable("the management password goes with the step-up entries only")
-    plain = {key: value.reveal() if isinstance(value, Hidden) else value for key, value in fields.items()}
+    plain = revealed(fields)
     if action.door is not None:
         return client.request({"op": action.door, **plain})
     if name == "hello":

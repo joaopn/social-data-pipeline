@@ -20,7 +20,7 @@ import json
 import sys
 
 from social_data_pipeline.control import REQUEST_MAX_BYTES, errors, verbs
-from social_data_pipeline.control.types import SecretValue
+from social_data_pipeline.control.types import reveal
 
 EXIT_FAILED = 1
 EXIT_REFUSED = 2
@@ -86,7 +86,7 @@ def _is_exit_code(value):
 def _arguments(sdp, verb, action, validated, run_id):
     """The keyword arguments the action is called with."""
     parameters = inspect.signature(action).parameters
-    arguments = {name: value.reveal() if isinstance(value, SecretValue) else value for name, value in validated.items()}
+    arguments = reveal(validated)
     for name in arguments:
         if name not in parameters:
             # The name is one of the registry's own field names.

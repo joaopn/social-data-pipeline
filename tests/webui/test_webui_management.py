@@ -120,7 +120,7 @@ def test_hostile_text_is_escaped_everywhere_and_never_an_attribute(client, broke
                 assert value in allowed_values, (route, value)
             if name in ("href", "hx-get", "action"):
                 assert value.startswith("/") and not value.startswith("//"), (route, value)
-        assert [value for name, value in attributes(page) if name == "href" and value.startswith(("/sources/", "/runs/r", "/runs/l"))] == [value for name, value in attributes(page) if name == "href" and re.fullmatch(r"/sources/demo|/runs/(r[0-9]{8}T[0-9]{6}-[0-9a-f]{6}|live-[0-9a-f]{12})", value)], route
+        assert [value for name, value in attributes(page) if name == "href" and value.startswith(("/sources/", "/runs/r", "/runs/l"))] == [value for name, value in attributes(page) if name == "href" and re.fullmatch(r"/sources/demo(\?tab=[a-z]+|#run-[a-z_]+)?|/runs/(r[0-9]{8}T[0-9]{6}-[0-9a-f]{6}|live-[0-9a-f]{12})", value)], route
     assert pages["/sources"].count(ESCAPED_MARK) >= 2
     assert pages["/sources/demo"].count("&lt;script&gt;") >= 15
     assert pages["/system"].count(ESCAPED_MARK) >= 5
@@ -200,7 +200,7 @@ TIMEOUT = words.CODE_SENTENCES["timeout"]
 @pytest.mark.parametrize("verb, when, kept, gone", [
     ("source.status", None, ["3 finished", "Finished files per stage"], ["Platform"]),
     ("source.progress", None, ["Platform", "No errors.", "Run postgres_ingest"], ["3 finished"]),
-    ("source.error_logs", lambda fields: fields["profile"] == "postgres_ingest", ["Platform", "3 finished", "<h3>mongo_ingest</h3>\n  <p class=\"muted\">No errors.</p>", "Run parse"], []),
+    ("source.error_logs", lambda fields: fields["profile"] == "postgres_ingest", ["Platform", "3 finished", re.compile(r'<h3 class="mono">mongo_ingest</h3>\s*<div class="cli mt">[^<]*</div>\s*<p class="muted">No errors.</p>'), "Run parse"], []),
 ])
 def test_each_read_of_the_source_page_fails_on_its_own(client, broker, verb, when, kept, gone):
     """Bug class: one failed read of a source (a damaged state file, a time-out) failing the whole page, or taking the forms with it when it is not the read they need."""
@@ -210,14 +210,14 @@ def test_each_read_of_the_source_page_fails_on_its_own(client, broker, verb, whe
     assert response.status_code == 200
     assert response.text.count(TIMEOUT) == 1
     for text in kept:
-        assert text in response.text, text
+        assert (text.search(response.text) if isinstance(text, re.Pattern) else text in response.text), text
     for text in gone:
         assert text not in response.text, text
     if verb == "source.status":
         assert "profiles are not known" in response.text and "Remove this source" in response.text
 
 
-@pytest.mark.parametrize("verb, kept", [("db.status", ["Checks: postgres", "Checks: mongo"]), ("db.verify", ["PostgreSQL", "MongoDB", "Reset postgres", "The checks could not be read"])])
+@pytest.mark.parametrize("verb, kept", [("db.status", ['<span class="ok">ok   </span> postgres', '<span class="ok">ok   </span> mongo']), ("db.verify", ["PostgreSQL", "MongoDB", "Reset postgres", "The checks could not be read"])])
 def test_each_read_of_the_databases_page_fails_on_its_own(client, broker, verb, kept):
     """Bug class: the checks lost because the status failed, or the status lost because the checks (which probe the containers) failed."""
     failing(verb, broker)

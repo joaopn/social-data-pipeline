@@ -1,22 +1,25 @@
+{#- The confirm page of a pending action, in the mock-up's dialog look: a card centred in the page with the action's title, the `sdp` command wrapped in full, the inputs, what else it acts on and what it destroys, the management password for a step-up, then Cancel and Confirm. It is drawn in the page, never as a box with a height or a scroll bar of its own: a Queue approval shows its whole statement (`_queue_pending.html`). -#}
 {% extends "frame.html" %}
 {% import "_forms.html" as forms with context %}
-{% block content %}
-{%- if line %}
-<p class="notice notice-bad" role="alert">{{ line }}</p>
-{%- endif %}
-<section class="card" aria-labelledby="pending-title">
-  <h2 id="pending-title">{% if refusal %}Refused{% else %}Confirm this action{% endif %}</h2>
+{% block shell %}
+<main class="main">
+<section class="card dialog{{ ' step' if pending.step_up else '' }}" aria-labelledby="pending-title">
+  <h4>{% if refusal %}Refused{% else %}Confirm this action{% endif %}</h4>
+  <div class="row"><h2 id="pending-title">{{ pending.title }}</h2>{% if not refusal %}<a class="btn ghost sm right" href="{{ pending.leave_href if pending.queue else '/' }}" title="Leave it: nothing is done">✕</a>{% endif %}</div>
+  {%- if line %}
+  <p class="notice notice-bad" role="alert">{{ line }}</p>
+  {%- endif %}
   {%- if pending.queue %}
   {%- include "_queue_pending.html" %}
   {%- else %}
   {%- if pending.command %}
-  <p>The command it stands for:</p>
-  <pre class="command"><code>{{ pending.command }}</code></pre>
+  <h4>The command it stands for</h4>
+  <pre class="cli wrap"><code>{{ pending.command }}</code></pre>
   {%- else %}
   <p class="muted">{{ pending.no_command }}</p>
   {%- endif %}
   {%- if pending.inputs %}
-  <dl class="facts">
+  <dl class="kv">
     {%- for label, value in pending.inputs %}
     <dt>{{ label }}</dt><dd>{{ value }}</dd>
     {%- endfor %}
@@ -38,10 +41,10 @@
   {%- if refusal %}
   {%- with outcome = refusal %}{% include "_outcome.html" %}{% endwith %}
   {%- else %}
-  <form method="post" action="/pending/{{ pending.id }}/confirm" class="action-form">
+  <form method="post" action="/pending/{{ pending.id }}/confirm" class="confirm-form">
     {{ forms.token() }}
     {%- if pending.step_up %}
-    <label>Management password
+    <label class="f">Management password
       <input type="password" name="management_password" autocomplete="off" required>
     </label>
     {%- if pending.queue %}
@@ -50,9 +53,13 @@
     <p class="muted small">This action needs the management password again. A terminal would also ask for the secrets the command above does not show.</p>
     {%- endif %}
     {%- endif %}
-    <button type="submit" class="{{ 'danger' if pending.destroys else '' }}">Confirm</button>
+    <div class="row wrap">
+      <span class="tag {{ 'step' if pending.step_up else 'write' }}">{{ "step-up" if pending.step_up else "write" }}</span>
+      <span class="small muted">kept for {{ pending.minutes_left }} more minute{{ "s" if pending.minutes_left != 1 }}; nothing is done until you confirm</span>
+      <span class="right row"><a class="btn" href="{{ pending.leave_href if pending.queue else '/' }}">Leave it</a><button type="submit" class="btn {{ 'danger' if pending.destroys else 'primary' }}">Confirm</button></span>
+    </div>
   </form>
-  <p class="muted small">This pending action is kept for {{ pending.minutes_left }} more minute{{ "s" if pending.minutes_left != 1 }}; nothing is done until you confirm. <a href="{{ pending.leave_href if pending.queue else '/' }}">Leave it</a></p>
   {%- endif %}
 </section>
+</main>
 {% endblock %}

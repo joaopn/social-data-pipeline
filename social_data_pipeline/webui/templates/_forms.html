@@ -1,4 +1,4 @@
-{#- Pieces of the forms of the Management pages. Import with context (they use the page's form token). Every form that changes something posts to /pending, which only keeps the choice as a pending action and asks the broker nothing. -#}
+{#- Pieces of the forms of the Management pages, in the mock-up's look (label.f fields, .btn buttons: primary for the main submit, danger for what destroys). Import with context (they use the page's form token). Every form that changes something posts to /pending, which only keeps the choice as a pending action and asks the broker nothing; the confirm page shows the command and asks for the management password where the action needs it. -#}
 {% macro token() -%}
 <input type="hidden" name="form_token" value="{{ form_token }}">
 {%- endmacro %}
@@ -11,12 +11,24 @@
   <input type="hidden" name="{{ key }}" value="{{ value }}">
   {%- endfor %}
   {%- if caller is defined %}{{ caller() }}{% endif %}
-  <button type="submit" class="{{ 'danger' if danger else 'secondary' }}">{{ button }}</button>
+  <button type="submit" class="btn {{ 'danger' if danger else 'primary' }}">{{ button }}</button>
+</form>
+{%- endmacro %}
+
+{#- One small button that makes a pending action with its fields preset (a card's Start, Stop, Reset…): `kind` is "" or "danger", `title` the button's longer name. -#}
+{% macro button(name, label, hidden={}, kind="", title="") -%}
+<form method="post" action="/pending" class="action-form inline">
+  {{ token() }}
+  <input type="hidden" name="action" value="{{ name }}">
+  {%- for key, value in hidden.items() %}
+  <input type="hidden" name="{{ key }}" value="{{ value }}">
+  {%- endfor %}
+  <button type="submit" class="btn sm{{ ' ' ~ kind if kind else '' }}"{% if title %} title="{{ title }}"{% endif %}>{{ label }}</button>
 </form>
 {%- endmacro %}
 
 {% macro admin_password(kept) -%}
-<label>Database admin password <small>(optional)</small>
+<label class="f">Database admin password <span class="muted">(optional)</span>
   <input type="password" name="admin_password" autocomplete="off" maxlength="1024">
 </label>
 <p class="muted small">{% if kept %}A database admin password is kept for this session: it is used when this field is empty.{% else %}No database admin password is kept for this session: give it here when the database has authentication on.{% endif %}</p>

@@ -1,139 +1,175 @@
+{#- The Databases tab (`/databases`) and one database's page (`/databases/<database>`), as the mock-up draws them: the chip tabs Servers, MCP servers, Queue setup and Verify as links `?tab=` (every tab rendered, the others hidden); one card per database with its state, facts and small buttons, each a form that makes a pending action with the service or database preset (the confirm page asks for the management password where the action needs it). -#}
 {% extends "frame.html" %}
 {% import "_forms.html" as forms with context %}
-{% block content %}
-{%- if only %}
-<p><a href="/databases">All databases</a></p>
-{%- endif %}
-{%- if not only %}
-<section class="card" aria-labelledby="services-title">
-  <h2 id="services-title">Start and stop services</h2>
-  <div class="forms">
-  {%- call forms.action("db.start", "Start") %}
-  <h3>Start</h3>
-  <label>Service
-    <select name="service">
-      <option value="">every configured service</option>
-      {%- for service in services %}
-      <option value="{{ service }}">{{ service }}</option>
-      {%- endfor %}
-    </select>
-  </label>
-  {{ forms.admin_password(db_password_kept) }}
-  <p class="muted small">Needs the management password.</p>
-  {%- endcall %}
-  {%- call forms.action("db.stop", "Stop") %}
-  <h3>Stop</h3>
-  <label>Service
-    <select name="service">
-      <option value="">every configured service</option>
-      {%- for service in services %}
-      <option value="{{ service }}">{{ service }}</option>
-      {%- endfor %}
-    </select>
-  </label>
-  <p class="muted small">Refused while a pipeline run is alive.</p>
-  {%- endcall %}
-  </div>
-</section>
-{%- endif %}
 
-{%- if not db_status.ok %}
-<section class="card" aria-labelledby="status-title">
-  <h2 id="status-title">Status</h2>
+{% macro verify_lines(results) -%}
+<div class="log mt">{% for result in results %}{% if result.ok %}<span class="ok">ok   </span> {{ result.name }}{% else %}{% for finding in result.findings %}<span class="er">drift</span> {{ result.name }}  [{{ finding.category }}] {{ finding.message }}{% if finding.fix and finding.fix != "-" %}  → {{ finding.fix }}{% endif %}{% if not loop.last %}
+{% endif %}{% else %}<span class="er">drift</span> {{ result.name }}{% endfor %}{% endif %}{% if not loop.last %}
+{% endif %}{% endfor %}</div>
+{%- endmacro %}
+
+{% block shell %}
+<main class="main">
+<a class="btn sm subbar-action" href="/sources">Run a profile…</a>
+<div class="row wrap">
+  <h1>{% if only %}{{ sections[0].row.title if sections else only }}{% else %}Databases{% endif %}</h1>
+  {%- if only %}
+  <nav class="subtabs tabs-h" aria-label="Databases"><a class="chipbtn" href="/databases">All databases</a></nav>
+  {%- else %}
+  <nav class="subtabs tabs-h" aria-label="Databases">
+    {%- for key, label in (("servers", "Servers"), ("mcp", "MCP servers"), ("queue", "Queue setup"), ("verify", "Verify")) %}
+    <a class="chipbtn{{ ' on' if key == tab else '' }}" href="/databases?tab={{ key }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}</a>
+    {%- endfor %}
+  </nav>
+  {%- endif %}
+</div>
+
+<div class="mt-l"{% if not only and tab != "servers" %} hidden{% endif %}>
+  {%- if not db_status.ok %}
   {%- with block = db_status %}{% include "_failure.html" %}{% endwith %}
-</section>
-{%- elif not db_status.configured %}
-<section class="card" aria-labelledby="status-title">
-  <h2 id="status-title">Status</h2>
+  {%- elif not db_status.configured %}
   <p class="muted">No database is configured. Set them up in a terminal with <code>python sdp.py db setup</code>.</p>
-</section>
-{%- endif %}
-{%- if not db_verify.ok %}
-<section class="card" aria-labelledby="verify-title">
-  <h2 id="verify-title">Checks</h2>
-  {%- with block = db_verify %}{% include "_failure.html" %}{% endwith %}
-</section>
-{%- else %}
-{%- for warning in db_verify.warnings %}
-<p class="notice notice-warn">{{ warning }}</p>
-{%- endfor %}
-{%- if db_verify.message %}
-<p class="muted">{{ db_verify.message }}</p>
-{%- endif %}
-{%- endif %}
-
-{%- for section in sections %}
-{%- set row = section.row %}
-<section class="card" aria-labelledby="db-{{ loop.index }}-title">
-  <h2 id="db-{{ loop.index }}-title">{{ row.title }}</h2>
-  <dl class="facts">
-    <dt>State</dt><dd><span class="state {{ 'state-on' if row.running else 'state-off' }}">{{ "running" if row.running else "stopped" }}</span></dd>
-    <dt>Ports</dt><dd><code>{{ row.ports | join(", ") }}</code></dd>
-    <dt>Data folder</dt><dd><code>{{ row.path }}</code></dd>
-    <dt>Admin user</dt><dd>{{ row.admin_user or "none: authentication is off" }}</dd>
-  </dl>
-  <h3>Checks</h3>
-  {%- if section.verify is none %}
-  <p class="muted">{% if db_verify.ok %}No check result for this database.{% else %}The checks could not be read (see above).{% endif %}</p>
-  {%- elif section.verify.ok %}
-  <p><span class="state state-on">no drift</span></p>
-  {%- else %}
-  {%- with findings = section.verify.findings %}{% include "_findings.html" %}{% endwith %}
   {%- endif %}
-  {%- if row.db %}
-  <div class="forms">
-  {{ forms.action("db.reset", "Reset " ~ row.db, {"db": row.db}, danger=True) }}
-  {{ forms.action("db.unsetup", "Remove " ~ row.db, {"db": row.db}, danger=True) }}
+  <div class="cards dbcards">
+  {%- for section in sections %}
+  {%- set row = section.row %}
+  <section class="card" aria-labelledby="db-{{ loop.index }}-title">
+    <div class="row"><h2 id="db-{{ loop.index }}-title">{{ row.title }}</h2><span class="pill right"><span class="dot{{ ' ok' if row.running else '' }}"></span>{{ "running" if row.running else "stopped" }}</span></div>
+    <dl class="kv mt">
+      <dt>Ports</dt><dd class="mono">{{ row.ports | join(", ") }}</dd>
+      <dt>Data folder</dt><dd class="mono">{{ row.path }}</dd>
+      <dt>Admin user</dt><dd>{{ row.admin_user or "none: authentication is off" }}</dd>
+      <dt>Checks</dt><dd>
+        {%- if section.verify is none %}{% if db_verify.ok %}No check result for this database.{% else %}The checks could not be read (see Verify).{% endif %}
+        {%- elif section.verify.ok %}<span class="state state-on">no drift</span>
+        {%- else %}{{ section.verify.findings | length }} finding{{ "s" if section.verify.findings | length != 1 }} · <a href="/databases?tab=verify">Verify</a>{% endif %}</dd>
+    </dl>
+    {%- if row.db %}
+    <div class="row mt wrap">
+      {{ forms.button("db.start", "Start", {"service": row.db}, "", "Start " ~ row.db) }}
+      {{ forms.button("db.stop", "Stop", {"service": row.db}, "", "Stop " ~ row.db) }}
+      {{ forms.button("db.reset", "Reset…", {"db": row.db}, "danger", "Reset " ~ row.db) }}
+      {{ forms.button("db.unsetup", "Remove…", {"db": row.db}, "danger", "Remove " ~ row.db) }}
+    </div>
+    {%- endif %}
+  </section>
+  {%- endfor %}
+  {%- if not only and db_status.ok and db_status.configured %}
+  {%- for name in databases %}{% if name not in db_status.configured %}
+  <section class="card unset" aria-label="{{ name }}">
+    <div class="row"><h2>{{ {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}[name] }}</h2>{% if name == "postgres" %}<span class="tag">legacy</span>{% endif %}<span class="pill right"><span class="dot"></span>not set up</span></div>
+    <p class="muted small mt">Not configured on this deployment. Set it up in a terminal with <code>python sdp.py db setup</code>.</p>
+  </section>
+  {%- endif %}{% endfor %}
+  {%- endif %}
   </div>
-  {%- endif %}
-</section>
-{%- endfor %}
 
-{%- for result in shared %}
-<section class="card" aria-labelledby="shared-{{ loop.index }}-title">
-  <h2 id="shared-{{ loop.index }}-title">Checks: {{ result.name }}</h2>
-  {%- if result.ok %}
-  <p><span class="state state-on">no drift</span></p>
-  {%- else %}
-  {%- with findings = result.findings %}{% include "_findings.html" %}{% endwith %}
+  {%- if not only %}
+  <section class="card mt-l narrow svc" aria-labelledby="services-title">
+    <h3 id="services-title">Start or stop services</h3>
+    <div class="forms">
+    {%- call forms.action("db.start", "Start") %}
+    <label class="f">Service
+      <select name="service">
+        <option value="">every configured service</option>
+        {%- for service in services %}
+        <option value="{{ service }}">{{ service }}</option>
+        {%- endfor %}
+      </select>
+    </label>
+    {{ forms.admin_password(db_password_kept) }}
+    <p class="muted small">Needs the management password.</p>
+    {%- endcall %}
+    {%- call forms.action("db.stop", "Stop") %}
+    <label class="f">Service
+      <select name="service">
+        <option value="">every configured service</option>
+        {%- for service in services %}
+        <option value="{{ service }}">{{ service }}</option>
+        {%- endfor %}
+      </select>
+    </label>
+    <p class="muted small">Refused while a pipeline run is alive.</p>
+    {%- endcall %}
+    </div>
+  </section>
+
+  <section class="card mt narrow svc" aria-labelledby="password-title">
+    <h3 id="password-title">The session's database admin password</h3>
+    <p class="muted small">{% if db_password_kept %}A database admin password is kept for this session: a start and a run use it when their form leaves the field empty.{% else %}No database admin password is kept for this session.{% endif %}</p>
+    <div class="forms">
+    {%- call forms.action("session.set_db_password", "Keep it for this session") %}
+    <label class="f">Database admin password
+      <input type="password" name="password" autocomplete="off" maxlength="1024" required>
+    </label>
+    {%- endcall %}
+    {{ forms.action("session.clear_db_password", "Forget it") }}
+    </div>
+  </section>
   {%- endif %}
-</section>
-{%- endfor %}
+</div>
 
 {%- if not only %}
-{%- if db_status.ok and (db_status.mcp or db_status.jobs) %}
-<section class="card" aria-labelledby="extra-title">
-  <h2 id="extra-title">MCP servers and scheduler</h2>
-  <table>
-    <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">Port</th></tr></thead>
+<div class="mt-l"{% if tab != "mcp" %} hidden{% endif %}>
+  <p class="muted small">The servers that let the chat's assistant and outside agents query a database. <code>python sdp.py db setup-mcp</code></p>
+  {%- if not db_status.ok %}
+  <p class="muted mt">Not known: the status could not be read (see Servers).</p>
+  {%- elif not db_status.mcp %}
+  <p class="muted mt">The status lists no MCP server.</p>
+  {%- else %}
+  <table class="t mt">
+    <thead><tr><th scope="col">Server</th><th scope="col">State</th><th scope="col">Port</th><th scope="col">Logs in as</th><th scope="col"></th></tr></thead>
     <tbody>
       {%- for entry in db_status.mcp %}
-      <tr><td>{{ entry.name }}{% if entry.read_only %} <small>read-only</small>{% endif %}</td><td><span class="state {{ 'state-on' if entry.running else 'state-off' }}">{{ "running" if entry.running else "stopped" }}</span></td><td><code>{{ entry.port }}</code></td></tr>
+      <tr>
+        <td><b>{{ entry.name }}</b></td>
+        <td><span class="pill"><span class="dot{{ ' ok' if entry.running else '' }}"></span>{{ "running" if entry.running else "stopped" }}</span></td>
+        <td class="mono">{{ entry.port }}</td>
+        <td>{{ "read-only user" if entry.read_only else "not a read-only user" }}</td>
+        <td>{% if entry.name in services %}<div class="row">{{ forms.button("db.start", "Start", {"service": entry.name}, "", "Start " ~ entry.name) }}{{ forms.button("db.stop", "Stop", {"service": entry.name}, "", "Stop " ~ entry.name) }}</div>{% endif %}</td>
+      </tr>
       {%- endfor %}
-      {%- if db_status.jobs %}
-      <tr><td>jobs</td><td><span class="state {{ 'state-on' if db_status.jobs.running else 'state-off' }}">{{ "running" if db_status.jobs.running else "stopped" }}</span></td><td><code>{{ db_status.jobs.port }}</code></td></tr>
-      {%- endif %}
     </tbody>
   </table>
-</section>
+  {%- endif %}
+  <div class="row mt">{{ forms.button("db.unsetup_mcp", "Remove…", {}, "danger", "Remove the MCP servers' configuration") }}<span class="cli grow">python sdp.py db unsetup-mcp</span></div>
+</div>
+
+<div class="mt-l"{% if tab != "queue" %} hidden{% endif %}>
+  <p class="muted small">The query scheduler that runs the long queries of the <a href="/queue">Queue window</a>. <code>python sdp.py db setup-jobs</code></p>
+  {%- if not db_status.ok %}
+  <p class="muted mt">Not known: the status could not be read (see Servers).</p>
+  {%- elif db_status.jobs is none %}
+  <p class="muted mt">The status lists no query scheduler.</p>
+  {%- else %}
+  <div class="card mt narrow">
+    <div class="row"><h2>jobs</h2><span class="pill right"><span class="dot{{ ' ok' if db_status.jobs.running else '' }}"></span>{{ "running" if db_status.jobs.running else "stopped" }}</span></div>
+    <dl class="kv mt"><dt>Port for outside agents</dt><dd class="mono">{{ db_status.jobs.port }}</dd></dl>
+    <div class="row mt">{{ forms.button("db.start", "Start", {"service": "jobs"}, "", "Start jobs") }}{{ forms.button("db.stop", "Stop", {"service": "jobs"}, "", "Stop jobs") }}</div>
+  </div>
+  {%- endif %}
+  <div class="row mt">{{ forms.button("db.unsetup_jobs", "Remove…", {}, "danger", "Remove the scheduler's configuration") }}<span class="cli grow">python sdp.py db unsetup-jobs</span></div>
+</div>
 {%- endif %}
 
-
-<section class="card" aria-labelledby="config-title">
-  <h2 id="config-title">Configuration and the session's database password</h2>
-  <div class="forms">
-  {{ forms.action("db.unsetup_mcp", "Remove the MCP servers' configuration", danger=True) }}
-  {{ forms.action("db.unsetup_jobs", "Remove the scheduler's configuration", danger=True) }}
-  </div>
-  <p class="muted">{% if db_password_kept %}A database admin password is kept for this session: a start and a run use it when their form leaves the field empty.{% else %}No database admin password is kept for this session.{% endif %}</p>
-  <div class="forms">
-  {%- call forms.action("session.set_db_password", "Keep it for this session") %}
-  <label>Database admin password
-    <input type="password" name="password" autocomplete="off" maxlength="1024" required>
-  </label>
-  {%- endcall %}
-  {{ forms.action("session.clear_db_password", "Forget it") }}
-  </div>
-</section>
-{%- endif %}
+<div class="mt-l"{% if not only and tab != "verify" %} hidden{% endif %}>
+  {%- if only %}<h3>Checks</h3>{% endif %}
+  <div class="row"><span class="muted small">config, environment, credentials, containers and mounts agree</span><a class="btn sm right" href="{{ '/databases/' ~ only if only else '/databases?tab=verify' }}">Run again</a></div>
+  <div class="cli mt">python sdp.py db verify</div>
+  {%- if not db_verify.ok %}
+  <div class="mt">{% with block = db_verify %}{% include "_failure.html" %}{% endwith %}</div>
+  {%- else %}
+  {%- for warning in db_verify.warnings %}
+  <p class="notice notice-warn mt">{{ warning }}</p>
+  {%- endfor %}
+  {%- set results = db_verify.results.values() | list if not only else [db_verify.results[only]] if only in db_verify.results else [] %}
+  {%- if results %}
+  {{ verify_lines(results) }}
+  {%- endif %}
+  {%- if db_verify.message %}
+  <p class="muted small mt">{{ db_verify.message }}</p>
+  {%- endif %}
+  {%- endif %}
+</div>
+</main>
 {% endblock %}

@@ -1,7 +1,13 @@
+{#- The Runs tab, as the mock-up draws it: every run the broker lists, started here or in a terminal, with its state as a pill, a link to its page (facts and output) and a cancel while it is alive. -#}
 {% extends "frame.html" %}
-{% block content %}
-<section class="card" aria-labelledby="runs-title">
-  <h2 id="runs-title">Pipeline runs</h2>
+{% import "_forms.html" as forms with context %}
+
+
+{% block shell %}
+<main class="main">
+<a class="btn sm subbar-action" href="/sources">Run a profile…</a>
+<div class="row"><h1>Runs</h1><span class="muted small">every <code>sdp run</code>, started here or in a terminal</span></div>
+<section class="mt" aria-label="Pipeline runs">
   {%- if not block.ok %}
   {%- include "_failure.html" %}
   {%- else %}
@@ -11,19 +17,20 @@
   {%- if not block.rows %}
   <p class="muted">No runs. Start one from a source's page.</p>
   {%- else %}
-  <table>
-    <thead><tr><th scope="col">Run</th><th scope="col">Kind</th><th scope="col">Profile</th><th scope="col">Source</th><th scope="col">State</th><th scope="col">Started</th><th scope="col">Ended</th><th scope="col">Exit code</th></tr></thead>
+  <table class="t">
+    <thead><tr><th scope="col">State</th><th scope="col">Profile</th><th scope="col">Source</th><th scope="col">Started</th><th scope="col">Ended</th><th scope="col">Exit code</th><th scope="col">Started from</th><th scope="col">Run</th><th scope="col"></th></tr></thead>
     <tbody>
       {%- for row in block.rows %}
       <tr>
-        <td>{% if row.href %}<a href="{{ row.href }}"><code>{{ row.id }}</code></a>{% else %}<code>{{ row.id }}</code>{% endif %}</td>
-        <td>{{ row.kind }}</td>
-        <td>{{ row.profile }}</td>
+        <td>{% include "_run_pill.html" %}</td>
+        <td class="mono">{{ row.profile }}</td>
         <td>{% if row.source_href %}<a href="{{ row.source_href }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %}</td>
-        <td>{{ row.state }}</td>
         <td>{{ row.started }}</td>
         <td>{{ row.ended }}</td>
-        <td>{{ row.exit_code }}</td>
+        <td class="mono">{{ row.exit_code }}</td>
+        <td>{{ "terminal" if row.kind == "terminal" else row.kind }}{% if row.started_by != "-" %} <span class="muted small">· {{ row.started_by }}</span>{% endif %}</td>
+        <td class="mono small">{% if row.href %}<a href="{{ row.href }}">{{ row.id }}</a>{% else %}{{ row.id }}{% endif %}</td>
+        <td><div class="row">{% if row.href %}<a class="btn sm" href="{{ row.href }}" title="The run's facts and output">Log</a>{% endif %}{% if row.alive and row.raw_id %}{{ forms.button("run.cancel", "Cancel", {"run_id": row.raw_id}, "danger", "Cancel this run") }}{% endif %}</div></td>
       </tr>
       {%- endfor %}
     </tbody>
@@ -31,4 +38,5 @@
   {%- endif %}
   {%- endif %}
 </section>
+</main>
 {% endblock %}

@@ -1,0 +1,24 @@
+{#- The Overview's live figures (`GET /overview/live`, `overview.read_live`): the queue's line in the place of its placeholder in "Needs attention", then the counts of the grid's cells and a source's failed read out of band. Every text is escaped; no element here asks again. -#}
+{%- if live.broker %}
+<div class="att"><span class="dot bad"></span><p><b>Live figures:</b> {{ live.broker }}</p></div>
+{%- elif live.queue and live.queue.get("failed") %}
+<div class="att"><span class="dot bad"></span><p><b>Queue:</b> {{ live.queue.failed }}</p><span class="right row"><a class="btn sm" href="/queue">Open Queue →</a></span></div>
+{%- elif live.queue and live.queue.get("pending") %}
+<div class="att"><span class="dot warn"></span><p><b>Queue:</b> {{ live.queue.pending }} quer{{ "y waits" if live.queue.pending == 1 else "ies wait" }} for approval</p><span class="right row"><a class="btn sm" href="/queue">Open Queue →</a></span></div>
+{%- elif quiet and not live.sources %}
+<div class="att"><span class="dot ok"></span><p class="muted">Nothing needs attention.</p></div>
+{%- endif %}
+{%- if live.sources %}
+<div class="att"><span class="dot bad"></span><p><b>Finished files:</b> the sources could not be read: {{ live.sources }}</p></div>
+{%- endif %}
+{%- for row in live.rows %}
+{%- for profile, cell in row.cells.items() %}
+<span class="cnt" id="c-{{ row.key }}-{{ profile }}" hx-swap-oob="true" title="{{ cell.title }}">{{ cell.text }}</span>
+{%- endfor %}
+{%- if row.failed %}
+<div class="small muted" id="m-{{ row.key }}" hx-swap-oob="true">Finished files not read: {{ row.failed }}</div>
+{%- endif %}
+{%- endfor %}
+{%- if live.cut %}
+<p class="muted small mt" id="grid-note" hx-swap-oob="true">The counts are the finished files of each stage, shown for the first {{ live.cut[0] }} of {{ live.cut[1] }} sources only.</p>
+{%- endif %}

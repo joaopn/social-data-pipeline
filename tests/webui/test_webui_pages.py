@@ -10,6 +10,7 @@ The contracts pinned here, each test naming the bug class it catches:
 
 from __future__ import annotations
 
+import html
 import re
 import threading
 import time
@@ -21,7 +22,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
 from markupsafe import escape
-from webui_helpers import ORIGIN, a_run, db_status, form_token, log_in, run_list, session_cookie, source_list, with_cookie
+from webui_helpers import ORIGIN, a_job, a_run, db_status, form_token, log_in, run_list, session_cookie, source_list, source_progress, with_cookie
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.control import verbs
@@ -56,7 +57,7 @@ def client(app, make_client):
 def blocks_of(page):
     """The text of each section of the Overview, by its title."""
     found = {}
-    for title, body in re.findall(r'<h2 id="[a-z]+-title">([^<]+)</h2>(.*?)</section>', page, re.DOTALL):
+    for title, body in re.findall(r'<h[23] id="[a-z]+-title">([^<]+)</h[23]>(.*?)</section>', page, re.DOTALL):
         found[title] = body
     return found
 
@@ -132,7 +133,8 @@ def test_a_plain_name_is_a_link_of_its_url_encoded_form(client, broker):
     names = ["demo", "Reddit_2024.v2-x", "0"]
     broker.answers["source.list"] = source_list(*({"name": name, "profiles": []} for name in names))
     page = client.get("/").text
-    hrefs = re.findall(r'href="(/sources/[^"]*)"', page)
+    # Each source's name and its grid cells link to its page; a cell of a profile it has adds the anchor of that profile's run form.
+    hrefs = list(dict.fromkeys(href.split("#")[0] for href in re.findall(r'href="(/sources/[^"]*)"', page)))
     assert hrefs == [f"/sources/{name}" for name in names]
     assert overview.link("/sources/", "Reddit_2024.v2-x") == "/sources/Reddit_2024.v2-x"
     assert [client.get(href).status_code for href in hrefs] == [200, 200, 200]
@@ -150,13 +152,13 @@ def test_each_read_failing_alone_leaves_the_other_blocks(client, broker, failing
     response = client.get("/")
     assert response.status_code == 200
     blocks = blocks_of(response.text)
-    titles = {"db.status": "Databases", "source.list": "Sources", "run.list": "Runs alive now"}
-    for verb, title in titles.items():
-        if verb == failing:
-            assert words.CODE_SENTENCES["timeout"] in blocks[title]
-        else:
-            assert words.CODE_SENTENCES["timeout"] not in blocks[title]
-            assert "<table>" in blocks[title]
+    # A failed read is one line of "Needs attention"; what the other reads say stays in its place.
+    labels = {"db.status": "Databases", "source.list": "Sources", "run.list": "Runs"}
+    assert response.text.count(words.CODE_SENTENCES["timeout"]) == 1
+    assert f"<b>{labels[failing]}:</b> {words.CODE_SENTENCES['timeout']}" in blocks["Needs attention"]
+    kept = {"db.status": ("Right now", "PostgreSQL running · MongoDB stopped"), "source.list": ("Sources and pipeline profiles", '<table class="t matrix">'), "run.list": ("Right now", "r20261121T101500-0a1b2c")}
+    for verb, (title, text) in kept.items():
+        assert (text in blocks[title]) == (verb != failing), verb
 
 
 def test_an_answer_of_another_shape_fails_its_block_only(client, broker):
@@ -202,7 +204,7 @@ def test_ports_open_beyond_the_machine_get_one_notice(client, broker):
 def test_the_runs_block_lists_only_runs_alive_now(client, broker):
     """Bug class: finished runs listed as if alive, or a terminal run left out."""
     broker.answers["run.list"] = run_list(a_run(id="r20261121T101500-aaaaaa", state="finished"), a_run(id="r20261121T101500-bbbbbb", state="detached"), a_run(id="live-0123456789ab", kind="terminal", state="running"), a_run(id="r20261121T101500-cccccc", state="cancelled"))
-    runs = blocks_of(client.get("/").text)["Runs alive now"]
+    runs = blocks_of(client.get("/").text)["Right now"]
     assert "bbbbbb" in runs and "live-0123456789ab" in runs
     assert "aaaaaa" not in runs and "cccccc" not in runs
 
@@ -252,3 +254,66 @@ def test_a_slow_broker_stalls_neither_the_login_page_nor_the_health_check(make_a
         slow.join(10)
     assert results == [200]
     assert broker.verbs_called() == list(overview.READ_VERBS)
+
+
+# ── j. the Overview's live figures (GET /overview/live) ─────────────────────
+
+HX = {"hx-request": "true"}
+
+
+def test_the_live_figures_need_a_session_the_broker_still_knows(client, app, broker, door, make_client):
+    """Bug class: the queue's number or a source's files shown to a browser without a session, or to one the broker has ended (the login page swapped into the Overview instead of a redirect); the Overview itself waiting for the scheduler."""
+    door.add("pending", a_job())
+    page = client.get("/").text
+    assert 'hx-get="/overview/live" hx-trigger="load" hx-swap="outerHTML"' in page and door.requests == []
+    stranger = make_client(app)
+    assert stranger.get("/overview/live").status_code == 303 and stranger.get("/overview/live", headers=HX).headers["hx-redirect"] == "/login"
+    broker.answers["audit.list"] = broker_client.BrokerError("session_ended", "x")
+    ended = client.get("/overview/live", headers=HX)
+    assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended" and door.requests == []
+    assert client.get("/", headers=HX).status_code in (204, 303)
+    assert client.head("/overview/live").status_code == 405
+
+
+def test_the_grid_has_a_column_for_every_profile_and_no_other():
+    """Bug class: a profile `sdp run` takes that the Overview's grid leaves out, or a column the broker refuses."""
+    from social_data_pipeline.webui import actions
+
+    assert sorted(overview.GRID_PROFILES) == sorted(actions.VALID_PROFILES) and len(set(overview.GRID_PROFILES)) == len(overview.GRID_PROFILES)
+
+
+def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_only(client, broker, door, monkeypatch):
+    """Bug class: a cell that claims a state or a count the reads do not give (a profile not set up shown with files, a running profile not shown running), a wrong number of waiting queries, one source's failed read taking the other sources' figures or the queue's line with it, a call outside the table or without the short time limit, every source asked however many there are."""
+    broker.answers["source.list"] = source_list({"name": "demo", "profiles": ["parse", "lingua", "ml"]}, {"name": "b.2", "profiles": ["parse"]}, {"name": "third", "profiles": ["parse"]})
+    broker.answers["run.list"] = run_list(a_run(profile="lingua", source="demo"))
+    stage = {"not_readable": None, "path": "x", "data_types": [{"data_type": "submissions", "exists": True, "not_readable": None, "finished": 3, "being_written": 1, "newest": None}, {"data_type": "comments", "exists": True, "not_readable": None, "finished": 4, "being_written": 0, "newest": None}]}
+    stages = [{**stage, "stage": "parse", "kind": "parse"}, {**stage, "stage": "lingua", "kind": "lingua"}, {**stage, "stage": "a_cls", "kind": "classifier"}, {**stage, "stage": "b_cls", "kind": "classifier", "data_types": [{**stage["data_types"][0], "finished": 1}]}]
+    broker.answers["source.progress"] = lambda fields: broker_client.BrokerError("timeout", "x") if fields["name"] == "b.2" else source_progress(fields["name"], stages=stages)
+    page = client.get("/").text
+    demo, other = overview.cell_key("demo"), overview.cell_key("b.2")
+    cells = dict(re.findall(r'<a class="stage (\w+)" href="/sources/demo(?:#run-\w+)?" title="(\w+) on demo', page)[i][::-1] for i in range(8))
+    assert cells == {"parse": "setup", "lingua": "run", "ml": "setup", "sr_ingest": "none", "sr_ml": "none", "mongo_ingest": "none", "postgres_ingest": "none", "postgres_ml": "none"}
+    assert f'id="c-{demo}-parse"' in page and f'id="c-{demo}-sr_ingest"' not in page
+
+    door.add("pending", a_job())
+    door.add("pending", a_job("pg_0123abce"))
+    monkeypatch.setattr(overview, "LIVE_SOURCES_MAX", 2)
+    broker.calls.clear()
+    part = client.get("/overview/live", headers=HX)
+    assert part.status_code == 200 and not part.text.startswith("<!doctype")
+    assert "<b>Queue:</b> 2 queries wait for approval" in part.text and 'href="/queue"' in part.text
+    counts = dict(re.findall(r'<span class="cnt" id="c-' + demo + r'-(\w+)" hx-swap-oob="true" title="[^"]*">([^<]*)</span>', part.text))
+    assert counts == {"parse": "7", "lingua": "7", "ml": "7 · 1"}
+    assert f'id="m-{other}" hx-swap-oob="true">Finished files not read: {html.escape(words.CODE_SENTENCES["timeout"], quote=True)}' in part.text and f'id="c-{other}-' not in part.text
+    assert "for the first 2 of 3 sources only" in part.text
+    asked = [(call[2], call[3]) for call in broker.calls if call[0] == "call"]
+    assert asked == [("audit.list", {"limit": 1}), ("source.list", {}), ("source.progress", {"name": "demo"}), ("source.progress", {"name": "b.2"})]
+    assert {timeout for kind, verb, timeout in broker.timeouts[-4:]} == {overview.LIVE_SECONDS}
+    assert door.ops() == ["counts"] and door.timeouts == [("counts", overview.LIVE_SECONDS)]
+
+    door.jobs.clear()
+    assert "Nothing needs attention." in client.get("/overview/live?quiet=1", headers=HX).text
+    assert "Queue:" not in client.get("/overview/live", headers=HX).text
+    door.answers["counts"] = broker_client.BrokerUnreachable("no_reply")
+    part = client.get("/overview/live", headers=HX).text
+    assert "<b>Queue:</b> The scheduler did not answer: " in part and f'id="c-{demo}-parse" hx-swap-oob="true"' in part

@@ -1,90 +1,91 @@
+{#- The Overview, as the mock-up draws it: "Needs attention" and "Right now" side by side, then the grid of sources and pipeline profiles. The page shows what its three reads say at once; the queue's line and the cells' counts come from `/overview/live` once the page has loaded (`_overview_live.html`). -#}
 {% extends "frame.html" %}
-{% block content %}
+{% block shell %}
 {%- set databases = blocks["db.status"] %}
 {%- set sources = blocks["source.list"] %}
 {%- set runs = blocks["run.list"] %}
-{%- if databases.ok %}
-<section class="notices" aria-label="Notices">
-  {%- for name in databases.unauthenticated %}
-  <p class="notice notice-warn">The database {{ name }} runs without authentication: anyone who can reach its port can read and change its data.</p>
-  {%- endfor %}
-  {%- if databases.open_ports %}
-  <p class="notice notice-warn">These services publish their ports on every address of this machine, so other machines can reach them:
-    {%- for service in databases.open_ports %} {{ service.service }} ({{ service.ports | join(", ") }}){% if not loop.last %},{% endif %}{% endfor %}.</p>
-  {%- endif %}
-</section>
-{%- endif %}
+<main class="main">
+<a class="btn sm subbar-action" href="/sources">Run a profile…</a>
+<div class="cards ov-top">
+  <section class="card" aria-labelledby="attention-title">
+    <h3 id="attention-title">Needs attention</h3>
+    {%- set quiet = databases.ok and sources.ok and runs.ok and not databases.unauthenticated and not databases.open_ports and runs.docker_available %}
+    {%- for label, block in (("Databases", databases), ("Sources", sources), ("Runs", runs)) %}
+    {%- if not block.ok %}
+    <div class="att"><span class="dot bad"></span><div class="grow"><p><b>{{ label }}:</b> {{ block.sentence }}</p>
+      {%- if block.errors %}<pre class="output mt">{{ block.errors }}</pre>{% endif %}</div></div>
+    {%- endif %}
+    {%- endfor %}
+    {%- if databases.ok %}
+    {%- for name in databases.unauthenticated %}
+    <div class="att"><span class="dot warn"></span><p>The database {{ name }} runs without authentication: anyone who can reach its port can read and change its data.</p><span class="right row"><a class="btn sm" href="/databases">Open databases</a></span></div>
+    {%- endfor %}
+    {%- if databases.open_ports %}
+    <div class="att"><span class="dot warn"></span><p>These services publish their ports on every address of this machine, so other machines can reach them:
+      {%- for service in databases.open_ports %} {{ service.service }} ({{ service.ports | join(", ") }}){% if not loop.last %},{% endif %}{% endfor %}.</p></div>
+    {%- endif %}
+    {%- endif %}
+    {%- if runs.ok and not runs.docker_available %}
+    <div class="att"><span class="dot warn"></span><p>Docker cannot be asked: runs started in a terminal are not listed.</p></div>
+    {%- endif %}
+    <div class="att live" hx-get="/overview/live{{ '?quiet=1' if quiet else '' }}" hx-trigger="load" hx-swap="outerHTML"><span class="dot"></span><p class="muted">Asking the scheduler and the sources' folders…</p></div>
+  </section>
+  <section class="card" aria-labelledby="now-title">
+    <h3 id="now-title">Right now</h3>
+    {%- if runs.ok %}
+    {%- for row in runs.rows %}
+    <div class="att"><span class="dot run"></span><p><b class="mono">{{ row.profile }}</b> on {% if row.source_href %}<a href="{{ row.source_href }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %} · {{ row.state }} · since {{ row.started }} <span class="muted small mono">{{ row.id }}</span></p>{% if row.href %}<span class="right"><a class="btn sm" href="{{ row.href }}">Log</a></span>{% endif %}</div>
+    {%- else %}
+    <div class="att"><span class="dot"></span><p class="muted">No run is alive.</p></div>
+    {%- endfor %}
+    {%- else %}
+    <div class="att"><span class="dot"></span><p class="muted">The runs could not be read (see Needs attention).</p></div>
+    {%- endif %}
+    {%- if not databases.ok %}
+    <div class="att"><span class="dot"></span><p class="muted">The databases could not be read (see Needs attention).</p></div>
+    {%- elif not databases.configured %}
+    <div class="att"><span class="dot"></span><p class="muted">No database is configured.</p></div>
+    {%- else %}
+    {%- set up = databases.rows | selectattr("running") | map(attribute="title") | list %}
+    {%- set down = databases.rows | rejectattr("running") | map(attribute="title") | list %}
+    <div class="att"><span class="dot{{ ' ok' if up and not down else ' warn' if up else '' }}"></span><p>
+      {%- if up %}{{ up | join(", ") }} running{% endif %}{% if up and down %} · {% endif %}{% if down %}{{ down | join(", ") }} stopped{% endif %}
+      {%- if databases.mcp_running %} · {{ databases.mcp_running }} MCP server{{ "s" if databases.mcp_running != 1 }} running{% endif %}
+      {%- if databases.jobs_running is not none %} · the scheduler {{ "running" if databases.jobs_running else "stopped" }}{% endif %}</p><span class="right"><a class="btn sm" href="/databases">Open databases</a></span></div>
+    {%- endif %}
+  </section>
+</div>
 
-<section class="card" aria-labelledby="databases-title">
-  <h2 id="databases-title">Databases</h2>
-  {%- if not databases.ok %}
-  {%- with block = databases %}{% include "_failure.html" %}{% endwith %}
-  {%- elif not databases.configured %}
-  <p class="muted">No database is configured.</p>
-  {%- else %}
-  <table>
-    <thead><tr><th scope="col">Database</th><th scope="col">State</th><th scope="col">Port</th></tr></thead>
-    <tbody>
-      {%- for row in databases.rows %}
-      <tr>
-        <td>{% if row.href %}<a href="{{ row.href }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</td>
-        <td><span class="state {{ 'state-on' if row.running else 'state-off' }}">{{ "running" if row.running else "stopped" }}</span></td>
-        <td><code>{{ row.port }}</code></td>
-      </tr>
-      {%- endfor %}
-    </tbody>
-  </table>
-  {%- endif %}
-</section>
-
-<section class="card" aria-labelledby="sources-title">
-  <h2 id="sources-title">Sources</h2>
+<section class="mt-l" aria-labelledby="grid-title">
+  <h2 id="grid-title">Sources and pipeline profiles</h2>
+  <p class="muted small">One row per source, one column per <code>sdp run</code> profile. A cell opens the source, where the profile can be run.</p>
   {%- if not sources.ok %}
-  {%- with block = sources %}{% include "_failure.html" %}{% endwith %}
+  <p class="muted mt">The sources could not be read (see Needs attention).</p>
   {%- elif not sources.rows %}
-  <p class="muted">No source is configured.</p>
+  <p class="muted mt">No source is configured. Add one in a terminal with <code>python sdp.py source add &lt;name&gt;</code>.</p>
   {%- else %}
-  <table>
-    <thead><tr><th scope="col">Source</th><th scope="col">Profiles</th></tr></thead>
+  <div class="card mt grid-card">
+  <table class="t matrix">
+    <thead><tr><th scope="col">Source</th>{% for profile in profiles %}<th scope="col" class="mono prof">{{ profile }}</th>{% endfor %}</tr></thead>
     <tbody>
-      {%- for row in sources.rows %}
+      {%- for row in grid %}
       <tr>
-        <td>{% if row.href %}<a href="{{ row.href }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</td>
-        <td>{% for profile in row.profiles %}<span class="tag">{{ profile }}</span> {% else %}<span class="muted">none</span>{% endfor %}</td>
+        <td class="src"><b>{% if row.href %}<a href="{{ row.href }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</b><div class="small muted">{{ row.set_up }} of {{ profiles | length }} profiles set up</div>{% if row.key %}<div class="small muted" id="m-{{ row.key }}"></div>{% endif %}</td>
+        {%- for cell in row.cells %}
+        <td class="cellc">
+          {%- set word = {"run": "running", "setup": "set up", "none": "not set up"}[cell.state] %}
+          {%- set icon = {"run": "▶", "setup": "○", "none": "–"}[cell.state] %}
+          {%- if cell.href %}<a class="stage {{ cell.state }}" href="{{ cell.href }}" title="{{ cell.profile }} on {{ row.name }}: {{ word }}">{% else %}<span class="stage {{ cell.state }}">{% endif -%}
+          <span class="top"><span aria-hidden="true">{{ icon }}</span><span>{{ word }}</span>{% if cell.id %}<span class="cnt" id="{{ cell.id }}"></span>{% endif %}</span><span class="bar"></span>
+          {%- if cell.href %}</a>{% else %}</span>{% endif %}</td>
+        {%- endfor %}
       </tr>
       {%- endfor %}
     </tbody>
   </table>
+  </div>
+  <p class="muted small mt" id="grid-note">The counts are the finished files of each stage (<code>python sdp.py source progress &lt;name&gt;</code>); the loads into the databases are counted on each source's page.</p>
   {%- endif %}
 </section>
-
-<section class="card" aria-labelledby="runs-title">
-  <h2 id="runs-title">Runs alive now</h2>
-  {%- if not runs.ok %}
-  {%- with block = runs %}{% include "_failure.html" %}{% endwith %}
-  {%- else %}
-  {%- if not runs.docker_available %}
-  <p class="notice notice-warn">Docker cannot be asked: runs started in a terminal are not listed.</p>
-  {%- endif %}
-  {%- if not runs.rows %}
-  <p class="muted">No run is alive.</p>
-  {%- else %}
-  <table>
-    <thead><tr><th scope="col">Run</th><th scope="col">Kind</th><th scope="col">Profile</th><th scope="col">Source</th><th scope="col">State</th><th scope="col">Started</th></tr></thead>
-    <tbody>
-      {%- for row in runs.rows %}
-      <tr>
-        <td><code>{{ row.id }}</code></td>
-        <td>{{ row.kind }}</td>
-        <td>{{ row.profile }}</td>
-        <td>{% if row.source_href %}<a href="{{ row.source_href }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %}</td>
-        <td>{{ row.state }}</td>
-        <td>{{ row.started }}</td>
-      </tr>
-      {%- endfor %}
-    </tbody>
-  </table>
-  {%- endif %}
-  {%- endif %}
-</section>
+</main>
 {% endblock %}

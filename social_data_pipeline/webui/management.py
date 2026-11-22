@@ -2,10 +2,10 @@
 
 Pages, each read in one worker of the pages' bound, each block failing on its own:
 
-- `GET /sources`: the sources (`source.list`). `GET /sources/<name>` (a plain name, else not found): the ingestion state (`source.status`), the finished files per stage (`source.progress`), the error logs (`source.error_logs`, once per profile of the source among `postgres_ingest`, `postgres_ml`, `mongo_ingest`; one too large to send is answered with the terminal command to use instead), one small form per profile the source has, and "Remove this source".
-- `GET /databases` and `GET /databases/<database>` (one of the three, else not found): `db.status` and `db.verify` per database; the forms to start and stop services, to reset and remove a database, to remove the MCP servers' and the scheduler's configuration, and to keep or forget the database admin password for the session.
+- `GET /sources` and `GET /sources/<name>` (a plain name, else not found): the rail of sources (`source.list`) and one source, the one named or the first with a plain name: its ingestion state (`source.status`), the finished files per stage (`source.progress`), the runs (`run.list`, for the stages that run now), the error logs (`source.error_logs`, once per profile of the source among `postgres_ingest`, `postgres_ml`, `mongo_ingest`; one too large to send is answered with the terminal command to use instead), the pipeline drawn from them (`pipeline_model`), one small form per profile the source has, and "Remove…". `?tab=` picks the tab shown (Pipeline, Configuration, Errors); every tab is rendered, the others hidden, so each read still fails in one place only.
+- `GET /databases` and `GET /databases/<database>` (one of the three, else not found): `db.status` and `db.verify` per database (`?tab=`: Servers, MCP servers, Queue setup, Verify); the forms to start and stop services, to reset and remove a database, to remove the MCP servers' and the scheduler's configuration, and to keep or forget the database admin password for the session.
 - `GET /runs`: `run.list`. `GET /runs/<run id>` (either form of a run id, else not found; `?offset=` where a view starts): the run's facts, a cancel form while it is alive, and the output view.
-- `GET /system`: the broker's `hello`, the newest 200 lines of the audit log, the table of actions.
+- `GET /system`: the broker's `hello`, the newest 200 lines of the audit log, the table of actions (`?tab=`: Broker and verbs, Audit log).
 
 An action, the same for every state-changing one (the Queue's actions too, with what `queue` adds through its `Hooks`: how their pending action is made and shown, and the thread that runs them, which asks the broker whether the session lives before it asks the scheduler): `POST /pending` with the form (`action` names the table's entry) is checked against the table without asking the broker and kept as a pending action of the session (`work.SessionWork`), answered with a redirect to `GET /pending/<id>`, which shows the `sdp` command, every input (a secret as dots), what a destructive verb destroys, and for a step-up entry a field for the management password. `POST /pending/<id>/confirm` carries that password or nothing; the pending action is taken out of the session before anything is awaited, so two confirms at once start one call. The call runs in a thread of its own, not tied to the request, under a bound of its own (`Limits.action_workers`; a cancel under `Limits.cancel_workers`, so that it gets through while long actions run; "busy" when full), through a client WITHOUT a time limit, and writes its outcome; the confirm waits for it up to `Limits.action_wait_seconds`: a refusal that came at once is shown on the pending page (`step_up_failed` and `step_up_required` put the action back, `unauthorized` and `session_ended` end the session), anything else is a redirect to `GET /actions/<id>`, which shows "under way" (an htmx poll every 2 seconds) and then the outcome. A broker that cannot be reached is an outcome there, not a logout.
 
@@ -41,6 +41,12 @@ OFFSET_PATTERN = r"[0-9]{1,16}"
 RETRY_CODES = ("step_up_failed", "step_up_required")
 RUN_PAGE_LIST_LIMIT = 1000
 AUDIT_LINES = 200
+# The tabs of a source's page, of the Databases page and of the System page (`?tab=`); the first is the one shown without one.
+SOURCE_TABS = ("pipeline", "configuration", "errors")
+DATABASE_TABS = ("servers", "mcp", "queue", "verify")
+SYSTEM_TABS = ("broker", "audit")
+# The "Load into databases" lanes of a source's pipeline: each database and its profiles, and which view of the ingestion state (`pages.INGESTION_NAMES`) holds each profile's state files, with the start of their labels when the view holds two profiles.
+LANES = (("StarRocks", (("sr_ingest", "StarRocks", ""), ("sr_ml", "StarRocks classifiers", ""))), ("MongoDB", (("mongo_ingest", "MongoDB", "ingest_"),)), ("PostgreSQL", (("postgres_ingest", "PostgreSQL", "ingest_"), ("postgres_ml", "PostgreSQL", "ml_"))))
 # The Management page each action belongs to.
 ACTIVE = {"run.start": "sources", "source.remove": "sources", "run.cancel": "runs"}
 
@@ -162,48 +168,78 @@ def install(api, ctx, queue_hooks):
 
     # ── sources ──
 
-    @api.get("/sources")
-    async def sources_page(request: Request):
-        def build(session, answers):
-            return {"block": pages.build(answers, {"list": overview.sources_block})["list"]}
-
-        return await page(request, "sources", "Sources", "sources.html", plan_of(("list", "source.list", {})), build)
-
-    @api.get("/sources/{name}")
-    async def source_page(request: Request, name: str):
-        if not actions.is_plain_name(name):
-            return _not_found()
+    def source_plan(chosen):
+        """The reads of a Sources page: the list (the rail), then for the source `chosen(list answer)` names (None: none) its state, finished files, the runs and its error logs, stopping once the session has ended."""
 
         def plan(ask):
-            answers = {"status": ask("source.status", {"name": name})}
-            if answers["status"][0] == "error" and session_ends(answers["status"][1]):
+            answers = {"list": ask("source.list", {})}
+            if answers["list"][0] == "error" and session_ends(answers["list"][1]):
                 return answers
-            answers["progress"] = ask("source.progress", {"name": name})
-            if answers["progress"][0] == "error" and session_ends(answers["progress"][1]):
+            name = chosen(answers["list"])
+            if name is None:
                 return answers
+            answers["name"] = ("ok", name)
+            for key, verb, fields in (("status", "source.status", {"name": name}), ("progress", "source.progress", {"name": name}), ("runs", "run.list", {})):
+                answers[key] = ask(verb, fields)
+                if answers[key][0] == "error" and session_ends(answers[key][1]):
+                    return answers
             for profile in _error_log_profiles(answers["status"]):
                 answers["errors:" + profile] = ask("source.error_logs", {"name": name, "profile": profile})
                 if answers["errors:" + profile][0] == "error" and session_ends(answers["errors:" + profile][1]):
                     break
             return answers
 
+        return plan
+
+    def source_build(request):
         def build(session, answers):
-            makers = {"status": pages.source_status_block, "progress": pages.source_progress_block}
+            listed = pages.build(answers, {"list": overview.sources_block})["list"]
+            tab = request.query_params.get("tab")
+            model = {"block": listed, "source_name": None, "tab": tab if tab in SOURCE_TABS else SOURCE_TABS[0], "tabs": SOURCE_TABS}
+            if "name" not in answers:
+                model["rail"] = overview.grid(listed, {"ok": False})
+                return model
+            name = answers["name"][1]
+            makers = {"status": pages.source_status_block, "progress": pages.source_progress_block, "runs": pages.runs_block}
             profiles = [key.split(":", 1)[1] for key in answers if key.startswith("errors:")]
             makers.update({"errors:" + profile: partial(pages.error_logs_block, profile=profile) for profile in profiles})
             blocks = pages.build(answers, makers)
-            status = blocks["status"]
+            status, runs = blocks["status"], blocks["runs"]
+            alive = {"ok": runs["ok"], "rows": [row for row in runs["rows"] if row["alive"]] if runs["ok"] else []}
             forms = None
             if status["ok"] and status["found"]:
                 forms = [{"profile": profile, "inputs": actions.run_form_inputs(profile)} for profile in status["run_profiles"]]
             error_logs = [{"profile": profile, "block": blocks["errors:" + profile], "command": f"python sdp.py source error-logs {name} --profile={profile}"} for profile in profiles]
-            return {"source_name": name, "source_status": status, "progress": blocks["progress"], "error_logs": error_logs, "run_forms": forms, "db_password_kept": session.work.db_password_kept, "database_profiles": actions.DATABASE_PROFILES}
+            failed = sum(len(state_file["failed"]) for entry in error_logs if entry["block"]["ok"] for state_file in entry["block"]["files"])
+            model.update({
+                "source_name": name, "source_status": status, "progress": blocks["progress"], "error_logs": error_logs, "failed_files": failed, "run_forms": forms,
+                "db_password_kept": session.work.db_password_kept, "database_profiles": actions.DATABASE_PROFILES,
+                "rail": overview.grid(listed, alive), "pipeline": pipeline_model(name, status, answers.get("progress"), alive),
+            })
+            return model
 
-        return await page(request, "sources", f"Source {name}", "source.html", plan, build)
+        return build
+
+    @api.get("/sources")
+    async def sources_page(request: Request):
+        def first_plain(answer):
+            try:
+                rows = overview.sources_block(answer[1])["rows"] if answer[0] == "ok" else []
+            except Exception:
+                return None
+            return next((row["name"] for row in rows if row["href"]), None)
+
+        return await page(request, "sources", "Sources", "source.html", source_plan(first_plain), source_build(request))
+
+    @api.get("/sources/{name}")
+    async def source_page(request: Request, name: str):
+        if not actions.is_plain_name(name):
+            return _not_found()
+        return await page(request, "sources", f"Source {name}", "source.html", source_plan(lambda answer: name), source_build(request))
 
     # ── databases ──
 
-    def databases_build(only):
+    def databases_build(only, request):
         def build(session, answers):
             blocks = pages.build(answers, {"status": pages.databases_status_block, "verify": pages.databases_verify_block})
             status, verify = blocks["status"], blocks["verify"]
@@ -214,25 +250,20 @@ def install(api, ctx, queue_hooks):
                         continue
                     result = verify["results"].get(row["db"]) if verify["ok"] and row["db"] else None
                     sections.append({"row": row, "verify": result})
-            # The checks that are no database's section: those of the MCP servers and the scheduler on the whole page; every one (of this page) when the status could not be read, so that the checks still show.
-            shared = []
-            if verify["ok"] and not status["ok"]:
-                shared = [result for name, result in verify["results"].items() if only is None or name == only]
-            elif verify["ok"] and only is None:
-                shared = [result for name, result in verify["results"].items() if name not in actions.DATABASES]
-            return {"db_status": status, "db_verify": verify, "sections": sections, "shared": shared, "only": only, "services": actions.SERVICES, "db_password_kept": session.work.db_password_kept}
+            tab = request.query_params.get("tab")
+            return {"db_status": status, "db_verify": verify, "sections": sections, "only": only, "services": actions.SERVICES, "databases": actions.DATABASES, "db_password_kept": session.work.db_password_kept, "tab": tab if tab in DATABASE_TABS else DATABASE_TABS[0]}
 
         return build
 
     @api.get("/databases")
     async def databases_page(request: Request):
-        return await page(request, "databases", "Databases", "databases.html", plan_of(("status", "db.status", {}), ("verify", "db.verify", {})), databases_build(None))
+        return await page(request, "databases", "Databases", "databases.html", plan_of(("status", "db.status", {}), ("verify", "db.verify", {})), databases_build(None, request))
 
     @api.get("/databases/{name}")
     async def database_page(request: Request, name: str):
         if name not in actions.DATABASES:
             return _not_found()
-        return await page(request, "databases", f"Database {name}", "databases.html", plan_of(("status", "db.status", {}), ("verify", "db.verify", {})), databases_build(name))
+        return await page(request, "databases", f"Database {name}", "databases.html", plan_of(("status", "db.status", {}), ("verify", "db.verify", {})), databases_build(name, request))
 
     # ── runs ──
 
@@ -311,7 +342,8 @@ def install(api, ctx, queue_hooks):
         def build(session, answers):
             blocks = pages.build(answers, {"hello": pages.hello_block, "audit": pages.audit_block})
             table = [{"name": action.name, "cls": action.cls, "title": action.title, "form": action.form} for action in actions.TABLE.values()]
-            return {"hello": blocks["hello"], "audit": blocks["audit"], "table": table}
+            tab = request.query_params.get("tab")
+            return {"hello": blocks["hello"], "audit": blocks["audit"], "table": table, "tab": tab if tab in SYSTEM_TABS else SYSTEM_TABS[0]}
 
         return await page(request, "system", "System", "system.html", plan_of(("hello", "hello", {}), ("audit", "audit.list", {"limit": AUDIT_LINES})), build)
 
@@ -497,6 +529,50 @@ def install(api, ctx, queue_hooks):
         if _is_htmx(request):
             return ctx.render("_outcome.html", outcome=model)
         return ctx.frame("outcome.html", active_of(outcome.action), session, title=model["title"], outcome=model)
+
+
+def _number(value):
+    """A count of the ingestion state as the page shows it (text), or None when it is no plain count."""
+    return int(value) if isinstance(value, str) and value.isdigit() and len(value) <= 12 else None
+
+
+def pipeline_model(name, status, progress_answer, alive):
+    """The Pipeline tab of a source: `prepare` (the dumps folder, then the nodes of parse, lingua and ml) and `lanes` (per database, the nodes of its profiles). A node: `profile`, `state` (`run` while a run of it on this source is alive, `fail` when its state files name failed files, `setup` when the source has the profile, `none`), `dir`, `line` (what the reads say of it, or None), `title`, `href` (its run form on this page) and `run_href` (the page of its alive run). Only the reads' own figures are shown: the finished files of `source.progress` for parse, lingua and ml, the loaded and failed files of the state files for the loads."""
+    found = status["ok"] and status["found"]
+    run_profiles = status["run_profiles"] if found else []
+    paths = dict(status["paths"]) if found else {}
+    running = {row["profile"]: row for row in alive["rows"] if row["source"] == name}
+    try:
+        counts = overview.progress_cells(progress_answer[1]) if progress_answer and progress_answer[0] == "ok" else {}
+    except Exception:
+        counts = {}
+
+    def node(profile, directory, line, title, failed=False):
+        run = running.get(profile)
+        state = "run" if run else "fail" if failed else "setup" if profile in run_profiles else "none"
+        return {"profile": profile, "state": state, "dir": directory, "line": line, "title": title, "href": f"/sources/{name}#run-{profile}" if profile in run_profiles else None, "run_href": run["href"] if run else None}
+
+    prepare = []
+    for profile, directory in (("parse", paths.get("parsed")), ("lingua", paths["output"].rstrip("/") + "/lingua" if paths.get("output") else None), ("ml", paths.get("output"))):
+        figure = counts.get(profile)
+        prepare.append(node(profile, directory, figure["text"] + " finished" if figure else None, figure["title"] if figure else None))
+    views = {view["name"]: view for view in status["ingestion"]} if found else {}
+    lanes = []
+    for database, profiles in LANES:
+        nodes = []
+        for profile, view_name, prefix in profiles:
+            view = views.get(view_name)
+            entries = [entry for entry in view["entries"] if entry["label"].startswith(prefix)] if view else []
+            loaded = [_number(entry["count"]) for entry in entries]
+            failed = [_number(entry["failed_count"]) for entry in entries]
+            line = None
+            if entries and None not in loaded and None not in failed:
+                line = f"{sum(loaded)} files loaded" + (f", {sum(failed)} failed" if sum(failed) else "")
+            elif entries:
+                line = "state files of another shape"
+            nodes.append(node(profile, None, line, ", ".join(entry["label"] for entry in entries) or None, failed=bool(entries) and None not in failed and sum(failed) > 0))
+        lanes.append({"database": database, "nodes": nodes, "legacy": database == "PostgreSQL"})
+    return {"dumps": paths.get("dumps"), "prepare": prepare, "lanes": lanes}
 
 
 def _error_log_profiles(status_answer):

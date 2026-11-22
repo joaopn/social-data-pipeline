@@ -9,6 +9,7 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - `POST /login`: the per-address limit (`limiter`: refused without asking the broker), then the broker's `login` with the channel `local` when the connection has both signs of the machine itself (it arrived on the local port, `config.LOCAL_PORT`, to which only 127.0.0.1 of the host is published, and its client address is the network's gateway, as which Docker's proxy shows a client on 127.0.0.1) and `remote` otherwise; on success a new session id in the cookie and the broker's token in memory only; the id the browser sent before is forgotten. Local logins share one key of the per-address limit; any other login is counted under its client address.
 - `POST /logout`: the session forgotten, the broker's `logout` asked (under a bound of its own, waiting a few seconds for a place), the cookie cleared.
 - `GET /`: the Overview, from three read verbs; a block whose read failed says why, and the others stay. A session the broker no longer knows (`unauthorized`, `session_ended`) or a broker that cannot be reached ends the session here too, and the browser is sent to the login page with a line saying why.
+- `GET /overview/live`: the Overview's live figures (the queries that wait for approval, the finished files per source and stage), a part of the page that the Overview asks once it has loaded, so that a slow scheduler or a large source never slows it: see `overview.read_live`. Its own bound (`Limits.live_workers`); a full bound answers 204, which leaves the page as it is.
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
 - The Chat window (`/chat`, `/chat/new`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
@@ -84,6 +85,8 @@ class Limits:
     page_workers: int = 4
     # The top bar's indicators (`/status`) have a bound of their own: a hung scheduler or runner holds a place for up to three time limits, and must never take a page's place.
     status_workers: int = 2
+    # The Overview's live figures (`/overview/live`) have a bound of their own too: one request asks up to 52 calls in at most about 20 seconds, and must never take a page's place.
+    live_workers: int = 2
     local_login_workers: int = 1
     remote_login_workers: int = 2
     logout_workers: int = 2
@@ -168,6 +171,7 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
     limiter = LoginLimiter(clock, failures_max=limits.login_failures, window_seconds=limits.login_window_seconds, addresses_max=limits.addresses_max)
     pages = Gate(limits.page_workers)
     indicators = Gate(limits.status_workers)
+    live = Gate(limits.live_workers)
     local_logins = Gate(limits.local_login_workers)
     remote_logins = Gate(limits.remote_login_workers)
     logouts = Gate(limits.logout_workers)
@@ -301,7 +305,8 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
             if outcome == "error" and session_ends(value):
                 sessions.forget(session_id)
                 return to_login(request, why(value), clear_cookie=True)
-        return frame("overview.html", "overview", session, title="Overview", blocks=overview.build(answers))
+        blocks = overview.build(answers)
+        return frame("overview.html", "overview", session, title="Overview", blocks=blocks, grid=overview.grid(blocks["source.list"], blocks["run.list"]), profiles=overview.GRID_PROFILES)
 
     context = Context(
         render=render, frame=frame, current=current, to_login=to_login, sessions=sessions, pages=pages, pieces=Gate(limits.piece_workers), tails=Gate(limits.tail_workers),
@@ -322,6 +327,24 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
             sessions.forget(session_id)
             return to_login(request, why(made.error), clear_cookie=True)
         return render("_status.html", indicators=made)
+
+    @api.get("/overview/live")
+    async def overview_live(request: Request):
+        """The Overview's live figures, a part of the page asked by htmx once the page has loaded (see `overview.read_live`): the queue's line, which takes the place of its placeholder, and the counts of the grid's cells out of band. `?quiet=1`: the page had nothing else that needs attention, so the part says so when the queue has nothing either. A full bound answers 204, which leaves the page as it is."""
+        session_id, session = current(request)
+        if session is None:
+            return to_login(request, clear_cookie=bool(session_id))
+
+        def ask(verb, fields):
+            return call_broker(lambda: broker(token=session.token, timeout=overview.LIVE_SECONDS), lambda made: actions.call(made, verb, fields))
+
+        made = await live.run(lambda: overview.read_live(lambda: queue.broker_session_error(context, session, timeout=overview.LIVE_SECONDS), scheduler, ask))
+        if made is BUSY_GATE:
+            return Response(status_code=204)
+        if isinstance(made, overview.LiveSessionEnded):
+            sessions.forget(session_id)
+            return to_login(request, why(made.error), clear_cookie=True)
+        return render("_overview_live.html", live=made, quiet=request.query_params.get("quiet") == "1")
 
     # The Queue's routes first: `/queue/auto-accept` and `/queue/running-rows` before `/queue/<job id>`.
     hooks = queue.install(api, context)

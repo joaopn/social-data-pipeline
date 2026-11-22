@@ -1,1 +1,95 @@
-/* The Management window's own rules, on the kit's tokens of app.css. */
+/* The Management window's own rules, on the kit's tokens of app.css: the mock-up's Overview (its two cards and the grid of sources and profiles), the Sources tab (the rail, the pipeline's nodes and lanes), the Databases and System tabs, the Runs, and the confirm, outcome and refusal pages drawn as the mock-up's dialog (a card in the page: no height and no scroll box of its own, so an approval's whole statement stays on the page). The mock-up's inline styles are classes here. */
+
+[hidden] { display: none !important; }
+
+/* The mock-up's "Run a profile…" at the right of the tab bar: the frame's tab bar has no slot for a page's own button, so the button sits in the page and is placed over the bar's right end. */
+.subbar-action { position: fixed; top: 55px; right: 16px; z-index: 5; }
+@media (max-width: 900px) { .subbar-action { display: none; } }
+
+/* Overview: "Needs attention" and "Right now" side by side, then the grid */
+.ov-top { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+@media (max-width: 900px) { .ov-top { grid-template-columns: minmax(0, 1fr); } }
+.att { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.att:last-child { border-bottom: 0; }
+.card > .att + .att { margin-top: 0; }
+.att p { margin: 0; overflow-wrap: anywhere; }
+.att .grow pre { margin-top: 6px; }
+.att > .right { flex: none; }
+.grid-card { padding: 6px 8px; overflow-x: auto; }
+.matrix th.prof { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.matrix td { padding: 10px 10px; }
+.matrix td.cellc { padding: 6px 4px; }
+.matrix td.src { min-width: 150px; }
+.matrix tbody tr:hover td { background: none; }
+.stage .cnt:empty { display: none; }
+.stage.setup .top > span:first-child { color: var(--ink-2); }
+/* A run is alive: the bar moves, because no read tells how far it is. */
+.stage.run .bar { position: relative; }
+.stage.run .bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 30%; border-radius: 2px; background: var(--accent); animation: sweep 1.6s ease-in-out infinite; }
+@keyframes sweep { 0% { left: 0; } 50% { left: 70%; } 100% { left: 0; } }
+@media (prefers-reduced-motion: reduce) { .stage.run .bar::after { animation: none; width: 100%; } }
+
+/* Sources: the rail of sources and the chosen source */
+.srcwin { display: grid; grid-template-columns: 236px minmax(0, 1fr); flex: 1; min-height: 0; }
+.srcwin > * { min-height: 0; min-width: 0; }
+.rail { background: var(--surface); border-right: 1px solid var(--line); overflow: auto; padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+.rail h4 { padding: 6px 10px; }
+.srcbtn { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-radius: 6px; border: 1px solid transparent; color: var(--ink); text-align: left; }
+.srcbtn:hover { background: var(--surface-2); text-decoration: none; }
+.srcbtn.on { background: var(--accent-soft); border-color: var(--line-2); }
+.mini { display: flex; gap: 3px; }
+.mini i { width: 14px; height: 5px; border-radius: 2px; background: var(--surface-3); }
+.mini i.s { background: var(--muted); } .mini i.r { background: var(--accent); }
+.pane { padding: 18px 22px 40px; }
+.pane > h1 { margin-bottom: 0; }
+@media (max-width: 900px) { .srcwin { grid-template-columns: 64px minmax(0, 1fr); } .srcbtn .small, .srcbtn .mini, .rail h4 { display: none; } .srcbtn b { overflow: hidden; text-overflow: ellipsis; } }
+.flow { display: flex; align-items: center; overflow-x: auto; padding: 4px 0 8px; }
+.node { min-width: 124px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); padding: 9px 11px; display: flex; flex-direction: column; gap: 5px; color: var(--ink); text-align: left; }
+a.node:hover { border-color: var(--muted); text-decoration: none; }
+.node.run { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.node.fail { border-color: var(--crit); }
+.node.none { border-style: dashed; opacity: .55; background: none; }
+.node .nm { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+.node .dir { font-size: 11px; color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; }
+.arrow { align-self: center; color: var(--muted); padding: 0 6px; flex: none; }
+.lanes { display: flex; gap: 10px; flex-wrap: wrap; }
+.lane { display: flex; flex-wrap: wrap; align-items: center; row-gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface-2); }
+.lane .db { flex: 0 0 100%; font-size: 12px; color: var(--ink-2); display: flex; gap: 6px; align-items: center; }
+.forms { margin-top: 10px; }
+.runform { scroll-margin-top: 12px; }
+.runform:target .action-form { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.action-form h3 { font-size: 12.5px; }
+.action-form input[type="text"], .action-form input[type="password"], .action-form select { width: 100%; }
+.action-form.inline { display: inline-flex; padding: 0; border: 0; background: none; min-width: 0; }
+.errlog + .errlog { margin-top: 22px; }
+.errlog .log { white-space: pre-wrap; overflow-wrap: anywhere; }
+table.detail td, table.detail th { font-size: 12px; }
+
+/* Databases and System */
+.tabs-h { margin-left: 10px; }
+.dbcards { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+.card.unset { border-style: dashed; }
+.card > .row h2, .card > .row h3 { margin: 0; }
+.narrow { max-width: 820px; }
+.syscards { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.kv dd.row { display: flex; }
+.kv .notice { margin: 0; }
+
+/* The confirm, outcome and refusal pages: the mock-up's dialog, drawn in the page. No height, no overflow: the page itself scrolls. */
+.dialog { max-width: 640px; margin: 24px auto; padding: 18px 20px; border-color: var(--line-2); border-radius: 10px; box-shadow: var(--shadow); }
+.dialog.step { border-left: 3px solid var(--crit); }
+.dialog > h4 + .row, .dialog > h4 + h2 { margin-top: 4px; }
+.dialog .outcome { border: 0; padding: 0; background: none; }
+.dialog .action-form, .confirm-form { border: 0; padding: 0; background: none; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 10px; }
+.confirm-form label.f { max-width: 22rem; }
+
+/* Spacing the kit's base rules would make smaller: a section after the cards, a subtitle under its heading. */
+.main > .mt-l, .pane > .mt-l, .main > section > .mt-l { margin-top: 20px; }
+h2 + p.small, .main h2 + .muted.small { margin-top: 4px; }
+.matrix td.src a { color: var(--ink); }
+/* The forms that start or stop any service and keep the session's password: one line each, their notes under them. */
+.svc .forms { flex-direction: column; gap: 10px; }
+.svc .action-form { flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: 6px 12px; border: 0; padding: 0; background: none; min-width: 0; }
+.svc .action-form label.f { width: 16rem; flex: none; }
+.svc .action-form > p { order: 2; flex-basis: 100%; margin: 0; }
+h1 .mono { font-size: inherit; }

@@ -1,29 +1,59 @@
+{#- The System tab, as the mock-up draws it: the chip tabs "Broker and verbs" and "Audit log" as links `?tab=` (both rendered, the other hidden). The first: what the web UI may ask the broker, by class, the table of every entry, and the broker's greeting; the second: the newest lines of the audit log. -#}
 {% extends "frame.html" %}
-{% block content %}
-<section class="card" aria-labelledby="broker-title">
-  <h2 id="broker-title">The broker</h2>
-  {%- with block = hello %}
-  {%- if not block.ok %}
-  {%- include "_failure.html" %}
-  {%- else %}
-  <dl class="facts">
+{% block shell %}
+<main class="main">
+<a class="btn sm subbar-action" href="/sources">Run a profile…</a>
+<div class="row wrap">
+  <h1>System</h1>
+  <nav class="subtabs tabs-h" aria-label="System">
+    {%- for key, label in (("broker", "Broker and verbs"), ("audit", "Audit log")) %}
+    <a class="chipbtn{{ ' on' if key == tab else '' }}" href="/system?tab={{ key }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}</a>
+    {%- endfor %}
+  </nav>
+</div>
+
+<div class="mt-l"{% if tab != "broker" %} hidden{% endif %}>
+  <p class="muted small">This window cannot touch Docker. Each action is one named entry sent to the broker, which is the only part that can, and each verb is one <code>sdp</code> command. A read changes nothing; a write needs a confirmation; a step-up needs the confirmation and the management password again.</p>
+  <div class="cards syscards mt">
+    {%- for cls, label, tag, says in (("read", "Read", "read", "any logged-in session"), ("write", "Write", "write", "confirm page"), ("step_up", "Step-up", "step", "password again, every time")) %}
+    <div class="card"><div class="row"><h3>{{ label }}</h3><span class="tag {{ tag }}">{{ says }}</span></div><p class="mono small ink2 mt">{{ table | selectattr("cls", "equalto", cls) | map(attribute="name") | join(" · ") }}</p></div>
+    {%- endfor %}
+  </div>
+  <dl class="kv mt-l">
+    {%- with block = hello %}
+    {%- if not block.ok %}
+    <dt>Broker</dt><dd>{% include "_failure.html" %}</dd>
+    {%- else %}
+    <dt>Broker</dt><dd class="row"><span class="dot ok"></span>answered · on the host · private socket · no network port</dd>
     <dt>Protocol</dt><dd>{{ block.protocol }}</dd>
     <dt>Management password set</dt><dd>{{ block.password_set }}</dd>
+    {%- endif %}
+    {%- endwith %}
   </dl>
-  {%- endif %}
-  {%- endwith %}
-</section>
 
-<section class="card" aria-labelledby="audit-title">
-  <h2 id="audit-title">Audit log <small>newest first, at most 200 lines</small></h2>
+  <section class="mt-l" aria-labelledby="table-title">
+    <h2 id="table-title">What the web UI may ask the broker</h2>
+    <table class="t mt">
+      <thead><tr><th scope="col">Name</th><th scope="col">Class</th><th scope="col">What it does</th><th scope="col">Terminal command</th></tr></thead>
+      <tbody>
+        {%- for entry in table %}
+        <tr><td><code>{{ entry.name }}</code></td><td>{{ entry.cls }}</td><td>{{ entry.title }}</td><td><code>{{ entry.form }}</code></td></tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<div class="mt-l"{% if tab != "audit" %} hidden{% endif %}>
+  <p class="muted small">Newest first, at most 200 lines. <code>python sdp.py broker audit</code></p>
   {%- with block = audit %}
   {%- if not block.ok %}
   {%- include "_failure.html" %}
   {%- elif not block.rows %}
-  <p class="muted">The audit log has no lines.</p>
+  <p class="muted mt">The audit log has no lines.</p>
   {%- else %}
-  <table>
-    <thead><tr><th scope="col">Time</th><th scope="col">Session</th><th scope="col">Event</th><th scope="col">Verb</th><th scope="col">Outcome</th></tr></thead>
+  <table class="t mt">
+    <thead><tr><th scope="col">When</th><th scope="col">Session</th><th scope="col">Event</th><th scope="col">Verb</th><th scope="col">Outcome</th></tr></thead>
     <tbody>
       {%- for row in block.rows %}
       <tr><td>{{ row.time }}</td><td>{{ row.session }}</td><td>{{ row.event }}</td><td>{{ row.verb }}</td><td>{{ row.outcome }}</td></tr>
@@ -32,18 +62,6 @@
   </table>
   {%- endif %}
   {%- endwith %}
-</section>
-
-<section class="card" aria-labelledby="table-title">
-  <h2 id="table-title">What the web UI may ask the broker</h2>
-  <p class="muted">A read changes nothing; a write needs a confirmation; a step-up needs the confirmation and the management password again.</p>
-  <table>
-    <thead><tr><th scope="col">Name</th><th scope="col">Class</th><th scope="col">What it does</th><th scope="col">Terminal command</th></tr></thead>
-    <tbody>
-      {%- for entry in table %}
-      <tr><td><code>{{ entry.name }}</code></td><td>{{ entry.cls }}</td><td>{{ entry.title }}</td><td><code>{{ entry.form }}</code></td></tr>
-      {%- endfor %}
-    </tbody>
-  </table>
-</section>
+</div>
+</main>
 {% endblock %}

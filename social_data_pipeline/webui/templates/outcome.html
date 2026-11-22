@@ -1,7 +1,14 @@
+{#- The outcome of a confirmed action, in the same dialog look as its confirm page: the action's title, the command it stood for, then the outcome (`_outcome.html`, which asks for itself again while the action is under way). -#}
 {% extends "frame.html" %}
-{% block content %}
-{%- if outcome.command %}
-<pre class="command"><code>{{ outcome.command }}</code></pre>
-{%- endif %}
-{% include "_outcome.html" %}
+{% block shell %}
+<main class="main">
+<section class="card dialog" aria-labelledby="outcome-title">
+  <h4>Outcome</h4>
+  <h2 id="outcome-title">{{ outcome.title }}</h2>
+  {%- if outcome.command %}
+  <pre class="cli wrap"><code>{{ outcome.command }}</code></pre>
+  {%- endif %}
+  {% include "_outcome.html" %}
+</section>
+</main>
 {% endblock %}

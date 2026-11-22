@@ -1,9 +1,0 @@
-{#- The findings of one check of `db verify`: `findings`, each with its category, message and the command that fixes it. -#}
-<table>
-  <thead><tr><th scope="col">Category</th><th scope="col">Finding</th><th scope="col">Fix</th></tr></thead>
-  <tbody>
-    {%- for finding in findings %}
-    <tr><td>{{ finding.category }}</td><td>{{ finding.message }}</td><td><code>{{ finding.fix }}</code></td></tr>
-    {%- endfor %}
-  </tbody>
-</table>

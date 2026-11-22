@@ -83,7 +83,7 @@ def main_text(page):
 def forms_of(page):
     """Each form of a page that posts to /pending: {field name: value} of its inputs (hidden ones with their value, others with the empty text), selects with their options."""
     found = []
-    for body in re.findall(r'<form method="post" action="/pending" class="action-form">(.*?)</form>', page, re.DOTALL):
+    for body in re.findall(r'<form method="post" action="/pending" class="action-form[^"]*">(.*?)</form>', page, re.DOTALL):
         fields = {}
         for tag in re.findall(r"<input [^>]*>", body):
             name = re.search(r'name="([^"]*)"', tag).group(1)
@@ -102,9 +102,13 @@ def test_the_databases_page_offers_the_registrys_choices(client, broker):
     by_action = {}
     for fields in forms:
         by_action.setdefault(fields["action"], []).append(fields)
-    assert by_action["db.start"][0]["service"] == ["", *actions.SERVICES]
-    assert by_action["db.stop"][0]["service"] == ["", *actions.SERVICES]
-    assert set(by_action["db.start"][0]) == {"form_token", "action", "service", "admin_password"}
+    # One start and one stop form with every service to choose from; the cards' buttons carry one service each, always one the registry takes.
+    choosing = {name: [fields for fields in by_action[name] if isinstance(fields["service"], list)] for name in ("db.start", "db.stop")}
+    assert [fields["service"] for fields in choosing["db.start"]] == [["", *actions.SERVICES]]
+    assert [fields["service"] for fields in choosing["db.stop"]] == [["", *actions.SERVICES]]
+    assert set(choosing["db.start"][0]) == {"form_token", "action", "service", "admin_password"}
+    assert [fields["service"] for fields in by_action["db.start"] if not isinstance(fields["service"], list)] == ["postgres", "mongo"]
+    assert [fields["service"] for fields in by_action["db.stop"] if not isinstance(fields["service"], list)] == ["postgres", "mongo"]
     assert [fields["db"] for fields in by_action["db.reset"]] == ["postgres", "mongo"]
     assert [fields["db"] for fields in by_action["db.unsetup"]] == ["postgres", "mongo"]
     assert set(by_action) == {"db.start", "db.stop", "db.reset", "db.unsetup", "db.unsetup_mcp", "db.unsetup_jobs", "session.set_db_password", "session.clear_db_password"}

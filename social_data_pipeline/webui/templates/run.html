@@ -1,18 +1,25 @@
+{#- One run's page, as the mock-up's Runs section draws a run: its profile and source with its state, the command it stands for, its facts, a cancel while it is alive, and the output view (a read-only stream the browser asks piece by piece, see `output`). -#}
 {% extends "frame.html" %}
 {% import "_forms.html" as forms with context %}
-{% block content %}
-<p><a href="/runs">All runs</a></p>
-<section class="card" aria-labelledby="facts-title">
-  <h2 id="facts-title">The run</h2>
+{% block shell %}
+<main class="main">
+<a class="btn sm subbar-action" href="/sources">Run a profile…</a>
+<div class="row wrap"><a class="chipbtn" href="/runs">All runs</a></div>
+<section class="mt" aria-labelledby="facts-title">
   {%- if not block.ok %}
-  {%- include "_failure.html" %}
+  <h1 id="facts-title">Run <span class="mono">{{ run_id }}</span></h1>
+  <div class="mt">{% include "_failure.html" %}</div>
   {%- elif block.run is none %}
-  <p class="muted">The list of runs does not hold this run: it is not among the newest 1000 recorded runs, or it was started in a terminal and has ended.</p>
+  <h1 id="facts-title">Run <span class="mono">{{ run_id }}</span></h1>
+  <p class="muted mt">The list of runs does not hold this run: it is not among the newest 1000 recorded runs, or it was started in a terminal and has ended.</p>
   {%- else %}
   {%- set run = block.run %}
-  <dl class="facts">
+  <div class="row wrap"><h1 id="facts-title"><span class="mono">{{ run.profile }}</span> · {{ run.source }}</h1>{% with row = run %}{% include "_run_pill.html" %}{% endwith %}
+    {%- if run.alive %}<span class="right row">{{ forms.button("run.cancel", "Cancel this run", {"run_id": run_id}, "danger") }}</span>{% endif %}</div>
+  <div class="cli mt"><span>python sdp.py run <b>{{ run.profile }}</b> --source=<b>{{ run.source }}</b></span></div>
+  <dl class="kv mt">
+    <dt>Run</dt><dd class="mono">{{ run_id }}</dd>
     <dt>Kind</dt><dd>{{ run.kind }}</dd>
-    <dt>Profile</dt><dd>{{ run.profile }}</dd>
     <dt>Source</dt><dd>{% if run.source_href %}<a href="{{ run.source_href }}">{{ run.source }}</a>{% else %}{{ run.source }}{% endif %}</dd>
     <dt>Fields</dt><dd>{% for key, value in run.flags %}<span class="tag">{{ key }}={{ value }}</span> {% else %}<span class="muted">none</span>{% endfor %}</dd>
     <dt>Started by</dt><dd>{{ run.started_by }}</dd>
@@ -21,19 +28,17 @@
     <dt>Ended</dt><dd>{{ run.ended }}</dd>
     <dt>Exit code</dt><dd>{{ run.exit_code }}</dd>
   </dl>
-  {%- if run.alive %}
-  {{ forms.action("run.cancel", "Cancel this run", {"run_id": run_id}, danger=True) }}
-  {%- endif %}
   {%- if not block.docker_available %}
-  <p class="notice notice-warn">Docker cannot be asked: the state shown may be out of date.</p>
+  <p class="notice notice-warn mt">Docker cannot be asked: the state shown may be out of date.</p>
   {%- endif %}
   {%- endif %}
 </section>
 
-<section class="card" aria-labelledby="output-title">
-  <h2 id="output-title">Output{% if offset %} <small>from byte {{ offset }}</small>{% endif %}</h2>
+<section class="mt-l" aria-labelledby="output-title">
+  <div class="row"><h2 id="output-title">Output{% if offset %} <small>from byte {{ offset }}</small>{% endif %}</h2><span class="right muted small">a read-only log stream, not a terminal</span></div>
   <div class="output-view" id="view-{{ view_id }}" aria-live="polite">
     <div class="output-next" hx-get="{{ first_href }}" hx-trigger="load" hx-swap="outerHTML"><span class="muted">Loading the output...</span></div>
   </div>
 </section>
+</main>
 {% endblock %}

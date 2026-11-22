@@ -1,9 +1,17 @@
+{#- A choice or a confirmation that was not taken, in the dialog look: why, and the way back. -#}
 {% extends "frame.html" %}
-{% block content %}
-<p class="notice notice-bad" role="alert">{{ line }}{% if field %} The field: {{ field }}.{% endif %}</p>
-{%- if back is defined and back %}
-<p><a href="{{ back[0] }}">{{ back[1] }}</a></p>
-{%- else %}
-<p><a href="/">Back to the Overview</a></p>
-{%- endif %}
+{% block shell %}
+<main class="main">
+<section class="card dialog" aria-labelledby="refused-title">
+  <h2 id="refused-title">{{ title }}</h2>
+  <p class="notice notice-bad" role="alert">{{ line }}{% if field %} The field: {{ field }}.{% endif %}</p>
+  <div class="row">
+  {%- if back is defined and back %}
+  <a class="btn right" href="{{ back[0] }}">{{ back[1] }}</a>
+  {%- else %}
+  <a class="btn right" href="/">Back to the Overview</a>
+  {%- endif %}
+  </div>
+</section>
+</main>
 {% endblock %}

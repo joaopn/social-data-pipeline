@@ -1,31 +1,24 @@
 ---
 title: "Configuration reference"
 parent: "User guide"
-nav_order: 11
+nav_order: 13
 ---
-# Configuration Reference
+# Configuration reference
 
-This document is the master configuration reference for Social Data Pipeline. It covers every environment variable, configuration file, and tunable setting across all profiles.
+This page is the full configuration reference: every environment variable, configuration file and tunable setting across all profiles. You rarely edit these by hand: the setup commands write them, and this page says what each one does.
 
-> [!TIP]
-> Run `python sdp.py db setup` to configure databases, then `python sdp.py source add <name>` to add sources. The scripts auto-detect your hardware, walk you through every setting with sensible defaults, and generate `.env`, `config/db/*.yaml`, per-source config in `config/sources/<name>/`, and `postgresql.local.conf`. To add a database later without reconfiguring existing ones, use `python sdp.py db setup --add <db>`. The reference below documents what each setting does.
+Run `python sdp.py db setup` to configure databases, then `python sdp.py source add <name>` to add sources. The scripts detect your hardware, walk you through every setting with sensible defaults, and generate `.env`, `config/db/*.yaml`, the per-source config in `config/sources/<name>/`, `config/postgres/postgresql.local.conf` and `config/starrocks/{fe,be}.local.conf`. To add a database later without reconfiguring existing ones, use `python sdp.py db setup --add <db>`.
 
-For profile-specific usage and workflows, see:
-- [Parse Profile](parsing.md)
-- [Classification Profiles](classifiers.md)
-- [Database Profiles](databases.md)
-- [Jobs Scheduler](query-scheduler.md)
+For profile-specific usage and workflows, see [Parsing](parsing.md), [Language detection and classifiers](classifiers.md), [Databases](databases.md) and [Query scheduler](query-scheduler.md).
 
----
-
-## 1. Environment Variables
+## Environment variables
 
 All environment variables are set in the `.env` file at the project root. Docker Compose reads this file automatically.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PLATFORM` | Platform to use for parsing (`reddit` or `custom/<name>`) | `reddit` |
-| `SOURCE` | Source name — selects config from `config/sources/<name>/` | (auto or set by `sdp.py run --source`) |
+| `SOURCE` | Source name — selects config from `config/sources/<name>/` | (auto or set by `python sdp.py run --source`) |
 | `DUMPS_PATH` | Directory containing compressed dump files | `./data/dumps` |
 | `EXTRACTED_PATH` | Storage for decompressed JSON files | `./data/extracted` |
 | `PARSED_PATH` | Storage for parsed files | `./data/parsed` |
@@ -61,35 +54,34 @@ All environment variables are set in the `.env` file at the project root. Docker
 | `POSTGRES_MCP_USER` | PostgreSQL MCP connection user | (unset) |
 | `MONGO_MCP_PORT` | MongoDB MCP server port | `3000` |
 | `MONGO_MCP_READ_ONLY` | MongoDB MCP read-only flag | `true` |
-| `MCP_MONGODB_USER` | MongoDB MCP connection user | (unset) |
+| `MONGO_MCP_USER` | MongoDB MCP connection user (passed into the MCP container as `MCP_MONGODB_USER`) | (unset) |
 | `STARROCKS_MCP_PORT` | StarRocks MCP server port | `9000` |
 | `STARROCKS_MCP_USER` | StarRocks MCP connection user | (unset) |
 | `JOBS_PORT` | Jobs scheduler UI + MCP port | `8050` |
 | `JOBS_RESULT_ROOT` | Host directory for job result files (bind-mounted into PG/SR as `/jobs_export`) | `./data/jobs/results` |
 
-> [!NOTE]
-> - `SOURCE` controls which source config directory is loaded. When running via `sdp.py run`, it is set automatically (auto-selects if only one source configured, or via `--source`).
-> - `CLASSIFIER` is used with the `ml` profile to run only one GPU classifier instead of all enabled classifiers.
-> - `FILE_FILTER` is set automatically by `sdp.py run --filter`. It applies fnmatch glob matching on file IDs (e.g. `*2024*`, `RS_2024-*`) to restrict which files are processed. Works with all profiles.
-> - `SKIP_LINGUA_FILES` is set automatically by `sdp.py run parse --skip-lingua-files`. When set, parse skips files for which `<OUTPUT_PATH>/lingua/<data_type>/<id>_lingua.{csv,parquet}` already exists, so users running a `parse → lingua` workflow can delete old extracted/parsed files without parse re-decompressing them on the next run. Parse profile only.
-> - `PROFILE` is set internally by docker-compose service definitions (`lingua` or `ml`). Do not set this manually.
-> - `HF_TOKEN` is optional but recommended to avoid rate limits and to access private models. Obtain one at https://huggingface.co/settings/tokens.
-> - `PARSED_PATH` and `OUTPUT_PATH` are used by `sdp.py run` for per-source container mounts and as fallback mounts for the PostgreSQL server in `docker-compose.yml`. `sdp db start` auto-generates per-source volume mounts in `docker-compose.override.yml` so the PG server can access files for all sources regardless of filesystem layout.
-> - Auth env vars (`POSTGRES_PASSWORD`, `MONGO_ADMIN_PASSWORD`, `STARROCKS_ROOT_PASSWORD`) are set at runtime via `getpass` prompting — they are never stored in `.env` or on disk.
-> - MCP env vars are written to `.env` by `sdp db setup-mcp`. RO user credentials are generated by `sdp db setup` and stored in the database data volume as `.ro_credentials` (chmod 600).
+Notes on these variables:
 
----
+- `SOURCE` controls which source config directory is loaded. When running via `python sdp.py run`, it is set automatically (auto-selects if only one source configured, or via `--source`).
+- `CLASSIFIER` is used with the `ml` profile to run only one GPU classifier instead of all enabled classifiers.
+- `FILE_FILTER` is set automatically by `python sdp.py run --filter`. It applies fnmatch glob matching on file IDs (e.g. `*2024*`, `RS_2024-*`) to restrict which files are processed. Works with all profiles.
+- `SKIP_LINGUA_FILES` is set automatically by `python sdp.py run parse --skip-lingua-files`. When set, parse skips files for which `<OUTPUT_PATH>/lingua/<data_type>/<id>_lingua.{csv,parquet}` already exists, so users running a `parse → lingua` workflow can delete old extracted/parsed files without parse re-decompressing them on the next run. Parse profile only.
+- `PROFILE` is set internally by docker-compose service definitions (`lingua` or `ml`). Do not set this manually.
+- `HF_TOKEN` is optional but recommended to avoid rate limits and to access private models. Obtain one at https://huggingface.co/settings/tokens.
+- `PARSED_PATH` and `OUTPUT_PATH` are used by `python sdp.py run` for per-source container mounts and as fallback mounts for the PostgreSQL server in `docker-compose.yml`. `python sdp.py db start` auto-generates per-source volume mounts in `docker-compose.override.yml` so the PG server can access files for all sources regardless of filesystem layout.
+- Auth env vars (`POSTGRES_PASSWORD`, `MONGO_ADMIN_PASSWORD`, `STARROCKS_ROOT_PASSWORD`) are set at runtime via `getpass` prompting — they are never stored in `.env` or on disk.
+- MCP env vars are written to `.env` by `python sdp.py db setup-mcp`. RO user credentials are generated by `python sdp.py db setup` and stored in the database data volume as `.ro_credentials` (chmod 600).
 
-## 2. Config Directory Structure
+## Config directory structure
 
 ```
 config/
-├── db/                            # Global database config (written by sdp db setup)
+├── db/                            # Global database config (written by python sdp.py db setup)
 │   ├── postgres.yaml             # Port, name, tablespaces, auth flag
 │   ├── mongo.yaml                # Port, cache size, auth flag
 │   ├── starrocks.yaml            # Port, FE/BE memory, table compression, storage paths, auth flag
-│   └── mcp.yaml                  # MCP server config (written by sdp db setup-mcp)
-├── sources/                       # Per-source config (written by sdp source add)
+│   └── mcp.yaml                  # MCP server config (written by python sdp.py db setup-mcp)
+├── sources/                       # Per-source config (written by python sdp.py source add)
 │   └── <name>/                   # One directory per source
 │       ├── platform.yaml         # Platform config (fields, types, indexes, schema, file patterns)
 │       ├── parse.yaml            # Parse profile overrides
@@ -114,18 +106,25 @@ config/
 │   ├── pipeline.yaml             # Database ingestion settings
 │   ├── postgresql.conf           # PostgreSQL server tuning
 │   ├── pg_hba.conf               # PostgreSQL authentication (default, no-auth)
-│   ├── postgresql.local.conf     # Generated PGTune config (written by sdp db setup)
-│   ├── pg_hba.local.conf         # Generated auth config (written by sdp db setup when auth enabled)
-│   ├── entrypoint-wrapper.sh     # Container entrypoint (pg_parquet, auth migration)
-│   └── initdb.d/                 # First-init scripts (pg_parquet extension)
+│   ├── postgresql.local.conf     # Generated PGTune config (written by python sdp.py db setup)
+│   ├── pg_hba.local.conf         # Generated auth config (written by python sdp.py db setup when auth enabled)
+│   ├── entrypoint-wrapper.sh     # Container entrypoint (pg_parquet, auth migration, RO user sync)
+│   ├── healthcheck.sh            # Container health check (logs in as the RO user under auth)
+│   └── initdb.d/                 # First-init scripts
+│       ├── 01-pg-parquet.sql     # Creates the pg_parquet extension
+│       └── 02-ro-user.sh         # Creates the read-only user on a fresh database (when one is configured)
 ├── mongo/
 │   ├── pipeline.yaml             # MongoDB ingestion settings
 │   ├── mongod.conf               # MongoDB server configuration
-│   └── entrypoint-wrapper.sh     # Container entrypoint (auth migration)
+│   ├── entrypoint-wrapper.sh     # Container entrypoint (auth migration)
+│   └── healthcheck.sh            # Container health check (logs in as the RO user under auth)
 ├── starrocks/
-│   ├── fe.conf                   # StarRocks FE config (written by sdp db setup)
-│   ├── be.conf                   # StarRocks BE config (written by sdp db setup)
-│   └── entrypoint-wrapper.sh     # Container entrypoint (auth: root password + RO user sync)
+│   ├── fe.conf                   # StarRocks FE config template (copied into fe.local.conf by python sdp.py db setup)
+│   ├── be.conf                   # StarRocks BE config template (copied into be.local.conf by python sdp.py db setup)
+│   ├── fe.local.conf             # Generated FE config, the one mounted (written by python sdp.py db setup)
+│   ├── be.local.conf             # Generated BE config, the one mounted (written by python sdp.py db setup)
+│   ├── entrypoint-wrapper.sh     # Container entrypoint (auth: root password + RO user sync)
+│   └── healthcheck.sh            # Container health check (logs in as the RO user under auth)
 ├── sr/
 │   └── pipeline.yaml             # StarRocks ingestion settings
 ├── sr_ml/
@@ -134,29 +133,22 @@ config/
 ├── mcp/
 │   ├── entrypoint-postgres.sh    # PostgreSQL MCP entrypoint
 │   ├── entrypoint-mongo.sh       # MongoDB MCP entrypoint
-│   └── entrypoint-starrocks.sh   # StarRocks MCP entrypoint
+│   ├── entrypoint-starrocks.sh   # StarRocks MCP entrypoint
+│   └── mongo-mcp-*.patch         # Patches applied to the MongoDB MCP server at image build
 ├── postgres_ml/
 │   ├── pipeline.yaml             # ML classifier ingestion settings
 │   └── services.yaml             # Classifier table definitions
 └── jobs/
     ├── config.yaml               # Jobs scheduler default template (committed)
-    └── config.local.yaml         # Local override (written by sdp db setup-jobs, gitignored)
+    ├── config.local.yaml         # Local override (written by python sdp.py db setup-jobs, gitignored)
+    └── entrypoint.sh             # Jobs container entrypoint
 ```
 
----
+## Source configuration overrides
 
-## 3. Source Configuration Overrides
+Each source has per-profile override files in `config/sources/<name>/`, laid over the base profile configs. `python sdp.py source add <name>` generates them, but you can also write them by hand.
 
-Each source has per-profile override files in `config/sources/<name>/` that are deep-merged over the base profile configs. These are generated by `python sdp.py source add <name>` but can also be created manually.
-
-### How it works
-
-1. Base config is loaded from `config/{profile}/pipeline.yaml` (and other profile-level files like `cpu_classifiers.yaml`).
-2. Source overrides from `config/sources/<name>/<profile>.yaml` are deep-merged on top.
-3. Overrides are scoped by config filename — each top-level key corresponds to a config file (without the `.yaml` extension).
-4. **List values fully replace the base config** (they are not merged).
-
-### Example
+An override file holds only the values you want to change. Its top-level keys name the base file they override, without `.yaml` (`pipeline:` overrides `pipeline.yaml`, `gpu_classifiers:` overrides `gpu_classifiers.yaml`), and the values you set win over the base. A list replaces the base list entirely; it is not merged. How the layers are merged is in [Setup and configuration](../architecture/configuration.md#how-the-layers-merge).
 
 ```yaml
 # config/sources/reddit/parse.yaml
@@ -185,11 +177,11 @@ In this example, the `pipeline:` key overrides settings from `config/parse/pipel
 | `config/sources/<name>/starrocks.yaml` | `config/sr/pipeline.yaml` |
 | `config/sources/<name>/sr_ml.yaml` | `config/sr_ml/pipeline.yaml`, `services.yaml` |
 
----
+## Per-profile configuration reference
 
-## 4. Per-Profile Configuration Reference
+The sections below cover each profile's base config files, their settings and their defaults. A source changes them through its override files (above).
 
-### Parse Profile
+## Parse profile
 
 **File:** `config/parse/pipeline.yaml`
 
@@ -210,13 +202,11 @@ processing:
 | `cleanup_temp` | Delete intermediate files (extracted JSON) after processing. | `false` |
 | `watch_interval` | Poll for new files every N minutes. `0` means run once and exit. | `0` |
 
-See also: [Parse Profile guide](parsing.md)
+See also: [Parsing](parsing.md).
 
----
+## Lingua profile
 
-### Lingua Profile
-
-#### Pipeline: `config/lingua/pipeline.yaml`
+### Pipeline: `config/lingua/pipeline.yaml`
 
 ```yaml
 processing:
@@ -235,10 +225,9 @@ cpu_classifiers:            # CPU classifiers to run
 | `watch_interval` | Poll interval in minutes (`0` = run once). | `0` |
 | `cpu_classifiers` | List of CPU classifiers to run (references keys in `cpu_classifiers.yaml`). | `[lingua]` |
 
-#### Classifiers: `config/lingua/cpu_classifiers.yaml`
+### Classifiers: `config/lingua/cpu_classifiers.yaml`
 
-<details>
-<summary><strong>Global settings</strong> (apply to all CPU classifiers)</summary>
+Global settings (apply to all CPU classifiers):
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -247,10 +236,7 @@ cpu_classifiers:            # CPU classifiers to run
 | `remove_patterns` | Regex patterns removed before classification. | URLs, `r/subreddit`, `u/user` |
 | `fields` | Additional columns to keep in `lingua_ingest` CSV (beyond mandatory `id`, `dataset`, `retrieved_utc`). Empty means only mandatory fields. | `[]` |
 
-</details>
-
-<details>
-<summary><strong>Lingua classifier settings</strong> (<code>lingua:</code> key)</summary>
+Lingua classifier settings (`lingua:` key):
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -262,23 +248,13 @@ cpu_classifiers:            # CPU classifiers to run
 | `batch_size` | Rows per batch (larger = less overhead, more memory). | `2000000` |
 | `languages` | List of Lingua enum names to detect. | 54 languages across 5 tiers (see below) |
 
-</details>
+The language tiers are listed in [Language tiers](classifiers.md#language-tiers).
 
-**Language tiers:**
+See also: [Language detection and classifiers](classifiers.md).
 
-- **Tier 1 (Top 10 countries):** English, German, Spanish, Portuguese, French, Italian, Russian, Hindi, Tagalog, Turkish
-- **Tier 2 (High volume):** Dutch, Swedish, Polish, Malay, Arabic, Vietnamese, Thai, Chinese, Japanese, Korean, Romanian, Greek, Czech, Danish, Finnish, Bokmal, Hebrew
-- **Tier 3 (Moderate/Regional):** Ukrainian, Hungarian, Slovak, Croatian, Serbian, Bulgarian, Slovene, Lithuanian, Latvian, Estonian, Bosnian, Indonesian, Persian
-- **Tier 4 (Indian Regional):** Bengali, Tamil, Telugu, Marathi, Gujarati, Punjabi, Urdu
-- **Tier 5 (Low volume):** Commented out by default — uncomment in `cpu_classifiers.yaml` to enable (Afrikaans, Albanian, Armenian, Azerbaijani, Basque, Belarusian, Catalan, Esperanto, and others)
+## ML GPU profile
 
-See also: [Classification Profile guide](classifiers.md)
-
----
-
-### ML GPU Profile
-
-#### Pipeline: `config/ml/pipeline.yaml`
+### Pipeline: `config/ml/pipeline.yaml`
 
 ```yaml
 processing:
@@ -299,10 +275,9 @@ gpu_classifiers:
 | `watch_interval` | Poll interval in minutes (`0` = run once). | `0` |
 | `gpu_classifiers` | List of GPU classifiers to run (references keys in `gpu_classifiers.yaml`). Each entry is either a bare classifier name (runs on every `processing.data_types` entry) or a `{name, data_types}` dict that scopes the classifier to a subset. Unknown `data_types` raise a config error. | `[toxic_roberta, go_emotions]` |
 
-#### Classifiers: `config/ml/gpu_classifiers.yaml`
+### Classifiers: `config/ml/gpu_classifiers.yaml`
 
-<details>
-<summary><strong>Global settings</strong> (apply to all GPU classifiers unless overridden per-classifier)</summary>
+Global settings (apply to all GPU classifiers unless overridden per classifier):
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -319,10 +294,7 @@ gpu_classifiers:
 | `min_tokens` | Global minimum token count after text cleaning (`0` = no filter). | `0` |
 | `fields` | Additional columns to keep in output (beyond mandatory `id`, `dataset`, `retrieved_utc` + classifier columns). Empty or unset keeps all input columns. | `[author, subreddit]` |
 
-</details>
-
-<details>
-<summary><strong>Per-classifier options</strong> (defined as top-level keys like <code>toxic_roberta:</code>)</summary>
+Per-classifier options (defined as top-level keys like `toxic_roberta:`):
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -343,9 +315,7 @@ gpu_classifiers:
 | `batch_size` | Override global rows-per-batch for disk I/O. | global value |
 | `fields` | Override global additional output columns. | global value |
 
-</details>
-
-**Bundled classifiers:**
+Bundled classifiers:
 
 | Classifier | Model | Type | Activation | Languages |
 |-----------|-------|------|------------|-----------|
@@ -356,13 +326,11 @@ gpu_classifiers:
 
 Output columns are auto-derived from the model's `config.id2label` mapping.
 
-See also: [Classification Profile guide](classifiers.md)
+See also: [Language detection and classifiers](classifiers.md).
 
----
+## PostgreSQL profiles
 
-### PostgreSQL Profiles
-
-#### Base Table Ingestion: `config/postgres/pipeline.yaml`
+### Base table ingestion: `config/postgres/pipeline.yaml`
 
 ```yaml
 database:
@@ -382,13 +350,11 @@ processing:
   parallel_index_workers: 8  # Workers per index build
   cleanup_temp: false        # Delete intermediate files
   watch_interval: 0          # Run once (0) or poll every N minutes
-  prefer_lingua: true        # Ingest lingua-enriched files instead of originals
+  prefer_lingua: true        # Ingest only lingua-enriched files (strict either/or, no fallback)
 
 indexes: {}                  # Per-data-type index fields (set via source platform.yaml)
 ```
 
-<details>
-<summary><strong>Full options table</strong></summary>
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -406,16 +372,14 @@ indexes: {}                  # Per-data-type index fields (set via source platfo
 | **processing.parallel_index_workers** | `max_parallel_maintenance_workers` per index build. | `8` |
 | **processing.cleanup_temp** | Delete intermediate files after ingestion. | `false` |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
-| **processing.prefer_lingua** | Ingest lingua-enriched files (from `lingua` output) instead of originals. Falls back to original if not found. | `true` |
+| **processing.prefer_lingua** | If `true`, ingest only the lingua-enriched files (from the `lingua` output folder); if `false`, ingest the original parsed files. Strict either/or with no fallback: with `true` and no lingua output, ingest finds zero files. | `true` |
 | **indexes** | Index fields per data type (e.g., `{submissions: [dataset, author, subreddit]}`). | `{}` |
 | **tablespaces** | Tablespace definitions: map of name to host path (e.g., `{nvme1: /mnt/nvme1/pg-tablespace}`). | `{}` |
 | **table_tablespaces** | Table-to-tablespace assignments: map of data type to tablespace name (e.g., `{submissions: nvme1}`). Use `pgdata` for the default PostgreSQL data directory. | `{}` |
 
-</details>
-
 See [Tablespaces](databases.md#tablespaces) for details on multi-disk setups.
 
-#### ML Table Ingestion: `config/postgres_ml/pipeline.yaml`
+### ML table ingestion: `config/postgres_ml/pipeline.yaml`
 
 ```yaml
 database:
@@ -450,16 +414,15 @@ ml_indexes: {}               # Per classifier table, e.g. {comments_lingua: [lan
 | **ml_indexes** | Index fields per classifier table, keyed by table name (data type + classifier suffix). **No fallback** to `indexes` — base index fields name columns classifier tables do not have. | `{}` (from platform config) |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
 
-Only tables that ingested at least one file in the current run are indexed; each index lands in the same tablespace as its table. Use `sdp db create-indexes` to add indexes to tables that are already fully ingested.
+Only tables that ingested at least one file in the current run are indexed; each index lands in the same tablespace as its table. Use `python sdp.py db create-indexes` to add indexes to tables that are already fully ingested.
 
-> [!NOTE]
-> `prefer_lingua` is read from the postgres profile (`config/postgres/pipeline.yaml`). When `true`, the lingua classifier is skipped during `postgres_ml` ingestion because lingua data is already in the main table. When `false`, lingua data is ingested from the `lingua_ingest` directory.
+`prefer_lingua` is read from the postgres profile (`config/postgres/pipeline.yaml`). When `true`, the lingua classifier is skipped during `postgres_ml` ingestion because lingua data is already in the main table. When `false`, lingua data is ingested from the `lingua_ingest` directory.
 
-#### Classifier Resolution
+### Classifier resolution
 
-**What ingestion runs comes from the source's ml/lingua profile config**, not from a separate declaration. For each classifier listed in `config/sources/<name>/ml.yaml`'s `pipeline.gpu_classifiers` (and lingua via `cpu_classifiers`), `postgres_ml` reads the merged profile config to get its `suffix` and `data_types` scope. Source overrides win over the global `gpu_classifiers.yaml` defaults.
+What ingestion runs comes from the source's ml/lingua profile config, not from a separate declaration. For each classifier listed in `config/sources/<name>/ml.yaml`'s `pipeline.gpu_classifiers` (and lingua via `cpu_classifiers`), `postgres_ml` reads the merged profile config to get its `suffix` and `data_types` scope. Source overrides win over the global `gpu_classifiers.yaml` defaults.
 
-#### Ingestion Overrides: `config/postgres_ml/services.yaml`
+### Ingestion overrides: `config/postgres_ml/services.yaml`
 
 This file is for ingestion-only tweaks that don't belong in the ml profile. Empty by default; everything is derived.
 
@@ -485,11 +448,9 @@ classifiers:
 
 `suffix` is **not** an ingestion override — it lives in the ml/lingua profile (so the ML run and the ingestion always agree on file names). Column types are auto-inferred from data unless `column_overrides` is set.
 
-See also: [Database Profile guide](databases.md)
+See also: [Databases](databases.md).
 
----
-
-### PostgreSQL Server Tuning
+## PostgreSQL server tuning
 
 The PostgreSQL container loads its configuration from `config/postgres/`:
 
@@ -498,12 +459,11 @@ The PostgreSQL container loads its configuration from `config/postgres/`:
 | `postgresql.conf` | Server tuning parameters (shared_buffers, work_mem, etc.) |
 | `pg_hba.conf` | Client authentication rules (default: trust/no-auth) |
 | `postgresql.local.conf` | **Local override** — if present, replaces `postgresql.conf` |
-| `pg_hba.local.conf` | **Local override** — if present, replaces `pg_hba.conf` (generated by `sdp db setup` when auth enabled) |
+| `pg_hba.local.conf` | **Local override** — if present, replaces `pg_hba.conf` (generated by `python sdp.py db setup` when auth enabled) |
 
-> [!TIP]
-> Run `python sdp.py db setup`, which handles PGTune integration and ZFS optimization as part of the interactive setup.
+Run `python sdp.py db setup`, which handles PGTune integration and ZFS optimization as part of the interactive setup.
 
-**Manual approach:**
+To tune by hand instead:
 
 1. Go to [PGTune](https://pgtune.leopard.in.ua/) and generate settings with:
    - **DB Type:** Data Warehouse
@@ -513,11 +473,9 @@ The PostgreSQL container loads its configuration from `config/postgres/`:
 
 The local override files (`postgresql.local.conf`, `pg_hba.local.conf`) are not tracked by git, making them safe for machine-specific tuning.
 
----
+## MongoDB profile
 
-### MongoDB Profile
-
-#### Ingestion: `config/mongo/pipeline.yaml`
+### Ingestion: `config/mongo/pipeline.yaml`
 
 ```yaml
 database:
@@ -545,9 +503,9 @@ mongo_indexes: {}           # Per-data-type index fields (set via platform confi
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
 | **mongo_indexes** | Index fields per data type (e.g., `{submissions: [id, author]}`). Set via source `platform.yaml`. | `{}` |
 
-Platform-specific settings (`mongo_collection_strategy`, `mongo_db_name`/`mongo_db_name_template`, `mongo_collections`, `mongo_indexes`) are configured in the source's `platform.yaml`, not in the pipeline config. See [Platform Configuration](#5-platform-configuration).
+Platform-specific settings (`mongo_collection_strategy`, `mongo_db_name`/`mongo_db_name_template`, `mongo_collections`, `mongo_indexes`) are configured in the source's `platform.yaml`, not in the pipeline config. See [Platform configuration](#platform-configuration).
 
-#### Server: `config/mongo/mongod.conf`
+### Server: `config/mongo/mongod.conf`
 
 Mounted into the mongo container. Key settings:
 - `directoryPerDB: true` — each database in its own directory
@@ -556,11 +514,9 @@ Mounted into the mongo container. Key settings:
 
 Cache size is controlled via `MONGO_CACHE_SIZE_GB` env var (default: 2 GB), not in the conf file.
 
----
+## StarRocks ingestion profile
 
-### StarRocks Ingestion Profile
-
-#### Ingestion: `config/sr/pipeline.yaml`
+### Ingestion: `config/sr/pipeline.yaml`
 
 ```yaml
 database:
@@ -575,7 +531,7 @@ processing:
   index_poll_interval: 10  # Seconds between alter-job status polls during index build
   cleanup_temp: false      # Delete intermediate files after ingestion
   watch_interval: 0        # Run once (0) or poll every N minutes
-  prefer_lingua: true      # Ingest lingua-enriched files if available
+  prefer_lingua: true      # Ingest only lingua-enriched files (strict either/or, no fallback)
 
 sr_indexes: {}             # Per-data-type index fields (set via platform config).
                            # Plain list = bitmap; {bitmap: [...], bloomfilter: [...]}
@@ -591,17 +547,17 @@ sr_indexes: {}             # Per-data-type index fields (set via platform config
 | **processing.check_duplicates** | Enable `merge_condition` for conditional upsert (keeps row with higher `upsert_order_field`). | `true` |
 | **processing.create_indexes** | Create indexes after ingestion completes. | `true` |
 | **processing.index_poll_interval** | Seconds between `SHOW ALTER TABLE COLUMN` polls while waiting for an index build to finish. | `10` |
-| **processing.prefer_lingua** | Prefer lingua-enriched files over original parsed files. | `true` |
+| **processing.prefer_lingua** | If `true`, ingest only the lingua-enriched files; if `false`, the original parsed files. Strict either/or with no fallback: with `true` and no lingua output, ingest finds zero files. | `true` |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
 | **sr_indexes** | Index fields per data type. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. Falls back to `indexes` from platform config, which is read list-only since postgres_ingest shares it. See [Choosing a StarRocks Index Type](databases.md#choosing-a-starrocks-index-type). | `{}` |
 
 StarRocks uses database-per-source (database name = source name). Tables are Primary Key tables with `DISTRIBUTED BY HASH(pk)` and `enable_persistent_index = true` when the platform defines a `primary_key`. Custom platforms (e.g. HF datasets) can leave `primary_key` unset; tables then use the Duplicate Key model with `DISTRIBUTED BY RANDOM`, re-runs append rows, and `check_duplicates` is forced off so no `merge_condition` is emitted.
 
-**Table compression.** New tables are created with the global `compression` codec from `config/db/starrocks.yaml` (default `ZSTD`; see [starrocks Profile → Table Compression](databases.md#table-compression)). Override per source under `pipeline.database.compression` in the source's `starrocks.yaml` / `sr_ml.yaml`.
+**Table compression.** New tables are created with the global `compression` codec from `config/db/starrocks.yaml` (default `ZSTD`; see [Table compression](databases.md#table-compression)). Override per source under `pipeline.database.compression` in the source's `starrocks.yaml` / `sr_ml.yaml`.
 
-**Index builds.** `sr_ingest`, `sr_ml`, and `sdp db create-indexes` handle two mechanisms. Bitmap indexes are submitted as `CREATE INDEX … USING BITMAP` and polled via `SHOW ALTER TABLE COLUMN` until each alter job reaches `FINISHED`, so progress reflects the actual build rather than the submission. Bloom filters are a table property, applied as one `ALTER TABLE … SET ("bloom_filter_columns" = …)` per table; because that statement replaces the whole list, the current value is always read from `SHOW CREATE TABLE` and merged first, and the property is re-read afterwards to confirm the change took effect — an unreadable current value aborts rather than risk dropping existing bloom columns. Which `SHOW ALTER TABLE` view reports a bloom filter change is unverified, so for bloom filters the poll is best-effort progress reporting and the re-read is what decides success. Different tables run in parallel, because StarRocks' "one schema change per table" constraint is per-table — but indexes within a single table run serially. `sr_ml` caps its client-side fan-out at 8 concurrent tables, since its plan spans data types × classifiers rather than data types alone. BE-side parallelism is capped by `alter_tablet_worker_count` in `config/starrocks/be.conf` (set at `sdp db setup` based on hardware). Each worker buffers bitmaps while it runs, so raising the count speeds up builds at the cost of BE memory — high-cardinality columns (e.g. `author`) can push the BE past its memory limit if the pool is too large.
+**Index builds.** `sr_ingest`, `sr_ml` and `python sdp.py db create-indexes` build bitmap indexes and bloom filters; different tables are indexed in parallel and the indexes of one table one at a time, and `sr_ml` caps this at 8 tables at once. BE-side parallelism is capped by `alter_tablet_worker_count` in `config/starrocks/be.local.conf` (set at `python sdp.py db setup` from the hardware, from the `be.conf` template); raising it speeds up builds at the cost of BE memory, and high-cardinality columns (for example `author`) can push the BE past its memory limit if the pool is too large. How builds are submitted, polled and confirmed is in [Databases and ingestion](../architecture/databases.md#index-builds).
 
-#### ML Classifier Ingestion: `config/sr_ml/pipeline.yaml` + `services.yaml`
+### ML classifier ingestion: `config/sr_ml/pipeline.yaml` + `services.yaml`
 
 ```yaml
 database:
@@ -635,25 +591,19 @@ sr_ml_indexes: {}          # Per classifier table, e.g. {comments_lingua: [lang]
 | **sr_ml_indexes** | Index fields per classifier table, keyed by table name (data type + classifier suffix). Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. **No fallback** — unlike `sr_indexes`, it never falls back to `indexes`. | `{}` (from platform config) |
 | **processing.watch_interval** | Poll for new files every N minutes (`0` = run once). | `0` |
 
-Only tables that ingested at least one file in the current run are indexed; tables build in parallel (capped at 8), fields within a table serially. Use `sdp db create-indexes` to add indexes to tables that are already fully ingested.
+Only tables that ingested at least one file in the current run are indexed; tables build in parallel (capped at 8), fields within a table serially. Use `python sdp.py db create-indexes` to add indexes to tables that are already fully ingested.
 
 Classifier tables (e.g., `submissions_lingua`, `comments_toxicity_en`) are created in the same database as base tables. Schema is auto-inferred from Parquet metadata or CSV sampling. `prefer_lingua` is read from the `sr_ingest` profile config.
 
 `sr_ml` resolves classifier runs (name, suffix, `data_types` scope) from the source's ml/lingua profile config, the same way `postgres_ml` does. `config/sr_ml/services.yaml` (and the per-source `config/sources/<name>/sr_ml.yaml`) holds optional ingestion-only overrides — see *Ingestion Overrides* under PostgreSQL ML above for the schema.
 
----
+## Jobs scheduler
 
-### Jobs Scheduler
+Configured via `python sdp.py db setup-jobs`. Reference is in [query-scheduler.md](query-scheduler.md) — covers `config/jobs/config.yaml` (committed defaults) merged with `config/jobs/config.local.yaml` (gitignored override): targets, port, per-backend timeouts, history retention, and the optional UI auth toggle.
 
-Configured via `sdp db setup-jobs`. Reference is in [query-scheduler.md](query-scheduler.md) — covers `config/jobs/config.yaml` (committed defaults) merged with `config/jobs/config.local.yaml` (gitignored override): targets, port, per-backend timeouts, history retention, and the optional UI auth toggle.
+## Platform configuration
 
----
-
-## 5. Platform Configuration
-
-### Overview
-
-Each source has a `platform.yaml` in `config/sources/<name>/` that defines the platform-specific settings. For built-in platforms (like Reddit), this is copied from a template in `config/templates/` during `sdp source add`. For custom platforms, it is generated interactively.
+Each source has a `platform.yaml` in `config/sources/<name>/` that defines the platform-specific settings. For built-in platforms (like Reddit), this is copied from a template in `config/templates/` during `python sdp.py source add`. For custom platforms, it is generated interactively.
 
 | Key | Description |
 |-----|-------------|
@@ -678,12 +628,9 @@ Each source has a `platform.yaml` in `config/sources/<name>/` that defines the p
 | `fields` | Fields to extract per data type. |
 | `paths` | Optional per-source data paths (overrides global `DUMPS_PATH`, etc.). |
 
-### Reddit Platform: `config/sources/reddit/platform.yaml`
+### Reddit platform: `config/sources/reddit/platform.yaml`
 
-For Reddit, the template `config/templates/reddit.yaml` is copied into `config/sources/reddit/platform.yaml` during `sdp source add reddit`, then customized interactively.
-
-<details>
-<summary><strong>Full config</strong></summary>
+For Reddit, the template `config/templates/reddit.yaml` is copied into `config/sources/reddit/platform.yaml` during `python sdp.py source add reddit`, then customized interactively.
 
 ```yaml
 db_schema: reddit
@@ -735,14 +682,9 @@ fields:
     # ... 17 fields total ...
 ```
 
-</details>
+### Custom platforms: `config/sources/<name>/platform.yaml`
 
-### Custom Platforms: `config/sources/<name>/platform.yaml`
-
-Custom platform configs are generated interactively during `sdp source add <name>`. Users choose an input format (NDJSON, CSV, or Parquet) and enter glob patterns for file matching (e.g., `tweets_*.json.gz`, `data_*.csv.zst`) which are converted to regex patterns with auto-detected compression. For Hugging Face datasets (`--hf` flag), input format is set to `parquet` automatically and file patterns are auto-generated.
-
-<details>
-<summary><strong>Example config</strong></summary>
+Custom platform configs are generated interactively during `python sdp.py source add <name>`. Users choose an input format (NDJSON, CSV, or Parquet) and enter glob patterns for file matching (e.g., `tweets_*.json.gz`, `data_*.csv.zst`) which are converted to regex patterns with auto-detected compression. For Hugging Face datasets (`--hf` flag), input format is set to `parquet` automatically and file patterns are auto-generated.
 
 ```yaml
 db_schema: my_data
@@ -797,8 +739,6 @@ fields:
     - content
 ```
 
-</details>
-
 Run `python sdp.py source add <name>` to generate the config interactively.
 
-See [Custom Platforms](custom-data.md) for a complete setup guide.
+See [Your own data and Hugging Face](custom-data.md) for a complete setup guide.

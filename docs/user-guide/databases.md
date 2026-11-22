@@ -1,707 +1,152 @@
 ---
 title: "Databases"
 parent: "User guide"
-nav_order: 6
+nav_order: 8
 ---
-# Database Profiles
+# Databases
 
-Social Data Pipeline supports three database destinations:
-- **PostgreSQL** — ingests parsed files (Parquet or CSV) via three profiles: `postgres` (server), `postgres_ingest` (main tables), `postgres_ml` (classifier outputs)
-- **MongoDB** — ingests raw JSON/NDJSON/CSV/Parquet directly after extraction via two profiles: `mongo` (server), `mongo_ingest` (bulk import)
-- **StarRocks** — OLAP analytical database for high-performance queries via three profiles: `starrocks` (server), `sr_ingest` (main tables), `sr_ml` (classifier outputs)
+This page covers getting your data into PostgreSQL, StarRocks or MongoDB and querying it: choosing a database, starting it, the ingest profiles, indexes, server settings, authentication and reprocessing. You end up with one table (or collection) per data type, plus one table per classifier.
 
-All databases support optional authentication and MCP servers for AI tool access.
+## Choosing a database
 
-## Running
+PostgreSQL and StarRocks ingest the same parsed files and support the same pipeline features (classifiers, lingua, MCP servers, authentication). MongoDB ingests the raw extracted records instead, with every original field.
+
+| | PostgreSQL | StarRocks | MongoDB |
+|---|---|---|---|
+| **Best for** | General-purpose queries, joins with external data, extensions (PostGIS, pg_parquet, pgvector) | Large-scale analytical queries (aggregations, scans, GROUP BY over billions of rows) | Raw data inspection: the extracted JSON/NDJSON, CSV or Parquet records with all their fields, straight after decompression or download, without parsing |
+| **Query speed** | Good with proper indexing; row-oriented storage | Much faster (~10X) for analytics; columnar storage with vectorized execution | Not compared |
+| **Ecosystem** | Mature, widely supported, connects to nearly everything | MySQL wire protocol: works with any MySQL client, but a smaller ecosystem | `mongosh`, `mongoexport` and any MongoDB client |
+| **Extensibility** | Rich extension system (custom types, FDWs, procedural languages) | Limited, focused on analytics | Not compared |
+| **Storage model** | Row-oriented, B-tree indexes, tablespaces for multi-disk | Columnar, bitmap and bloom filter indexes, built-in multi-disk through `storage_root_path` | Documents, zstd compression, one collection per file or per data type |
+| **Ingestion** | Fast initial load (deferred PK), ON CONFLICT upsert | Single code path: Primary Key tables handle dedup natively | `mongoimport` bulk insert (blind insert, no upsert) |
+
+**Use PostgreSQL** if you need a general-purpose database that integrates with other tools and workflows. **Use StarRocks** if your main goal is fast analytical queries over large datasets. **Use MongoDB** to keep every original field of the raw records. They can be used in parallel.
+
+Each database is a set of Docker Compose profiles:
+
+| Database | Server profile | Ingest profiles |
+|----------|----------------|-----------------|
+| PostgreSQL | `postgres` (PostgreSQL 18, custom image `Dockerfile.postgres` with the `pg_parquet` extension for native Parquet ingestion) | `postgres_ingest` (main tables), `postgres_ml` (classifier outputs) |
+| StarRocks | `starrocks` (official `starrocks/allin1-ubuntu` image, FE + BE in one container) | `sr_ingest` (main tables), `sr_ml` (classifier outputs) |
+| MongoDB | `mongo` (MongoDB 8, official image) | `mongo_ingest` (bulk import) |
+
+All databases support optional authentication and MCP servers for AI tool access (see [AI access](ai-access.md)).
+
+## Starting and stopping
 
 ```bash
 python sdp.py db start                  # Start configured database(s) + MCP servers
+python sdp.py db start postgres         # Start one: postgres, mongo, starrocks, postgres-mcp, mongo-mcp, starrocks-mcp or jobs
+python sdp.py db stop                   # Stop configured database(s) + MCP servers
+python sdp.py db status                 # Show database config, health, MCP and jobs scheduler status
+```
+
+Database servers must be running before the ingest profiles can connect. `python sdp.py db start` starts every database configured by `python sdp.py db setup`. With auth enabled, it prompts for the admin password each time.
+
+PostgreSQL and StarRocks read the parsed and output files themselves, through bind mounts. A source whose `paths.parsed` and `paths.output` lie under `PARSED_PATH` and `OUTPUT_PATH` (the default-disk case) is visible to a running database as soon as its folders appear, so `python sdp.py source add` needs no restart. A source whose paths lie elsewhere (multi-disk, for example `paths.parsed: /mnt/fast_ssd/parsed/<src>`) needs a restart: `python sdp.py source add` and `python sdp.py source remove` warn when it does, and `python sdp.py db stop <service> && python sdp.py db start <service>` applies it. `python sdp.py run *_ingest` and `*_ml` refuse at the CLI when a mount is missing. The mechanics are in [Databases and ingestion](../architecture/databases.md#how-the-servers-see-the-files).
+
+## Ingest profiles
+
+```bash
 python sdp.py run postgres_ingest       # Ingest parsed files into PostgreSQL
 python sdp.py run postgres_ml           # Ingest ML classifier outputs into PostgreSQL
 python sdp.py run mongo_ingest          # Ingest raw data into MongoDB
 python sdp.py run sr_ingest             # Ingest parsed files into StarRocks
 python sdp.py run sr_ml                 # Ingest ML classifier outputs into StarRocks
-python sdp.py db stop                   # Stop configured database(s) + MCP servers
 python sdp.py source error-logs         # Show error details for failed datasets
 ```
 
-All ingestion profiles support `--filter` (`-f`) to restrict processing to files matching a pattern (fnmatch glob on file ID). State-based skip logic still applies — `--filter` narrows the file set before the state check:
+| Profile | What it loads | From | Into |
+|---------|---------------|------|------|
+| `postgres_ingest` | Main tables (for example `submissions`, `comments`) | Parsed files (Parquet or CSV), or the lingua-enriched files when `prefer_lingua: true` | PostgreSQL `{schema}.{data_type}` |
+| `postgres_ml` | One table per classifier and data type | Classifier output files | PostgreSQL `{schema}.{data_type}{suffix}` |
+| `sr_ingest` | Main tables | Parsed files, or the lingua-enriched files when `prefer_lingua: true` | StarRocks `{database}.{data_type}` |
+| `sr_ml` | One table per classifier and data type | Classifier output files | StarRocks `{database}.{data_type}{suffix}` |
+| `mongo_ingest` | One collection per file or per data type | Raw extracted JSON/NDJSON, CSV or Parquet | MongoDB |
+
+Run them in this order:
+
+1. **`lingua` before `postgres_ingest` / `sr_ingest`**, when `prefer_lingua: true` (the default). These profiles then read only the lingua output folder; if lingua has not run, they find no files to load. With `prefer_lingua: false` they read the original parsed files, and the lingua columns go to a separate table through `postgres_ml` / `sr_ml`.
+2. **`postgres_ml` after `postgres_ingest`**, and **`sr_ml` after `sr_ingest`**. `postgres_ml` adds a foreign key to the main table by default (`use_foreign_key: true`), which needs the main table to exist.
+
+All ingest profiles accept `--filter` (`-f`) to restrict processing to files whose file id matches an fnmatch glob. The state-based skip still applies; `--filter` narrows the file set before the state check:
 
 ```bash
 python sdp.py run postgres_ingest --filter "*2024*"   # Only ingest 2024 months
 ```
 
-> [!IMPORTANT]
-> Database servers must be running before ingestion profiles can connect. `sdp.py db start` starts all databases configured during `sdp.py db setup`. Use `sdp.py db start postgres`, `sdp.py db start mongo`, or `sdp.py db start starrocks` to start a specific one.
+Every ingest profile tracks which files it has loaded, so a rerun continues where the last one stopped (see [Reprocessing](#reprocessing) to load files again).
 
-> [!NOTE]
-> PostgreSQL and StarRocks read parsed/output files server-side via two layered bind mounts. The compose-file definitions bind `${PARSED_PATH:-./data/parsed}` and `${OUTPUT_PATH:-./data/output}` on each server unconditionally, so any source whose `paths.parsed` / `paths.output` lives under those parents (the default-disk case) is visible to a running DB the moment its directories appear — `source add` works without a restart. Sources whose paths fall outside those parents (multi-disk: e.g. `paths.parsed: /mnt/fast_ssd/parsed/<src>`) need per-source override entries in `docker-compose.override.yml`, which `sdp.py db start` regenerates from the configured source set. `source add` / `source remove` warn when an out-of-parent source change requires `sdp.py db stop <service> && sdp.py db start <service>`, and `sdp.py run *_ingest` / `*_ml` fail-fast at the CLI rather than letting the orchestrator container die deep in `pg_parquet` / `FILES()`.
+## Checking for drift: `db verify`
 
-### Drift detection: `db verify`
+`python sdp.py db verify` is the operator preflight. It checks every drift surface in one shot and exits non-zero on any finding. It covers auth coherence (`config/db/<db>.yaml` ↔ `.env` ↔ `.ro_credentials`), credential file mode and ownership, container env and health (when running), per-source mounts in `docker-compose.override.yml`, and MCP and jobs cross-references.
 
-Use `sdp.py db verify` as the operator preflight: it checks every drift surface in one shot and exits non-zero on any finding. Categories covered: auth coherence (`config/db/<db>.yaml` ↔ `.env` ↔ `.ro_credentials`), credential file mode + ownership, container env / health (when running), per-source mounts in `docker-compose.override.yml`, MCP / jobs cross-references. Output modes:
+| Option | Output |
+|--------|--------|
+| (none) | A human-readable list of findings; each line names the recovery command |
+| `--json` | Machine-readable for CI and scripts: the structure is stable and includes per-database `ok` flags and a typed `findings[]` array per check |
+| `--db <name>` | Only one database; cross-cutting MCP and jobs findings still show, because they may name the filtered database |
 
-- default — human-readable findings list, each line names the recovery command.
-- `--json` — machine-readable for CI / scripts (the structure is stable and includes per-DB `ok` flags + a typed `findings[]` array per check).
-- `--db <name>` — restrict to one database; cross-cutting MCP / jobs findings still surface because they may name the filtered DB.
+As a pipeline preflight:
 
-Recommended usage as a pipeline preflight: `python sdp.py db verify && python sdp.py run postgres_ingest --source <name>`. The `db status` command also prints a drift section using the same checks (without container probes), but always exits 0 since it's an informational summary.
+```bash
+python sdp.py db verify && python sdp.py run postgres_ingest --source <name>
+```
 
----
+`python sdp.py db status` also prints a drift section with the same checks (without the container probes), but always exits 0, since it is an informational summary.
 
-## postgres Profile (Server)
+## Connecting and querying
 
-Runs a PostgreSQL 18 server using a custom Docker image (`Dockerfile.postgres`) with the `pg_parquet` extension for native Parquet ingestion support.
+| Database | Connect with |
+|----------|--------------|
+| PostgreSQL | `psql -h localhost -U postgres -d datasets` (port `POSTGRES_PORT`, default 5432) |
+| StarRocks | Any MySQL client, for example `mysql -h 127.0.0.1 -P 9030 -u root --skip-password` (StarRocks uses the MySQL wire protocol) |
+| MongoDB | `mongosh` on port `MONGO_PORT` (default 27017) |
 
-### Configuration Files
-
-| File | Purpose |
-|------|---------|
-| `config/postgres/postgresql.conf` | Server tuning (memory, parallelism, WAL) |
-| `config/postgres/pg_hba.conf` | Authentication rules (default: trust/no-auth) |
-| `postgresql.local.conf` | Local tuning overrides (generated by `sdp db setup`) |
-| `pg_hba.local.conf` | Local auth overrides (generated by `sdp db setup` when auth enabled) |
-| `config/postgres/initdb.d/` | First-init scripts (creates `pg_parquet` extension) |
-
-The Docker entrypoint automatically loads local override files if present.
-
-### Export Volume
-
-The host directory `DB_EXPORT_PATH` (default: `./data/export`) is bind-mounted at `/export` inside the container. Use this path in SQL queries to write results to the host:
+The host folder `DB_EXPORT_PATH` (default `./data/export`) is bind-mounted at `/export` inside the PostgreSQL and MongoDB containers. Use this path in SQL queries, or with `mongoexport` or `mongosh`, to write results to the host:
 
 ```sql
 COPY (SELECT * FROM reddit.submissions LIMIT 100) TO '/export/sample.csv' WITH CSV HEADER;
 ```
 
-### Tuning Recommendations
+To give an AI agent access to the databases, see [AI access](ai-access.md).
 
-Use [PGTune](https://pgtune.leopard.in.ua/) to generate optimal settings:
-- **DB Type**: Data Warehouse
-- **Data Storage**: SSD
+## Indexes
 
-Append the output to `config/postgres/postgresql.conf`.
+Each ingest profile builds the indexes configured for its tables once loading is done. Index fields are set per source in `platform.yaml`:
 
-> [!TIP]
-> The default configuration is tuned for 60GB RAM, 24 CPUs, SSD storage. Run `python sdp.py db setup` to generate a `postgresql.local.conf` with PGTune integration and optional ZFS optimization.
-
----
-
-## postgres_ingest Profile
-
-Ingests parsed files (Parquet or CSV) into PostgreSQL main tables (e.g., `submissions`, `comments`).
-
-### How It Works
-
-The postgres_ingest profile is a full pipeline that can also extract and parse if needed:
-
-1. **Input Detection**: Detects compressed dumps, JSON, and parsed files (same as parse profile)
-2. **Extraction/Parsing**: Extracts and parses files that haven't been processed yet
-3. **Ingestion**: Loads data into PostgreSQL via server-side `COPY` — uses `FORMAT parquet` (via pg_parquet) or `FORMAT csv` based on file extension
-4. **Indexing**: Creates indexes on configured fields
-5. **Analyze**: Updates table statistics
-
-### prefer_lingua Behavior
-
-When `prefer_lingua: true` (default), postgres_ingest looks for Lingua-enriched files in `OUTPUT_PATH/<source>/lingua/` instead of the originals in `PARSED_PATH/<source>/`. This means:
-- The main table includes language columns (`lang`, `lang_prob`, `lang2`, `lang2_prob`) directly
-- No separate lingua table is needed
-- Falls back to original parsed files if Lingua output is not found
-
-When `prefer_lingua: false`:
-- Ingests original parsed files (without language columns) into the main table
-- Lingua data is ingested separately via `postgres_ml` from the `lingua_ingest` directory
-
-### Standard Ingestion (ON CONFLICT)
-
-When the table already exists with a primary key:
-- Uses server-side `COPY` with ON CONFLICT for duplicate handling (Parquet via pg_parquet or CSV)
-- Conflicts on `id` (the primary key); incoming row replaces existing only when `COALESCE(EXCLUDED.retrieved_utc, -1) > COALESCE(table.retrieved_utc, -1)`
-- NULL is treated as smaller than any value, so a real timestamp always replaces a NULL — never the reverse, and same-NULL re-ingests are no-ops (idempotent)
-- `check_duplicates: true` enables ON CONFLICT DO UPDATE
-
-### Fast Initial Load (New Tables)
-
-When a table does not exist yet — or exists without a primary key (e.g., from an interrupted prior run) — the pipeline uses an optimized bulk ingestion strategy:
-
-1. **CREATE TABLE (no PK)** — Table created without primary key to avoid per-row index maintenance
-2. **Blind COPY** — All files loaded without duplicate checking (Parquet or CSV)
-3. **Deduplication** — In-place `ROW_NUMBER()` window function removes duplicates per `id`. Surviving row is chosen by `COALESCE(retrieved_utc, -1) DESC` (real timestamps win over NULL), then platform `mandatory_fields` DESC for cross-dataset tiebreakers (e.g. Reddit's `dataset DESC` keeps the later month), then `ctid` as the final tiebreaker (run-to-run / cross-machine deterministic on a freshly-COPYed heap)
-4. **PRIMARY KEY** — Adds primary key constraint in a single index build after all data is loaded
-
-> [!NOTE]
-> Faster than ON CONFLICT for initial loads with billions of rows. The speedup comes from deferring index maintenance until after all data is loaded. Once the table has a primary key, subsequent ingestions use ON CONFLICT. Tables left without a PK by an interrupted run are auto-detected and re-routed back through the fast-load path on the next ingest.
-
-> [!NOTE]
-> **No table partitioning.** Reddit-wide queries that aren't bounded to a few months would hit 200+ partitions, splitting indexes and hurting performance; partitioning would also interfere with the deferred-PK dedup path. If your workload is dominated by analytical scans over the full dataset, [StarRocks](#starrocks-profile-server) is the better fit.
-
-### Indexing
-
-After ingestion, indexes are created on configured fields:
-- Index fields come from `indexes` in the source's `platform.yaml` (e.g., Reddit: `[dataset, author, subreddit, domain]` for submissions), keyed by data type. Classifier tables use a separate set — see [postgres_ml → Indexing](#indexing-1)
-- `parallel_index_workers` controls `max_parallel_maintenance_workers` per index build
-- Indexes are B-tree by default
-
-To add indexes after ingestion, use `sdp db create-indexes`. This interactive command connects to running databases, shows existing tables/columns/indexes, and lets you choose which fields to index. Optionally persists new indexes to `platform.yaml` — base tables to `indexes` / `sr_indexes`, classifier tables to `ml_indexes` / `sr_ml_indexes`, so the owning profile rebuilds them on the next run.
-
-### Configuration
-
-**Base config:** `config/postgres/pipeline.yaml`
-**Source overrides:** `config/sources/<name>/postgres.yaml`
-
-<details>
-<summary><strong>Full options table</strong></summary>
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `database.host` | PostgreSQL hostname | `postgres` |
-| `database.port` | PostgreSQL port (override: `POSTGRES_PORT`) | `5432` |
-| `database.name` | Database name (override: `DB_NAME`) | `datasets` |
-| `database.schema` | Schema name (set via source `platform.yaml`) | `null` |
-| `database.user` | Database user | `postgres` |
-| `processing.data_types` | Data types to ingest | `[]` (from source config) |
-| `processing.parallel_mode` | Extract/parse/ingest in parallel phases | `false` |
-| `processing.parallel_ingestion` | Ingest data types concurrently | `true` |
-| `processing.parse_workers` | CSV parsing workers | `12` |
-| `processing.check_duplicates` | Handle duplicate IDs | `true` |
-| `processing.create_indexes` | Create indexes after ingestion | `true` |
-| `processing.parallel_index_workers` | Workers per index build | `8` |
-| `processing.cleanup_temp` | Delete intermediate files | `false` |
-| `processing.watch_interval` | Poll for new files (0 = once) | `0` |
-| `processing.prefer_lingua` | Use Lingua-enriched files as input | `true` |
-| `indexes` | Index fields per data type | `{}` (from platform) |
-| `tablespaces` | Tablespace definitions (name → host path) | `{}` |
-| `table_tablespaces` | Data type → tablespace assignments | `{}` |
-
-</details>
-
----
-
-## Tablespaces
-
-PostgreSQL tablespaces allow spreading tables across multiple physical disks. This is necessary when the database exceeds the capacity of a single drive (e.g., full Reddit data approaches 8TB+).
-
-### Setup
-
-Run `python sdp.py db setup` and answer "yes" to the tablespace question in the PostgreSQL section. The script will:
-
-1. Ask you to define tablespaces (name + host path for each disk)
-2. Ask you to assign each data type to a tablespace
-3. Generate the tablespace config in `config/db/postgres.yaml`
-4. Generate `docker-compose.override.yml` with the required volume mounts
-
-`pgdata` is always available as a tablespace option and refers to the default PostgreSQL data directory (no extra volume mount needed).
-
-### Configuration
-
-Tablespace settings live in `config/postgres/pipeline.yaml` (or source overrides):
-
-```yaml
-# config/sources/reddit/postgres.yaml
-pipeline:
-  tablespaces:
-    nvme1: /mnt/nvme1/pg-tablespace    # name: host_path
-    nvme2: /mnt/nvme2/pg-tablespace
-  table_tablespaces:
-    submissions: nvme1                   # data_type: tablespace_name
-    comments: nvme2                      # "pgdata" = default PG data directory
-```
-
-The corresponding `docker-compose.override.yml` is auto-generated by `sdp.py db setup`:
-
-```yaml
-services:
-  postgres:
-    volumes:
-      - /mnt/nvme1/pg-tablespace:/data/tablespace/nvme1
-      - /mnt/nvme2/pg-tablespace:/data/tablespace/nvme2
-```
-
-### How It Works
-
-- On startup, the ingestion pipeline creates any missing tablespaces via `CREATE TABLESPACE`
-- `CREATE TABLE` and `CREATE INDEX` statements include `TABLESPACE <name>` for non-pgdata assignments
-- Data types assigned to `pgdata` use the default PostgreSQL data directory (no TABLESPACE clause)
-- Classifier tables (from `postgres_ml`) inherit the tablespace of their parent data type
-- Container paths follow the convention `/data/tablespace/<name>` (deterministic from tablespace name)
-
----
-
-## postgres_ml Profile
-
-Ingests ML classifier outputs into separate PostgreSQL tables.
-
-### How It Works
-
-1. **Classifier Resolution**: Loads the source's ml/lingua profile config to determine which classifiers to ingest, their `suffix`, and their `data_types` scope. Source `ml.yaml` is authoritative for what runs.
-2. **Override Layer**: `config/postgres_ml/services.yaml` and `config/sources/<name>/postgres_ml.yaml` add optional ingestion-only tweaks (`enabled: false` to skip, custom `source_dir`, `column_overrides`).
-3. **File Detection**: Finds classifier output files in `OUTPUT_PATH/<source>/{source_dir}/{data_type}/` — only for `data_types` in the classifier's scope.
-4. **Type Inference**: Samples `type_inference_rows` rows to auto-detect column types (CSV) or reads schema directly (Parquet).
-5. **Table Creation**: Creates tables named `{data_type}{suffix}` (e.g., `submissions_toxicity_en`).
-6. **Ingestion**: Loads CSV data with duplicate handling.
-7. **Foreign Keys**: Optionally adds FK constraint to main table via `(dataset, id)`.
-8. **Indexing**: Creates indexes on classifier tables from `ml_indexes` (see [Indexing](#indexing-1)).
-
-### prefer_lingua Interaction
-
-- When `prefer_lingua: true` in the postgres profile: lingua data is already in the main table, so `postgres_ml` skips the lingua classifier
-- When `prefer_lingua: false`: `postgres_ml` ingests lingua data from the `lingua_ingest` directory
-
-### Fast Initial Load (New Tables)
-
-Same algorithm as postgres_ingest, with an additional step:
-
-1. CREATE TABLE (no PK, no FK)
-2. Blind COPY of all classifier output files
-3. Deduplication (same null-safe ORDER BY: `COALESCE(retrieved_utc, -1) DESC, dataset DESC, ctid`)
-4. Add PRIMARY KEY
-5. **Add FOREIGN KEY** (validates all IDs exist in the main table)
-
-Once the table has a primary key, subsequent ingestions use ON CONFLICT. Classifier tables left without a PK by an interrupted run are auto-detected and re-routed back through fast-load on the next ingest.
-
-### Classifier Resolution and Overrides
-
-What runs and the per-classifier `suffix` come from the source's ml/lingua profile config. `config/postgres_ml/services.yaml` and the per-source `config/sources/<name>/postgres_ml.yaml` only carry ingestion-only overrides:
-
-| Option | Description |
-|--------|-------------|
-| `enabled` | Skip ingestion of a classifier without removing it from the ml profile. Default `true`. |
-| `source_dir` | Directory under `OUTPUT_PATH/` (default: classifier name). |
-| `source_dir_ingest` | Lingua-only: alternative directory used when `prefer_lingua: false`. Defaults to `lingua_ingest`. |
-| `column_overrides` | Force specific column types instead of inferring from data. |
-
-`suffix` is **not** an ingestion override; it lives in the ml/lingua profile so file naming is consistent between the run and the ingest.
-
-### Indexing
-
-Classifier tables have their own index set, `ml_indexes`, keyed by **classifier table name** (data type + classifier suffix):
+| Key | Used by | Keyed by | Index type |
+|-----|---------|----------|------------|
+| `indexes` | `postgres_ingest` | Data type (Reddit: `[dataset, author, subreddit, domain]` for submissions) | B-tree |
+| `ml_indexes` | `postgres_ml` | Classifier table name (data type + classifier suffix) | B-tree |
+| `sr_indexes` | `sr_ingest` | Data type; falls back to `indexes`, read list-only (bitmap), since postgres_ingest shares it | Bitmap or bloom filter |
+| `sr_ml_indexes` | `sr_ml` | Classifier table name | Bitmap or bloom filter |
+| `mongo_indexes` | `mongo_ingest` | Data type | A single ascending index per field per collection |
 
 ```yaml
 # config/sources/reddit/platform.yaml
 ml_indexes:
   comments_lingua: [lang]
   comments_toxic_roberta: [toxic]
-```
-
-- **No fallback to `indexes`.** The base index list names columns (`author`, `subreddit`, `domain`) that classifier tables do not have, so the two sets are independent. A classifier table with no `ml_indexes` entry gets no indexes.
-- Only tables that ingested at least one file **in the current run** are indexed. To add an index after everything is ingested, use `sdp db create-indexes`.
-- Each index is placed in the same tablespace as its table (the data type's `table_tablespaces` entry).
-- A failed index build logs a warning and the run continues — an unknown tablespace does not abort ingestion.
-- `parallel_index_workers` controls `max_parallel_maintenance_workers` per index build, as in postgres_ingest.
-
-### Configuration
-
-**Config file:** `config/postgres_ml/pipeline.yaml`
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `processing.data_types` | Data types to ingest | `[]` (from source config) |
-| `processing.check_duplicates` | Handle duplicate IDs | `true` |
-| `processing.parallel_ingestion` | Ingest data types concurrently | `true` |
-| `processing.type_inference_rows` | Rows to sample for column type inference | `1000` |
-| `processing.use_foreign_key` | Add FK constraint to main table | `true` |
-| `processing.create_indexes` | Create indexes on classifier tables after ingestion | `true` |
-| `processing.parallel_index_workers` | Maintenance workers per index build | `8` |
-| `ml_indexes` | Index fields per classifier table. No fallback to `indexes`. | `{}` (from platform config) |
-| `processing.watch_interval` | Poll for new files (0 = once) | `0` |
-
----
-
-## Authentication
-
-Database authentication is optional and can be enabled during `sdp db setup`. When adding a database with `sdp db setup --add`, auth is automatically extended if already enabled on existing databases. When enabled, it adds password-based access control to PostgreSQL, MongoDB, and StarRocks.
-
-### Users
-
-When auth is enabled, two database users are created per database:
-
-| Database | Admin user | RO user | Password storage |
-|----------|-----------|---------|-----------------|
-| PostgreSQL | `postgres` | `readonly` | Admin: runtime prompt. RO: `.ro_credentials` |
-| MongoDB | `admin` | `readonly` | Admin: runtime prompt. RO: `.ro_credentials` |
-| StarRocks | `root` | `readonly` | Admin: runtime prompt. RO: `.ro_credentials` |
-
-The admin password is **never stored on disk** — it is prompted each time `sdp db start` is run with auth enabled. If forgotten, use `sdp db recover-password` to reset it. The read-only user password is auto-generated during `sdp db setup` and stored in `.ro_credentials` (chmod 600) in each database data volume.
-
-### Recovering Credentials
-
-| Scenario | Command |
-|----------|---------|
-| Lost admin password | `sdp db recover-password` |
-| Lost or known-leaked RO password | `sdp db recover-password --regenerate-ro` (also resets admin) |
-
-`recover-password --regenerate-ro` writes a fresh `.ro_credentials` for every database with auth + RO user before each branch's final restart; the database entrypoint applies the new password as part of the same restart cycle.
-
-Re-running `sdp db setup` on an existing install now defaults to **keeping** the existing RO password; the previous default (always auto-generate) silently rotated it on every re-run and broke any client with cached credentials.
-
-### Wiping Data Without Losing Config
-
-`sdp db reset --db <postgres|mongo|starrocks>` wipes a single database's data while preserving every config surface: `config/db/<db>.yaml`, `config/sources/*/<db>.yaml`, `.env`, `docker-compose.override.yml`, `config/db/mcp.yaml`, and `.ro_credentials`. Reset stops the DB + its MCP, deletes only the server's own subdirectories under `<DB>_DATA_PATH` (`pgdata/`, `db/`, `fe/`+`be/`), plus host-side `state_tracking/` and mongo's `logs/`, plus the contents of PG tablespaces or SR `storage_paths`. After reset, `sdp db start <db>` brings the DB back up with the preserved `.ro_credentials` (the entrypoint re-creates the RO user from it), ready for `sdp run <db>_ingest`. Reset refuses to run while an ingest container is in flight against the target DB.
-
-Pick the right tool: `db reset` is for re-ingesting from scratch; `db unsetup --db <db>` removes the database entirely (config included); `db setup --add <db>` re-runs setup in place without losing data.
-
-### How It Works
-
-- **PostgreSQL**: `pg_hba.local.conf` uses `scram-sha-256` for remote connections and `trust` for local socket. Existing databases are migrated via temporary trust start in the entrypoint.
-- **MongoDB**: Fresh databases use official `docker-entrypoint.sh` delegation. Existing databases use the MongoDB localhost exception to create the initial admin user.
-- **StarRocks**: The entrypoint wrapper starts StarRocks, waits for FE readiness, then sets the root password and creates/syncs the read-only user via SQL. Uses `GRANT SELECT ON ALL TABLES IN ALL DATABASES TO ROLE 'sdp_readonly'` for read-only access. Password recovery uses temporary `enable_auth_check = false` in `fe.conf` (analogous to PostgreSQL's trust-auth swap).
-
----
-
-## MCP Servers
-
-Optional MCP (Model Context Protocol) servers expose databases to AI tools like Claude Desktop, VS Code, and Cursor.
-
-### Setup
-
-```bash
-python sdp.py db setup-mcp           # Configure MCP servers (interactive)
-python sdp.py db start               # Starts databases + MCP servers together
-```
-
-### Servers
-
-| Database   | Image                            | Transport        | Default Port | Endpoint |
-|------------|----------------------------------|------------------|--------------|----------|
-| PostgreSQL | `crystaldba/postgres-mcp`        | SSE              | 8000         | `/sse`   |
-| MongoDB    | `Dockerfile.mcp-mongo`           | Streamable HTTP  | 3000         | `/mcp`   |
-| StarRocks  | `Dockerfile.mcp-starrocks`       | Streamable HTTP  | 9000         | `/mcp`   |
-
-MCP servers connect using the read-only database user (configured during `sdp db setup`) when auth is enabled, or with default credentials otherwise. The database entrypoint wrappers create/update the RO user on every start, reading credentials from `.ro_credentials` in the data volume. `sdp db setup-mcp` only configures MCP server settings (ports, access mode) — it requires an existing RO user. Read-only mode is the default but can be changed during `sdp db setup-mcp`. Use `sdp db unsetup-mcp` to remove MCP configuration.
-
----
-
-## Database Schema
-
-### PostgreSQL
-
-Uses schemas for source namespacing. The schema name is set per-source in `config/sources/<name>/platform.yaml`:
-- Reddit: `reddit` schema
-- Custom: user-defined during `sdp source add`
-
-| Table Type | Name Pattern | Example |
-|------------|-------------|---------|
-| Main tables | `{schema}.{data_type}` | `reddit.submissions`, `reddit.comments` |
-| Classifier tables | `{schema}.{data_type}{suffix}` | `reddit.submissions_lingua`, `reddit.comments_toxicity_en` |
-
-### StarRocks
-
-Uses database-per-source namespacing (StarRocks has no schema concept). The database name is the source name.
-
-| Table Type | Name Pattern | Example |
-|------------|-------------|---------|
-| Main tables | `{database}.{data_type}` | `reddit.submissions`, `reddit.comments` |
-| Classifier tables | `{database}.{data_type}{suffix}` | `reddit.submissions_lingua`, `reddit.comments_toxicity_en` |
-
-### MongoDB
-
-Uses database-per-source with per-data-type databases or explicit naming. See [mongo_ingest](#mongo_ingest-profile) for details.
-
-### Primary Keys
-
-PostgreSQL and StarRocks ingest the platform's `primary_key` column as the table PK. The Reddit template hardcodes `primary_key: id`; custom platforms set it interactively in `sdp source add` (default: leave blank). When set, PostgreSQL adds `PRIMARY KEY (pk)` after the bulk load and StarRocks uses the Primary Key table model with `DISTRIBUTED BY HASH(pk)` and `enable_persistent_index = true`. When left blank (common for HF datasets without a natural unique field), PostgreSQL ingests without a PK constraint and StarRocks uses the Duplicate Key model with `DISTRIBUTED BY RANDOM` — re-runs append rows, no source-level dedup, no `merge_condition` upsert.
-
----
-
-## Resume Behavior
-
-### State Tracking
-
-**PostgreSQL**: Each data type has a JSON state file in `$PGDATA_PATH/state_tracking/`:
-- `{PLATFORM}_postgres_ingest_{data_type}.json` — tracks ingested datasets
-- `{PLATFORM}_postgres_ml_{classifier}_{data_type}.json` — tracks ingested classifier files
-
-**StarRocks**: Each data type has a JSON state file in `$STARROCKS_DATA_PATH/state_tracking/`:
-- `{PLATFORM}_sr_ingest_{data_type}.json` — tracks ingested datasets
-- `{PLATFORM}_sr_ml_{classifier}_{data_type}.json` — tracks ingested classifier files
-
-**MongoDB**: State files in `$MONGO_DATA_PATH/state_tracking/`:
-- `{PLATFORM}_mongo_ingest_{data_type}.json` — tracks ingested files
-
-Additionally, MongoDB stores ingested file IDs in a `_sdp_metadata` collection per database, enabling state recovery even if state files are lost.
-
-### Database Recovery
-
-- **PostgreSQL**: On first run, if no state file exists, `postgres_ingest` queries the database for unique datasets already present.
-- **StarRocks**: On first run, if no state file exists, `sr_ingest` queries the database for unique datasets already present (same approach as PostgreSQL).
-- **MongoDB**: On first run, if no state file exists, `mongo_ingest` queries the `_sdp_metadata` collection to rebuild the list of already-ingested files.
-
-### Reprocessing
-
-**PostgreSQL:**
-```bash
-# Reprocess a specific data type (postgres_ingest)
-# 1. Drop the table
-psql -h localhost -U postgres -d datasets -c "DROP TABLE reddit.comments;"
-# 2. Delete the state file
-rm data/database/postgres/state_tracking/reddit_postgres_ingest_comments.json
-
-# Reprocess a classifier table (postgres_ml)
-psql -h localhost -U postgres -d datasets -c "DROP TABLE reddit.comments_toxicity_en;"
-rm data/database/postgres/state_tracking/reddit_postgres_ml_toxic_roberta_comments.json
-```
-
-**StarRocks:**
-```bash
-# Reprocess a specific data type (sr_ingest)
-# 1. Drop the table
-mysql -h 127.0.0.1 -P 9030 -u root -e "DROP TABLE reddit.comments;"
-# 2. Delete the state file
-rm data/database/starrocks/state_tracking/reddit_sr_ingest_comments.json
-
-# Reprocess a classifier table (sr_ml)
-mysql -h 127.0.0.1 -P 9030 -u root -e "DROP TABLE reddit.comments_toxicity_en;"
-rm data/database/starrocks/state_tracking/reddit_sr_ml_toxic_roberta_comments.json
-```
-
-Indexes are rebuilt with the table: the next run recreates them from `indexes` / `sr_indexes` for base tables and `ml_indexes` / `sr_ml_indexes` for classifier tables. This is also the way to apply an index that was configured after everything had already been ingested — a plain re-run skips files that are already processed and therefore indexes nothing.
-
----
-
-## mongo Profile (Server)
-
-Runs a MongoDB 8 server using the official Docker image.
-
-### Configuration Files
-
-| File | Purpose |
-|------|---------|
-| `config/mongo/mongod.conf` | Server configuration (storage, compression, networking) |
-
-### Server Settings
-
-The `mongod.conf` configures:
-- **`directoryPerDB: true`** — each database stored in its own directory
-- **zstd compression** — both journal and collection block compressor set to zstd
-- **Diagnostics disabled** — reduces disk noise
-
-WiredTiger cache size is controlled via the `MONGO_CACHE_SIZE_GB` environment variable (default: 2 GB), passed as a CLI flag in docker-compose.
-
-### Export Volume
-
-The host directory `DB_EXPORT_PATH` (default: `./data/export`) is bind-mounted at `/export` inside the container. Use this path with `mongoexport` or `mongosh` to write results to the host.
-
----
-
-## mongo_ingest Profile
-
-Ingests raw extracted files directly into MongoDB using `mongoimport`. Supports JSON/NDJSON, CSV, and Parquet input — the file format is auto-detected from the file extension. Operates on raw data right after decompression or download — no intermediate parsing needed.
-
-### How It Works
-
-1. **Extract**: Detects compressed dump files, decompresses using format-appropriate tools (`.zst`, `.gz`, `.xz`, `.tar.gz`). For `input_format: parquet` sources (e.g., HF datasets), also detects parquet files in `data/extracted/`.
-2. **Ingest**: For each extracted file:
-   - Creates a collection with zstd WiredTiger compression
-   - Runs `mongoimport` for bulk insertion (blind insert, no upsert)
-   - Auto-detects CSV files (by `.csv` extension) and passes `--type csv --headerline` to mongoimport
-   - Auto-detects Parquet files (by `.parquet` extension) and transparently converts to temp NDJSON via PyArrow before running mongoimport. Temp file is deleted on success; location is printed on error for manual cleanup.
-   - Records the file in the `_sdp_metadata` collection for state tracking
-3. **Index**: Creates configured indexes on each collection
-
-### Parquet Ingestion
-
-For sources with `input_format: parquet` (e.g., Hugging Face datasets), `mongo_ingest` detects parquet files in `data/extracted/<data_type>/` and ingests them directly — preserving all original columns without needing the parse profile first. This is useful for raw data inspection in MongoDB while PostgreSQL gets a parsed field subset.
-
-The parquet → MongoDB flow:
-1. PyArrow reads parquet row groups iteratively (memory-bounded)
-2. Each row is serialized to JSON and written to a temp NDJSON file (`{filepath}.ndjson.tmp`)
-3. `mongoimport` ingests the temp NDJSON (standard path — same logging and error handling)
-4. Temp file is deleted on success
-
-> [!NOTE]
-> The MongoDB container image (`Dockerfile.mongo`) includes `pyarrow` for parquet conversion. This is separate from the CPU/GPU processing containers.
-
-### Collection Strategies
-
-Set per-source in `platform.yaml` via `mongo_collection_strategy`:
-
-| Strategy | Description | Use Case |
-|----------|-------------|----------|
-| `per_file` | Each input file becomes its own collection | Reddit: monthly dumps (`RS_2024-01` → collection `2024-01` in db `reddit_submissions`) |
-| `per_data_type` | All files of a type merge into one collection | Twitter: many small files → single `tweets` collection |
-
-### Database Naming
-
-Two approaches configured in the source's `platform.yaml`:
-- **Built-in platforms** use `mongo_db_name_template` with `{platform}` and `{data_type}` placeholders (e.g., `reddit_submissions`, `reddit_comments`)
-- **Custom sources** use explicit `mongo_db_name` + per-data-type `mongo_collections` mapping (e.g., `mongo_db_name: mydata` with `mongo_collections: {posts: posts, users: users}`)
-
-### Configuration
-
-**Base config:** `config/mongo/pipeline.yaml`
-**Source overrides:** `config/sources/<name>/mongo.yaml`
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `database.host` | MongoDB hostname | `mongo` |
-| `database.port` | MongoDB port (override: `MONGO_PORT`) | `27017` |
-| `processing.data_types` | Data types to process | `[]` (from source config) |
-| `processing.num_insertion_workers` | `mongoimport --numInsertionWorkers` | `4` |
-| `processing.create_indexes` | Create indexes after ingestion | `true` |
-| `processing.cleanup_temp` | Delete extracted JSON after ingestion | `false` |
-| `processing.watch_interval` | Poll for new files (0 = once) | `0` |
-
-### Indexes
-
-Index fields are configured per-source in `platform.yaml` under `mongo_indexes`:
-
-```yaml
-# config/sources/reddit/platform.yaml
+sr_ml_indexes:
+  comments_lingua: [lang]                                  # plain list = bitmap
+  comments_emotions_en: {bloomfilter: [author], bitmap: [subreddit]}
 mongo_indexes:
   submissions: [id, author, subreddit, domain]
   comments: [id, author, subreddit, link_id]
 ```
 
-Each field gets a single ascending index per collection.
+- **Classifier tables have no fallback.** The base index lists name columns (`author`, `subreddit`, `domain`) that classifier tables do not have, so `ml_indexes` and `sr_ml_indexes` never fall back to `indexes` or `sr_indexes`. A classifier table with no entry gets no indexes.
+- **Classifier tables are indexed only when they ingested at least one file in the current run** (`postgres_ml`, `sr_ml`). A plain re-run skips files already processed and so indexes nothing.
+- **A failed classifier-table index build logs a warning and the run continues** (`postgres_ml`, `sr_ml`). For `postgres_ml`, an unknown tablespace does not abort ingestion.
+- **PostgreSQL**: `parallel_index_workers` sets `max_parallel_maintenance_workers` per index build; each classifier-table index is placed in the same tablespace as its table (the data type's `table_tablespaces` entry).
+- **StarRocks**: tables are indexed in parallel with each other and fields within a table one at a time; `sr_ml` caps this at 8 tables at once. See [Databases and ingestion](../architecture/databases.md#index-builds) for how builds are polled.
 
-To add indexes after ingestion, use `sdp db create-indexes`. This interactive command discovers collections via metadata, shows existing indexes, and creates new ones across all collections for a data type. Optionally persists new indexes to `platform.yaml` under `mongo_indexes` (MongoDB has no ML ingestion profile, so there is no separate classifier-table set).
+To add indexes after ingestion, run `python sdp.py db create-indexes`. This interactive command connects to the running databases, shows existing tables (or, for MongoDB, collections found through metadata), columns and indexes, and lets you choose which fields to index; for MongoDB it creates the index across all collections of a data type. It can save the new indexes to `platform.yaml`: base tables to `indexes` / `sr_indexes`, classifier tables to `ml_indexes` / `sr_ml_indexes`, MongoDB to `mongo_indexes` (MongoDB has no ML ingest profile, so there is no separate classifier set). The owning profile then rebuilds them on the next run.
 
----
+### Choosing a StarRocks index type
 
-## starrocks Profile (Server)
-
-Runs a StarRocks OLAP database using the official `starrocks/allin1-ubuntu` image (FE + BE in a single container). StarRocks provides high-performance analytical queries on large datasets using a columnar storage engine with Primary Key tables for automatic upsert/deduplication.
-
-### Configuration
-
-Configured during `sdp.py db setup`:
-
-| Setting | Config key | Default |
-|---------|-----------|---------|
-| MySQL protocol port | `port` | `9030` |
-| FE HTTP port | `fe_http_port` | `8030` |
-| FE JVM heap (GB) | `fe_jvm_heap` | `max(2, RAM/8)` |
-| BE memory limit (GB) | `be_mem_limit` | `~50% RAM` |
-| Table compression | `compression` | `ZSTD` |
-| Extra storage disks | `storage_paths` | `[]` (primary only) |
-
-Configuration files generated by setup:
-- `config/db/starrocks.yaml` — port, memory settings, storage paths
-- `config/starrocks/fe.conf` — FE network, metadata, JVM heap
-- `config/starrocks/be.conf` — BE network, storage paths, memory limit
-
-### Memory Model
-
-The all-in-one container runs both FE (query planner, metadata) and BE (storage, query execution). Memory is split explicitly during setup:
-
-- **FE JVM heap** — Java heap for query planning and metadata. 2-8 GB typical.
-- **BE memory limit** — Native memory for storage engine, block cache, query execution. This is the main tuning knob.
-- **Container memory limit** — Docker `mem_limit`, should be `fe_heap + be_mem + 2GB` headroom.
-
-### Multi-Disk Storage
-
-The primary data path (`STARROCKS_DATA_PATH`, set during setup) is always used as BE tablet storage. Extra disks can be added on top of it, and BE distributes tablets across all configured paths:
-
-```
-Host                          Container                               Role
-$STARROCKS_DATA_PATH/be/storage  →  /data/deploy/starrocks/be/storage    primary
-/mnt/nvme0/starrocks             →  /data/deploy/starrocks/be/storage_0  extra 1
-/mnt/nvme1/starrocks             →  /data/deploy/starrocks/be/storage_1  extra 2
-```
-
-The primary mount is declared in `docker-compose.yml`; extra disks are added to `docker-compose.override.yml` and listed in `storage_root_path` in `config/starrocks/be.local.conf`, with the primary path always first.
-
-### Bucketing (tablet count per table)
-
-StarRocks splits each table into **tablets** (one bucket = one tablet with `replication_num=1`). Tablets are the physical storage unit — they govern compaction granularity, disk distribution, and scan-task scheduling. Compute parallelism for a query is set separately by the BE's `pipeline_dop` and is **not** capped by bucket count: if tablets < pipeline_dop, StarRocks uses morsel-driven execution to split individual tablets into finer work units and keep all compute threads busy.
-
-Set per source during `sdp source add`, stored in `config/sources/<name>/platform.yaml`:
-
-```yaml
-# Uniform — all tables in this source get 256 buckets (the common case)
-sr_buckets: 256
-
-# Per-data-type override (hand-edit only; not prompted)
-sr_buckets:
-  submissions: 128
-  comments: 512
-```
-
-The default during setup is `logical_cpu_count × 8`, which targets roughly 1–10 GB per tablet for datasets in the 100 GB – 10 TB range. Rules of thumb:
-
-- **< 10 GB source**: drop to `logical_cpus` or `logical_cpus × 2` to avoid wastefully small tablets (< 128 MB).
-- **100 GB – 10 TB source**: default is fine.
-- **> 10 TB source**: raise proportionally. Target tablet size is 1–10 GB; tolerable up to ~100 GB on append-only workloads (base compaction is slow on large tablets).
-
-Tables created before an `sr_buckets` change keep their original bucket count — StarRocks doesn't reshard unpartitioned tables in place.
-
-### Table Compression
-
-A single global compression codec is chosen during `sdp.py db setup` and stored as `compression` in `config/db/starrocks.yaml`. It is applied to every StarRocks table (base and classifier) as a `PROPERTIES("compression" = "<codec>")` clause at `CREATE TABLE` time. The default is `ZSTD`, which compresses text-heavy columns roughly 33% smaller than StarRocks' own `LZ4` default while keeping scans fast. The prompt offers `ZSTD` and `LZ4`; `ZLIB` and `SNAPPY` are also accepted if set by hand.
-
-The setting only affects **newly created** tables. Existing tables keep their codec until dropped/recreated, or altered explicitly:
-
-```sql
-ALTER TABLE reddit.comments SET ("compression" = "ZSTD");
-```
-
-A per-source override is available through the normal profile deep-merge — add it to `config/sources/<name>/starrocks.yaml` (base tables) or `sr_ml.yaml` (classifier tables) under the `pipeline` key, and the per-source value wins over the global default:
-
-```yaml
-pipeline:
-  database:
-    compression: LZ4
-```
-
-When no codec is configured at all (e.g. installs that predate this setting), the property is omitted and StarRocks falls back to `LZ4`.
-
-### Connecting
-
-StarRocks uses the MySQL wire protocol. Connect with any MySQL client:
-
-```bash
-mysql -h 127.0.0.1 -P 9030 -u root --skip-password
-```
-
-### Health Check
-
-The container health check verifies MySQL connectivity. StarRocks takes 30-60s to fully start (FE boot + BE registration). The health check uses `start_period: 60s` before counting failures.
-
----
-
-## sr_ingest Profile
-
-Ingests parsed Parquet or CSV files into StarRocks. Feature parity with `postgres_ingest` but significantly simpler — when a `primary_key` is configured, StarRocks handles upsert and deduplication natively; when not, the table uses the Duplicate Key model and re-runs append rows.
-
-### How It Works
-
-1. **Creates database** — one database per source (e.g., `reddit`, `twitter_academic`), like MongoDB's database-per-source pattern
-2. **Creates tables** — columns and types derived from `platform.yaml` field definitions. With a `primary_key`: Primary Key table with `DISTRIBUTED BY HASH(pk)`, auto-deduplicates on insert. Without one: Duplicate Key model with `DISTRIBUTED BY RANDOM`, append-only
-3. **Ingests files** — `INSERT INTO ... SELECT FROM FILES()` reads Parquet/CSV directly from the StarRocks BE filesystem mount. The ingestion container sends SQL; StarRocks BE reads the files itself
-4. **Conditional upsert** — when `check_duplicates: true`, uses `merge_condition` to keep rows with higher `upsert_order_field` (e.g., `retrieved_utc`)
-5. **Creates indexes** — bitmap and/or bloom filter, for columns configured in `sr_indexes`, keyed by data type (classifier tables use `sr_ml_indexes` in the sr_ml profile; see [Choosing a StarRocks Index Type](#choosing-a-starrocks-index-type)). Bloom filter columns are applied first as a single `ALTER TABLE … SET ("bloom_filter_columns" = …)` per table, then bitmaps one at a time. Tables are built in parallel with each other; fields within a table are built serially (StarRocks allows only one schema change per table at a time). `CREATE INDEX` is async on the BE, so the pipeline polls `SHOW ALTER TABLE COLUMN` every `processing.index_poll_interval` seconds (default: 10) until each alter job reaches `FINISHED`. Per-BE concurrency for schema changes is capped by `alter_tablet_worker_count` in `config/starrocks/be.conf` — configured at `sdp db setup`.
-6. **Runs ANALYZE** — collects statistics for the query optimizer
-
-State tracking via JSON files in the StarRocks data directory enables resume after interruption.
-
-### Configuration
-
-Base config: `config/sr/pipeline.yaml`
-Source override: `config/sources/<name>/starrocks.yaml`
-
-| Setting | Config key | Default | Notes |
-|---------|-----------|---------|-------|
-| Host | `database.host` | `starrocks` | Docker service name |
-| Port | `database.port` | `9030` | MySQL protocol port |
-| User | `database.user` | `root` | |
-| Data types | `processing.data_types` | `[]` | Falls back to platform config |
-| Check duplicates | `processing.check_duplicates` | `true` | Use merge_condition for conditional upsert |
-| Create indexes | `processing.create_indexes` | `true` | Create indexes after ingestion |
-| Index poll interval | `processing.index_poll_interval` | `10` | Seconds between alter-job status polls during BITMAP index build |
-| Prefer lingua | `processing.prefer_lingua` | `true` | Ingest lingua-enriched files (includes lang columns) |
-| Watch interval | `processing.watch_interval` | `0` | Minutes between checks (0 = run once) |
-| Index fields | `sr_indexes` | `{}` | Per data type. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. Falls back to `indexes`, which is read list-only (bitmap) since postgres_ingest shares it |
-
-### Differences from postgres_ingest
-
-- **Single code path** — no fast-load vs standard-load branching. Primary Key tables handle dedup natively
-- **No schema** — uses `database.table` (not `schema.table`). Database name = source name
-- **No tablespaces** — multi-disk handled by BE `storage_root_path` config
-- **No deferred PK** — primary key always defined at table creation
-- **Two index mechanisms** — bitmap and bloom filter instead of B-tree (see below)
-
-## Choosing a StarRocks Index Type
-
-`sr_indexes` and `sr_ml_indexes` accept either a plain list — which always means **bitmap** — or a per-type mapping:
+`sr_indexes` and `sr_ml_indexes` accept either a plain list, which always means bitmap, or a per-type mapping:
 
 ```yaml
 sr_indexes:
@@ -717,72 +162,409 @@ sr_indexes:
 | Column types | Not `FLOAT` / `DOUBLE` | Not `FLOAT` / `DOUBLE` / `TINYINT` / `BOOLEAN` / `DECIMAL` / `HLL` |
 | Cost | Larger; built per column | Smaller |
 
-Neither accelerates `LIKE` — that needs an N-gram bloom filter, which this pipeline does not manage.
+Neither speeds up `LIKE`; that needs an N-gram bloom filter, which this pipeline does not manage.
 
-Bitmap indexes are **adaptive**: StarRocks skips one at query time when it cannot filter out roughly 999/1000 of rows, so a column with very few distinct values gets the build cost without the benefit. Reference points from a real 3.1B-row classifier table: `dataset` has 255 distinct values (1 in 255 — below the useful threshold), `subreddit` 23.8M, `author` 164M. High-cardinality columns queried only with `=` / `IN` are the bloom filter's case; columns needing range or null predicates are bitmap's.
+Bitmap indexes are adaptive: StarRocks skips one at query time when it cannot filter out roughly 999/1000 of rows, so a column with very few distinct values gets the build cost without the benefit. Reference points from a real 3.1B-row classifier table: `dataset` has 255 distinct values (1 in 255, below the useful threshold), `subreddit` 23.8M, `author` 164M. High-cardinality columns queried only with `=` / `IN` are the bloom filter's case; columns that need range or null predicates are bitmap's.
 
-`sdp db create-indexes` defaults every index it creates to a bloom filter and asks once, at the end, which should be bitmap instead. Column types are checked first: `FLOAT` and `DOUBLE` support **neither** mechanism and are dropped from the plan with a message — which covers every classifier score column, including `lang_prob` — while `TINYINT` / `BOOLEAN` / `DECIMAL` support only bitmap and are switched automatically.
+`python sdp.py db create-indexes` defaults every StarRocks index it creates to a bloom filter and asks once, at the end, which should be bitmap instead. Column types are checked first: `FLOAT` and `DOUBLE` support neither mechanism and are dropped from the plan with a message (this covers every classifier score column, including `lang_prob`), while `TINYINT` / `BOOLEAN` / `DECIMAL` support only bitmap and are switched automatically.
 
-> [!NOTE]
 > Whether adding a bloom filter column rebuilds existing data or applies only to newly written data is not documented upstream and has not been verified here. Treat bloom filters as reliable for data written after the change; if you need coverage of existing rows and cannot confirm the behaviour, use a bitmap index.
 
-## sr_ml Profile
+## StarRocks settings
 
-Ingests ML classifier outputs (lingua, toxic_roberta, go_emotions) into separate StarRocks tables. Feature parity with `postgres_ml` but simpler — no fast-load/standard-load branching, no foreign keys, single ingestion path.
+These are set by `python sdp.py db setup`:
 
-### How It Works
+| Setting | Config key | Default |
+|---------|------------|---------|
+| MySQL protocol port | `port` | `9030` |
+| FE HTTP port | `fe_http_port` | `8030` |
+| FE JVM heap (GB) | `fe_jvm_heap` | `max(2, RAM/8)` |
+| BE memory limit (GB) | `be_mem_limit` | `~50% RAM` |
+| Table compression | `compression` | `ZSTD` |
+| Extra storage disks | `storage_paths` | `[]` (primary only) |
 
-1. **Resolves classifier runs** from the source's ml/lingua profile config (the same place `postgres_ml` reads from). Source `ml.yaml` is authoritative for which classifiers run and their `data_types` scope; `suffix` comes from the merged ml/lingua config. `config/sr_ml/services.yaml` and `config/sources/<name>/sr_ml.yaml` add optional ingestion-only overrides.
-2. **Detects classifier output files** in `/data/output/{source_dir}/{data_type}/`, restricted to each classifier's `data_types` scope.
-3. **Infers schema** from the first file per data type:
-   - **Parquet**: reads typed schema from file metadata (no sampling)
-   - **CSV**: samples N rows and infers types (INT > FLOAT > BOOLEAN > STRING)
-4. **Creates classifier tables** as Primary Key tables (e.g., `submissions_lingua`, `comments_toxicity_en`)
-5. **Ingests files** via `INSERT INTO ... SELECT FROM FILES()` with optional `merge_condition`
-6. **Runs ANALYZE** per classifier table after ingestion
-7. **Creates indexes** on classifier tables from `sr_ml_indexes` — bitmap and/or bloom filter (see [Indexing](#indexing-2))
+| File | What it holds | Written by |
+|------|---------------|------------|
+| `config/db/starrocks.yaml` | Port, memory settings, compression, storage paths | `python sdp.py db setup` |
+| `config/starrocks/fe.conf` | FE network, metadata, JVM heap: the template for `fe.local.conf` | Shipped; setup does not change it |
+| `config/starrocks/be.conf` | BE network, storage paths, memory limit: the template for `be.local.conf` | Shipped; setup does not change it |
+| `config/starrocks/fe.local.conf` | Copy of `fe.conf` with `jvm_heap_size` set | `python sdp.py db setup` |
+| `config/starrocks/be.local.conf` | Copy of `be.conf` with `mem_limit`, `alter_tablet_worker_count` and, with extra disks, `storage_root_path` set | `python sdp.py db setup` |
 
-Lingua handling follows the `prefer_lingua` pattern: when `true` (default, read from sr_ingest profile), lingua classifier outputs are already embedded in base tables via sr_ingest, so the lingua classifier is skipped. When `false`, lingua data is ingested from `lingua_ingest/` into separate tables.
+Only the `.local.conf` files are mounted into the container. An edit to `fe.conf` or `be.conf` therefore takes effect only after you re-run `python sdp.py db setup` (and restart StarRocks).
 
-### Indexing
+### Memory
 
-Classifier tables have their own index set, `sr_ml_indexes`, keyed by **classifier table name** (data type + classifier suffix):
+The all-in-one container runs both the FE (query planner, metadata) and the BE (storage, query execution). Setup splits the memory explicitly:
 
-```yaml
-# config/sources/reddit/platform.yaml
-sr_ml_indexes:
-  comments_lingua: [lang]                                  # plain list = bitmap
-  comments_emotions_en: {bloomfilter: [author], bitmap: [subreddit]}
+| Part | What it is |
+|------|------------|
+| FE JVM heap | Java heap for query planning and metadata; 2-8 GB is typical |
+| BE memory limit | Native memory for the storage engine, block cache and query execution; the main tuning knob |
+| Container memory limit | Docker `mem_limit` (`STARROCKS_MEM_LIMIT`); should be `fe_heap + be_mem + 2GB` headroom |
+
+### Multi-disk storage
+
+The primary data path (`STARROCKS_DATA_PATH`, set during setup) is always used as BE tablet storage. Extra disks can be added on top of it, and the BE spreads tablets across all configured paths:
+
+```
+Host                             Container                               Role
+$STARROCKS_DATA_PATH/be/storage  →  /data/deploy/starrocks/be/storage    primary
+/mnt/nvme0/starrocks             →  /data/deploy/starrocks/be/storage_0  extra 1
+/mnt/nvme1/starrocks             →  /data/deploy/starrocks/be/storage_1  extra 2
 ```
 
-- **No fallback.** Unlike `sr_indexes` (which falls back to `indexes`), `sr_ml_indexes` has no fallback at all — base index fields name columns the classifier tables do not have. A classifier table with no entry gets no indexes.
-- Index type selection is described in [Choosing a StarRocks Index Type](#choosing-a-starrocks-index-type).
-- Only tables that ingested at least one file **in the current run** are indexed. Use `sdp db create-indexes` to add indexes afterwards.
-- Per table: bloom filter columns go first as one `ALTER TABLE`, then bitmaps serially (StarRocks allows one schema change per table). Tables build in parallel, capped at 8 concurrent — the fan-out here is data types × classifiers, not just data types. Each concurrent table costs one connection and one alter-job poll per `index_poll_interval`.
-- `CREATE INDEX` is async on the BE, so the pipeline polls until each alter job reaches `FINISHED`. A job that ends in any other state logs a warning and the run continues. For bloom filters, polling is best-effort progress reporting only — success is decided by re-reading `bloom_filter_columns` from `SHOW CREATE TABLE` and comparing it against the intended set.
+The primary mount is declared in `docker-compose.yml`; extra disks are added to `docker-compose.override.yml` and listed in `storage_root_path` in `config/starrocks/be.local.conf`, with the primary path always first.
 
-### Configuration
+### Bucketing (tablet count per table)
 
-Base config: `config/sr_ml/pipeline.yaml` + `services.yaml`
-Source override: `config/sources/<name>/sr_ml.yaml`
+StarRocks splits each table into tablets (one bucket is one tablet with `replication_num=1`). Tablets are the physical storage unit: they govern compaction granularity, disk distribution and scan-task scheduling. Query parallelism is set separately by the BE's `pipeline_dop` and is not capped by the bucket count: when there are fewer tablets than `pipeline_dop`, StarRocks splits tablets into finer work units (morsel-driven execution) to keep all compute threads busy.
+
+The bucket count is set per source during `python sdp.py source add` and stored in `config/sources/<name>/platform.yaml`:
+
+```yaml
+# Uniform — all tables in this source get 256 buckets (the common case)
+sr_buckets: 256
+
+# Per-data-type override (hand-edit only; not prompted)
+sr_buckets:
+  submissions: 128
+  comments: 512
+```
+
+The setup default is `logical_cpu_count × 8`, which targets roughly 1–10 GB per tablet for datasets of 100 GB – 10 TB.
+
+| Source size | Buckets |
+|-------------|---------|
+| Under 10 GB | Drop to `logical_cpus` or `logical_cpus × 2`, to avoid wastefully small tablets (under 128 MB) |
+| 100 GB – 10 TB | The default is fine |
+| Over 10 TB | Raise proportionally. Target 1–10 GB per tablet; up to ~100 GB is tolerable on append-only workloads (base compaction is slow on large tablets) |
+
+Tables created before an `sr_buckets` change keep their original bucket count: StarRocks does not reshard unpartitioned tables in place.
+
+### Table compression
+
+A single global compression codec is chosen during `python sdp.py db setup` and stored as `compression` in `config/db/starrocks.yaml`. It applies to every StarRocks table (base and classifier) as a `PROPERTIES("compression" = "<codec>")` clause at `CREATE TABLE` time. The default is `ZSTD`, which makes text-heavy columns roughly 33% smaller than StarRocks' own `LZ4` default while keeping scans fast. The prompt offers `ZSTD` and `LZ4`; `ZLIB` and `SNAPPY` are also accepted if set by hand.
+
+The setting only affects newly created tables. Existing tables keep their codec until dropped and recreated, or altered explicitly:
+
+```sql
+ALTER TABLE reddit.comments SET ("compression" = "ZSTD");
+```
+
+To override it for one source, add it to `config/sources/<name>/starrocks.yaml` (base tables) or `sr_ml.yaml` (classifier tables) under the `pipeline` key; the per-source value wins over the global default:
+
+```yaml
+pipeline:
+  database:
+    compression: LZ4
+```
+
+When no codec is configured at all (for example installs that predate this setting), the property is omitted and StarRocks falls back to `LZ4`.
+
+### Startup time
+
+The container health check verifies MySQL connectivity (and, under auth with a read-only user, that this user can log in). StarRocks takes 30-60 s to start fully (FE boot plus BE registration), so the health check waits `start_period: 90s` before counting failures.
+
+## PostgreSQL settings
+
+| File | Purpose |
+|------|---------|
+| `config/postgres/postgresql.conf` | Server tuning (memory, parallelism, WAL) |
+| `config/postgres/pg_hba.conf` | Authentication rules (default: trust, no auth) |
+| `config/postgres/postgresql.local.conf` | Local tuning override, generated by `python sdp.py db setup`; if present, replaces `postgresql.conf` |
+| `config/postgres/pg_hba.local.conf` | Local auth override, generated by `python sdp.py db setup` when auth is enabled; if present, replaces `pg_hba.conf` |
+| `config/postgres/initdb.d/` | First-init scripts (create the `pg_parquet` extension and the read-only user) |
+
+The Docker entrypoint loads the local override files when they exist. They are not tracked by git, so they are safe for machine-specific tuning.
+
+### Server tuning
+
+The default configuration is tuned for 60 GB RAM, 24 CPUs and SSD storage. Run `python sdp.py db setup` to generate a `postgresql.local.conf` with PGTune integration and optional ZFS optimization.
+
+To tune by hand instead:
+
+1. Go to [PGTune](https://pgtune.leopard.in.ua/) and generate settings with **DB Type:** Data Warehouse and **Data Storage:** SSD, and your system's RAM, CPUs and connections.
+2. Append the generated settings to `config/postgres/postgresql.conf`, or create `config/postgres/postgresql.local.conf` with the full configuration.
+
+### Tablespaces
+
+PostgreSQL tablespaces spread tables across several physical disks. You need them when the database exceeds the capacity of one drive (full Reddit data approaches 8 TB and more).
+
+**1. Run the setup.** Run `python sdp.py db setup` and answer yes to the tablespace question in the PostgreSQL section. The script asks you to define tablespaces (a name and a host path for each disk) and to assign each data type to a tablespace. It writes the tablespace config to `config/db/postgres.yaml` and generates `docker-compose.override.yml` with the volume mounts. `pgdata` is always available as a tablespace and means the default PostgreSQL data directory (no extra mount needed).
+
+**2. Check the result.** The tablespace settings live in `config/postgres/pipeline.yaml` or the source overrides:
+
+```yaml
+# config/sources/reddit/postgres.yaml
+pipeline:
+  tablespaces:
+    nvme1: /mnt/nvme1/pg-tablespace    # name: host_path
+    nvme2: /mnt/nvme2/pg-tablespace
+  table_tablespaces:
+    submissions: nvme1                   # data_type: tablespace_name
+    comments: nvme2                      # "pgdata" = default PG data directory
+```
+
+The matching `docker-compose.override.yml`, generated by `python sdp.py db setup`:
+
+```yaml
+services:
+  postgres:
+    volumes:
+      - /mnt/nvme1/pg-tablespace:/data/tablespace/nvme1
+      - /mnt/nvme2/pg-tablespace:/data/tablespace/nvme2
+```
+
+Classifier tables from `postgres_ml` go to the tablespace of their parent data type. How the pipeline creates and uses the tablespaces is in [Databases and ingestion](../architecture/databases.md#tablespaces).
+
+PostgreSQL tables are not partitioned. Reddit-wide queries that are not bounded to a few months would hit 200+ partitions, splitting indexes and hurting performance. If your workload is dominated by analytical scans over the full dataset, StarRocks is the better fit.
+
+## MongoDB settings
+
+| File | Purpose |
+|------|---------|
+| `config/mongo/mongod.conf` | Server configuration (storage, compression, networking) |
+
+`mongod.conf` sets:
+
+- **`directoryPerDB: true`**: each database is stored in its own directory.
+- **zstd compression**: both the journal and the collection block compressor use zstd.
+- **Diagnostics disabled** (`diagnosticDataCollectionEnabled: false`): reduces disk noise.
+
+The WiredTiger cache size is set by the `MONGO_CACHE_SIZE_GB` environment variable (default 2 GB), passed as a command-line flag in docker-compose, not in the conf file.
+
+### Collections and database names
+
+Set per source in `platform.yaml` with `mongo_collection_strategy`:
+
+| Strategy | Description | Use case |
+|----------|-------------|----------|
+| `per_file` | Each input file becomes its own collection | Reddit: monthly dumps (`RS_2024-01` → collection `2024-01` in database `reddit_submissions`) |
+| `per_data_type` | All files of a type merge into one collection | Twitter: many small files → a single `tweets` collection |
+
+Database names are set in the source's `platform.yaml` in one of two ways:
+
+| Source | Keys | Example |
+|--------|------|---------|
+| Built-in platforms | `mongo_db_name_template` with `{platform}` and `{data_type}` placeholders | `reddit_submissions`, `reddit_comments` |
+| Custom sources | Explicit `mongo_db_name` plus a per-data-type `mongo_collections` mapping | `mongo_db_name: mydata` with `mongo_collections: {posts: posts, users: users}` |
+
+### What mongo_ingest reads
+
+`mongo_ingest` works on the raw data right after decompression or download, with no parse step. It reads JSON/NDJSON, CSV and Parquet, detecting the format from the file extension. For sources with `input_format: parquet` (for example Hugging Face datasets) it ingests the parquet files in `data/extracted/<data_type>/` directly, keeping all original columns. This is useful for inspecting the raw data in MongoDB while PostgreSQL gets a parsed field subset. If a Parquet conversion fails, the error names the location of its temp file, for manual cleanup.
+
+## Ingest profile settings
+
+### postgres_ingest
+
+**Base config:** `config/postgres/pipeline.yaml`. **Source overrides:** `config/sources/<name>/postgres.yaml`.
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `database.host` | PostgreSQL hostname | `postgres` |
+| `database.port` | PostgreSQL port (override: `POSTGRES_PORT`) | `5432` |
+| `database.name` | Database name (override: `DB_NAME`) | `datasets` |
+| `database.schema` | Schema name (set via the source's `platform.yaml`) | `null` |
+| `database.user` | Database user | `postgres` |
+| `processing.data_types` | Data types to ingest | `[]` (from source config) |
+| `processing.parallel_mode` | Extract, parse and ingest in parallel phases | `false` |
+| `processing.parallel_ingestion` | Ingest data types concurrently | `true` |
+| `processing.parse_workers` | CSV parsing workers | `12` |
+| `processing.check_duplicates` | Handle duplicate IDs | `true` |
+| `processing.create_indexes` | Create indexes after ingestion | `true` |
+| `processing.parallel_index_workers` | Workers per index build | `8` |
+| `processing.cleanup_temp` | Delete intermediate files | `false` |
+| `processing.watch_interval` | Poll for new files (0 = once) | `0` |
+| `processing.prefer_lingua` | Ingest only the lingua-enriched files (strict either/or, no fallback) | `true` |
+| `indexes` | Index fields per data type | `{}` (from platform) |
+| `tablespaces` | Tablespace definitions (name → host path) | `{}` |
+| `table_tablespaces` | Data type → tablespace assignments | `{}` |
+
+### postgres_ml
+
+**Config file:** `config/postgres_ml/pipeline.yaml`. **Source overrides:** `config/sources/<name>/postgres_ml.yaml`.
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `processing.data_types` | Data types to ingest | `[]` (from source config) |
+| `processing.check_duplicates` | Handle duplicate IDs | `true` |
+| `processing.parallel_ingestion` | Ingest data types concurrently | `true` |
+| `processing.type_inference_rows` | Rows to sample for column type inference | `1000` |
+| `processing.use_foreign_key` | Add an FK constraint to the main table | `true` |
+| `processing.create_indexes` | Create indexes on classifier tables after ingestion | `true` |
+| `processing.parallel_index_workers` | Maintenance workers per index build | `8` |
+| `ml_indexes` | Index fields per classifier table; no fallback to `indexes` | `{}` (from platform config) |
+| `processing.watch_interval` | Poll for new files (0 = once) | `0` |
+
+Which classifiers are ingested, and each one's `suffix` and `data_types` scope, come from the source's ml and lingua profile config. `config/postgres_ml/services.yaml` and `config/sources/<name>/postgres_ml.yaml` hold only ingestion-only overrides:
+
+| Option | Description |
+|--------|-------------|
+| `enabled` | Skip ingestion of a classifier without removing it from the ml profile. Default `true`. |
+| `source_dir` | Directory under `OUTPUT_PATH/` (default: the classifier name) |
+| `source_dir_ingest` | Lingua only: the directory used when `prefer_lingua: false`. Defaults to `lingua_ingest`. |
+| `column_overrides` | Force specific column types instead of inferring them from the data |
+
+`suffix` is not an ingestion override: it lives in the ml/lingua profile, so the file naming is the same for the run and the ingest.
+
+### sr_ingest
+
+**Base config:** `config/sr/pipeline.yaml`. **Source override:** `config/sources/<name>/starrocks.yaml`.
 
 | Setting | Config key | Default | Notes |
-|---------|-----------|---------|-------|
+|---------|------------|---------|-------|
 | Host | `database.host` | `starrocks` | Docker service name |
 | Port | `database.port` | `9030` | MySQL protocol port |
 | User | `database.user` | `root` | |
 | Data types | `processing.data_types` | `[]` | Falls back to platform config |
-| Check duplicates | `processing.check_duplicates` | `true` | Use merge_condition for conditional upsert |
+| Check duplicates | `processing.check_duplicates` | `true` | Use `merge_condition` for conditional upsert |
+| Create indexes | `processing.create_indexes` | `true` | Create indexes after ingestion |
+| Index poll interval | `processing.index_poll_interval` | `10` | Seconds between alter-job status polls during an index build |
+| Prefer lingua | `processing.prefer_lingua` | `true` | Ingest only the lingua-enriched files (includes the lang columns); strict either/or, no fallback |
+| Watch interval | `processing.watch_interval` | `0` | Minutes between checks (0 = run once) |
+| Index fields | `sr_indexes` | `{}` | Per data type. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. Falls back to `indexes`, which is read list-only (bitmap) since postgres_ingest shares it |
+
+### sr_ml
+
+**Base config:** `config/sr_ml/pipeline.yaml` and `services.yaml`. **Source override:** `config/sources/<name>/sr_ml.yaml`.
+
+| Setting | Config key | Default | Notes |
+|---------|------------|---------|-------|
+| Host | `database.host` | `starrocks` | Docker service name |
+| Port | `database.port` | `9030` | MySQL protocol port |
+| User | `database.user` | `root` | |
+| Data types | `processing.data_types` | `[]` | Falls back to platform config |
+| Check duplicates | `processing.check_duplicates` | `true` | Use `merge_condition` for conditional upsert |
 | Parallel ingestion | `processing.parallel_ingestion` | `true` | Process data types concurrently |
 | Type inference rows | `processing.type_inference_rows` | `1000` | CSV rows to sample for type inference |
 | Create indexes | `processing.create_indexes` | `true` | Create indexes on classifier tables after ingestion |
 | Index poll interval | `processing.index_poll_interval` | `10` | Seconds between alter-job status polls |
-| Index fields | `sr_ml_indexes` | `{}` | Per classifier table. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. **No fallback** to `sr_indexes` / `indexes` |
+| Index fields | `sr_ml_indexes` | `{}` | Per classifier table. Plain list = bitmap, or `{bitmap: [...], bloomfilter: [...]}`. No fallback to `sr_indexes` / `indexes` |
 | Watch interval | `processing.watch_interval` | `0` | Minutes between checks (0 = run once) |
 
-### Differences from postgres_ml
+`config/sr_ml/services.yaml` takes the same ingestion-only overrides as `postgres_ml` (above).
 
-- **Single code path** — no fast-load vs standard-load branching. Primary Key tables handle dedup natively
-- **No foreign keys** — StarRocks FKs are non-enforced optimizer hints; skipped entirely
-- **No deferred PK** — primary key always defined at table creation
-- **No tablespace management** — not applicable to StarRocks
+### mongo_ingest
+
+**Base config:** `config/mongo/pipeline.yaml`. **Source overrides:** `config/sources/<name>/mongo.yaml`.
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `database.host` | MongoDB hostname | `mongo` |
+| `database.port` | MongoDB port (override: `MONGO_PORT`) | `27017` |
+| `processing.data_types` | Data types to process | `[]` (from source config) |
+| `processing.num_insertion_workers` | `mongoimport --numInsertionWorkers` | `4` |
+| `processing.create_indexes` | Create indexes after ingestion | `true` |
+| `processing.cleanup_temp` | Delete extracted JSON after ingestion | `false` |
+| `processing.watch_interval` | Poll for new files (0 = once) | `0` |
+
+## Authentication
+
+Database authentication is optional and can be enabled during `python sdp.py db setup`. When it is enabled, it adds password-based access control to PostgreSQL, MongoDB and StarRocks. When you add a database with `python sdp.py db setup --add`, auth is extended to it automatically if it is already enabled on the existing databases.
+
+### Users
+
+When auth is enabled, two database users are created per database:
+
+| Database | Admin user | RO user | Password storage |
+|----------|------------|---------|------------------|
+| PostgreSQL | `postgres` | `readonly` | Admin: runtime prompt. RO: `.ro_credentials` |
+| MongoDB | `admin` | `readonly` | Admin: runtime prompt. RO: `.ro_credentials` |
+| StarRocks | `root` | `readonly` | Admin: runtime prompt. RO: `.ro_credentials` |
+
+The admin password is never stored on disk: it is prompted each time `python sdp.py db start` runs with auth enabled. If you forget it, `python sdp.py db recover-password` resets it. The read-only user's password is generated during `python sdp.py db setup` and stored in `.ro_credentials` (chmod 600) in each database's data volume. How each database applies these is in [Credentials and auth](../architecture/credentials.md).
+
+### Recovering credentials
+
+| Scenario | Command |
+|----------|---------|
+| Lost admin password | `python sdp.py db recover-password` |
+| Lost or known-leaked RO password | `python sdp.py db recover-password --regenerate-ro` (also resets the admin password) |
+
+`recover-password --regenerate-ro` writes a fresh `.ro_credentials` for every database with auth and an RO user, and the database applies the new password on the restart that follows.
+
+Re-running `python sdp.py db setup` on an existing install keeps the existing RO password by default. An older default (always generate a new one) silently rotated it on every re-run and broke any client with cached credentials.
+
+### Wiping data without losing config
+
+`python sdp.py db reset --db <postgres|mongo|starrocks>` wipes one database's data and keeps every config surface: `config/db/<db>.yaml`, `config/sources/*/<db>.yaml`, `.env`, `docker-compose.override.yml`, `config/db/mcp.yaml` and `.ro_credentials`.
+
+Reset stops the database and its MCP server and deletes:
+
+- only the server's own subfolders under `<DB>_DATA_PATH` (`pgdata/`, `db/`, `fe/` + `be/`),
+- the host-side `state_tracking/` and MongoDB's `logs/`,
+- the contents of PostgreSQL tablespaces or StarRocks `storage_paths`.
+
+Afterwards, `python sdp.py db start <db>` brings the database back up with the kept `.ro_credentials` (the read-only user is re-created from it), ready for `python sdp.py run <db>_ingest`. Reset refuses to run while an ingest container is running against the target database.
+
+| To | Use |
+|----|-----|
+| Re-ingest from scratch | `python sdp.py db reset --db <db>` |
+| Remove the database entirely, config included | `python sdp.py db unsetup --db <db>` |
+| Re-run setup in place without losing data | `python sdp.py db setup --add <db>` |
+
+## Reprocessing
+
+Each ingest profile records the files it has loaded in a state file per data type, so a rerun skips them. To load data again, drop the table and remove the matching state entries. The state files are named after the source:
+
+| Profile | State file | One entry per |
+|---------|------------|---------------|
+| `postgres_ingest` | `$PGDATA_PATH/state_tracking/{SOURCE}_postgres_ingest_{data_type}.json` | Ingested file (for example `RS_2024-01`) |
+| `postgres_ml` | `$PGDATA_PATH/state_tracking/{SOURCE}_postgres_ml_{data_type}.json` | Classifier file, as `<classifier>/<file stem>`; one file shared by all classifiers of that data type |
+| `sr_ingest` | `$STARROCKS_DATA_PATH/state_tracking/{SOURCE}_sr_ingest_{data_type}.json` | Ingested file |
+| `sr_ml` | `$STARROCKS_DATA_PATH/state_tracking/{SOURCE}_sr_ml_{data_type}.json` | Classifier file, as `<classifier>/<file stem>` |
+| `mongo_ingest` | `$MONGO_DATA_PATH/state_tracking/{SOURCE}_mongo_ingest_{data_type}.json` | Ingested file |
+
+**PostgreSQL:**
+
+```bash
+# Reprocess a data type (postgres_ingest): drop the table, delete its state file
+psql -h localhost -U postgres -d datasets -c "DROP TABLE reddit.comments;"
+rm data/database/postgres/state_tracking/reddit_postgres_ingest_comments.json
+
+# Reprocess one classifier table (postgres_ml): drop the table, then remove the
+# classifier's "toxic_roberta/..." entries from the shared state file
+psql -h localhost -U postgres -d datasets -c "DROP TABLE reddit.comments_toxicity_en;"
+# edit data/database/postgres/state_tracking/reddit_postgres_ml_comments.json
+```
+
+**StarRocks:**
+
+```bash
+# Reprocess a data type (sr_ingest)
+mysql -h 127.0.0.1 -P 9030 -u root -e "DROP TABLE reddit.comments;"
+rm data/database/starrocks/state_tracking/reddit_sr_ingest_comments.json
+
+# Reprocess one classifier table (sr_ml): drop the table, then remove the
+# classifier's "toxic_roberta/..." entries from the shared state file
+mysql -h 127.0.0.1 -P 9030 -u root -e "DROP TABLE reddit.comments_toxicity_en;"
+# edit data/database/starrocks/state_tracking/reddit_sr_ml_comments.json
+```
+
+For a classifier table you can instead delete the whole `*_ml_{data_type}.json` file; then every classifier of that data type is ingested again on the next run.
+
+Indexes are rebuilt with the table: the next run recreates them from `indexes` / `sr_indexes` for base tables and `ml_indexes` / `sr_ml_indexes` for classifier tables. This is also how to apply an index that was configured after everything had been ingested, since a plain re-run skips files already processed and therefore indexes nothing. (`python sdp.py db create-indexes` adds an index without reloading.)
+
+## Database schema
+
+| Database | Namespacing | Main tables | Classifier tables |
+|----------|-------------|-------------|-------------------|
+| PostgreSQL | One schema per source, set in `config/sources/<name>/platform.yaml` (`db_schema`): `reddit` for Reddit, user-defined for custom sources | `{schema}.{data_type}`, for example `reddit.submissions`, `reddit.comments` | `{schema}.{data_type}{suffix}`, for example `reddit.submissions_lingua`, `reddit.comments_toxicity_en` |
+| StarRocks | One database per source, named after the source (StarRocks has no schemas) | `{database}.{data_type}`, for example `reddit.submissions` | `{database}.{data_type}{suffix}`, for example `reddit.comments_toxicity_en` |
+| MongoDB | One database per data type or explicit names (see [Collections and database names](#collections-and-database-names)) | One collection per file or per data type | None (MongoDB has no ML ingest profile) |
+
+### Primary keys
+
+PostgreSQL and StarRocks use the platform's `primary_key` column as the table's primary key. The Reddit template sets `primary_key: id`; custom platforms set it interactively in `python sdp.py source add` (default: left blank).
+
+| `primary_key` | PostgreSQL | StarRocks |
+|---------------|------------|-----------|
+| Set | `PRIMARY KEY (pk)`, added after the bulk load | Primary Key table model, `DISTRIBUTED BY HASH(pk)`, `enable_persistent_index = true` |
+| Blank (common for HF datasets without a natural unique field) | No PK constraint | Duplicate Key model with `DISTRIBUTED BY RANDOM` |
+
+Without a primary key, re-runs append rows: there is no source-level dedup and no `merge_condition` upsert.
+
+## MCP servers
+
+The read-only MCP servers that give AI agents access to these databases, their setup with `python sdp.py db setup-mcp` and their ports are on [AI access](ai-access.md).

@@ -287,7 +287,7 @@ Valid profiles: `parse`, `lingua`, `ml`, `postgres_ingest`, `postgres_ml`, `mong
 | `sdp.py broker status` | Say whether the broker runs, its pid, since when, and whether a password is set |
 | `sdp.py broker audit [--limit N] [--verify] [--json]` | Print the newest lines of the broker's audit log, or check its chain with `--verify` |
 
-The broker is a host process on a unix socket through which a logged-in session can run a fixed list of typed actions. The web UI uses it. See [The broker](docs/user-guide/broker.md).
+The broker is a host process on a unix socket through which a logged-in session can run a fixed list of typed actions. The web UI uses it. See [The web UI](docs/user-guide/webui.md).
 
 ### Web UI (`sdp.py webui`)
 

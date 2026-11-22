@@ -1,105 +1,112 @@
 ---
 title: "Chat"
 parent: "User guide"
-nav_order: 10
+nav_order: 12
 ---
-# The chat
+# Chat
 
-The Chat window is an AI assistant that works in a sandbox container whose only network peer is a gateway container; the gateway holds the model's credential, so the sandbox never sees it, and reaches the model and the databases' MCP servers for it. This version has five commands: `sdp.py chat setup`, which asks the settings and the credential, stores them and builds the two images; `sdp.py chat start`, `stop` and `status`, which run the two containers, stop them and say how they are; and `sdp.py chat unsetup`, which removes the images, the settings and the credential. In a started chat the sandbox runs the chat's runner, which keeps the chats and runs the assistant (see [What the sandbox runs](#what-the-sandbox-runs)). The Chat window of the web UI is where you ask the assistant (see [The Chat window](webui.md#the-chat-window)).
+The chat is an AI assistant that answers questions about your databases, writes files and plots, and can submit long queries to the query scheduler's queue for your approval. You ask it in the [web UI](webui.md)'s Chat window; this page covers setting it up and running it.
+
+The assistant works in a sandbox container whose only network peer is a gateway container. The gateway holds the model's credential, so the sandbox never sees it, and reaches the model and the databases' MCP servers for it. What the sandbox runs and what it can reach is in [Broker, web UI and chat](../architecture/control-plane.md#the-chat).
 
 ## Back ends
 
 | Back end | What it uses | What setup asks |
-|----------|--------------|-----------------|
+|---|---|---|
 | `claude-code` | Claude Code on your own Claude subscription login | The token: run `claude setup-token` on a machine where you are logged in to Claude Code and paste what it prints. This uses YOUR subscription, under the vendor's terms for it. |
 | `openai-compatible` | An endpoint that speaks the OpenAI API, such as OpenRouter | The endpoint's address (default `https://openrouter.ai/api/v1`), the model name, and the endpoint's API key |
 
 The address must be `https://host[:port]/path`: https only, and no user name, query, fragment, `..` or `%`. The model name is 1 to 200 visible ASCII characters without spaces.
 
-## `sdp.py chat setup`
+## Set up and start
 
-It asks, in this order:
+**1. Have a database the chat can read.** The chat reads a database only through its MCP server on the database's read-only user. Set the database up with authentication and a read-only user, then its MCP server, then start it.
 
-1. The back end (1: `claude-code`, 2: `openai-compatible`).
-2. For `openai-compatible`: the address and the model name.
-3. The secret (the token or the API key), asked once and without echo, as `sdp.py broker passwd` asks its password. White space around it is dropped; it is refused when it is empty, longer than 4096 characters, or holds anything but visible ASCII characters (a space inside included). When a credential is already stored, setup first asks whether to replace it; the default keeps it and asks no secret. When you choose another back end than the saved one, that question is not asked and a new secret is required, because the stored one belongs to the other back end; the same holds when the settings are missing, cannot be read or name no back end, because then the stored secret's back end is not known.
-4. The soft cap of the chats' work folder in GiB (a whole number from 1 to 10000, default 10).
+```bash
+python sdp.py db setup                      # authentication and a read-only user
+python sdp.py db setup-mcp                  # the MCP servers
+python sdp.py db start                      # databases, MCP servers, scheduler
+```
 
-On a second setup the earlier answers are the defaults. A refused address, model name or cap is asked again; a refused secret ends the setup with nothing saved.
+**2. Set up the chat.** It asks the back end, the secret and the work folder's cap, and builds the images `sdp-gateway` and `sdp-sandbox`.
 
-Then it writes the settings and the credential and builds the two images: `sdp-gateway` (from `Dockerfile.gateway`: the gateway package on `python:3.13-slim`, as user 65534) and `sdp-sandbox` (from `Dockerfile.sandbox`: `python:3.13-slim` with pandas, numpy, matplotlib, pyarrow and the `mcp` package, and Claude Code at a pinned version, its binary downloaded directly from the vendor's download location and checked against a SHA-256 written in the Dockerfile before it is run, at `/usr/local/bin/claude`, and the chat's runner and its agent; as user 65534). Each image is built from a context cut down by its ignore file (`Dockerfile.gateway.dockerignore`, `Dockerfile.sandbox.dockerignore`) to the files that Dockerfile copies, so `.sdp` and the credential never reach Docker. It ends with a summary (the back end, the address and model, the cap), names the command that starts the chat, and says that the Chat window is in the web UI (started, or restarted, with `python sdp.py webui start` once the chat runs). The secret and its length are never printed, logged, passed on a command line or put in an environment.
+```bash
+python sdp.py chat setup
+```
 
-It refuses a deployment folder whose path holds a comma or a line break. At its start it removes a leftover temporary file (a regular file only) of the credential (`model.token.<8 hex>.tmp`, left by an interrupted write) from `credential/`.
+**3. Start it.**
+
+```bash
+python sdp.py chat start                    # gateway and sandbox; attaches the databases
+```
+
+**4. Start the web UI, or restart it.** The Chat window is in the web UI; start it once the chat runs (stop and start it when it already ran).
+
+```bash
+python sdp.py webui start
+```
+
+## What chat setup asks
+
+1. **The back end** (1: `claude-code`, 2: `openai-compatible`).
+2. **For `openai-compatible`:** the address and the model name.
+3. **The secret** (the token or the API key), asked once and without echo, as `python sdp.py broker passwd` asks its password. White space around it is dropped; it is refused when it is empty, longer than 4096 characters, or holds anything but visible ASCII characters (a space inside included).
+4. **The soft cap of the chats' work folder** in GiB (a whole number from 1 to 10000, default 10).
+
+On a second setup the earlier answers are the defaults. When a credential is already stored, setup first asks whether to replace it; the default keeps it and asks no secret. When you choose another back end than the saved one, that question is not asked and a new secret is required, because the stored one belongs to the other back end; the same holds when the settings are missing, cannot be read or name no back end, because then the stored secret's back end is not known.
+
+A refused address, model name or cap is asked again; a refused secret ends the setup with nothing saved. Setup refuses a deployment folder whose path holds a comma or a line break. At its start it removes a leftover temporary file (a regular file only) of the credential (`model.token.<8 hex>.tmp`, left by an interrupted write) from `credential/`.
+
+Then it writes the settings and the credential and builds the two images (see [The chat's images](../architecture/control-plane.md#the-chats-images)). It ends with a summary (the back end, the address and model, the cap), names the command that starts the chat, and says that the Chat window is in the web UI (started, or restarted, with `python sdp.py webui start` once the chat runs). The secret and its length are never printed, logged, passed on a command line or put in an environment.
 
 ### What it stores
 
 Everything is under `.sdp/chat/` in the deployment folder:
 
 | Path | Mode | What it holds |
-|------|------|---------------|
+|---|---|---|
 | `.sdp/chat/` | 0700 | The chat's state |
 | `.sdp/chat/config.json` | 0600 | The back end; for `openai-compatible` the address (`upstream`) and the model (`model`); the work folder's cap (`work_cap_gib`); the Claude Code version of the sandbox image (`claude_code_version`) |
 | `.sdp/chat/credential/` | 0700 | The credential's folder |
 | `.sdp/chat/credential/model.token` | 0600 | The secret, and nothing else: a file only you can read |
-| `.sdp/chat/work/` | 0700 | The chats: one folder per chat, made by the runner (see below); the sandbox's `/work` |
+| `.sdp/chat/work/` | 0700 | The chats: one folder per chat, made by the runner (see [A chat's files](#a-chats-files)); the sandbox's `/work` |
 | `.sdp/chat/socket/` | 0700 | The sandbox's `/run/sdp-chat`, which holds the runner's socket `runner.sock` (0600) while the chat runs |
 | `.sdp/chat/gateway/` | 0700 | The gateway's config (`config.json`, 0600), written by `chat start` and removed by `chat stop`; it holds no secret |
 
 The modes are set explicitly, whatever your umask. Each folder must be a real folder that belongs to you: a symbolic link or a folder of another user in its place is refused and left as it is. The settings and the secret are written to a temporary file made with mode 0600 and then renamed, so a file is never half written.
 
-## `sdp.py chat start`
+## What chat start does
 
-It refuses, with the command to run, when the chat is not set up (the settings, the token file and both images must be there), when Docker runs rootless or remaps user ids (the sandbox's files would land on this machine owned by another user, and the gateway could not read your token), when the chat already runs (stop it first), and when a container `sdp-gateway` or `sdp-sandbox`, or a network `sdp-chat` or `sdp-chat-up`, belongs to another deployment. A container or network left by an earlier start that does not run is removed. Then it looks at the databases and starts:
+It refuses, with the command to run:
 
-1. **The databases.** For each of `postgres-mcp`, `mongo-mcp` and `starrocks-mcp`, the running container of this deployment (the compose project `sdp`, the service, and the compose working folder equal to the deployment folder) is attached only when its MCP server is on the database's read-only user: its read-only user key (`POSTGRES_MCP_USER`, `MCP_MONGODB_USER`, `STARROCKS_MCP_USER`) has a value. Docker is asked only whether that key is set; nothing of the container's environment, which holds passwords, is read or printed. A database is left out when its MCP server does not run, or is not on a read-only user. When no database can be attached, start refuses, names each database with its reason, says how to fix it (set the database up with authentication and a read-only user with `python sdp.py db setup`, its MCP server with `python sdp.py db setup-mcp`, and start it with `python sdp.py db start`), and makes nothing.
-2. **The networks.** `sdp-chat-up`, an ordinary bridge, and `sdp-chat`, an internal network (no route out of it), IPv4 only (`--ipv6=false`), made with the IPv4 gateway mode `isolated` (`-o com.docker.network.bridge.gateway_mode_ipv4=isolated`), so that this machine has no IPv4 address on it: a plain internal network gives the machine the network's gateway address, through which a container on it could reach every service of the machine that listens on all addresses. `sdp-chat` is made once so that Docker picks a free subnet, then made again with that subnet given, so that the gateway can be given a fixed address on it: the subnet's second host address. Each time, start reads the network back and requires it to be internal, to carry the isolated gateway mode, to have no gateway address and to have no IPv6 subnet; otherwise it removes what it made and refuses (for IPv6, with a line that names Docker's default network options as the thing to check). A Docker that refuses or ignores the option cannot keep the machine itself off the chat's network: start then refuses and says that a newer Docker is needed (it never falls back to a plain internal network).
-3. **The gateway's config**, `.sdp/chat/gateway/config.json`: it listens on its `sdp-chat` address only; the model on port 8080 (for `claude-code` the vendor's API with the `anthropic-beta` values measured from the pinned Claude Code, for `openai-compatible` the saved address and model); and one port per attached database: postgres on 8001, mongo on 8002, starrocks on 8003, each forwarded to that MCP server by an alias on `sdp-chat-up` (`sdp-chat-postgres-mcp`, `sdp-chat-mongo-mcp`, `sdp-chat-starrocks-mcp`) and only on its paths (`/sse` and `/messages/` for postgres, `/mcp` for the other two); with the query queue (below), port 8004 to the scheduler.
-4. **The gateway** (`sdp-gateway`): made on `sdp-chat` at its address, connected to `sdp-chat-up`, started; start waits until it says every listener listens (a gateway that refuses its config ends with its own message, which start prints). Its config folder and the credential's folder are mounted read-only; it publishes no port and has no environment holding a secret.
-5. **The databases are attached**: each one's MCP container is connected to `sdp-chat-up` under its alias, and with the query queue the scheduler's container under `sdp-chat-jobs`. The compose project's own network is never touched.
-6. **The sandbox** (`sdp-sandbox`): on `sdp-chat` only, with `.sdp/chat/work` at `/work` and `.sdp/chat/socket` at `/run/sdp-chat` (both read-write) and nothing else mounted, `HOME=/work`, the gateway's address in `SDP_CHAT_GATEWAY`, and for the runner the back end (`SDP_CHAT_BACKEND`), the attached databases (`SDP_CHAT_DATABASES`, a comma list) and the soft cap in GiB (`SDP_CHAT_CAP_GIB`), and `SDP_CHAT_QUEUE=1` with the query queue, none of them a secret. Docker's init runs as its first process (`--init`), so that what a turn's processes leave behind is reaped.
+- when the chat is not set up (the settings, the token file and both images must be there);
+- when Docker runs rootless or remaps user ids (the sandbox's files would land on this machine owned by another user, and the gateway could not read your token);
+- when the chat already runs (stop it first);
+- when a container `sdp-gateway` or `sdp-sandbox`, or a network `sdp-chat` or `sdp-chat-up`, belongs to another deployment;
+- when Docker refuses or ignores the isolated gateway mode of the chat's network: it then says that a newer Docker is needed (it never falls back to a plain internal network).
 
-Both containers run as your uid and gid, with a read-only root, no capabilities, no new privileges, no restart, a small `/tmp` in memory, and limits on processes and memory (the sandbox: 512 processes, 4 GiB). When a step fails, start removes what it made (containers, networks, attachments, the gateway's config) and says what failed. It ends with a summary: the back end, which databases the chat can read, for each one left out why, whether the query queue is attached (or one line saying why the assistant cannot use it), and that the Chat window is in the web UI (started, or restarted, with `python sdp.py webui start`). The token is never read, printed or passed by the command: the gateway reads it from its mounted file.
+A container or network left by an earlier start that does not run is removed.
 
-### The query queue
+**Which databases the chat reads.** For each of `postgres-mcp`, `mongo-mcp` and `starrocks-mcp`, the running container of this deployment is attached only when its MCP server is on the database's read-only user: its read-only user key (`POSTGRES_MCP_USER`, `MCP_MONGODB_USER`, `STARROCKS_MCP_USER`) has a value. Docker is asked only whether that key is set; nothing of the container's environment, which holds passwords, is read or printed. A database is left out when its MCP server does not run, or is not on a read-only user. When no database can be attached, start refuses, names each database with its reason, says how to fix it (set the database up with authentication and a read-only user with `python sdp.py db setup`, its MCP server with `python sdp.py db setup-mcp`, and start it with `python sdp.py db start`), and makes nothing.
 
-When the deployment's query scheduler runs (its `jobs` container, found by the same compose labels as the databases) and `data/jobs/control` is a real folder of yours without access for the group or others (the scheduler makes it, see [the control socket](query-scheduler.md#control-socket)), start also gives the gateway a way to the scheduler's [assistant endpoint](query-scheduler.md#the-assistants-endpoint):
+Then it makes the chat's two networks, the gateway and the sandbox (the steps are in [What chat start makes](../architecture/control-plane.md#what-chat-start-makes)). When a step fails, start removes what it made (containers, networks, attachments, the gateway's config) and says what failed. It ends with a summary: the back end, which databases the chat can read, for each one left out why, whether the query queue is attached (or one line saying why the assistant cannot use it), and that the Chat window is in the web UI (started, or restarted, with `python sdp.py webui start`). The token is never read, printed or passed by the command: the gateway reads it from its mounted file.
 
-- It makes sure `data/jobs/control/assistant.secret` holds a valid secret: one that is there and valid is kept (so the secret stays the same across restarts of the chat), one that is not valid is replaced by 32 random bytes as hex, written to a temporary file of mode 0600 that then takes the name, without following a link. A link or anything but a regular file of yours in its place is left as it is, and the chat starts without the queue.
-- It copies the secret into `.sdp/chat/gateway/assistant.secret` (0600), which the gateway reads at its start from its read-only mount of that folder. The scheduler's control folder (which holds the control socket) is never mounted into the gateway.
-- The gateway's port 8004 forwards `/assistant/mcp` and `/assistant/results/` to `http://sdp-chat-jobs:<port>`, the port being `JOBS_PORT` of the deployment's `.env` (8050 when it is not set), and adds the header `x-sdp-assistant` with the secret to every request on that port, and on no other. A header of that name sent by the sandbox is dropped, like every header not on the gateway's list. The listener uses the port of the deployment's settings: if the scheduler's own configuration was edited by hand to another `port`, the assistant's queue requests fail (the page's published port is then wrong as well).
+## What you can ask
 
-The secret is never printed, put on a command line or in an environment. Queries of the assistant are marked as its own and are never auto-accepted: each waits for a person's approval on the scheduler's page or in the web UI's Queue window.
+Ask about the data in your databases. Each question is one **turn** of the assistant, run in the chat's own folder:
 
-When the scheduler does not run, or the control folder is missing, open to others, a link or not yours, or `JOBS_PORT` is not a port number, start says so in one line, `The assistant cannot use the query queue: <why>.`, and starts the chat without it. `chat status` says whether the queue is attached now (and shows it dropped when the scheduler's container was replaced since the start); `chat stop` detaches the scheduler and removes the gateway's copy of the secret; `chat unsetup` removes that copy with `.sdp/chat/gateway/` and leaves `data/jobs/control/assistant.secret`, which belongs to the scheduler's folder.
+- **The databases.** It reads each attached database through that database's MCP server, read-only.
+- **The shell and files.** It can run shell commands and read and write files in the chat's folder (with `claude-code`: the tools `Bash`, `Read`, `Write`, `Edit`, `Glob` and `Grep`; with `openai-compatible`: `run_shell`).
+- **Plots.** It saves plots as PNG files in its folder and names them in its answer; the Chat window shows them.
+- **No internet.** It cannot reach the internet.
+- **Memory.** The assistant remembers the chat: each later question continues the same conversation. A new chat starts from nothing.
 
-### What the sandbox can and cannot reach
+The sandbox image has Python 3.13 with pandas, numpy, matplotlib and pyarrow. How each back end runs a turn is in [What the sandbox runs](../architecture/control-plane.md#what-the-sandbox-runs).
 
-By construction, the sandbox is on `sdp-chat` only, an internal IPv4-only network on which this machine has no IPv4 address (the isolated gateway mode is about IPv4, which is why the network is refused when it comes back with IPv6; the sandbox's interface has no IPv6 address and does not reach the bridge's link-local address, which the script checks), so its only peer is the gateway, which listens there on its own address only. `tests/e2e/manual/check_chat_isolation.py` checks this against a real Docker: the bridge of `sdp-chat` has no IPv4 and no global IPv6 address of the machine and its read-back is internal, isolated, without a gateway and without IPv6; from inside the sandbox, the gateway's ports on its `sdp-chat` address answer (the model port refuses a path that is not in its table with its own error and forwards nothing; a database's port reaches its MCP server; the port of a database left out is closed), and nothing else is reached: no address and no name on the internet, no MCP server by its own address or its alias, not the gateway's `sdp-chat-up` address, and nothing at any network's gateway address or any address of the machine. That a published port of this machine is not reached could not be shown on the development machine, whose own firewall drops what any container sends to it. The sandbox sees neither the broker's socket folder, nor Docker's socket, nor the deployment's data folder, nor the credential (no file of it, and the token in no process's environment). It runs as your user, its root is read-only, it has no capabilities, and what it writes to `/work` and `/run/sdp-chat` lands in `.sdp/chat/work` and `.sdp/chat/socket`, owned by you. From `sdp-chat-up`, the gateway's ports are closed: it listens on `sdp-chat` only.
-
-### When a database drops out
-
-A database is attached to the running container its MCP server had at start. When that container is replaced (by `python sdp.py db stop` and `db start`, a new `db setup-mcp`, or anything else that makes Compose create it anew), the new container is not attached and the chat can no longer read that database; `chat status` shows it as dropped. To bring it back: `python sdp.py chat stop`, then `python sdp.py chat start`. A database started after the chat is likewise attached only by a new start.
-
-## What the sandbox runs
-
-The sandbox's command is the chat's runner (`python -m social_data_pipeline.chat`, the package `social_data_pipeline/chat/`), a small server on the unix socket `/run/sdp-chat/runner.sock` (`.sdp/chat/socket/runner.sock` on this machine, mode 0600). The Chat window of the web UI talks to it through that folder, which `sdp.py webui start` mounts read-only (see [The Chat window](webui.md#the-chat-window)). The runner keeps the chats and, for each message, runs one turn of the assistant.
-
-**A turn** with the back end `claude-code` is one run of Claude Code (`claude -p`, the version the image pins) in the chat's folder, with the tools `Bash`, `Read`, `Write`, `Edit`, `Glob` and `Grep` and one MCP server per attached database, each reached through the gateway's port for it (postgres on 8001, mongo on 8002, starrocks on 8003). It is told that it answers questions about your databases through their MCP tools, read-only, that it saves plots as PNG files in its folder and names them in its answer, and that it cannot reach the internet. It runs without asking for permissions (the listed tools and the databases' MCP tools are allowed, anything else is refused), with no settings, hooks, plugins or memory files loaded, and with an environment of its own that holds no credential: Claude Code is given a placeholder in place of a token and the gateway's address as its API address, and the gateway puts your token in. Each turn gets a new, empty scratch folder `/tmp/sdp-chat-<chat id>` inside the sandbox (in memory; whatever was there before is renamed away first, a link without being followed, and removed in the background, a little at a time when a leftover process keeps writing into it): it is the turn's temporary folder, and its `home/` and `matplotlib/` are the turn's `HOME` and matplotlib settings folder, so that a shell start-up file or a matplotlib setting the assistant leaves behind does not shape its next turn. Claude Code's own folder (`CLAUDE_CONFIG_DIR`) is the chat's `home/`, where its session is kept. The first message of a chat starts a new Claude Code session; each later one resumes it, so the assistant remembers the chat.
-
-**A turn** with the back end `openai-compatible` is one run of the project's own agent (`python -m social_data_pipeline.chat.agent`, in `social_data_pipeline/chat/agent.py`) in the chat's folder, with the same scratch folder, the same kind of environment (built from scratch, holding no credential: the turn's `HOME`, `TMPDIR` and matplotlib folder, `PATH`, the gateway's address, the model's name and the attached databases) and the same stop and time limit as a Claude Code turn. Each model call is a request to the gateway's model port (`POST /chat/completions`, not streamed, without a key: the gateway adds yours and sends it to the address and model saved at setup, and refuses any other model); the request holds the same role text as the Claude Code back end, the chat's history, your message and the tools. The tools are `run_shell`, which runs a command with `bash` in the chat's `files/` folder in a process group of its own (its output, standard output and error together, cut to 16,000 characters, and its exit code go back to the model; it is ended after 120 seconds, and whatever it leaves running in the background is ended when it returns), and every tool of each attached database's MCP server, named `<database>__<tool>` (at most 64 per database; a tool whose name does not fit `[A-Za-z0-9_-]` in 64 characters is left out, its description is cut to 1,000 characters, its input schema is kept only when it is an object under 16 KiB of at most 2,000 objects and lists, and the tools are cut when their schemas together hold more than 100,000; a call has 120 seconds and its result is cut to 16,000 characters). The agent connects to each database's server through the gateway at the start of the turn (the `mcp` package in the image: SSE for postgres, streamable HTTP for mongo and starrocks); one it cannot reach is left out for that turn. The model's tool calls are run in order and answered; a reply without tool calls is the answer; at most 40 model calls a turn. Each reply is checked before it is used (at most 4 MiB, the shape of a chat-completions answer, tool names among those offered, arguments a JSON object, at most 256 tool calls listed, of which the first 16 are taken and the rest ignored with a note): an unknown tool or arguments that cannot be used are answered to the model as a tool error, a reply that cannot be used ends the turn with an error. When the gateway or the endpoint answers with any status but 200, the turn ends with the error "the model could not be reached" and `backend.log` names the status, never what the endpoint said. The end of a turn reports its time and number of model calls but no cost.
-
-The history of an `openai-compatible` chat is kept in the chat's folder, `home/openai-session.json` (mode 0600, replaced whole after each turn that was not stopped): the messages of the earlier turns, each tool output cut to 4,000 characters. Before each model call the history is cut to 400,000 characters by dropping the oldest turns whole (a tool call is never separated from its result). The budget is fixed at 400,000 characters; the newest turn is always kept (when it alone is over, its tool outputs are left out, and when that is not enough only its question and its answer are kept), and `backend.log` says when turns are dropped. Within a turn the request is budgeted too: when the turn's own messages pass 1,000,000 characters, its oldest tool outputs (then its oldest tool arguments and texts) are replaced by a short placeholder in the request. When the endpoint refuses a request that holds earlier turns as too large (status 400 or 413), it is sent once more with the current turn only, and when that is taken the history starts again from this turn (with a line in `backend.log`): a model with a small context loses the older turns this way. The assistant's commands can edit that file; a file that is not of the shape the agent writes is taken as empty, with a line in `backend.log`. A tool call that has no answer (a turn that failed halfway through its calls) is answered "the tool did not finish" before the turn is kept or sent, and an answer without its call is dropped; a history read back is repaired the same way.
-
-**The query queue.** When `chat start` attached the queue (see [The query queue](#the-query-queue); otherwise it printed `The assistant cannot use the query queue: <why>.` and the assistant has no such tools), the sandbox gets `SDP_CHAT_QUEUE=1` and both back ends add one more MCP server, `jobs`, at the gateway's port 8004 (`http://<gateway>:8004/assistant/mcp`, streamable HTTP): for Claude Code it is in the turn's `mcp.json` and allowed as `mcp__jobs`; the agent offers its tools as `jobs__<tool>`. Its tools are those of the scheduler's [assistant endpoint](query-scheduler.md#the-assistants-endpoint): `list_targets`, `submit_postgres_query`, `submit_starrocks_query`, `submit_mongo_query`, `query_status` and `query_cancel`. The role text then has one more paragraph: long or heavy queries go to the queue with these tools; a person approves each one in the Queue window of the web UI before it runs and the assistant cannot approve it, so after a submission it tells you the job id and that the query waits for your approval, and ends its turn instead of waiting; `query_status` tells where a query stands and `query_cancel` withdraws one of its own while it is pending; the parts of a finished query's result are listed at `http://<gateway>:8004/assistant/results/<job id>` (JSON) and each part is at `http://<gateway>:8004/assistant/results/<job id>/<part number>`, the gateway's address being in `SDP_CHAT_GATEWAY` (which Claude Code's environment holds only with the queue), fetched from the shell with Python's `urllib` (the sandbox image has no `curl`) into the chat's folder, where they show as the turn's files. Only the assistant's own queries are visible to it there and through `query_status`. Its queries are never auto-accepted, and the Queue window labels them (see [The Queue window](webui.md#the-queue-window)). The runner's `hello` says whether the queue is attached (`queue`), and the Chat window shows it.
-
-**A chat's files** are in `.sdp/chat/work/<chat id>/` (a chat id is `c_` and 12 hexadecimal digits): `files/` is the assistant's working folder, where it writes its plots and other files; `home/` is the back end's home (Claude Code's session files and its `mcp.json`, or the agent's `openai-session.json`); `events.jsonl` is the chat's log (your messages, the assistant's text, each tool call and its result cut to 2,000 characters, each file that is new or changed in `files/` after a turn, and the end of each turn with its cost, for Claude Code); `meta.json` holds when it was made, its title (the first message cut to 80 characters), its session id and its number of turns; `backend.log` holds the last turn's error output of Claude Code or of the agent (at most 1 MiB). The chats persist on this machine across `chat stop` and `chat start`; a deleted chat leaves the list at once and its files are removed in the background (its folder is first renamed to `<chat id>.old-<8 hexadecimal digits>`; what a process a turn left behind keeps writing is removed a little at a time, at later turns and deletes, when a message is refused over the soft cap, and at the next start; a scratch folder whose chat is no longer listed is removed the same way), and `chat unsetup` removes all chats only when you say so.
-
-What carries over from one turn to the next is only the session itself (the chat's history, kept in `home/`, which the assistant could also edit and so shape its own later turns in the same chat) and the files in `files/` (the scratch folder is new for every turn); agents, commands, output styles, skills and settings files placed in `home/` or in `files/.claude/` were measured not to be loaded.
-
-**The limits:**
+### The limits
 
 | Limit | Value |
-|-------|-------|
+|---|---|
 | Time of one turn | 30 minutes; then the turn is ended (`SDP_CHAT_TURN_SECONDS` in the sandbox changes it) |
 | Turns at once | 2 in the sandbox, 1 per chat |
 | Soft cap | Before each turn the work folder is measured (without following a link); over the cap set at setup, the turn is refused until chats are deleted |
@@ -107,26 +114,65 @@ What carries over from one turn to the next is only the session itself (the chat
 | A message | 1 to 32,000 characters |
 | A chat's log | 16 MiB (and one line per 32 bytes of that); then the chat is full and takes no more messages |
 
-A stopped turn, and one past its time limit, is ended with all its processes as one process group: TERM, then KILL after 5 seconds. A process that detached itself from the group (with `setsid`) is not followed: it lives until the sandbox stops, and when it holds the turn's output open, the runner waits for the output to end for about 5 seconds in all, then lets go of it and ends the turn anyway; nothing such a process prints afterwards reaches the chat.
+A stopped turn, and one past its time limit, is ended with all its processes. With `openai-compatible`, a turn makes at most 40 model calls, and the end of a turn reports its time and number of model calls but no cost.
 
-## `sdp.py chat stop`
+## Files and plots
 
-It stops and removes both containers, detaches every container from the chat's two networks (whatever its state: a container left attached to a removed network could no longer start; one that is already gone is no error), removes both networks, the gateway's config and its copy of the scheduler's secret. The exit code is 0 when the chat ran, 1 when nothing ran (what an earlier start left is removed then too) or something could not be removed. It refuses, and stops nothing, when a container or network of the chat's names belongs to another deployment.
+What the assistant writes lands in the chat's folder, which you can download from the Chat window (see [Files and plots](webui.md#files-and-plots)) or find on this machine.
 
-## `sdp.py chat status`
+### A chat's files
 
-It says whether the gateway and the sandbox run, the back end, which databases the chat can read now (read from the members of `sdp-chat-up` by their compose service label, so a database whose container was replaced since the start shows as dropped, with the commands that bring it back), whether the query queue is attached now, and the work folder's size: the sum of the sizes of its files, measured from this machine without following a link, against the soft cap set at setup. The walk stops after 1,000,000 entries and then says "more than". Status says when the folder is over the soft cap; the runner refuses to start a new turn then (see below). The exit code is 0 when both containers run, 1 otherwise.
+A chat's files are in `.sdp/chat/work/<chat id>/` (a chat id is `c_` and 12 hexadecimal digits):
 
-## `sdp.py chat unsetup`
+| Path | What it holds |
+|---|---|
+| `files/` | The assistant's working folder, where it writes its plots and other files |
+| `home/` | The back end's home: Claude Code's session files and its `mcp.json`, or the agent's `openai-session.json` |
+| `events.jsonl` | The chat's log: your messages, the assistant's text, each tool call and its result cut to 2,000 characters, each file that is new or changed in `files/` after a turn, and the end of each turn with its cost, for Claude Code |
+| `meta.json` | When it was made, its title (the first message cut to 80 characters), its session id and its number of turns |
+| `backend.log` | The last turn's error output of Claude Code or of the agent (at most 1 MiB) |
 
-It says what it removes (the images `sdp-gateway` and `sdp-sandbox`, and `.sdp/chat/config.json`, `.sdp/chat/credential/`, `.sdp/chat/socket/` and `.sdp/chat/gateway/`) and asks to confirm (default no). It then refuses, removing nothing, while a container of the chat exists for this deployment (stop it first with `python sdp.py chat stop`), and also when Docker cannot be asked. Then it asks separately whether to also delete all chats and their files (`.sdp/chat/work/`, default no). Leftover temporary files of an interrupted setup beside `config.json` go too, and `.sdp/chat/` itself goes when nothing is left in it; when something else stayed in it, one line says how many entries stayed. Nothing is removed through a symbolic link: a link in place of a piece is refused and left; inside a removed folder, files, FIFOs, sockets and links are unlinked without being opened or followed, folders of any mode (000 included) and any depth are removed, one folder at a time. A folder on another file system, one of another user, and one that changes while it is removed are not entered and are left; the command then says how many entries could not be removed and exits with 1. A piece that is already gone is not an error. The exit code is 0, or 1 when something could not be removed.
+The chats persist on this machine across `chat stop` and `chat start`. A deleted chat leaves the list at once and its files are removed in the background. `chat unsetup` removes all chats only when you say so.
+
+## The query queue
+
+When the deployment's [query scheduler](query-scheduler.md) runs, the assistant can also submit long or heavy queries to its queue. A person approves each one in the Queue window of the web UI before it runs, and the assistant cannot approve it:
+
+1. **The assistant submits** a query and tells you the job id and that the query waits for your approval, then ends its turn instead of waiting.
+2. **You approve it** (or reject it) in the web UI's [Queue window](webui.md#the-queue-window), where it is labelled "Submitted by the chat's assistant". Its queries are never auto-accepted, whatever the target's setting.
+3. **In a later turn** the assistant checks where the query stands, and fetches the parts of a finished result into the chat's folder, where they show as the turn's files. It can also withdraw one of its own queries while it is pending.
+
+Only the assistant's own queries are visible to it. The Chats page shows whether the queue is attached (the line "Query queue").
+
+**When the queue is attached.** `chat start` attaches it when the scheduler runs (its `jobs` container) and `data/jobs/control` is a real folder of yours without access for the group or others (the scheduler makes it). Otherwise start says so in one line, `The assistant cannot use the query queue: <why>.`, and starts the chat without it: when the scheduler does not run, or the control folder is missing, open to others, a link or not yours, or `JOBS_PORT` is not a port number. A link or anything but a regular file of yours in the place of `data/jobs/control/assistant.secret` also starts the chat without the queue. How the queue is reached is in [The assistant's query queue](../architecture/control-plane.md#the-assistants-query-queue).
+
+The queue uses the port of the deployment's settings (`JOBS_PORT` of `.env`, 8050 when it is not set): if the scheduler's own configuration was edited by hand to another `port`, the assistant's queue requests fail (the page's published port is then wrong as well).
+
+`chat status` says whether the queue is attached now (and shows it dropped when the scheduler's container was replaced since the start); `chat stop` detaches the scheduler and removes the gateway's copy of the secret; `chat unsetup` removes that copy with `.sdp/chat/gateway/` and leaves `data/jobs/control/assistant.secret`, which belongs to the scheduler's folder.
+
+## When a database drops out
+
+A database is attached to the running container its MCP server had at start. When that container is replaced (by `python sdp.py db stop` and `db start`, a new `db setup-mcp`, or anything else that makes Compose create it anew), the new container is not attached and the chat can no longer read that database; `chat status` shows it as dropped. To bring it back:
+
+```bash
+python sdp.py chat stop
+python sdp.py chat start
+```
+
+A database started after the chat is likewise attached only by a new start.
+
+## Stop, status and unsetup
+
+- **`python sdp.py chat stop`** stops and removes both containers, detaches every container from the chat's two networks (whatever its state: a container left attached to a removed network could no longer start; one that is already gone is no error), and removes both networks, the gateway's config and its copy of the scheduler's secret. The exit code is 0 when the chat ran, 1 when nothing ran (what an earlier start left is removed then too) or something could not be removed. It refuses, and stops nothing, when a container or network of the chat's names belongs to another deployment.
+- **`python sdp.py chat status`** says whether the gateway and the sandbox run, the back end, which databases the chat can read now (read from the members of `sdp-chat-up` by their compose service label, so a database whose container was replaced since the start shows as dropped, with the commands that bring it back), whether the query queue is attached now, and the work folder's size: the sum of the sizes of its files, measured from this machine without following a link, against the soft cap set at setup. The walk stops after 1,000,000 entries and then says "more than". Status says when the folder is over the soft cap; the runner refuses to start a new turn then. The exit code is 0 when both containers run, 1 otherwise.
+- **`python sdp.py chat unsetup`** says what it removes (the images `sdp-gateway` and `sdp-sandbox`, and `.sdp/chat/config.json`, `.sdp/chat/credential/`, `.sdp/chat/socket/` and `.sdp/chat/gateway/`) and asks to confirm (default no). It then refuses, removing nothing, while a container of the chat exists for this deployment (stop it first with `python sdp.py chat stop`), and also when Docker cannot be asked. Then it asks separately whether to also delete all chats and their files (`.sdp/chat/work/`, default no). Leftover temporary files of an interrupted setup beside `config.json` go too, and `.sdp/chat/` itself goes when nothing is left in it; when something else stayed in it, one line says how many entries stayed. Nothing is removed through a symbolic link (see [How chat unsetup removes](../architecture/control-plane.md#how-chat-unsetup-removes)); what could not be removed is counted, and the command then exits with 1. A piece that is already gone is not an error.
 
 ## Commands
 
 | Command | What it does |
-|---------|--------------|
-| `sdp.py chat setup` | Asks the back end, the address and model (`openai-compatible`), the secret (without echo; on a second setup only when you replace it) and the work folder's soft cap; writes `.sdp/chat/`; builds the images `sdp-gateway` and `sdp-sandbox`. Exit code 0, or 1 with one line. |
-| `sdp.py chat start` | Starts the gateway and the sandbox and attaches each database whose running MCP server is on a read-only user; refuses, saying why for each database, when none can be attached. Exit code 0, or 1 with the reason (what it made is removed). |
-| `sdp.py chat stop` | Stops and removes both containers and networks and detaches the databases. Exit code 0, or 1 when nothing ran. |
-| `sdp.py chat status` | Whether each container runs, the back end, the databases the chat can read now and those dropped since the start, the work folder's size against its soft cap. Exit code 0 when both containers run. |
-| `sdp.py chat unsetup` | After a confirmation, removes the two images, the settings and the credential; after a second one, also all chats and their files. Refused while the chat's containers exist. |
+|---|---|
+| `python sdp.py chat setup` | Asks the back end, the address and model (`openai-compatible`), the secret (without echo; on a second setup only when you replace it) and the work folder's soft cap; writes `.sdp/chat/`; builds the images `sdp-gateway` and `sdp-sandbox`. Exit code 0, or 1 with one line. |
+| `python sdp.py chat start` | Starts the gateway and the sandbox and attaches each database whose running MCP server is on a read-only user; refuses, saying why for each database, when none can be attached. Exit code 0, or 1 with the reason (what it made is removed). |
+| `python sdp.py chat stop` | Stops and removes both containers and networks and detaches the databases. Exit code 0, or 1 when nothing ran. |
+| `python sdp.py chat status` | Whether each container runs, the back end, the databases the chat can read now and those dropped since the start, the work folder's size against its soft cap. Exit code 0 when both containers run. |
+| `python sdp.py chat unsetup` | After a confirmation, removes the two images, the settings and the credential; after a second one, also all chats and their files. Refused while the chat's containers exist. |

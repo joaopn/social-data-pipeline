@@ -1,47 +1,60 @@
 ---
 title: "Query scheduler"
 parent: "User guide"
-nav_order: 7
+nav_order: 10
 ---
-# Jobs Profile (Query Scheduler)
+# Query scheduler
 
-A queue-and-approve layer in front of the configured databases. Agents (or humans) submit a query over MCP; a human approves/rejects it in a web UI; the runner executes the approved job and writes results to disk.
+The query scheduler (the `jobs` profile) is a queue-and-approve layer in front of the configured databases. Agents (or humans) submit a query over MCP, a human approves or rejects it in a web page, and the scheduler runs the approved query and writes its result to files on disk.
 
-The jobs profile bridges two needs in the agentic flow:
+![Jobs scheduler WebUI — pending queue with agent-submitted queries awaiting approval](../assets/jobs-scheduler.png)
 
-- **Read-only MCP servers** ([postgres-mcp / mongo-mcp / starrocks-mcp](databases.md#mcp-servers)) are great for short ad-hoc questions but answer in-band — large result sets can blow up an agent's context, and read-only enforcement blocks any query that needs more than `SELECT`.
-- **Direct DB clients** (psql, MySQL, mongosh) work for humans but aren't safe to hand to an autonomous agent.
+It bridges two needs in the agentic flow:
 
-`jobs` sits between them: agents submit through MCP tools, humans gate execution through a web UI, results land as files on disk (Parquet / CSV / NDJSON). Long-running aggregations don't block the agent's session and don't pollute its context.
+- **Read-only MCP servers** ([postgres-mcp / mongo-mcp / starrocks-mcp](databases.md)) are great for short ad-hoc questions but answer in-band: large result sets can blow up an agent's context, and read-only enforcement blocks any query that needs more than `SELECT`.
+- **Direct database clients** (psql, MySQL, mongosh) work for humans but aren't safe to hand to an autonomous agent.
+
+The scheduler sits between them: agents submit through MCP tools, humans gate execution through a web page, and results land as files on disk (Parquet, CSV or NDJSON). Long-running aggregations don't block the agent's session and don't pollute its context.
 
 ## Setup
 
+**1. Configure at least one database and its MCP servers.** The scheduler reuses the read-only database credentials provisioned by the MCP setup (`.ro_credentials` in each data volume), so run `setup-mcp` before `setup-jobs`.
+
 ```bash
 python sdp.py db setup                    # configure at least one database
-python sdp.py db setup-mcp                # configure the per-DB MCP servers
-python sdp.py db setup-jobs               # configure the scheduler (interactive)
-python sdp.py db start                    # starts DBs + MCPs + jobs together
+python sdp.py db setup-mcp                # configure the per-database MCP servers
 ```
 
-`setup-mcp` is a prerequisite — the jobs scheduler reuses the read-only DB credentials provisioned by the MCP setup flow (`.ro_credentials` in each data volume). Run `setup-mcp` before `setup-jobs`.
+**2. Configure the scheduler.** Setup asks the port, the results folder, the number of jobs that run at once, the history kept, the targets, a timeout per backend, and whether the page needs a password.
 
-`db start` includes the jobs container automatically once `setup-jobs` has been run — no separate command needed. To start only the scheduler: `python sdp.py db start jobs`.
+```bash
+python sdp.py db setup-jobs               # interactive
+```
+
+**3. Start it.** `db start` includes the jobs container automatically once `setup-jobs` has been run.
+
+```bash
+python sdp.py db start                    # starts databases, MCP servers and the scheduler together
+python sdp.py db start jobs               # only the scheduler
+```
+
+`python sdp.py db setup-llm` runs `setup-mcp` followed by `setup-jobs`.
 
 `setup-jobs` writes:
 
-| Artifact | Purpose |
-|----------|---------|
+| File | Purpose |
+|---|---|
 | `config/jobs/config.local.yaml` | Targets, port, timeouts, history retention, auth toggle |
 | `.env` (`JOBS_PORT`, `JOBS_RESULT_ROOT`) | Compose interpolation |
-| `docker-compose.override.yml` | Bind-mounts the result root into PG/SR containers as `/jobs_export` so the DB server can write results directly |
-| `config/starrocks/fe.local.conf` | Sets `enable_outfile_to_local = true` (only when a SR target exists) |
-| `data/jobs/`, `<JOBS_RESULT_ROOT>/` | Created on disk |
+| `docker-compose.override.yml` | Bind-mounts the result root into the PostgreSQL and StarRocks containers as `/jobs_export`, so the database server can write results directly |
+| `config/starrocks/fe.local.conf` | Sets `enable_outfile_to_local = true` (only when a StarRocks target exists) |
+| `data/jobs/`, `<JOBS_RESULT_ROOT>/` | Created on disk, as you |
 
-The committed `config/jobs/config.yaml` is the default template; `config.local.yaml` is gitignored and merged on top at runtime — same pattern as `postgresql.local.conf` and `fe.local.conf`.
+The committed `config/jobs/config.yaml` is the default template; `config.local.yaml` is gitignored and merged on top at runtime, the same pattern as `postgresql.local.conf` and `fe.local.conf`.
 
 ## Targets
 
-A **target** is a named connection profile that agents reference on every submission. One target = one backend + (optional) database. You can define several:
+A **target** is a named connection profile that agents reference on every submission. One target is one backend and an optional database. You can define several:
 
 ```yaml
 # config/jobs/config.local.yaml (excerpt)
@@ -57,90 +70,84 @@ targets:
     database: ""              # Mongo targets pick the database per query
 ```
 
-- **PostgreSQL targets** require `database` (the PG database to connect to).
-- **StarRocks targets** leave `database` empty by design. Queries must fully qualify (`reddit.comments`, not just `comments`) — keeps a single SR target reusable across sources.
-- **MongoDB targets** leave `database` empty. Agents call `list_mongo_databases(target)` to discover what's available, then pass `database=` on each `submit_mongo_query`.
+| Backend | `database` | How agents use it |
+|---|---|---|
+| PostgreSQL | Required: the PostgreSQL database to connect to | Plain table names |
+| StarRocks | Empty by design | Queries must fully qualify (`reddit.comments`, not just `comments`), which keeps a single StarRocks target reusable across sources |
+| MongoDB | Empty | Agents call `list_mongo_databases(target)` to discover what is available, then pass `database=` on each `submit_mongo_query` |
 
-Tools for backends with no configured target are **not registered** at all — they don't appear in MCP discovery. So an agent that sees `submit_starrocks_query` knows there's at least one SR target it can reach.
+Tools for backends with no configured target are **not registered** at all: they don't appear in MCP discovery. So an agent that sees `submit_starrocks_query` knows there is at least one StarRocks target it can reach.
 
-## Lifecycle of a job
+## Using it from an agent
 
-```
-[agent submits via MCP]
-        ↓
-   pending/<job_id>.json     ── visible in WebUI "Pending" tab
-        ↓ human clicks Approve
-   approved/<job_id>.json    ── runner picks it up
-        ↓
-   running/<job_id>.json     ── backend is executing it
-        ↓
-   history/<job_id>.json     ── done | failed | rejected | cancelled
-```
-
-Each phase is a directory under `data/jobs/` containing one JSON file per job. `history_retention` (default 500) caps the history directory; older entries are pruned in submission order.
-
-## MCP tools
-
-The MCP endpoint is served at `http://<host>:<JOBS_PORT>/mcp` (Streamable HTTP transport). Add to your agent's MCP config the same way as the per-DB MCPs.
+The MCP endpoint is served at `http://<host>:<JOBS_PORT>/mcp` (Streamable HTTP transport), by default `http://localhost:8050/mcp`. Add it to your agent's MCP config the same way as the per-database MCP servers ([AI access](ai-access.md)).
 
 | Tool | Backend gate | Purpose |
-|------|--------------|---------|
-| `submit_postgres_query` | at least one `postgres` target | Queue a SELECT; runner wraps it in `COPY (...) TO '/jobs_export/<job_id>/<file>' WITH (FORMAT parquet\|csv)` |
-| `submit_starrocks_query` | at least one `starrocks` target | Queue a SELECT; runner appends `INTO OUTFILE '...' FORMAT AS PARQUET\|CSV` (chunked output) |
-| `submit_mongo_query` | at least one `mongodb` target | Queue an aggregation pipeline; runner streams the cursor into NDJSON (default) or CSV |
-| `list_mongo_databases` | at least one `mongodb` target | Discover databases available on a Mongo target |
-| `query_status` | always | Poll job phase + result location |
-| `query_cancel` | always | Cancel a *pending* job (running jobs must be killed from the UI) |
+|---|---|---|
+| `submit_postgres_query` | at least one `postgres` target | Queue a SELECT; the runner wraps it in `COPY (...) TO '/jobs_export/<job_id>/<file>' WITH (FORMAT parquet\|csv)` |
+| `submit_starrocks_query` | at least one `starrocks` target | Queue a SELECT; the runner appends `INTO OUTFILE '...' FORMAT AS PARQUET\|CSV` (chunked output) |
+| `submit_mongo_query` | at least one `mongodb` target | Queue an aggregation pipeline; the runner streams the cursor into NDJSON (default) or CSV |
+| `list_mongo_databases` | at least one `mongodb` target | Discover databases available on a MongoDB target |
+| `query_status` | always | Poll job phase and result location |
+| `query_cancel` | always | Cancel a *pending* job (running jobs must be killed from the page) |
 
-Submission tools all require a short `description` — the human approver reads it before clicking Approve. The agent submits the SELECT or aggregation only; the runner builds the export wrapper, so agents can't smuggle in writes by appending `INSERT` / `INTO OUTFILE` clauses themselves.
+Submission tools all require a short `description`: the human approver reads it before clicking Approve. The agent submits the SELECT or aggregation only; the runner builds the export wrapper, so agents can't smuggle in writes by appending `INSERT` or `INTO OUTFILE` clauses themselves.
+
+A job goes from pending to approved to running to history (done, failed, rejected or cancelled); the [lifecycle](../architecture/query-scheduler.md#lifecycle-of-a-job) is in the architecture part.
 
 ### Output formats
 
 | Backend | File extension | How it's produced |
-|---------|---------------|-------------------|
+|---|---|---|
 | PostgreSQL | `.parquet`, `.csv` | Server-side `COPY ... TO '/jobs_export/<job_id>/<file>'` |
-| StarRocks | `.parquet`, `.csv` | Server-side `INTO OUTFILE 'file:///jobs_export/<job_id>/<stem>_'` — SR chunks output, so the folder contains `<stem>_0.<ext>`, `<stem>_1.<ext>`, … (readable as a single dataset by pyarrow / polars / DuckDB) |
-| MongoDB | `.ndjson` (default), `.csv` | Runner streams the cursor; CSV requires a terminal `$project` of flat scalars (runner fails fast on nested values) |
+| StarRocks | `.parquet`, `.csv` | Server-side `INTO OUTFILE 'file:///jobs_export/<job_id>/<stem>_'`: StarRocks chunks output, so the folder contains `<stem>_0.<ext>`, `<stem>_1.<ext>`, … (readable as a single dataset by pyarrow, polars or DuckDB) |
+| MongoDB | `.ndjson` (default), `.csv` | The runner streams the cursor; CSV requires a terminal `$project` of flat scalars (the runner fails fast on nested values) |
 
-Result files land in `<JOBS_RESULT_ROOT>/<job_id>/<filename>` on the host. The folder is created per-job; agents get the path back via `query_status`.
+Result files land in `<JOBS_RESULT_ROOT>/<job_id>/<filename>` on the host. The folder is created per job; agents get the path back via `query_status`.
 
-## Web UI
+The chat's assistant uses a separate endpoint of the scheduler, whose queries always wait for a person (see [The query queue](chat.md#the-query-queue) and [The assistant's endpoint](../architecture/query-scheduler.md#the-assistants-endpoint)).
 
-`http://localhost:<JOBS_PORT>/`
+## The scheduler's page
+
+The page is at `http://localhost:<JOBS_PORT>/` (by default `http://localhost:8050/`).
 
 | Tab | Contents |
-|-----|----------|
-| Pending | Queued submissions awaiting Approve / Reject. SQL is rendered with syntax highlighting; agents' `description` is shown alongside |
-| Running | Currently executing jobs with elapsed time and a Kill button |
-| History | Last `history_retention` jobs with status, duration, output size, and a link to result files |
+|---|---|
+| **Pending** | Queued submissions awaiting Approve or Reject. SQL is rendered with syntax highlighting; the agent's `description` is shown alongside |
+| **Running** | Currently executing jobs with elapsed time and a Kill button |
+| **History** | The last `history_retention` jobs with status, duration, output size, and a link to result files |
 
-Other UI features:
+Other features of the page:
 
-- **EXPLAIN** button on pending PG/SR jobs — runs `EXPLAIN` on the submitted SQL without executing the full query, so the approver can sanity-check cost before approving
-- **Results preview** — for done jobs, a small sample of the output file is rendered inline
-- **Disk usage panel** — shows bytes consumed by `<JOBS_RESULT_ROOT>` and free bytes on its filesystem
-- **SQL formatting** — submitted SQL is pretty-printed in the pending view
-- **Auto-accept** — opt-in panel for skipping the manual approve step on trusted targets (see below)
+- **EXPLAIN** button on pending PostgreSQL and StarRocks jobs: runs `EXPLAIN` on the submitted SQL without executing the full query, so the approver can sanity-check cost before approving.
+- **Results preview**: for done jobs, a small sample of the output file is rendered inline.
+- **Disk usage panel**: shows bytes consumed by `<JOBS_RESULT_ROOT>` and free bytes on its filesystem.
+- **SQL formatting**: submitted SQL is pretty-printed in the pending view.
+- **Auto-accept**: an opt-in panel for skipping the manual approve step on trusted targets (below).
+
+You can also approve, reject, kill, EXPLAIN and preview from the [web UI](webui.md)'s **Queue** window, behind its login and confirmation (see [The Queue window](webui.md#the-queue-window)). The scheduler's own page on its port keeps working beside it.
 
 ## Auto-accept
 
-A pill next to the **SDP Jobs** title in the navbar. Click it to open a floating popover with a row per configured target. Each row has a slider (0..`max_concurrent`) and an enable switch. When a target's switch is on, the runner approves its pending jobs automatically up to the slider's value (FIFO).
+A pill next to the **SDP Jobs** title in the navbar opens a floating popover with a row per configured target. Each row has a slider (0..`max_concurrent`) and an enable switch. When a target's switch is on, the runner approves its pending jobs automatically up to the slider's value.
 
-- **Per-target only** — there is no master toggle. A target with the switch off never auto-approves; a target with it on auto-approves up to the slider's value. Targets the user has never touched default to disabled.
-- **Default limit = `max_concurrent`** — first time you flip a target's switch, the slider is at its top (the runner's global cap). Lower it if you want to leave headroom for other targets.
-- **FIFO** — within a target, the oldest pending job is approved first (by submission time).
-- **Global cap still applies** — the runner's `max_concurrent` (config) gates the total number of jobs *executing* at once. Auto-accept just removes the human approval step; it doesn't bypass the worker pool. Slider values are clamped to `max_concurrent`.
-- **Slot accounting** — the cap counts `approved + running` for the target, so a backed-up approved queue doesn't sneak past the limit while the runner is busy on other targets.
-- **Persistence** — settings are stored in `data/jobs/auto_accept.json` (atomic writes). State survives container restarts; deleting the file resets every target to disabled.
+- **Per target only.** There is no master toggle. A target with the switch off never auto-approves; a target with it on auto-approves up to the slider's value. Targets you have never touched default to disabled.
+- **Default limit is `max_concurrent`.** The first time you flip a target's switch, the slider is at its top (the runner's global cap). Lower it if you want to leave headroom for other targets.
+- **FIFO.** Within a target, the oldest pending job is approved first (by submission time).
+- **The global cap still applies.** The runner's `max_concurrent` gates the total number of jobs *executing* at once. Auto-accept just removes the human approval step; it doesn't bypass the worker pool. Slider values are clamped to `max_concurrent`.
+- **Slot accounting.** The cap counts `approved + running` for the target, so a backed-up approved queue doesn't sneak past the limit while the runner is busy on other targets.
+- **Persistence.** Settings are stored in `data/jobs/auto_accept.json` (atomic writes). They survive container restarts; deleting the file resets every target to disabled.
+- **No Save button.** Flipping a switch or releasing a slider posts the change immediately.
+- **The chat's assistant is never auto-accepted.** Its queries wait for a person whatever the target's setting.
 
-Settings update reactively — flipping a switch or releasing a slider posts the change immediately. There is no Save button.
+In the web UI's Queue window, switching auto-accept on or raising its limit needs the management password again (see [Auto-accept and the management password](webui.md#auto-accept-and-the-management-password)).
 
 ## Per-backend timeouts
 
 Set during `setup-jobs`, applied at execution time:
 
 | Backend | Default | Notes |
-|---------|---------|-------|
+|---|---|---|
 | PostgreSQL | 0 (no limit) | `statement_timeout` set per session; 0 disables |
 | MongoDB | 0 (no limit) | `maxTimeMS` skipped when 0 |
 | StarRocks | 259200 (72h) | StarRocks caps `query_timeout` at 72h and rejects 0; setup enforces 1–72h |
@@ -149,73 +156,11 @@ All three are tunable in `config/jobs/config.local.yaml` under `default_timeouts
 
 ## Auth (optional)
 
-The web UI is open by default — anyone reaching `JOBS_PORT` on the host can approve / reject / kill jobs. Suitable for solo / single-user deployments.
+The page is open by default: anyone reaching `JOBS_PORT` on the host can approve, reject or kill jobs. This suits solo, single-user deployments.
 
-When `auth: true` (toggleable in `setup-jobs`), the UI prompts for the database admin password — the same password used by `sdp db setup` for any auth-enabled DB. The jobs container reads the password from its process env (passed through by `sdp db start` when any DB has auth enabled) and HMAC-authenticates UI sessions. Startup fails if no password is in the env.
+With `auth: true` (toggled in `setup-jobs`), the page asks for the database admin password, the same password used by `python sdp.py db setup` for any auth-enabled database. The jobs container reads the password from its process environment (passed through by `python sdp.py db start` when any database has auth enabled) and HMAC-authenticates page sessions. Startup fails if no password is in the environment; setup warns when no database has authentication enabled.
 
-> [!IMPORTANT]
-> UI auth is independent from MCP. The MCP endpoint at `/mcp` is not gated by the UI password — anything that can reach `JOBS_PORT` on the network can submit jobs. Treat the network boundary as the trust boundary, the same way you would for the per-DB MCP servers.
-
-## Control socket
-
-When its data folder (`data/jobs` on the host) belongs to a user other than root, the scheduler opens a unix socket at `data/jobs/control/door.sock` for that user, the operator. The folder is made with mode 0700 and the socket with mode 0600, both given to the owner of `data/jobs`; a connection from any other user (root included) is closed without a reply. The web UI's Queue window uses it (see [The web UI](webui.md#the-queue-window)): `sdp webui start` mounts the control folder read-only into the web UI's container. Through it a program of the operator can list the jobs of each tab, read one job with a digest of what it runs, approve it (only when that digest still matches the job as it is at that moment), reject it with a reason, kill it, run EXPLAIN on it (on an admin connection, like the EXPLAIN button), preview a finished result and change the auto-accept settings. Who approved or rejected a job, and who asked to kill it, through the socket is kept in its record (`acted_by`). The kill's label names who asked: it is set on a job that may still finish by itself, and it is lost when the scheduler restarts before the job is retired. Every approval, rejection, kill, EXPLAIN and auto-accept change through the socket is logged twice, the attempt and its outcome. The page, its port and its password gate are unchanged.
-
-`sdp db setup-jobs` makes `data/jobs` as the operator. If Docker made it instead (a `db start jobs` before setup), it belongs to root and the socket stays closed. Each reason the socket stays closed is one line in the scheduler's log (`docker logs <jobs container>`), beginning with "the control socket stays closed:":
-
-| Reason in the log | What to do |
-|---|---|
-| the data folder cannot be opened | Check that `data/jobs` exists and is a folder |
-| the data folder belongs to root | `sudo chown <you>:<your group> data/jobs`, then restart the scheduler |
-| others may write into the data folder | `chmod o-w data/jobs`, then restart the scheduler; anyone could otherwise move the control folder away. Write for the folder's group is accepted (a private group of your own is the common default) |
-| the results folder is the data folder or contains it | Set `JOBS_RESULT_ROOT` (`python sdp.py db setup-jobs`) to a folder that is not `data/jobs` and does not contain it: the database servers can write into the results folder |
-| the results folder lies inside the control folder | Set `JOBS_RESULT_ROOT` to a folder outside `data/jobs/control` |
-| the results folder cannot be looked at | Check that the results folder exists; it also stays closed when the folders up to three levels below the results folder (job folders aside) hold more than 10,000 entries |
-| the control folder is not a real folder | Remove the link or file at `data/jobs/control`; the scheduler makes the folder at its next start |
-| the control folder belongs to another user than the data folder | `sudo chown <owner of data/jobs> data/jobs/control` |
-| the control folder is open to the group or to others | `chmod 700 data/jobs/control` |
-| the control folder could not be made or given to the data folder's owner, or cannot be used | Check the permissions of `data/jobs` |
-| something other than a socket is in the place of door.sock | Remove `data/jobs/control/door.sock` |
-| the socket could not be made, or its thread could not be started | Restart the scheduler; a socket left by a scheduler that was killed is replaced by itself |
-
-The scheduler never deletes or re-creates `data/jobs/control` itself. The socket is removed when the scheduler stops. The scheduler's code is in its image, so `python sdp.py db start jobs` (which rebuilds the image) is what brings the socket to a running deployment.
-
-## The assistant's endpoint
-
-The scheduler also serves a second MCP server and a results route for the chat's assistant (see [The chat](chat.md#the-query-queue)), under `/assistant/` of its port: `/assistant/mcp` (Streamable HTTP) and `/assistant/results/<job id>` and `/assistant/results/<job id>/<part>`. The `/mcp` endpoint, the page and their behaviour for every other request are unchanged.
-
-- **The secret.** A request under `/assistant/` must carry the header `x-sdp-assistant` with the secret held in `data/jobs/control/assistant.secret`: a regular file (a link is not followed) of 64 to 256 lowercase hex digits. `python sdp.py chat start` writes it (32 random bytes as hex, mode 0600) when the scheduler runs and the control folder is there, keeps a valid one, and gives the chat's gateway a copy; nothing else writes it, and it is never printed. Without the file, without the header or with a wrong secret, the scheduler answers with the same 404 as for a path it does not have; it only counts such requests in its log. The file is looked at on every request, so a new secret takes effect without a restart.
-- **Marked queries.** A query submitted through `/assistant/mcp` carries `submitted_by: "assistant"` in its record (a record without it is written exactly as before). Such a query is never auto-accepted, whatever its target's auto-accept setting: it waits until a person approves it on the page or in the web UI's Queue window. The control socket's job lists show `submitted_by` for such a query, and the web UI's Queue window labels it "Submitted by the chat's assistant" in its rows, on its page and on the confirm pages of its actions (see [The Queue window](webui.md#the-queue-window)); the scheduler's own page does not show the mark.
-- **The tools.** The same submit tools as on `/mcp` (each query they make is marked) and `list_targets`; not `list_mongo_databases`, which uses the database's admin login without anyone's approval (the assistant finds MongoDB's databases through the read-only MongoDB MCP server instead). A submission's query text may be at most 1,000,000 characters (a Mongo pipeline: as compact JSON before it is checked and as the indented JSON that is stored, and at most 32 levels deep) and its description at most 2,000; a longer one is refused. A Mongo submission without a database is refused with a pointer to the read-only MongoDB MCP server. `query_status` and `query_cancel` take only the scheduler's job ids and only marked queries, and answer "no such job" for any other id. Nothing lists other queries.
-- **The results.** `GET /assistant/results/<job id>` lists the parts of a finished marked query (`{"parts": [{"index", "name", "size"}]}`); `GET /assistant/results/<job id>/<part>` sends one part as `application/octet-stream`, at most two at a time (and at most four listings at a time; beyond that the answer is 429). The parts are found as the control socket's preview finds them: in the query's folder under the results folder, only the output file's own name or `<stem>_<n><ext>`, and only regular files, looked at without following a link; a download opens only the part asked for. Anything else is the same 404; when the file system fails while the parts are found (too many open files, a part that went away), the request is refused with 503 rather than answered with a shorter list.
-
-## Concurrency and resume
-
-- `max_concurrent` (default 20) caps how many jobs run in parallel — each gets one thread from a `ThreadPoolExecutor`. Submissions beyond the cap stay in `approved/` until a slot frees up.
-- The store on disk is the source of truth — if the container restarts, jobs in `pending/` and `approved/` resurface. Jobs caught mid-execution in `running/` are marked failed on next start (no automatic re-run; the agent can resubmit).
-
-## Configuration reference
-
-### `config/jobs/config.local.yaml`
-
-| Key | Type | Default | Purpose |
-|-----|------|---------|---------|
-| `port` | int | 8050 | UI + MCP port (host-side via `JOBS_PORT` in `.env`) |
-| `result_root` | path | `./data/jobs/results` | Host directory where job output files land. Bind-mounted into PG/SR as `/jobs_export` and into the jobs container as `/data/jobs/results` |
-| `max_concurrent` | int | 20 | Worker pool size |
-| `history_retention` | int | 500 | Number of completed jobs kept in `history/` |
-| `default_timeouts.postgres` | seconds | 0 | 0 = no limit |
-| `default_timeouts.mongodb` | seconds | 0 | 0 = no limit |
-| `default_timeouts.starrocks` | seconds | 259200 | SR caps at 72h, rejects 0 |
-| `auth` | bool | false | Require DB admin password for UI access |
-| `targets.<name>.backend` | enum | required | `postgres` \| `starrocks` \| `mongodb` |
-| `targets.<name>.database` | string | varies | Required for PG; empty for SR/Mongo |
-
-### Env vars (in `.env`)
-
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `JOBS_PORT` | 8050 | Host port for UI + MCP |
-| `JOBS_RESULT_ROOT` | `./data/jobs/results` | Host path mounted into containers as `/jobs_export` (PG/SR) and `/data/jobs/results` (jobs) |
+> The page's password does not gate MCP. The MCP endpoint at `/mcp` is not gated by the page's password: anything that can reach `JOBS_PORT` on the network can submit jobs. Treat the network boundary as the trust boundary, the same way you would for the per-database MCP servers.
 
 ## Removing the scheduler
 
@@ -223,4 +168,32 @@ The scheduler also serves a second MCP server and a results route for the chat's
 python sdp.py db unsetup-jobs
 ```
 
-Stops the jobs container, removes `config/jobs/config.local.yaml`, removes `JOBS_PORT` / `JOBS_RESULT_ROOT` from `.env`, and strips the `/jobs_export` mount from `docker-compose.override.yml`. The `data/jobs/` directory and result files are left alone — delete manually if no longer needed.
+It stops the jobs container, removes `config/jobs/config.local.yaml`, removes `JOBS_PORT` and `JOBS_RESULT_ROOT` from `.env`, and strips the `/jobs_export` mount from `docker-compose.override.yml`. The `data/jobs/` directory and result files are left alone: delete them by hand if you no longer need them.
+
+## Configuration reference
+
+### `config/jobs/config.local.yaml`
+
+10 settings.
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `port` | int | 8050 | Page and MCP port (host side via `JOBS_PORT` in `.env`) |
+| `result_root` | path | `./data/jobs/results` | Host directory where job output files land. Bind-mounted into PostgreSQL and StarRocks as `/jobs_export` and into the jobs container as `/data/jobs/results` |
+| `max_concurrent` | int | 20 (setup's suggestion; `config/jobs/config.yaml` falls back to 5 when the local file omits it) | Worker pool size: how many jobs run in parallel. Jobs beyond it stay approved until a slot frees up |
+| `history_retention` | int | 500 | Number of completed jobs kept in history; older entries are pruned in submission order |
+| `default_timeouts.postgres` | seconds | 0 | 0 = no limit |
+| `default_timeouts.mongodb` | seconds | 0 | 0 = no limit |
+| `default_timeouts.starrocks` | seconds | 259200 | StarRocks caps at 72h, rejects 0 |
+| `auth` | bool | false | Require the database admin password for the page |
+| `targets.<name>.backend` | enum | required | `postgres` \| `starrocks` \| `mongodb` |
+| `targets.<name>.database` | string | varies | Required for PostgreSQL; empty for StarRocks and MongoDB |
+
+### Env vars (in `.env`)
+
+| Var | Default | Purpose |
+|---|---|---|
+| `JOBS_PORT` | 8050 | Host port for the page and MCP |
+| `JOBS_RESULT_ROOT` | `./data/jobs/results` | Host path mounted into containers as `/jobs_export` (PostgreSQL, StarRocks) and `/data/jobs/results` (jobs) |
+
+A job caught mid-execution when the container restarts is marked failed on the next start and is not re-run; the agent can resubmit (see [Concurrency and resume](../architecture/query-scheduler.md#concurrency-and-resume)).

@@ -1,6 +1,6 @@
 {#- What the pending page shows of an action of the Queue (`queue.Hooks.pending_model`). -#}
 {%- import "_queue_macros.html" as q %}
-<dl class="facts">
+<dl class="kv">
   <dt>Action</dt><dd>{{ pending.title }}</dd>
   {%- if pending.job_id %}
   <dt>Job</dt><dd>{% if pending.job_href %}<a href="{{ pending.job_href }}"><code>{{ pending.job_id }}</code></a>{% else %}<code>{{ pending.job_id }}</code>{% endif %}{% if pending.assistant %} <span class="tag">{{ pending.assistant }}</span>{% endif %}{% if pending.assistant_unknown %} <span class="muted">{{ pending.assistant_unknown }}</span>{% endif %}</dd>

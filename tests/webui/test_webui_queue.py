@@ -569,7 +569,8 @@ def test_the_tabs_count_list_and_page_through_the_jobs(client, door):
         door.add("pending", a_job(f"pg_{number:08x}"))
     door.add("approved", a_job("pg_000000aa", status="approved"))
     page = client.get("/queue").text
-    assert '<span class="tag">51</span>' in page and '<span class="tag">1</span>' in page
+    # The numbers are the frame's tab bar's, as the mock-up writes them: Running counts the approved and the running jobs.
+    assert 'aria-current="page">Pending (51)</a>' in page and '<a class="tab" href="/queue?tab=running">Running (1)</a>' in page
     assert page.count('href="/queue/pg_') == 50 and 'href="/queue?tab=pending&amp;page=2">More</a>' in page
     assert door.requests[-1] == {"op": "jobs", "phase": "pending", "limit": 50, "offset": 0}
     second = client.get("/queue?tab=pending&page=2").text
@@ -587,8 +588,12 @@ def test_only_job_ids_become_links(client, door):
         door.jobs[job_id] = ["pending", a_job(job_id)]
     door.add("pending", a_job())
     page = client.get("/queue").text
-    links = [value for name, value in attributes(main_part(page)) if name == "href" and value.startswith("/queue/")]
+    # The list alone: the auto-accept panel under it links its change page.
+    rows = main_part(page).split('id="auto-accept"')[0]
+    links = [value for name, value in attributes(rows) if name == "href" and value.startswith("/queue/")]
     assert links == [f"/queue/{JOB_ID}"]
+    # A row's forms (approve, reject, EXPLAIN) only for the id of a job's form, and only that id is posted.
+    assert re.findall(r'name="(?:action|job_id)" value="([^"]*)"', rows) == ["queue.approve", JOB_ID, "queue.reject", JOB_ID, "queue.explain", JOB_ID]
     assert not [mark for mark in RAW_MARKS if mark in page]
 
 
@@ -636,25 +641,73 @@ def test_hostile_text_is_text_everywhere(client, token, door, results):
     assert HOSTILE in hidden
 
 
-def test_the_running_tab_asks_for_itself_again_and_an_ended_session_is_sent_to_the_login(client, door, app):
-    """Bug class: a running tab that does not follow the queue (the operator watches a stale list), or an ended session whose poll swaps the login page into the tab."""
+def test_the_running_tab_asks_for_itself_again_and_an_ended_session_is_sent_to_the_login(client, door, app, token):
+    """Bug class: a running tab that does not follow the queue (the operator watches a stale list), an ended session whose poll swaps the login page into the tab, or a polled part whose Kill form has no form token (refused by the guard) or whose render fails on it."""
     door.add("running", a_job(status="running"))
     page = client.get("/queue?tab=running").text
     assert 'hx-get="/queue/running-rows?page=1" hx-trigger="load delay:5s" hx-swap="outerHTML"' in page
     part = client.get("/queue/running-rows?page=1", headers=HX)
     assert part.status_code == 200 and not part.text.startswith("<!doctype") and 'hx-trigger="load delay:5s"' in part.text and f"/queue/{JOB_ID}" in part.text
+    assert re.findall(r'name="(?:form_token|action|job_id)" value="([^"]*)"', part.text) == [token, "queue.kill", JOB_ID]
     assert 'hx-trigger' not in main_html(client.get("/queue?tab=pending").text)
     app.sessions.forget(client.cookies.get("__Host-sdp_session"))
     ended = client.get("/queue/running-rows?page=1", headers=HX)
     assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login"
 
 
+def test_the_running_tab_holds_the_approved_and_the_running_lists_each_with_its_pages(client, door):
+    """Bug class: the approved jobs lost when the Approved tab went into Running (or its old address answering 404), the Running tab's number leaving them out, or the pager of one list moving the other list too."""
+    for number in range(51):
+        door.add("approved", a_job(f"pg_{number:08x}", status="approved"))
+    door.add("running", a_job("pg_000000ee", status="running"))
+    page = client.get("/queue?tab=running").text
+    assert 'aria-current="page">Running (52)</a>' in page and "<h1>Running</h1>" in page
+    assert page.index("<h2>Approved, waiting to start</h2>") < page.index("<h2>Running</h2>") < page.index("/queue/pg_000000ee")
+    assert page.count('href="/queue/pg_') == 51 and 'href="/queue?tab=approved&amp;page=2">More</a>' in page
+    assert [request for request in door.requests if request["op"] == "jobs"][-2:] == [{"op": "jobs", "phase": "approved", "limit": 50, "offset": 0}, {"op": "jobs", "phase": "running", "limit": 50, "offset": 0}]
+    # The old address of the Approved tab is the Running tab, its list at the page asked; the running list stays at its first.
+    second = client.get("/queue?tab=approved&page=2").text
+    assert 'aria-current="page">Running (52)</a>' in second and "pg_00000032" in second and "/queue/pg_000000ee" in second
+    assert [request for request in door.requests if request["op"] == "jobs"][-2:] == [{"op": "jobs", "phase": "approved", "limit": 50, "offset": 50}, {"op": "jobs", "phase": "running", "limit": 50, "offset": 0}]
+    assert "auto_accept" not in door.ops()
+
+
+def test_a_rows_approve_posts_what_the_job_page_posts_and_leads_to_the_whole_statement(client, door):
+    """Bug class: a row's Approve that skips the confirm page (the statement never seen whole before the admin login runs it), or that posts fields the pending route refuses."""
+    door.add("pending", a_job(sql="SELECT 1\nFROM t\nWHERE made_up_mark_5e1"))
+    page = client.get("/queue").text
+    form = re.search(r'<form method="post" action="/pending" class="act">(.*?)</form>', page, re.DOTALL).group(1)
+    fields = dict(re.findall(r'<input type="hidden" name="([a-z_]+)" value="([^"]*)">', form))
+    assert set(fields) == {"form_token", "action", "job_id"} and fields["action"] == "queue.approve" and fields["job_id"] == JOB_ID
+    pending = client.get(pending_path(client.post("/pending", data=fields, headers={"origin": ORIGIN}))).text
+    assert '<pre class="statement-whole">\nSELECT 1\nFROM t\nWHERE made_up_mark_5e1</pre>' in pending and changes(door) == []
+
+
+def test_the_pending_tab_shows_the_auto_accept_panel_and_its_failure_stays_in_it(client, door):
+    """Bug class: the panel showing a target as switched off while the scheduler auto-approves its queries, no way from it to the change form, or a failure to read the settings that takes the pending list with it."""
+    door.add("pending", a_job())
+    door.auto = {"max_limit": 5, "targets": [{"name": "warehouse", "backend": "postgres", "database": "datasets", "enabled": True, "limit": 2}, {"name": "olap", "backend": "starrocks", "database": "reddit", "enabled": False, "limit": 0}]}
+    panel = client.get("/queue").text.split('id="auto-accept"')[1]
+    text = main_text(panel)
+    assert '<span class="sw on" role="img" aria-label="auto-accept on"></span>' in panel and '<span class="sw" role="img" aria-label="auto-accept off"></span>' in panel
+    assert "warehouse postgres \u00b7 auto-approving 2 of 5" in text and "olap starrocks \u00b7 every query waits for you 0 of 5" in text
+    assert '<meter min="0" max="5" value="2"' in panel and panel.count('href="/queue/auto-accept"') == 2 and queue.NEVER_AUTO_SENTENCE in text
+    door.answers["auto_accept"] = broker_client.BrokerUnreachable(broker_client.NO_REPLY)
+    response = client.get("/queue")
+    rows, panel = response.text.split('id="auto-accept"')
+    assert response.status_code == 200 and f'href="/queue/{JOB_ID}"' in rows and 'value="queue.approve"' in rows
+    assert words.DOOR_REASON_SENTENCES[broker_client.NO_REPLY] in main_text(panel) and words.DOOR_REASON_SENTENCES[broker_client.NO_REPLY] not in main_text(rows)
+
+
 def test_the_preview_shows_a_table_of_text_and_its_refusals(client, door, results):
-    """Bug class: a preview that drops its parts or the "truncated" mark (the operator believes the first rows are all), or a refusal shown as an empty table."""
+    """Bug class: a preview that drops its parts or the "truncated" mark (the operator believes the first rows are all), a refusal shown as an empty table, or a History row's Preview that does not lead to it."""
     a_done_job(door, results)
     door.preview = {**door.preview, "truncated": True, "parts": [{"name": "result.csv", "size": 8}, {"name": "result_1.csv", "size": 2048}], "parts_total": 2}
     page = client.get(f"/queue/{DONE_ID}").text
-    assert f'hx-get="/queue/{DONE_ID}/preview"' in page
+    assert f'hx-get="/queue/{DONE_ID}/preview"' in page and 'hx-trigger="load"' not in page
+    # A History row's Preview opens the job's page with its preview loaded at once.
+    assert f'href="/queue/{DONE_ID}?preview=1#result"' in client.get("/queue?tab=history").text
+    assert f'hx-get="/queue/{DONE_ID}/preview" hx-trigger="load"' in client.get(f"/queue/{DONE_ID}?preview=1").text
     part = client.get(f"/queue/{DONE_ID}/preview", headers=HX).text
     assert "<th scope=\"col\">a</th>" in part and "<td>1</td><td>2</td>" in part and "truncated" in part and "result_1.csv" in part and "2.0 KiB" in part
     for code in ("not_done", "preview_not_available", "preview_failed"):
@@ -1061,7 +1114,7 @@ def test_any_true_overwrite_is_said_with_its_value(client, token, door, value, o
     door.add("pending", a_job(overwrite=value))
     pages = {"tab": client.get("/queue").text, "job": client.get(f"/queue/{JOB_ID}").text, "approve": client.get(pending_path(choose(client, "queue.approve", token, job_id=JOB_ID))).text}
     # The list is the socket's short view, which keeps only a scalar `overwrite` (a list or an object arrives as None).
-    assert ('<span class="tag">overwrites</span>' in pages["tab"]) is (overwrites and not isinstance(value, (list, dict)))
+    assert ('<span class="tag warn">overwrites</span>' in pages["tab"]) is (overwrites and not isinstance(value, (list, dict)))
     assert ("overwrites an existing result" in pages["job"]) is overwrites
     assert (queue.OVERWRITE_SENTENCE in main_text(pages["approve"])) is overwrites
     for key in ("job", "approve"):
@@ -1372,9 +1425,14 @@ def pages_of_the_jobs(client, token, door, value):
 def test_a_query_of_the_assistant_is_labelled_on_every_page_that_shows_it(client, token, door):
     """Bug class: a page where a person approves, rejects, EXPLAINs or kills a query without seeing that the chat's assistant wrote it."""
     pages = pages_of_the_jobs(client, token, door, "assistant")
+    # A row says it in its "Submitted by" column, with the mock-up's tag; every other page with the label.
+    cell = f'<span class="tag write">{queue.ASSISTANT_TAG}</span> <span class="small muted">{queue.ASSISTANT_ROW_NOTE}</span>'
     for key, page in pages.items():
-        assert queue.ASSISTANT_LABEL in main_text(page), key
-    assert main_text(pages["tab pending"]).count(queue.ASSISTANT_LABEL) == 1
+        if key.startswith("tab "):
+            assert cell in main_part(page), key
+        else:
+            assert queue.ASSISTANT_LABEL in main_text(page), key
+    assert main_part(pages["tab pending"]).count(cell) == 1
 
 
 @pytest.mark.parametrize("value", [ABSENT, "", "Assistant", "assistant ", HOSTILE_MARK, HOSTILE, ["assistant"], {"assistant": True}, 1, True, None])
@@ -1384,6 +1442,7 @@ def test_any_other_mark_is_shown_as_nothing_and_never_echoed(client, token, door
     for key, page in pages.items():
         text = main_text(page)
         assert queue.ASSISTANT_LABEL not in text and queue.ASSISTANT_SENTENCE not in text and queue.EXPLAIN_ASSISTANT_SENTENCE not in text and queue.ASSISTANT_UNKNOWN not in text, key
+        assert 'class="tag write"' not in page and queue.ASSISTANT_ROW_NOTE not in text, key
         assert HOSTILE_MARK not in page and not [mark for mark in RAW_MARKS if mark in page], key
 
 

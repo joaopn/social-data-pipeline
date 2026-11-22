@@ -1,1 +1,51 @@
-/* The Queue window's own rules, on the kit's tokens of app.css. */
+/* The Queue window's own rules, on the kit's tokens of app.css: the mock-up's head of a tab, its table of jobs with a row of details under each job, the auto-accept panel, and a job's page. No rule here gives the approval's statement (`.statement-whole`) or anything around it a height or a scroll box (a test reads every sheet for this). */
+.qhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.qlist > h2 { margin: 8px 0 8px; }
+.qlist + .qlist { margin-top: 22px; }
+
+/* the table of jobs (the mock-up's jobRow) */
+table.jobs td.when .small { margin-top: 4px; }
+table.jobs td.out { overflow-wrap: anywhere; }
+table.jobs .note-line { font-family: var(--sans); margin-top: 2px; }
+table.jobs td.mono a { color: var(--ink); }
+table.jobs .error-line { font-family: var(--sans); margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 6rem; overflow: auto; }
+.jact { flex-wrap: wrap; gap: 6px; }
+.jact .btn.ghost { padding-left: 3px; padding-right: 3px; }
+.jact .sep { margin: 0 -4px; }
+form.act { display: contents; }
+details.sqlt { display: inline-block; }
+details.sqlt > summary { list-style: none; }
+details.sqlt > summary::-webkit-details-marker { display: none; }
+details.sqlt[open] > summary { color: var(--ink); background: var(--surface-3); }
+/* The row under a job: shown while its "SQL" is open (no script: the job's row holds an open details element). */
+tr.jd { display: none; }
+tr.job:has(details.sqlt[open]) + tr.jd { display: table-row; }
+table.t tr.jd td, table.t tr.jd:hover td { background: var(--surface-2); }
+table.t tr.job:has(details.sqlt[open]) td { border-bottom-color: transparent; }
+.jdetail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 4px; }
+.jdetail .statement { margin-top: 6px; max-height: 230px; }
+
+/* the auto-accept panel (the mock-up's .aa lines; a meter drawn as its slider) */
+.aa-card { max-width: 860px; margin-top: 20px; }
+.main > .aa-card { margin-top: 20px; }
+.aa-card .row h3 { margin: 0; }
+.aa { grid-template-columns: auto auto 1fr auto auto; margin-top: 12px; }
+.aa-limit { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.aa meter { width: 120px; height: 4px; border: 0; border-radius: 2px; background: var(--surface-3); -webkit-appearance: none; appearance: none; }
+.aa meter::-webkit-meter-bar { background: var(--surface-3); border: 0; border-radius: 2px; height: 4px; }
+.aa meter::-webkit-meter-optimum-value, .aa meter::-webkit-meter-suboptimum-value, .aa meter::-webkit-meter-even-less-good-value { background: var(--accent); border-radius: 2px; }
+.aa meter::-moz-meter-bar { background: var(--accent); border-radius: 2px; }
+.aa .muted meter::-webkit-meter-optimum-value { background: var(--muted); }
+
+/* the auto-accept page: each target's change form on one line */
+.aa-table .action-form { flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: 8px; border: 0; padding: 0; background: none; min-width: 0; }
+.aa-table .action-form label { align-self: auto; }
+.aa-table input[type="number"] { width: 6rem; }
+
+/* a job's page */
+.jhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.jgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.jgrid > * + * { margin-top: 0; }
+.jforms { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.jforms input[type="text"] { width: 18rem; }
+@media (max-width: 1000px) { .jgrid { grid-template-columns: minmax(0, 1fr); } }

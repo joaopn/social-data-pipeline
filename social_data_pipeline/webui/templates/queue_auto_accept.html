@@ -2,13 +2,14 @@
 {% import "_forms.html" as forms with context %}
 {% import "_queue_macros.html" as q %}
 {% block content %}
+<p class="small"><a href="/queue#auto-accept">&larr; Pending, and the auto-accept panel</a></p>
 <p class="muted">With auto-accept on, the scheduler approves the queries submitted to a target itself, up to the limit of the target's queries approved or running at a time. {{ step_up_note }} {{ never_auto_note }}</p>
 {%- if failure %}
 <p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
 {%- elif not rows %}
 <p class="muted">The scheduler has no targets.</p>
 {%- else %}
-<table>
+<table class="t aa-table">
   <thead><tr><th scope="col">Target</th><th scope="col">Backend</th><th scope="col">Database</th><th scope="col">Auto-accept</th><th scope="col">Limit</th><th scope="col">Change</th></tr></thead>
   <tbody>
     {%- for row in rows %}
@@ -16,7 +17,7 @@
       <td>{{ q.vis(row.shown) }}</td>
       <td>{{ q.vis(row.backend) }}</td>
       <td>{{ q.vis(row.database) }}</td>
-      <td>{% if row.enabled %}<span class="state state-on">on</span>{% else %}<span class="state">off</span>{% endif %}</td>
+      <td><span class="row"><span class="sw{{ ' on' if row.enabled else '' }}" aria-hidden="true"></span>{{ "on" if row.enabled else "off" }}</span></td>
       <td>{{ row.limit_text }}</td>
       <td>
         {%- if row.changeable %}

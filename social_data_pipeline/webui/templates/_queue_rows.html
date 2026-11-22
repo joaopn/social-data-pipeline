@@ -1,51 +1,104 @@
-{#- The jobs of one tab of the Queue, and the links to the next and the previous page. On the running tab the part asks for itself again every 5 seconds (htmx) and the answer replaces it. -#}
+{#- One list of the Queue (`rows`, a list model of `queue`): the mock-up's table of jobs, a row per job and under it a row of its own with the statement as the socket cut it, shown when the job's "SQL" is opened (a `details` element and a `:has` rule, no script); then the links to the next and the previous page. A job's id becomes a link, and its row gets its forms, only when it has the form of a job id (`row.job_id`). The running list asks for itself again every 5 seconds (htmx) and the answer replaces it: the part is rendered with the session's form token (`form_token`) for its forms. -#}
 {%- import "_queue_macros.html" as q %}
-<div id="queue-rows"{% if poll_href %} hx-get="{{ poll_href }}" hx-trigger="{{ poll_trigger }}" hx-swap="outerHTML"{% endif %}>
-  {%- if failure %}
-  <p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
-  {%- elif jobs_failure %}
-  <p class="notice notice-bad" role="alert">{{ jobs_failure }}</p>
-  {%- elif not jobs %}
-  <p class="muted">No jobs here.</p>
+<div id="queue-{{ rows.phase }}" class="qlist"{% if rows.poll_href %} hx-get="{{ rows.poll_href }}" hx-trigger="{{ rows.poll_trigger }}" hx-swap="outerHTML"{% endif %}>
+  {%- if rows.titled %}
+  <h2>{{ rows.title }}</h2>
+  {%- endif %}
+  {%- if rows.failure %}
+  <p class="notice notice-bad" role="alert">{{ rows.failure.sentence }}</p>
+  {%- elif not rows.jobs %}
+  <p class="muted small">Nothing here.</p>
   {%- else %}
-  <table class="queue">
+  <table class="t jobs">
     <thead>
       <tr>
-        <th scope="col">{% if tab == "history" %}Submitted / finished{% elif tab == "approved" %}Approved{% elif tab == "running" %}Started{% else %}Submitted{% endif %}</th>
+        <th scope="col">When</th>
         <th scope="col">Job</th>
+        <th scope="col">Submitted by</th>
         <th scope="col">Target</th>
-        {%- if tab == "history" %}
-        <th scope="col">Outcome</th>
-        <th scope="col">Rows / size</th>
-        {%- else %}
         <th scope="col">Output</th>
-        {%- endif %}
-        <th scope="col">Statement</th>
         <th scope="col">Description</th>
+        <th scope="col">Actions</th>
       </tr>
     </thead>
     <tbody>
-      {%- for row in jobs %}
-      <tr>
-        <td>{% if tab == "history" %}{{ row.submitted }}<br><span class="muted">{{ row.finished }}</span>{% elif tab == "approved" %}{{ row.approved }}{% elif tab == "running" %}{{ row.started }}{% else %}{{ row.submitted }}{% endif %}</td>
-        <td>{% if row.href %}<a href="{{ row.href }}"><code>{{ q.vis(row.id) }}</code></a>{% else %}<code>{{ q.vis(row.id) }}</code>{% endif %}{% if row.assistant %}<br><span class="tag">{{ row.assistant }}</span>{% endif %}</td>
-        <td>{{ q.vis(row.target) }}<br><span class="muted">{{ q.vis(row.backend) }}</span></td>
-        {%- if tab == "history" %}
-        <td>{{ q.vis(row.status) }}{% if row.error %}<pre class="output">
-{{ q.vis(row.error) }}</pre>{% endif %}{% if row.reject_reason %}<p class="small">Rejected: {{ q.vis(row.reject_reason) }}</p>{% endif %}</td>
-        <td>{{ row.rows }}<br><span class="muted">{{ row.size }}</span></td>
-        {%- else %}
-        <td><code>{{ q.vis(row.output) }}</code>{% if row.overwrite %} <span class="tag">overwrites</span>{% if row.overwrite_raw %} <span class="muted">({{ q.vis(row.overwrite_raw) }})</span>{% endif %}{% endif %}</td>
-        {%- endif %}
-        <td><pre class="statement statement-short">
-{{ q.vis(row.sql) }}</pre>{% if row.sql_cut %}<p class="muted small">Cut here: {{ row.sql_length }} characters in all. The job's page shows all of it.</p>{% endif %}</td>
+      {%- for row in rows.jobs %}
+      {%- set sql_word = "Pipeline" if row.mongo else "SQL" %}
+      <tr class="job">
+        <td class="when">
+          {%- if rows.phase == "history" %}
+          <span class="pill"><span class="dot {{ row.dot }}"></span>{{ q.vis(row.status) }}</span>
+          <div class="small muted">{{ row.finished }}</div>
+          {%- elif rows.phase == "pending" %}
+          <span class="pill"><span class="dot warn"></span>waiting for you</span>
+          <div class="small muted">{{ row.submitted }}</div>
+          {%- elif rows.phase == "approved" %}
+          <span class="pill"><span class="dot"></span>waiting to start</span>
+          <div class="small muted">approved {{ row.approved }}</div>
+          {%- else %}
+          <span class="pill"><span class="dot run"></span>running</span>
+          <div class="small muted">started {{ row.started }}</div>
+          {%- endif %}
+        </td>
+        <td class="mono">{% if row.href %}<a href="{{ row.href }}">{{ q.vis(row.id) }}</a>{% else %}{{ q.vis(row.id) }}{% endif %}</td>
+        <td>{% if row.assistant %}<span class="tag write">{{ row.assistant }}</span> <span class="small muted">{{ row.assistant_note }}</span>{% endif %}</td>
+        <td>{{ q.vis(row.target) }}<div class="small muted">{{ q.vis(row.backend) }}</div></td>
+        <td class="mono small out">{{ q.vis(row.output) }}{% if row.overwrite %} <span class="tag warn">overwrites</span>{% if row.overwrite_raw %} <span class="muted">({{ q.vis(row.overwrite_raw) }})</span>{% endif %}{% endif %}
+          {%- if rows.phase == "history" %}
+          {%- if row.done %}
+          <div class="muted note-line">{{ row.rows }} rows &middot; {{ row.size }}</div>
+          {%- endif %}
+          {%- if row.reject_reason %}
+          <div class="muted note-line">rejected: {{ q.vis(row.reject_reason) }}</div>
+          {%- endif %}
+          {%- if row.error %}
+          <div class="muted error-line">error: {{ q.vis(row.error) }}</div>
+          {%- endif %}
+          {%- endif %}
+        </td>
         <td>{% if row.description %}{{ q.vis(row.description) }}{% endif %}</td>
+        <td>
+          <div class="row jact">
+            {%- if row.job_id %}
+            {%- if rows.phase == "pending" %}
+            {{ q.act(form_token, "queue.approve", "Approve", row.job_id, "primary") }}
+            {{ q.act(form_token, "queue.reject", "Reject", row.job_id) }}
+            {%- elif rows.phase == "running" %}
+            {{ q.act(form_token, "queue.kill", "Kill", row.job_id, "danger") }}
+            {%- elif rows.phase == "history" and row.done %}
+            <a class="btn sm" href="{{ row.href }}?preview=1#result">Preview</a>
+            {%- if rows.downloads %}
+            <a class="btn sm" href="{{ row.href }}#result">Download</a>
+            {%- endif %}
+            {%- endif %}
+            {%- endif %}
+            <details class="sqlt"><summary class="btn sm ghost">{{ sql_word }}</summary></details>
+            {%- if row.job_id and rows.phase == "pending" %}
+            <span class="muted sep" aria-hidden="true">&middot;</span>
+            {{ q.act(form_token, "queue.explain", "EXPLAIN", row.job_id, "ghost") }}
+            {%- endif %}
+          </div>
+        </td>
+      </tr>
+      <tr class="jd">
+        <td colspan="7">
+          <div class="jdetail">
+            <div>
+              <h4>{{ sql_word }}</h4>
+              <pre class="statement">
+{{ q.vis(row.sql) }}</pre>
+              {%- if row.sql_cut %}
+              <p class="muted small">Cut here: {{ row.sql_length }} characters in all. The job's page shows all of it.</p>
+              {%- endif %}
+            </div>
+          </div>
+        </td>
       </tr>
       {%- endfor %}
     </tbody>
   </table>
   {%- endif %}
-  {%- if back_href or more_href %}
-  <p class="pager">{% if back_href %}<a href="{{ back_href }}">Newer page</a>{% endif %}{% if back_href and more_href %} | {% endif %}{% if more_href %}<a href="{{ more_href }}">More</a>{% endif %}</p>
+  {%- if rows.back_href or rows.more_href %}
+  <p class="pager">{% if rows.back_href %}<a href="{{ rows.back_href }}">Newer page</a>{% endif %}{% if rows.back_href and rows.more_href %} | {% endif %}{% if rows.more_href %}<a href="{{ rows.more_href }}">More</a>{% endif %}</p>
   {%- endif %}
 </div>

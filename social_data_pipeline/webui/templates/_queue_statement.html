@@ -10,7 +10,7 @@
 <pre class="{{ 'statement-whole' if whole else 'statement' }}">
 {{ q.vis(job.parts) }}</pre>
 <section class="hints" aria-labelledby="hints-{{ job.anchor }}">
-  <h3 id="hints-{{ job.anchor }}">{{ job.hints_label }}</h3>
+  <h4 id="hints-{{ job.anchor }}">{{ job.hints_label }}</h4>
   {%- if job.hints is none %}
   <p>{{ job.hints_not_computed }}</p>
   {%- elif job.hints %}

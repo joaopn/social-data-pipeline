@@ -1,19 +1,40 @@
+{#- A tab of the Queue window, as the mock-up draws it: its head (title and note) under the frame's tab bar, which shows the tabs' numbers (`subbar_counts`), then its lists (`_queue_rows.html`: Pending; Running holds "Approved, waiting to start" and "Running"; History), and on the Pending tab the auto-accept panel, whose failure is said in the panel alone. -#}
 {% extends "frame.html" %}
-{% block content %}
-<nav class="tabs" aria-label="Tabs">
-  {%- for key, label, href in tabs %}
-  <a class="tab{{ ' tab-on' if key == tab else '' }}" href="{{ href }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}{% if counts and key in counts %} <span class="tag">{{ counts[key] }}</span>{% endif %}</a>
+{% import "_queue_macros.html" as q %}
+{% block shell %}
+<main class="main">
+  <div class="qhead"><h1>{{ head_title }}</h1><span class="muted small">{{ head_note }}</span></div>
+  {%- if failure %}
+  <p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
+  {%- else %}
+  {%- if counts_failure %}
+  <p class="notice">The numbers of the tabs could not be read: {{ counts_failure }}</p>
+  {%- endif %}
+  {%- for rows in lists %}
+  {% include "_queue_rows.html" %}
   {%- endfor %}
-</nav>
-{%- if failure %}
-<p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
-{%- else %}
-{%- if counts_failure %}
-<p class="notice">The numbers of the tabs could not be read: {{ counts_failure }}</p>
-{%- endif %}
-{%- if page > 1 %}
-<p class="muted">Page {{ page }}</p>
-{%- endif %}
-{% include "_queue_rows.html" %}
-{%- endif %}
+  {%- if auto_accept %}
+  {%- set aa = auto_accept %}
+  <section class="card aa-card" id="auto-accept" aria-labelledby="aa-title">
+    <div class="row wrap"><h3 id="aa-title">Auto-accept</h3><span class="muted small">approve pending queries for a target automatically, up to a cap, first in first out</span></div>
+    {%- if aa.failure %}
+    <p class="notice notice-bad" role="alert">{{ aa.failure.sentence }}</p>
+    {%- elif not aa.rows %}
+    <p class="muted small">The scheduler has no targets.</p>
+    {%- else %}
+    <div class="aa">
+      {%- for target in aa.rows %}
+      <span class="sw{{ ' on' if target.enabled else '' }}" role="img" aria-label="auto-accept {{ 'on' if target.enabled else 'off' }}"></span>
+      <b>{{ q.vis(target.shown) }}</b>
+      <span class="muted small">{{ q.vis(target.backend) }} &middot; {{ "auto-approving" if target.enabled else "every query waits for you" }}</span>
+      <span class="small{{ '' if target.enabled else ' muted' }} aa-limit"><meter min="0" max="{{ aa.max_limit }}" value="{{ target.limit }}" title="the limit of queries approved or running at a time"></meter> {{ target.limit_text }} of {{ aa.max_limit_text }}</span>
+      <a class="small" href="/queue/auto-accept">Change&hellip;</a>
+      {%- endfor %}
+    </div>
+    {%- endif %}
+    <p class="muted small">{{ aa.never_auto_note }}</p>
+  </section>
+  {%- endif %}
+  {%- endif %}
+</main>
 {% endblock %}

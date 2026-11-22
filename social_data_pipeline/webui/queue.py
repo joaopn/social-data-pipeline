@@ -2,11 +2,11 @@
 
 Pages, all GET (a HEAD is 405), each asking the socket in one worker of a bound of its own (`Limits.door_workers`, four places; "busy" when full), never on the event loop, and rendered in a worker too (a statement can be 1 MiB):
 
-- `GET /queue?tab=pending|approved|running|history&page=N`: the numbers of the tabs (`counts`) and 50 jobs of the tab (`jobs` with `limit` and `offset`; a "more" link while the socket says `more`): target, backend, the statement as cut by the socket, the description, the times, and in the history the outcome, rows, size, error or rejection reason. A job's id becomes a link to its page only when it has the form of a job id. The running tab asks for itself again every 5 seconds (`GET /queue/running-rows?page=N`, a part of the page).
-- `GET /queue/<job id>` (the id checked first, else not found): what the socket's `job` gives that the scheduler's page shows, the statement as stored with every invisible or control character shown as an escape (`statements.visible`), the hints (`statements.hints`), who approved, rejected or asked to kill; the buttons the job's phase allows (pending: approve, reject with a reason, EXPLAIN; running: kill); for a finished job a button for its preview and one download link per part of its result (`results`). A job whose record is too large to send has no buttons: the page says to use the scheduler's own page.
+- `GET /queue?tab=pending|approved|running|history&page=N`: three tabs, as the mock-up draws them, in the frame's tab bar (`QUEUE_PAGES`): Pending and Running with their numbers (`counts`; Running counts the approved and the running jobs), and History. Each list holds 50 jobs (`jobs` with `limit` and `offset`; a "more" link while the socket says `more`): when, the job, who submitted it, target, backend, output file, description and the actions its phase allows, with the statement as cut by the socket in a row of its own under the job (opened by "SQL", no script), and in the history the outcome, rows, size, error or rejection reason. The Running tab shows two lists, each with its own pages: "Approved, waiting to start" above "Running"; `tab=approved` is the Running tab with the approved list at page N, `tab=running` the same with the running list at page N. A job's id becomes a link to its page, and its row gets its forms (approve, reject, EXPLAIN, kill: the same `POST /pending` as on its page), only when it has the form of a job id. The Pending tab also shows the auto-accept panel (`auto_accept`, asked in the same worker after the same check of the broker; its failure is said in the panel alone). The running list asks for itself again every 5 seconds (`GET /queue/running-rows?page=N`, a part of the page, with the session's form token for its forms).
+- `GET /queue/<job id>` (the id checked first, else not found): what the socket's `job` gives that the scheduler's page shows, the statement as stored with every invisible or control character shown as an escape (`statements.visible`), the hints (`statements.hints`), who approved, rejected or asked to kill; the buttons the job's phase allows (pending: approve, reject with a reason, EXPLAIN; running: kill); for a finished job a button for its preview (loaded at once when the address says `?preview=1`, as a History row's "Preview" link does) and one download link per part of its result (`results`). A job whose record is too large to send has no buttons: the page says to use the scheduler's own page.
 - `GET /queue/<job id>/preview`: a part of the page from the socket's `preview`: a table of text cells, the parts' names and sizes, "truncated" when the socket says so; its refusals as sentences.
 - `GET /queue/<job id>/download/<part>`: the part streamed from the web UI's read-only mount of the results folder (`results`), after the socket said the job is in the history as done; at most two at a time ("busy" beyond); anything else not found.
-- `GET /queue/auto-accept`: the targets with their auto-accept settings (`auto_accept`) and a form for each, and that the assistant's queries are never auto-accepted.
+- `GET /queue/auto-accept`: the targets with their auto-accept settings (`auto_accept`) and a form for each, and that the assistant's queries are never auto-accepted; the Pending tab's panel links here ("Change...").
 
 Wherever a job is shown (the rows of every tab, its page, the confirm pages of its actions), a job whose record's `submitted_by` is exactly `"assistant"` is labelled as submitted by the chat's assistant (`assistant_label`); any other value of the field is shown as nothing. The approval of such a job also says that the assistant wrote it and to read it as one from a stranger, its EXPLAIN that an EXPLAIN of it runs before any approval (and that it may be the assistant's, when that could not be read).
 
@@ -33,14 +33,24 @@ log = logging.getLogger("social_data_pipeline.webui")
 
 PAGE_SIZE = 50
 TABS = actions.PHASES
-TAB_TITLES = {"pending": "Pending", "approved": "Approved", "running": "Running", "history": "History"}
+TAB_TITLES = {"pending": "Pending", "approved": "Running", "running": "Running", "history": "History"}
 QUEUE_PAGES = (
     ("queue:pending", "Pending", "/queue?tab=pending"),
-    ("queue:approved", "Approved", "/queue?tab=approved"),
     ("queue:running", "Running", "/queue?tab=running"),
     ("queue:history", "History", "/queue?tab=history"),
-    ("queue:auto-accept", "Auto-accept", "/queue/auto-accept"),
 )
+# The tab of the frame under which each phase's list is shown, and the lists of each tab: the approved jobs wait under Running.
+TAB_OF = {"pending": "pending", "approved": "running", "running": "running", "history": "history"}
+LISTS_OF = {"pending": ("pending",), "running": ("approved", "running"), "history": ("history",)}
+LIST_TITLES = {"pending": "Pending approval", "approved": "Approved, waiting to start", "running": "Running", "history": "History"}
+HEAD_NOTES = {
+    "pending": "oldest first \u00b7 an approved query runs with the database's admin login, so read it first",
+    "running": "oldest first \u00b7 the running list refreshes every 5 seconds",
+    "history": "newest first",
+}
+# The dot of a job's pill by its phase, and in the history by its status (any other status: a grey dot).
+PHASE_PILLS = {"pending": ("warn", "waiting for you"), "approved": ("", "waiting to start"), "running": ("run", "running")}
+STATUS_DOTS = {"done": "ok", "failed": "bad", "rejected": "bad", "cancelled": "bad"}
 PAGE_PATTERN = r"[1-9][0-9]{0,3}"
 PAGE_MAX = actions.JOBS_OFFSET_MAX // PAGE_SIZE + 1
 PART_PATTERN = r"[0-9]{1,4}"
@@ -77,6 +87,9 @@ STEP_UP_NOTE = "Switching auto-accept on, or raising its limit, needs the manage
 # A job of the chat's assistant: its record's `submitted_by` is exactly this mark (`jobs.store.ASSISTANT`); any other value, which only a hand-edited record can have, is shown as nothing.
 ASSISTANT_MARK = "assistant"
 ASSISTANT_LABEL = "Submitted by the chat's assistant"
+# The row's "Submitted by" cell of such a job: the mock-up's tag and a note the record supports (it says no more than that the chat's assistant submitted it).
+ASSISTANT_TAG = "assistant"
+ASSISTANT_ROW_NOTE = "from a chat"
 ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the data it read can steer what it writes: read the statement as carefully as one from a stranger."
 ASSISTANT_UNKNOWN = "Whether the chat's assistant submitted this query could not be read."
 EXPLAIN_ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
@@ -192,15 +205,21 @@ def assistant_label(record):
 
 
 def row_model(job):
-    """One job of a list (the socket's short view) as a row; raises ValueError for one that is not an object."""
+    """One job of a list (the socket's short view) as a row; raises ValueError for one that is not an object. `job_id` is the raw id only when it has the form of a job id (else None, and the row has no link and no form)."""
     if not isinstance(job, dict):
         raise ValueError("not a job")
     sql = job.get("sql")
     sql_length = job.get("sql_length")
+    status = job.get("status")
     return {
         "id": shown(job.get("job_id")),
+        "job_id": job.get("job_id") if actions.is_job_id(job.get("job_id")) else None,
         "href": job_href(job.get("job_id")),
-        "assistant": assistant_label(job),
+        "assistant": ASSISTANT_TAG if assistant_label(job) else None,
+        "assistant_note": ASSISTANT_ROW_NOTE if assistant_label(job) else None,
+        "mongo": job.get("backend") == "mongodb",
+        "done": status == "done",
+        "dot": STATUS_DOTS.get(status, "") if isinstance(status, str) else "",
         "target": shown(job.get("target")),
         "backend": shown(job.get("backend")),
         "status": shown(job.get("status")),
@@ -262,6 +281,8 @@ def job_model(phase, record):
         "job_id": record.get("job_id"),
         "phase": phase,
         "phase_text": PHASE_WORDS.get(phase, "-"),
+        # The dot of the page's pill: by the phase, in the history by the status.
+        "dot": (STATUS_DOTS.get(record.get("status"), "") if isinstance(record.get("status"), str) else "") if phase == "history" else PHASE_PILLS.get(phase, ("", ""))[0],
         "assistant": assistant_label(record),
         "target": shown(record.get("target")),
         "backend": shown(backend),
@@ -446,45 +467,62 @@ def install(api, ctx):
     # ── the tabs ──
 
     def tab_base(tab, page, failure=None):
+        """The model of `/queue?tab=<tab>`: its head, the numbers of the frame's tabs, its lists, and on the Pending tab the auto-accept panel."""
+        shown_tab = TAB_OF[tab]
         return {
-            "tab": tab, "page": page, "tabs": [(key, TAB_TITLES[key], f"/queue?tab={key}") for key in TABS], "failure": failure,
-            "counts": None, "counts_failure": None, "jobs": None, "jobs_failure": None, "more_href": None, "back_href": None,
-            "poll_href": f"/queue/running-rows?page={page}" if tab == "running" else None, "poll_trigger": RUNNING_TRIGGER,
+            "tab": shown_tab, "page": page, "failure": failure, "head_title": LIST_TITLES[shown_tab], "head_note": HEAD_NOTES[shown_tab],
+            "counts": None, "counts_failure": None, "subbar_counts": {}, "lists": [], "auto_accept": None,
         }
 
+    def list_base(phase, page, failure=None):
+        """The model of one list (`_queue_rows.html`): its jobs or why there are none, its pager, and for the running list its poll."""
+        return {
+            "phase": phase, "title": LIST_TITLES[phase], "page": page, "failure": failure, "jobs": None, "more_href": None, "back_href": None,
+            "poll_href": f"/queue/running-rows?page={page}" if phase == "running" else None, "poll_trigger": RUNNING_TRIGGER,
+            "downloads": scheduler.results is not None, "titled": phase in ("approved", "running"),
+        }
+
+    def list_model(phase, page, listed):
+        model = list_base(phase, page)
+        kind, value = listed
+        if kind == "error":
+            model["failure"] = _failure(value)
+            return model
+        try:
+            if not isinstance(value, dict) or value.get("phase") != phase or not isinstance(value.get("jobs"), list) or not isinstance(value.get("more"), bool):
+                raise ValueError("not a list")
+            model["jobs"] = [row_model(job) for job in value["jobs"]]
+        except ValueError:
+            model["failure"] = {"sentence": SHAPE, "code": "shape"}
+            return model
+        if value["more"] and page < PAGE_MAX:
+            model["more_href"] = f"/queue?tab={phase}&page={page + 1}"
+        if page > 1:
+            model["back_href"] = f"/queue?tab={phase}&page={page - 1}"
+        return model
+
+    def ask_list(phase, page):
+        return list_model(phase, page, ask("queue.jobs", {"phase": phase, "limit": PAGE_SIZE, "offset": (page - 1) * PAGE_SIZE}))
+
     def tab_work(tab, page):
+        """The worker of a tab: the numbers, on the Pending tab the auto-accept panel, then each list of the tab (the list `tab` names at `page`, any other at its first page)."""
         def work(session):
             counts = ask("queue.counts")
             if unavailable(counts):
                 return tab_base(tab, page, _failure(counts[1]))
-            listed = ask("queue.jobs", {"phase": tab, "limit": PAGE_SIZE, "offset": (page - 1) * PAGE_SIZE})
-            return _tab_model(tab, page, counts, listed)
+            model = tab_base(tab, page)
+            kind, value = counts
+            if kind == "ok" and isinstance(value, dict) and all(isinstance(value.get(key), int) and not isinstance(value.get(key), bool) for key in ("pending", "approved", "running")):
+                model["counts"] = {key: value[key] for key in ("pending", "approved", "running")}
+                model["subbar_counts"] = {"queue:pending": value["pending"], "queue:running": value["approved"] + value["running"]}
+            else:
+                model["counts_failure"] = _failure(value)["sentence"] if kind == "error" else SHAPE
+            if model["tab"] == "pending":
+                model["auto_accept"] = auto_accept_model()
+            model["lists"] = [ask_list(phase, page if phase == tab else 1) for phase in LISTS_OF[model["tab"]]]
+            return model
 
         return work
-
-    def _tab_model(tab, page, counts, listed):
-        model = tab_base(tab, page)
-        kind, value = counts
-        if kind == "ok" and isinstance(value, dict) and all(isinstance(value.get(key), int) and not isinstance(value.get(key), bool) for key in ("pending", "approved", "running")):
-            model["counts"] = {key: value[key] for key in ("pending", "approved", "running")}
-        else:
-            model["counts_failure"] = _failure(value)["sentence"] if kind == "error" else SHAPE
-        kind, value = listed
-        if kind == "error":
-            model["jobs_failure"] = _failure(value)["sentence"]
-            return model
-        try:
-            if not isinstance(value, dict) or value.get("phase") != tab or not isinstance(value.get("jobs"), list) or not isinstance(value.get("more"), bool):
-                raise ValueError("not a list")
-            model["jobs"] = [row_model(job) for job in value["jobs"]]
-        except ValueError:
-            model["jobs_failure"] = SHAPE
-            return model
-        if value["more"] and page < PAGE_MAX:
-            model["more_href"] = f"/queue?tab={tab}&page={page + 1}"
-        if page > 1:
-            model["back_href"] = f"/queue?tab={tab}&page={page - 1}"
-        return model
 
     def _page_of(request):
         text = request.query_params.get("page")
@@ -500,7 +538,7 @@ def install(api, ctx):
         page = _page_of(request)
         if tab not in TABS or page is None:
             return _not_found()
-        return await show(request, f"queue:{tab}", f"Queue: {TAB_TITLES[tab]}", "queue.html", tab_work(tab, page))
+        return await show(request, f"queue:{TAB_OF[tab]}", f"Queue: {TAB_TITLES[tab]}", "queue.html", tab_work(tab, page))
 
     @api.get("/queue/running-rows")
     async def running_rows(request: Request):
@@ -510,28 +548,39 @@ def install(api, ctx):
         session_id, session = ctx.current(request)
         if session is None:
             return ctx.to_login(request, clear_cookie=bool(session_id))
-        made = await ctx.door.run(lambda: checked(session, tab_work("running", page)))
+
+        def work(_session):
+            listed = ask("queue.jobs", {"phase": "running", "limit": PAGE_SIZE, "offset": (page - 1) * PAGE_SIZE})
+            return list_model("running", page, listed)
+
+        made = await ctx.door.run(lambda: checked(session, work))
         if made is BUSY_GATE:
-            made = tab_base("running", page, {"sentence": BUSY, "code": "busy"})
+            made = list_base("running", page, {"sentence": BUSY, "code": "busy"})
         elif isinstance(made, _BrokerRefused):
             ending = refusal_of(request, session_id, made.error)
             if ending is not None:
                 return ending
             # The broker's sentence; the part asks again, as for a busy answer.
-            made = tab_base("running", page, broker_failure(made.error))
-        return await anyio.to_thread.run_sync(lambda: ctx.render("_queue_rows.html", **made))
+            made = list_base("running", page, broker_failure(made.error))
+        # The rows carry forms (kill): the part needs the session's form token.
+        return await anyio.to_thread.run_sync(lambda: ctx.render("_queue_rows.html", rows=made, form_token=session.form_token))
 
     # ── auto-accept ──
 
-    def auto_accept_work(session):
+    def auto_accept_model():
+        """The targets' auto-accept settings, for the auto-accept page and the Pending tab's panel, in the calling worker: a failure is said in the model, never raised."""
+        base = {"failure": None, "rows": None, "max_limit": None, "max_limit_text": None, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
         kind, value = ask("queue.auto_accept_state")
         if kind == "error":
-            return {"failure": _failure(value), "rows": None, "max_limit": None, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
+            return {**base, "failure": _failure(value)}
         try:
             max_limit, rows = _auto_accept_reply(value)
         except ValueError:
-            return {"failure": {"sentence": SHAPE, "code": "shape"}, "rows": None, "max_limit": None, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
-        return {"failure": None, "rows": rows, "max_limit": max_limit, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
+            return {**base, "failure": {"sentence": SHAPE, "code": "shape"}}
+        return {**base, "rows": rows, "max_limit": max_limit, "max_limit_text": rows_text(max_limit)}
+
+    def auto_accept_work(session):
+        return auto_accept_model()
 
     @api.get("/queue/auto-accept")
     async def auto_accept_page(request: Request):
@@ -575,7 +624,10 @@ def install(api, ctx):
     async def job_page(request: Request, job_id: str):
         if not actions.is_job_id(job_id):
             return _not_found()
-        return await show(request, "queue:job", f"Job {job_id}", "queue_job.html", job_work(job_id))
+        work = job_work(job_id)
+        # `?preview=1` (a History row's "Preview"): the page loads the preview at once.
+        preview_now = request.query_params.get("preview") == "1"
+        return await show(request, "queue:job", f"Job {job_id}", "queue_job.html", lambda session: {**work(session), "preview_now": preview_now})
 
     @api.get("/queue/{job_id}/preview")
     async def preview_part(request: Request, job_id: str):

@@ -17,15 +17,18 @@
     </form>
   </span>
 </header>
+{#- A page may give `subbar_counts` (a tab's key to a number, shown after its label as the mock-up does: "Pending (2)") and fill the block `subbar_right` (the right end of the tab bar, empty unless filled). -#}
 {%- if pages | length > 1 %}
+{%- set counts_of = subbar_counts if subbar_counts is defined and subbar_counts else {} %}
 <nav class="subbar" aria-label="{{ {'queue': 'Queue', 'chat': 'Chat'}.get(window, 'Management') }}">
   {%- for key, page_title, address in pages %}
   {%- if key == active %}
-  <a class="tab on" href="{{ address }}" aria-current="page">{{ page_title }}</a>
+  <a class="tab on" href="{{ address }}" aria-current="page">{{ page_title }}{% if key in counts_of %} ({{ counts_of[key] }}){% endif %}</a>
   {%- else %}
-  <a class="tab" href="{{ address }}">{{ page_title }}</a>
+  <a class="tab" href="{{ address }}">{{ page_title }}{% if key in counts_of %} ({{ counts_of[key] }}){% endif %}</a>
   {%- endif %}
   {%- endfor %}
+  <span class="right row small ink2">{% block subbar_right %}{% endblock %}</span>
 </nav>
 {%- endif %}
 {% block shell %}

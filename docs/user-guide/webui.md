@@ -152,9 +152,9 @@ The Queue window (`/queue`) is the query scheduler's own page, one to one, reach
 
 | Page | What it shows | What you can do there |
 |---|---|---|
-| **Pending**, **Approved**, **Running**, **History** (`/queue?tab=...`) | The number of jobs in the first three tabs, and 50 jobs of the tab per page (the oldest first, the history newest first; "More" while there are more): each job's id (a link to its page), target and backend, the start of its statement, its description and its times; in the history its outcome, rows, size and its error or rejection reason. The Running tab refreshes itself every 5 seconds | Open a job |
+| **Pending**, **Running**, **History** (`/queue?tab=...`, the tabs under the top bar) | The number of jobs waiting for approval and of those approved or running, on the tabs; 50 jobs per list and page (the oldest first, the history newest first; "More" while there are more), one row per job: when (a "waiting for you", "waiting to start" or "running" pill, or the outcome in the history, with its time), the job's id (a link to its page), "assistant" for a query of the chat's assistant, target and backend, output file, description and its actions; in the history the rows and size, the error or the rejection reason. "SQL" (for MongoDB "Pipeline") opens the start of the statement in a row under the job. The Running tab has two lists, each with its own pages: "Approved, waiting to start" above "Running"; the running list refreshes itself every 5 seconds. The old address `/queue?tab=approved` shows the Running tab. Under the Pending list, the **auto-accept panel**: each target with its switch (on or off), its backend, its limit of the scheduler's largest, and "Change..." to the Auto-accept page | Pending: Approve, Reject, EXPLAIN (each leads to its confirm page, as on the job's page; a rejection from the row has no reason). Running: Kill. History: Preview (the job's page with the preview loaded) and Download (the job's page, where each part is offered). Open a job |
 | **A job** (`/queue/<job id>`) | Everything the scheduler's page shows of it: its phase and status, target, backend (for MongoDB the collection and database), output file (and whether it overwrites an existing result), times, rows and size, description, error or rejection reason, who approved or rejected it or asked to kill it through the web UI (`web-<n>`, the broker's number of the session), and its statement as the scheduler holds it, with its hints | Pending: approve, reject with a reason, EXPLAIN. Running: kill. Finished: preview the result and download each of its parts |
-| **Auto-accept** (`/queue/auto-accept`) | Each target of the scheduler with its backend and database, whether auto-accept is on and its limit | Switch it on or off and set the limit, one form per target |
+| **Auto-accept** (`/queue/auto-accept`, from the panel's "Change...") | Each target of the scheduler with its backend and database, whether auto-accept is on and its limit | Switch it on or off and set the limit, one form per target |
 
 A job whose record is too large for the web UI (more than 1 MiB) is listed, but its page says to use the scheduler's own page, and it offers no approval.
 
@@ -171,12 +171,12 @@ A change whose answer never came may have been done: its outcome says so and ask
 
 ### Queries the chat's assistant submitted
 
-A query that the [chat](chat.md)'s assistant submitted is labelled "Submitted by the chat's assistant" wherever it is shown: in its row of each tab, on its page, and on the confirm pages of its approval, rejection, kill and EXPLAIN.
+A query that the [chat](chat.md)'s assistant submitted is labelled wherever it is shown: "assistant" (and "from a chat") in its row of each tab, "Submitted by the chat's assistant" on its page and on the confirm pages of its approval, rejection, kill and EXPLAIN.
 
 - The approval's confirm page of such a query also says, above the statement: "The chat's assistant wrote this query, and text in the data it read can steer what it writes: read the statement as carefully as one from a stranger."
 - The EXPLAIN confirm page of such a query says, above its own sentence: "The chat's assistant wrote this query, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
 - When the job could not be read for a rejection, a kill or an EXPLAIN, its page says "Whether the chat's assistant submitted this query could not be read." and the action can still be confirmed; the EXPLAIN page then says that the query may have been written by the chat's assistant.
-- The auto-accept page says that the assistant's queries are never auto-accepted: the scheduler leaves each one waiting for a person, whatever the target's setting.
+- The auto-accept page and panel say that the assistant's queries are never auto-accepted: the scheduler leaves each one waiting for a person, whatever the target's setting.
 
 ### Auto-accept and the management password
 

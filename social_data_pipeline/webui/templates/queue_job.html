@@ -1,24 +1,28 @@
+{#- A job's page, in the mock-up's look: its pill and labels, its facts and its statement side by side, then what its phase allows (the same forms as its row: each posts to /pending, whose page shows the job before anything is sent) and for a finished job its result. -#}
 {% extends "frame.html" %}
-{% import "_forms.html" as forms with context %}
 {% import "_queue_macros.html" as q %}
 {% block content %}
-<p><a href="/queue">The Queue</a></p>
+<p class="small"><a href="/queue">&larr; The Queue</a></p>
 {%- if failure %}
 <p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
 {%- else %}
-<section class="card" aria-labelledby="job-title">
-  <h2 id="job-title">The job <small>{{ job.phase_text }}</small></h2>
+<div class="jhead">
+  <span class="pill"><span class="dot {{ job.dot }}"></span>{{ job.phase_text }}</span>
   {%- if job.assistant %}
-  <p><span class="tag">{{ job.assistant }}</span></p>
+  <span class="tag write">{{ job.assistant }}</span>
   {%- endif %}
-  <dl class="facts">
+</div>
+<div class="jgrid">
+<section class="card" aria-labelledby="job-title">
+  <h3 id="job-title">The job</h3>
+  <dl class="kv">
     <dt>Status</dt><dd>{{ q.vis(job.status) }}</dd>
     <dt>Target</dt><dd>{{ q.vis(job.target) }} <span class="muted">({{ q.vis(job.backend) }})</span></dd>
     {%- if job.mongo %}
     <dt>Collection</dt><dd>{{ q.vis(job.collection) }}</dd>
     <dt>Database</dt><dd>{{ q.vis(job.database) }}</dd>
     {%- endif %}
-    <dt>Output file</dt><dd><code>{{ q.vis(job.output) }}</code>{% if job.overwrite %} <span class="tag">overwrites an existing result</span>{% if job.overwrite_raw %} <span class="muted">(overwrite: {{ q.vis(job.overwrite_raw) }})</span>{% endif %}{% endif %}</dd>
+    <dt>Output file</dt><dd><code>{{ q.vis(job.output) }}</code>{% if job.overwrite %} <span class="tag warn">overwrites an existing result</span>{% if job.overwrite_raw %} <span class="muted">(overwrite: {{ q.vis(job.overwrite_raw) }})</span>{% endif %}{% endif %}</dd>
     <dt>Submitted</dt><dd>{{ job.submitted }}</dd>
     <dt>Approved</dt><dd>{{ job.approved }}</dd>
     <dt>Started</dt><dd>{{ job.started }}</dd>
@@ -30,47 +34,48 @@
     {%- endfor %}
   </dl>
   {%- if job.description %}
-  <h3>Description</h3>
+  <h4>Description</h4>
   <p class="text">{{ q.vis(job.description) }}</p>
   {%- endif %}
   {%- if job.error %}
-  <h3>Error</h3>
+  <h4>Error</h4>
   <pre class="output">
 {{ q.vis(job.error) }}</pre>
   {%- endif %}
   {%- if job.reject_reason %}
-  <h3>Rejection reason</h3>
+  <h4>Rejection reason</h4>
   <p class="text">{{ q.vis(job.reject_reason) }}</p>
   {%- endif %}
 </section>
 
 <section class="card" aria-labelledby="statement-title">
-  <h2 id="statement-title">{% if job.mongo %}Pipeline{% else %}Statement{% endif %}</h2>
+  <h3 id="statement-title">{% if job.mongo %}Pipeline{% else %}Statement{% endif %}</h3>
   {%- with whole = false %}{% include "_queue_statement.html" %}{% endwith %}
 </section>
+</div>
 
 {%- if job.phase == "pending" or job.phase == "running" or job.done %}
-<section class="card" aria-labelledby="do-title">
-  <h2 id="do-title">What can be done</h2>
-  <div class="forms">
+<section class="card" id="result" aria-labelledby="do-title">
+  <h3 id="do-title">What can be done</h3>
   {%- if job.phase == "pending" %}
-  {{ forms.action("queue.approve", "Approve...", {"job_id": job_id}) }}
-  {% call forms.action("queue.reject", "Reject...", {"job_id": job_id}, danger=True) %}
-  <label>Reason <small>(optional, at most {{ reason_max }} characters)</small>
-    <input type="text" name="reason" maxlength="{{ reason_max }}" autocomplete="off">
-  </label>
-  {% endcall %}
-  {% call forms.action("queue.explain", "EXPLAIN...", {"job_id": job_id}) %}
-  <p class="muted small">{{ explain_sentence }}</p>
-  {% endcall %}
-  {%- elif job.phase == "running" %}
-  {% call forms.action("queue.kill", "Kill...", {"job_id": job_id}, danger=True) %}
-  <p class="muted small">{{ kill_sentence }}</p>
-  {% endcall %}
-  {%- endif %}
+  <div class="jforms">
+    {{ q.act(form_token, "queue.approve", "Approve...", job_id, "primary") }}
+    {% call q.act(form_token, "queue.reject", "Reject...", job_id) %}
+    <label>Reason <small>(optional, at most {{ reason_max }} characters)</small>
+      <input type="text" name="reason" maxlength="{{ reason_max }}" autocomplete="off">
+    </label>
+    {% endcall %}
+    {{ q.act(form_token, "queue.explain", "EXPLAIN...", job_id) }}
   </div>
+  <p class="muted small">{{ explain_sentence }}</p>
+  {%- elif job.phase == "running" %}
+  <div class="jforms">
+    {{ q.act(form_token, "queue.kill", "Kill...", job_id, "danger") }}
+  </div>
+  <p class="muted small">{{ kill_sentence }}</p>
+  {%- endif %}
   {%- if job.done %}
-  <h3>Result</h3>
+  <h4>Result</h4>
   {%- if parts_line %}
   <p class="muted">{{ parts_line }}</p>
   {%- endif %}
@@ -81,8 +86,8 @@
     {%- endfor %}
   </ul>
   {%- endif %}
-  <button type="button" class="secondary" hx-get="/queue/{{ job_id }}/preview" hx-target="#preview" hx-swap="innerHTML">Preview</button>
-  <div id="preview" class="preview" aria-live="polite"></div>
+  <button type="button" class="btn sm" hx-get="/queue/{{ job_id }}/preview" hx-target="#preview" hx-swap="innerHTML">Preview</button>
+  <div id="preview" class="preview" aria-live="polite"{% if preview_now %} hx-get="/queue/{{ job_id }}/preview" hx-trigger="load" hx-swap="innerHTML"{% endif %}></div>
   {%- endif %}
 </section>
 {%- endif %}

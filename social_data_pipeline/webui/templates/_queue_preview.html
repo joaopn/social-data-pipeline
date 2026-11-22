@@ -5,7 +5,7 @@
 {%- else %}
 <p>Format <code>{{ q.vis(preview.format) }}</code>; {{ preview.read_bytes }} read of the first part{% if preview.truncated %}; <strong>truncated</strong>: the first part is longer than what was read{% endif %}.</p>
 <div class="preview-table">
-<table>
+<table class="t">
   <thead><tr>{% for cell in preview.columns %}<th scope="col">{{ cell }}</th>{% endfor %}</tr></thead>
   <tbody>
     {%- for row in preview.rows %}

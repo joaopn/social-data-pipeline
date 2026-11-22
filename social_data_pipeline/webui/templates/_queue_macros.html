@@ -1,6 +1,16 @@
-{#- Macros of the Queue window. `vis` writes a text of the scheduler from its runs (`queue.shown`): plain runs as text, the characters made visible as escapes in a marked span; everything escaped by the template. -#}
+{#- Macros of the Queue window. `vis` writes a text of the scheduler from its runs (`queue.shown`): plain runs as text, the characters made visible as escapes in a marked span; everything escaped by the template. `act` is one small form of a job's row or page: it posts the job's id to /pending under the action's name, as the job page's forms do (the pending page then shows the job, for an approval its whole statement, before anything is sent); `token` is the session's form token, passed in because these macros are imported without the page's context. -#}
 {% macro vis(parts) -%}
 {%- for escape, text in parts -%}
 {%- if escape %}<span class="escape" title="made visible">{{ text }}</span>{% else %}{{ text }}{% endif -%}
 {%- endfor -%}
+{%- endmacro %}
+
+{% macro act(token, name, label, job_id, look="") -%}
+<form method="post" action="/pending" class="act">
+  <input type="hidden" name="form_token" value="{{ token }}">
+  <input type="hidden" name="action" value="{{ name }}">
+  <input type="hidden" name="job_id" value="{{ job_id }}">
+  {%- if caller is defined %}{{ caller() }}{% endif %}
+  <button type="submit" class="btn sm{{ ' ' ~ look if look else '' }}">{{ label }}</button>
+</form>
 {%- endmacro %}

@@ -86,3 +86,19 @@ button.danger { background: var(--sdp-bad); border-color: var(--sdp-bad); color:
   .side ul { display: flex; flex-wrap: wrap; gap: 0.25rem; }
   .window small { display: none; }
 }
+
+/* The Queue window. */
+.tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 1rem; border-bottom: 1px solid var(--sdp-line); }
+.tab { padding: 0.4rem 0.8rem; text-decoration: none; border-bottom: 2px solid transparent; }
+.tab-on { border-bottom-color: var(--sdp-accent); font-weight: 600; }
+.statement { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow: auto; font-size: 0.85rem; }
+/* The approval's statement: no height of its own, the whole statement on the page. */
+.statement-whole { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.85rem; }
+.statement-short { max-height: 8rem; margin: 0; font-size: 0.75rem; }
+.escape { background: var(--sdp-bad-soft); border: 1px solid var(--sdp-bad); border-radius: 3px; padding: 0 0.1rem; font-family: var(--pico-font-family-monospace, monospace); }
+.hints ul { margin-bottom: 0.5rem; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.parts { margin-bottom: 0.75rem; }
+.preview-table { overflow-x: auto; max-height: 28rem; }
+.preview-table td, .preview-table th { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8rem; }
+.pager { margin-top: 0.75rem; }

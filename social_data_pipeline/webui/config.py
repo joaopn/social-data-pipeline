@@ -1,6 +1,6 @@
 """The settings of the web UI, read from the environment `sdp webui start` gives the container, and the rules for the names and addresses the page is reached by.
 
-Four variables, all required: `SDP_WEBUI_HOSTS` (the names and addresses the page answers to, comma-separated: host names, IPv4 addresses, IPv6 addresses in brackets), `SDP_WEBUI_PORT` (the port the browser uses, which is the published port, not one the container listens on), `SDP_WEBUI_SOCKET` (the broker's socket inside the container) and `SDP_WEBUI_GATEWAY` (the IPv4 address of the gateway of the container's network, which `sdp webui start` reads from Docker).
+Four variables, all required: `SDP_WEBUI_HOSTS` (the names and addresses the page answers to, comma-separated: host names, IPv4 addresses, IPv6 addresses in brackets), `SDP_WEBUI_PORT` (the port the browser uses, which is the published port, not one the container listens on), `SDP_WEBUI_SOCKET` (the broker's socket inside the container) and `SDP_WEBUI_GATEWAY` (the IPv4 address of the gateway of the container's network, which `sdp webui start` reads from Docker). Two more are optional, set by `sdp webui start` only when the scheduler's folders are there to mount: `SDP_WEBUI_QUEUE_SOCKET` (the scheduler's control socket inside the container, `/run/sdp-jobs/door.sock`) and `SDP_WEBUI_RESULTS` (the scheduler's results folder inside the container, `/run/sdp-results`); without them the Queue window says why it is not available, or offers no downloads.
 
 The container listens on two ports: `LISTEN_PORT`, to which every listen address but 127.0.0.1 is published, and `LOCAL_PORT`, to which only 127.0.0.1 of the host is published. A login is from the machine itself only with both signs: it arrived on `LOCAL_PORT`, and its client address is the gateway's (a client on 127.0.0.1 of the host is seen with that address, through Docker's proxy). Neither sign alone is enough: Docker's proxy can dial from the gateway for a client of any address on the other port, and a machine that routes to the container's network through the host may reach `LOCAL_PORT` directly with its own address. A missing or malformed one is refused with a `ConfigError` whose `message` is one line naming the variable, never its value. Standard library only.
 """
@@ -14,6 +14,12 @@ ENV_HOSTS = "SDP_WEBUI_HOSTS"
 ENV_PORT = "SDP_WEBUI_PORT"
 ENV_SOCKET = "SDP_WEBUI_SOCKET"
 ENV_GATEWAY = "SDP_WEBUI_GATEWAY"
+ENV_QUEUE_SOCKET = "SDP_WEBUI_QUEUE_SOCKET"
+ENV_RESULTS = "SDP_WEBUI_RESULTS"
+# Where `sdp webui start` mounts the scheduler's control folder and its results folder, and the socket's path inside the first.
+QUEUE_MOUNT = "/run/sdp-jobs"
+QUEUE_SOCKET_IN_CONTAINER = QUEUE_MOUNT + "/door.sock"
+RESULTS_MOUNT = "/run/sdp-results"
 
 # The two ports the container listens on.
 LISTEN_PORT = 8443
@@ -77,12 +83,14 @@ def _host_entry(entry):
 
 @dataclass(frozen=True)
 class Settings:
-    """`hosts` the names and addresses in their `Host` form, `port` the port the browser uses, `socket_path` the broker's socket, `gateway` the IPv4 address of the network's gateway."""
+    """`hosts` the names and addresses in their `Host` form, `port` the port the browser uses, `socket_path` the broker's socket, `gateway` the IPv4 address of the network's gateway; `queue_socket` the scheduler's control socket and `results` its results folder, each None when it was not mounted."""
 
     hosts: tuple
     port: int
     socket_path: str
     gateway: str
+    queue_socket: str | None = None
+    results: str | None = None
 
     def allowed_hosts(self):
         """Every value a `Host` header may have: each name or address with the port, and also without it when the port is the default HTTPS port."""
@@ -120,4 +128,15 @@ def load_settings(environ=None):
         raise ConfigError(f"the setting {ENV_GATEWAY} is not an IPv4 address") from None
     if str(gateway) != gateway_text or gateway.is_unspecified or gateway.is_loopback:
         raise ConfigError(f"the setting {ENV_GATEWAY} is not the IPv4 address of a gateway in its short form")
-    return Settings(hosts=tuple(hosts), port=int(port_text), socket_path=socket_path, gateway=str(gateway))
+
+    def optional_path(name, max_bytes):
+        value = environ.get(name)
+        if value is None or value == "":
+            return None
+        if not value.startswith("/") or "\x00" in value or len(os.fsencode(value)) > max_bytes:
+            raise ConfigError(f"the setting {name} is not an absolute path of at most {max_bytes} bytes")
+        return value
+
+    queue_socket = optional_path(ENV_QUEUE_SOCKET, SOCKET_PATH_MAX_BYTES)
+    results = optional_path(ENV_RESULTS, 4096)
+    return Settings(hosts=tuple(hosts), port=int(port_text), socket_path=socket_path, gateway=str(gateway), queue_socket=queue_socket, results=results)

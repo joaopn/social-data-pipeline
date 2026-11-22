@@ -6,6 +6,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - The `docker create` argument list, pinned literally for a setting with two addresses and two names; the certificate's `openssl` argument list, with every value its own argument.
 - `start`: refused when not set up, under rootless Docker or user-namespace remapping, for a container of another deployment; "already running" with exit code 0; a failed create or start removes the container and returns 1 with Docker's last line; a server that ends right after its start is reported with its last log lines, removed, and the command returns 1; the broker is asked from inside the container. 127.0.0.1 is published to the local port 8444, every other listen address (IPv6 ones included) to 8443.
 - `unsetup` removes nothing through a symbolic link: a linked `.sdp` is refused and what it points at stays.
+- The Queue window's mounts (`_queue_mounts`): the `docker create` list pinned with none, one and both; `start` makes `data/jobs/control` 0700 whatever the umask; a linked or foreign control folder, a missing or linked `data/jobs`: no mount and the line; the results folder from `.env` (by its key), its default, a comma in its path, `data/jobs` itself, a folder above it (through a link too), a folder inside the control folder: each with its line and the right mounts; `.env` is never printed; `status` says which are mounted.
 - `stop` and `status` exit codes; `unsetup` asks first and removes the container, the network, the image and `.sdp/webui`.
 - `setup` refuses without a management password before asking anything; the state folder and its files have modes 0700 and 0600; no argument list holds the key or a password; every prompt has a tag listed in `tests/e2e/questions.yaml`.
 - `import sdp` loads neither the web package nor the control package; `sdp webui` alone prints the group's help.
@@ -64,6 +65,10 @@ class FakeDocker:
             return self.answer(1, stderr=f"first line\n{self.fail[word]}\n")
         if word == "info":
             return self.answer(0, json.dumps(self.security))
+        if arguments[1:3] == ["container", "inspect"] and "{{json .Mounts}}" in arguments:
+            created = next((call for call in reversed(self.calls) if call[1] == "create"), [])
+            mounts = [dict(part.split("=", 1) for part in created[index + 1].split(",") if "=" in part) for index, word in enumerate(created) if word == "--mount"]
+            return self.answer(0, json.dumps([{"Source": mount["source"], "Destination": mount["target"]} for mount in mounts]))
         if arguments[1:3] == ["container", "inspect"]:
             if self.container is None:
                 return self.answer(1, stderr="Error: No such container: sdp-webui")
@@ -254,6 +259,54 @@ def test_the_create_argument_list_is_pinned():
         "-e", "SDP_WEBUI_GATEWAY=172.30.0.1",
         "sdp-webui",
     ]
+
+
+PINNED_START = [
+    "docker", "create",
+    "--name", "sdp-webui",
+    "--label", "sdp.webui.root=/srv/deploy",
+    "--restart", "no",
+    "--user", "1000:1001",
+    "--read-only",
+    "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges",
+    "--pids-limit", "256",
+    "--memory", "512m",
+    "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
+    "--network", "sdp-webui",
+    "--mount", "type=bind,source=/srv/deploy/.sdp/socket,target=/run/sdp,readonly",
+    "--mount", "type=bind,source=/srv/deploy/.sdp/webui/tls,target=/tls,readonly",
+]
+PINNED_PORTS_AND_SETTINGS = [
+    "-p", "127.0.0.1:8443:8444",
+    "-e", "SDP_WEBUI_HOSTS=localhost,127.0.0.1",
+    "-e", "SDP_WEBUI_PORT=8443",
+    "-e", "SDP_WEBUI_SOCKET=/run/sdp/broker.sock",
+    "-e", "SDP_WEBUI_GATEWAY=172.30.0.1",
+]
+
+
+def test_the_create_argument_list_with_the_queue_mounts_is_pinned():
+    """Bug class: the scheduler's folders mounted writable, at another place, or with the socket's setting but not its folder (or the reverse), or the results folder mounted without its setting; a new mount slipping in with them."""
+    cfg = host.WebuiConfig(port=8443)
+    both = host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1", "/srv/deploy/data/jobs/control", "/srv/results")
+    assert both == [
+        *PINNED_START,
+        "--mount", "type=bind,source=/srv/deploy/data/jobs/control,target=/run/sdp-jobs,readonly",
+        "--mount", "type=bind,source=/srv/results,target=/run/sdp-results,readonly",
+        *PINNED_PORTS_AND_SETTINGS,
+        "-e", "SDP_WEBUI_QUEUE_SOCKET=/run/sdp-jobs/door.sock",
+        "-e", "SDP_WEBUI_RESULTS=/run/sdp-results",
+        "sdp-webui",
+    ]
+    assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1", "/srv/deploy/data/jobs/control") == [
+        *PINNED_START,
+        "--mount", "type=bind,source=/srv/deploy/data/jobs/control,target=/run/sdp-jobs,readonly",
+        *PINNED_PORTS_AND_SETTINGS,
+        "-e", "SDP_WEBUI_QUEUE_SOCKET=/run/sdp-jobs/door.sock",
+        "sdp-webui",
+    ]
+    assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1") == [*PINNED_START, *PINNED_PORTS_AND_SETTINGS, "sdp-webui"]
 
 
 @pytest.mark.parametrize("address", ["2001:db8::5", "192.0.2.10", "169.254.1.1"])
@@ -628,3 +681,214 @@ def test_unsetup_is_wired_with_a_confirmation(root, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda text="": "n")
     args = sdp.build_parser().parse_args(["webui", "unsetup"])
     assert args.func(args) == 0 and seen == [(root, False)]
+
+
+# ── the Queue window's mounts ───────────────────────────────────────────────
+
+ME = os.getuid(), os.getgid()
+ENV_MARKER = "made-up-env-marker-5e1d"
+
+
+@pytest.fixture
+def deployment(root, docker):
+    """A set-up web UI whose deployment folder has a `.env` with a marker in a key the start must not print; `data/jobs` is made by each test."""
+    set_up(root, docker)
+    (root / ".env").write_text(f"OTHER_SECRET={ENV_MARKER}\n")
+    docker.calls.clear()
+    return root
+
+
+def start_mounts(root, docker, capsys):
+    """Start the web UI; returns (its exit code, the Queue's two mount sources or None, the output)."""
+    capsys.readouterr()
+    code = host._start(str(root), *ME)
+    out = capsys.readouterr().out
+    created = next(call for call in docker.calls if call[1] == "create")
+    mounts = {dict(part.split("=", 1) for part in created[index + 1].split(",") if "=" in part)["target"]: created[index + 1] for index, word in enumerate(created) if word == "--mount"}
+    settings = {word.split("=", 1)[0] for index, word in enumerate(created) if index and created[index - 1] == "-e"}
+    queue = mounts.get("/run/sdp-jobs")
+    results = mounts.get("/run/sdp-results")
+    assert (queue is not None) == ("SDP_WEBUI_QUEUE_SOCKET" in settings) and (results is not None) == ("SDP_WEBUI_RESULTS" in settings)
+    docker.calls.clear()
+    host.cmd_stop(root)
+    assert ENV_MARKER not in out
+    return code, mount_source(queue), mount_source(results), out
+
+
+def mount_source(mount):
+    return dict(part.split("=", 1) for part in mount.split(",") if "=" in part)["source"] if mount else None
+
+
+def make_jobs(root, results=True):
+    (root / "data" / "jobs").mkdir(parents=True)
+    if results:
+        (root / "data" / "jobs" / "results").mkdir()
+
+
+@pytest.mark.parametrize("mask", [0o000, 0o277])
+def test_start_makes_the_control_folder_0700_and_mounts_both(deployment, docker, capsys, mask):
+    """Bug class: the control folder made with the umask's mode (0777 under the umask 0 that Docker's helpers use; 0500 under a strict one, which the scheduler cannot use), or not made at all, so that the scheduler opens the socket in a folder others can enter, or the web UI mounts nothing."""
+    make_jobs(deployment)
+    old = os.umask(mask)
+    try:
+        code, queue, results, out = start_mounts(deployment, docker, capsys)
+    finally:
+        os.umask(old)
+    assert code == 0 and "Queue:" not in out
+    control = deployment / "data" / "jobs" / "control"
+    assert stat.S_IMODE(os.lstat(control).st_mode) == 0o700 and os.lstat(control).st_uid == ME[0]
+    assert queue == str(control) and results == str(deployment / "data" / "jobs" / "results")
+
+
+def test_without_data_jobs_there_are_no_queue_mounts_and_a_line(deployment, docker, capsys):
+    """Bug class: a mount of a folder that does not exist (Docker refuses, or makes it as root, after which the scheduler refuses it), or no word on why the Queue window is not there."""
+    code, queue, results, out = start_mounts(deployment, docker, capsys)
+    assert code == 0 and queue is None and results is None
+    assert "the Queue window will not be available: the scheduler's data folder data/jobs is not there" in out
+    assert not (deployment / "data").exists()
+
+
+def test_a_linked_data_jobs_is_refused(deployment, docker, capsys, tmp_path):
+    """Bug class: `data/jobs` replaced by a link to a folder of someone else's choosing, whose `control` folder would then be mounted (and made there)."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (deployment / "data").mkdir()
+    (deployment / "data" / "jobs").symlink_to(elsewhere)
+    code, queue, results, out = start_mounts(deployment, docker, capsys)
+    assert queue is None and results is None and "is a link, not a folder" in out
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_linked_control_folder_is_refused_and_left(deployment, docker, capsys, tmp_path):
+    """Bug class: a link planted as `data/jobs/control` followed: its target mounted into the web UI, or given mode 0700."""
+    make_jobs(deployment)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o755)
+    (deployment / "data" / "jobs" / "control").symlink_to(elsewhere)
+    code, queue, results, out = start_mounts(deployment, docker, capsys)
+    assert code == 0 and queue is None and results is None
+    assert "data/jobs/control is a link or not a folder; it was left as it is" in out
+    assert (deployment / "data" / "jobs" / "control").is_symlink() and stat.S_IMODE(elsewhere.stat().st_mode) == 0o755
+
+
+def test_a_control_folder_of_another_user_is_refused(deployment, docker, capsys, monkeypatch):
+    """Bug class: a control folder that another user made (and can therefore replace the socket in) mounted as the scheduler's."""
+    make_jobs(deployment)
+    control = deployment / "data" / "jobs" / "control"
+    control.mkdir(mode=0o700)
+    inode = os.lstat(control).st_ino
+    real_fstat = os.fstat
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        if info.st_ino == inode:
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink, ME[0] + 1, info.st_gid, info.st_size, 0, 0, 0))
+        return info
+
+    monkeypatch.setattr(host.os, "fstat", fstat)
+    code, queue, results, out = start_mounts(deployment, docker, capsys)
+    assert queue is None and results is None and "data/jobs/control belongs to another user than you" in out
+
+
+def test_an_open_control_folder_is_said(deployment, docker, capsys):
+    """Bug class: a control folder open to others mounted without a word, while the scheduler keeps its socket closed and the page refuses it."""
+    make_jobs(deployment)
+    control = deployment / "data" / "jobs" / "control"
+    control.mkdir()
+    os.chmod(control, 0o750)
+    code, queue, results, out = start_mounts(deployment, docker, capsys)
+    assert queue == str(control) and "is open to the group or to others" in out and stat.S_IMODE(os.lstat(control).st_mode) == 0o750
+
+
+def write_env(root, value):
+    (root / ".env").write_text(f"OTHER_SECRET={ENV_MARKER}\nJOBS_RESULT_ROOT={value}\n")
+
+
+def test_the_results_folder_comes_from_the_env_key(deployment, docker, capsys, tmp_path):
+    """Bug class: the default results folder mounted while the deployment keeps its results elsewhere (the downloads then find nothing), or the setting read relative to the current folder instead of the deployment's."""
+    make_jobs(deployment, results=False)
+    elsewhere = tmp_path / "results-elsewhere"
+    elsewhere.mkdir()
+    write_env(deployment, str(elsewhere))
+    assert start_mounts(deployment, docker, capsys)[2] == str(elsewhere)
+    (deployment / "kept").mkdir()
+    write_env(deployment, "./kept")
+    assert start_mounts(deployment, docker, capsys)[2] == str(deployment / "kept")
+
+
+def test_the_default_results_folder_and_a_missing_one(deployment, docker, capsys):
+    """Bug class: no downloads although the default results folder is there, or a mount of a missing folder (which fails the start)."""
+    make_jobs(deployment, results=False)
+    code, queue, results, out = start_mounts(deployment, docker, capsys)
+    assert queue is not None and results is None and "downloads will not be available: the scheduler's results folder (JOBS_RESULT_ROOT) is not there" in out
+    (deployment / "data" / "jobs" / "results").mkdir()
+    assert start_mounts(deployment, docker, capsys)[2] == str(deployment / "data" / "jobs" / "results")
+
+
+@pytest.mark.parametrize("case, says", [
+    ("comma", "holds a comma"),
+    ("jobs", "is data/jobs or a folder above it"),
+    ("above", "is data/jobs or a folder above it"),
+    ("above_linked", "is data/jobs or a folder above it"),
+    ("inside_control", "lies inside data/jobs/control"),
+])
+def test_a_results_folder_that_must_not_be_mounted(deployment, docker, capsys, tmp_path, case, says):
+    """Bug class: a results folder (which the database servers can write) that is the scheduler's data folder, holds it (directly or through a link), or lies inside the control folder, mounted into the web UI: the job store or the socket's folder would then be in reach of what the database servers write, or a comma would give Docker's mount option another field."""
+    make_jobs(deployment)
+    if case == "comma":
+        folder = tmp_path / "a,b"
+        folder.mkdir()
+        value = str(folder)
+    elif case == "jobs":
+        value = "./data/jobs"
+    elif case == "above":
+        value = "./data"
+    elif case == "above_linked":
+        (tmp_path / "link").symlink_to(deployment / "data")
+        value = str(tmp_path / "link")
+    else:
+        (deployment / "data" / "jobs" / "control").mkdir(mode=0o700)
+        (deployment / "data" / "jobs" / "control" / "inner").mkdir()
+        value = "./data/jobs/control/inner"
+    write_env(deployment, value)
+    code, queue, results, out = start_mounts(deployment, docker, capsys)
+    assert code == 0 and queue == str(deployment / "data" / "jobs" / "control") and results is None
+    assert "downloads will not be available" in out and says in out
+
+
+def test_status_says_which_queue_folders_are_mounted_and_prints_no_env(deployment, docker, capsys):
+    """Bug class: a status that does not say why the Queue window is missing, or that prints the deployment's `.env`."""
+    make_jobs(deployment, results=False)
+    host._start(str(deployment), *ME)
+    capsys.readouterr()
+    host.cmd_status(deployment)
+    out = capsys.readouterr().out
+    assert "Queue: the scheduler's control folder is mounted" in out and "the results folder is not mounted" in out and ENV_MARKER not in out
+
+
+def test_the_results_folder_is_read_from_the_env_of_the_deployment_started(deployment, docker, capsys, tmp_path, monkeypatch):
+    """Bug class: the results folder read from the `.env` next to the installed code (`setup.utils.ROOT`) instead of the deployment's that is started, so another deployment's results would be mounted."""
+    from social_data_pipeline.setup import utils
+
+    other = tmp_path / "other-code"
+    other.mkdir()
+    (other / ".env").write_text("JOBS_RESULT_ROOT=/made-up/other/results\n")
+    monkeypatch.setattr(utils, "ROOT", other)
+    make_jobs(deployment, results=False)
+    (deployment / "mine").mkdir()
+    write_env(deployment, "./mine")
+    assert start_mounts(deployment, docker, capsys)[2] == str(deployment / "mine")
+
+
+@pytest.mark.parametrize("text", [
+    "", "JOBS_RESULT_ROOT=./a\n", "  JOBS_RESULT_ROOT = ./b  \n", "# JOBS_RESULT_ROOT=./c\nJOBS_RESULT_ROOT=./d\n", "JOBS_RESULT_ROOT=./e\nJOBS_RESULT_ROOT=./f\n",
+    "OTHER=1\n\n\nJOBS_RESULT_ROOT=./g=h\n", "JOBS_RESULT_ROOT\n", "JOBS_RESULT_ROOT=\n", "\tJOBS_RESULT_ROOT=./i\r\n",
+])
+def test_the_env_is_read_by_the_projects_rules(tmp_path, monkeypatch, text):
+    """Bug class: the host module reading `.env` by other rules than the rest of the CLI (a quote, a space, a comment, a second line of the key taken differently), so that the web UI mounts another results folder than the scheduler writes to."""
+    from social_data_pipeline.setup import utils
+
+    (tmp_path / ".env").write_text(text)
+    monkeypatch.setattr(utils, "ROOT", tmp_path)
+    assert host._env_of(str(tmp_path)) == utils.load_env()
+    assert host._env_of(str(tmp_path / "nowhere")) == {}

@@ -41,6 +41,13 @@ class Gate:
         finally:
             self._places.release()
 
+    def take(self):
+        """Take a place without waiting, for a call that runs in a thread of its own: True when one was free. The caller gives it back with `give_back` when that thread ends."""
+        return self._places.acquire(blocking=False)
+
+    def give_back(self):
+        self._places.release()
+
 
 def call_broker(make_client, function):
     """Run `function(client)` and return ("ok", its result) or ("error", the BrokerError). Any other exception is turned into ("error", an `internal` BrokerError) here, in the worker, so that no traceback with a password or a token in its frames leaves the thread."""

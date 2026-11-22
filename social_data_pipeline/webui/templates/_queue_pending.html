@@ -1,0 +1,37 @@
+{#- What the pending page shows of an action of the Queue (`queue.Hooks.pending_model`). -#}
+{%- import "_queue_macros.html" as q %}
+<dl class="facts">
+  <dt>Action</dt><dd>{{ pending.title }}</dd>
+  {%- if pending.job_id %}
+  <dt>Job</dt><dd>{% if pending.job_href %}<a href="{{ pending.job_href }}"><code>{{ pending.job_id }}</code></a>{% else %}<code>{{ pending.job_id }}</code>{% endif %}</dd>
+  {%- endif %}
+  {%- if pending.job %}
+  {%- set job = pending.job %}
+  <dt>Target</dt><dd>{{ q.vis(job.target) }} <span class="muted">({{ q.vis(job.backend) }})</span></dd>
+  {%- if job.mongo %}
+  <dt>Collection</dt><dd>{{ q.vis(job.collection) }}</dd>
+  <dt>Database</dt><dd>{{ q.vis(job.database) }}</dd>
+  {%- endif %}
+  <dt>Output file</dt><dd><code>{{ q.vis(job.output) }}</code></dd>
+  <dt>Description</dt><dd>{% if job.description %}{{ q.vis(job.description) }}{% else %}<span class="muted">none</span>{% endif %}</dd>
+  {%- endif %}
+  {%- if pending.reason %}
+  <dt>Reason</dt><dd>{{ q.vis(pending.reason) }}</dd>
+  {%- endif %}
+  {%- if pending.auto_accept %}
+  {%- set change = pending.auto_accept %}
+  <dt>Target</dt><dd>{{ q.vis(change.target) }}</dd>
+  <dt>Now</dt><dd>auto-accept {{ change.before[0] }}, limit {{ change.before[1] }}</dd>
+  <dt>After</dt><dd>auto-accept {{ change.after[0] }}, limit {{ change.after[1] }}</dd>
+  {%- endif %}
+</dl>
+{%- if pending.job %}
+{%- if pending.job.overwrite %}
+<p class="notice notice-warn">{{ pending.overwrite_sentence }}{% if pending.job.overwrite_raw %} <span class="muted">(overwrite: {{ q.vis(pending.job.overwrite_raw) }})</span>{% endif %}</p>
+{%- endif %}
+<h3>{% if pending.job.mongo %}Pipeline{% else %}Statement{% endif %}</h3>
+{%- with job = pending.job, whole = true %}{% include "_queue_statement.html" %}{% endwith %}
+{%- endif %}
+{%- for sentence in pending.sentences %}
+<p class="notice notice-bad">{{ sentence }}</p>
+{%- endfor %}

@@ -5,12 +5,16 @@
 </section>
 {%- elif outcome.running %}
 <section class="card outcome" id="outcome-{{ outcome.id }}" hx-get="/actions/{{ outcome.id }}" hx-trigger="load delay:2s" hx-swap="outerHTML">
-  <p><span class="state state-on">under way</span> The broker runs the action; this page shows its outcome when it has ended.</p>
+  <p><span class="state state-on">under way</span> {% if outcome.queue %}The scheduler is asked; this page shows its answer when it has come.{% else %}The broker runs the action; this page shows its outcome when it has ended.{% endif %}</p>
 </section>
 {%- else %}
 <section class="card outcome" id="outcome-{{ outcome.id }}">
   {%- if outcome.kind == "refusal" %}
-  <p class="notice notice-bad" role="alert">{{ outcome.sentence }}{% if outcome.field %} The field: {{ outcome.field }}.{% endif %}</p>
+  <p class="notice notice-bad" role="alert">{{ outcome.sentence }}{% if outcome.field %} The field: {{ outcome.field }}.{% endif %}{% if outcome.queue and outcome.door.get("phase") %} It is now: {{ outcome.door.get("phase") }}.{% endif %}</p>
+  {%- if outcome.queue and outcome.door.get("detail") %}
+  <pre class="output">
+{{ outcome.door.get("detail") }}</pre>
+  {%- endif %}
   {%- if outcome.exit_code is not none %}
   <p>Exit code <code>{{ outcome.exit_code }}</code></p>
   {%- endif %}
@@ -19,6 +23,8 @@
   {%- endif %}
   {%- elif outcome.run_href %}
   <p class="notice">The run was started: <a href="{{ outcome.run_href }}"><code>{{ outcome.run_id }}</code></a></p>
+  {%- elif outcome.queue %}
+  {%- include "_queue_outcome.html" %}
   {%- elif outcome.op %}
   <p class="notice">Done.</p>
   {%- else %}
@@ -31,6 +37,9 @@
   <h3>Errors <small>(their end)</small></h3>
   <pre class="output">{{ outcome.errors }}</pre>
   {%- endif %}
+  {%- endif %}
+  {%- if outcome.queue and outcome.back %}
+  <p><a href="{{ outcome.back[0] }}">{{ outcome.back[1] }}</a></p>
   {%- endif %}
 </section>
 {%- endif %}

@@ -1,0 +1,6 @@
+{#- Macros of the Queue window. `vis` writes a text of the scheduler from its runs (`queue.shown`): plain runs as text, the characters made visible as escapes in a marked span; everything escaped by the template. -#}
+{% macro vis(parts) -%}
+{%- for escape, text in parts -%}
+{%- if escape %}<span class="escape" title="made visible">{{ text }}</span>{% else %}{{ text }}{% endif -%}
+{%- endfor -%}
+{%- endmacro %}

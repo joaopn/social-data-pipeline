@@ -1,0 +1,51 @@
+{#- The jobs of one tab of the Queue, and the links to the next and the previous page. On the running tab the part asks for itself again every 5 seconds (htmx) and the answer replaces it. -#}
+{%- import "_queue_macros.html" as q %}
+<div id="queue-rows"{% if poll_href %} hx-get="{{ poll_href }}" hx-trigger="{{ poll_trigger }}" hx-swap="outerHTML"{% endif %}>
+  {%- if failure %}
+  <p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
+  {%- elif jobs_failure %}
+  <p class="notice notice-bad" role="alert">{{ jobs_failure }}</p>
+  {%- elif not jobs %}
+  <p class="muted">No jobs here.</p>
+  {%- else %}
+  <table class="queue">
+    <thead>
+      <tr>
+        <th scope="col">{% if tab == "history" %}Submitted / finished{% elif tab == "approved" %}Approved{% elif tab == "running" %}Started{% else %}Submitted{% endif %}</th>
+        <th scope="col">Job</th>
+        <th scope="col">Target</th>
+        {%- if tab == "history" %}
+        <th scope="col">Outcome</th>
+        <th scope="col">Rows / size</th>
+        {%- else %}
+        <th scope="col">Output</th>
+        {%- endif %}
+        <th scope="col">Statement</th>
+        <th scope="col">Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      {%- for row in jobs %}
+      <tr>
+        <td>{% if tab == "history" %}{{ row.submitted }}<br><span class="muted">{{ row.finished }}</span>{% elif tab == "approved" %}{{ row.approved }}{% elif tab == "running" %}{{ row.started }}{% else %}{{ row.submitted }}{% endif %}</td>
+        <td>{% if row.href %}<a href="{{ row.href }}"><code>{{ q.vis(row.id) }}</code></a>{% else %}<code>{{ q.vis(row.id) }}</code>{% endif %}</td>
+        <td>{{ q.vis(row.target) }}<br><span class="muted">{{ q.vis(row.backend) }}</span></td>
+        {%- if tab == "history" %}
+        <td>{{ q.vis(row.status) }}{% if row.error %}<pre class="output">
+{{ q.vis(row.error) }}</pre>{% endif %}{% if row.reject_reason %}<p class="small">Rejected: {{ q.vis(row.reject_reason) }}</p>{% endif %}</td>
+        <td>{{ row.rows }}<br><span class="muted">{{ row.size }}</span></td>
+        {%- else %}
+        <td><code>{{ q.vis(row.output) }}</code>{% if row.overwrite %} <span class="tag">overwrites</span>{% if row.overwrite_raw %} <span class="muted">({{ q.vis(row.overwrite_raw) }})</span>{% endif %}{% endif %}</td>
+        {%- endif %}
+        <td><pre class="statement statement-short">
+{{ q.vis(row.sql) }}</pre>{% if row.sql_cut %}<p class="muted small">Cut here: {{ row.sql_length }} characters in all. The job's page shows all of it.</p>{% endif %}</td>
+        <td>{% if row.description %}{{ q.vis(row.description) }}{% endif %}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+  {%- if back_href or more_href %}
+  <p class="pager">{% if back_href %}<a href="{{ back_href }}">Newer page</a>{% endif %}{% if back_href and more_href %} | {% endif %}{% if more_href %}<a href="{{ more_href }}">More</a>{% endif %}</p>
+  {%- endif %}
+</div>

@@ -1,6 +1,8 @@
 """The web UI's own table of what its pages may ask the broker for, and `call`, the one function through which every request to the broker goes.
 
-The image holds no registry (`control.verbs`), so the table is written out here: for each verb the pages use, its class (`read`, `write`, `step_up`, the registry's), its inputs with their kinds and closed choices, the builder of the `sdp` command shown to the operator, the line about what a terminal would ask, and for a destructive verb one sentence saying what it destroys. A test compares it with the registry: every verb exists there with the same class and is enabled on the socket, and its inputs are a subset of the registry's socket inputs with the same choices. The web side is stricter than the registry in two places, on purpose: a source name is always required for the source verbs, and `run.logs` pieces are at least 4096 bytes. Besides the verbs the table has three operations of the broker that are not verbs: `hello`, `session.set_db_password` (needs the management password) and `session.clear_db_password`.
+The image holds no registry (`control.verbs`), so the table is written out here: for each verb the pages use, its class (`read`, `write`, `step_up`, the registry's), its inputs with their kinds and closed choices, the builder of the `sdp` command shown to the operator, the line about what a terminal would ask, and for a destructive verb one sentence saying what it destroys. A test compares it with the registry: every verb exists there with the same class and is enabled on the socket, and its inputs are a subset of the registry's socket inputs with the same choices. The web side is stricter than the registry in two places, on purpose: a source name is always required for the source verbs, and `run.logs` pieces are at least 4096 bytes. Besides the verbs the table has four operations of the broker that are not verbs: `hello`, `session.set_db_password` (needs the management password), `session.clear_db_password` and `session.check_password` (the management password checked again, and nothing else).
+
+A second kind of entry is the query scheduler's control socket (`jobs/door.py`), whose entries are named `queue.*` and carry the name of the socket's operation in `door`: the reads `queue.counts`, `queue.jobs`, `queue.job`, `queue.preview` and `queue.auto_accept_state`, and the changes `queue.approve`, `queue.reject`, `queue.kill`, `queue.explain` and `queue.auto_accept` (`auto_accept.set`). The socket takes every listed field of an operation and nothing else, so every input of a `queue.*` entry is required (`opt_bool` and `opt_int` take None, which the socket reads as "leave it as it is"). A test compares them with the socket's own list of operations and fields.
 
 `parse_form` turns what a form posted into the fields of an action, checked by the table (closed choices, the plain-name pattern for source and classifier names, the file-filter pattern, the cross-field rules of `run.start`, unknown fields refused); `check_fields` checks fields a page made itself, and `call` checks again before it sends anything, so that no page can make the broker receive a verb, a field or a value outside this table. A secret is held in `Hidden`, which no `repr`, `str` or format shows. Standard library and this package only.
 """
@@ -26,6 +28,18 @@ SECRET_MAX_CHARS = 1024
 RUN_LOGS_MIN_LIMIT = 4096
 RUN_LOGS_MAX_LIMIT = 1048576
 LOG_OFFSET_MAX = 2 ** 53
+
+# Literal copies of the scheduler's control socket's rules (`jobs/door.py`: `JOB_ID`, `DIGEST`, `BY_LABEL`, `PHASES`, `JOBS_LIMIT_MAX`, `JOBS_OFFSET_MAX`, `REASON_MAX`): a test compares them.
+JOB_ID_PATTERN = r"(pg|sr|mg|job)_[0-9a-f]{8}"
+DIGEST_PATTERN = r"[0-9a-f]{64}"
+BY_PATTERN = r"web-[0-9]{1,12}"
+PHASES = ("pending", "approved", "running", "history")
+JOBS_LIMIT_MAX = 500
+JOBS_OFFSET_MAX = 100000
+REASON_MAX = 500
+TARGET_MAX_CHARS = 256
+# The digits an auto-accept limit of a form may have: only a bound of the form, since the real largest limit is the scheduler's (its `auto_accept` reply names it, `max_limit`, and a larger one is refused before anything is kept).
+LIMIT_DIGITS = 6
 
 # The profiles whose run uses a database, and so may need its admin password.
 DATABASE_PROFILES = ("postgres_ingest", "postgres_ml", "mongo_ingest", "sr_ingest", "sr_ml")
@@ -75,7 +89,7 @@ class Hidden:
 
 @dataclass(frozen=True)
 class Input:
-    """One input of an action: its kind (`enum`, `bool`, `name`, `source`, `filter`, `secret`, `run_id`, `int`), whether a request must carry it, the choices of an `enum`, the bounds of an `int`, the label a page shows, and what the input left out means when that is worth saying."""
+    """One input of an action: its kind (`enum`, `bool`, `name`, `source`, `filter`, `secret`, `run_id`, `int`; for the scheduler's entries also `job_id`, `digest`, `by`, `reason`, `target`, `opt_bool` and `opt_int`), whether a request must carry it, the choices of an `enum`, the bounds of an `int`, the label a page shows, and what the input left out means when that is worth saying."""
 
     kind: str
     label: str
@@ -93,7 +107,7 @@ class Input:
 
 @dataclass(frozen=True)
 class Action:
-    """One entry of the table. `command(fields)` is the `sdp` command shown, or None when there is none; `destroys(fields)` is (the sentence, the name of what is destroyed) for a destructive verb, else None; `form` is the command's form as the System page lists it; `note` is a line the pending page adds; `also(fields)` is what else the chosen fields act on (a service's MCP server, the scheduler), or None; `op` is true for an operation of the broker that is not a verb of the registry."""
+    """One entry of the table. `command(fields)` is the `sdp` command shown, or None when there is none; `destroys(fields)` is (the sentence, the name of what is destroyed) for a destructive verb, else None; `form` is the command's form as the System page lists it; `note` is a line the pending page adds; `also(fields)` is what else the chosen fields act on (a service's MCP server, the scheduler), or None; `op` is true for an operation of the broker that is not a verb of the registry; `door` is the name of the operation of the scheduler's control socket for a `queue.*` entry, else None."""
 
     name: str
     cls: str
@@ -109,6 +123,7 @@ class Action:
     note: str = ""
     # What else the action acts on for the chosen fields, `also(fields)`: a line for the pending page, or None.
     also: Callable | None = None
+    door: str | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "inputs", MappingProxyType(dict(self.inputs)))
@@ -315,7 +330,26 @@ TABLE = _table(
         "session.set_db_password", "step_up", "Keep the database admin password for this session", {"password": Input("secret", "Database admin password", required=True)},
         form="(no command: a terminal asks for the password each time a command needs it)", op=True,
     ),
+    Action("session.check_password", "step_up", "Check the management password again", form="(no command: asked before the Queue's auto-accept is switched on or its limit raised)", op=True),
+    # ── the scheduler's control socket ──
+    Action("queue.counts", "read", "The numbers of the Queue's tabs", form="(the scheduler's page: the tabs)", door="counts"),
+    Action("queue.jobs", "read", "One page of a tab of the Queue", {"phase": Input("enum", "Tab", required=True, choices=PHASES), "limit": Input("int", "Limit", required=True, lo=1, hi=JOBS_LIMIT_MAX), "offset": Input("int", "Offset", required=True, lo=0, hi=JOBS_OFFSET_MAX)}, form="(the scheduler's page: a tab)", door="jobs"),
+    Action("queue.job", "read", "One job of the Queue", {"job_id": Input("job_id", "Job", required=True)}, form="(the scheduler's page: a job's row)", door="job"),
+    Action("queue.preview", "read", "The preview of a finished job's result", {"job_id": Input("job_id", "Job", required=True)}, form="(the scheduler's page: Preview)", door="preview"),
+    Action("queue.auto_accept_state", "read", "The auto-accept settings of the scheduler's targets", form="(the scheduler's page: the auto-accept panel)", door="auto_accept"),
+    Action("queue.approve", "write", "Approve a query", {"job_id": Input("job_id", "Job", required=True), "digest": Input("digest", "Digest", required=True), "by": Input("by", "Asked by", required=True)}, form="(the scheduler's page: Approve)", door="approve"),
+    Action("queue.reject", "write", "Reject a query", {"job_id": Input("job_id", "Job", required=True), "reason": Input("reason", "Reason", required=True), "by": Input("by", "Asked by", required=True)}, form="(the scheduler's page: Reject)", door="reject"),
+    Action("queue.kill", "write", "Kill a running query", {"job_id": Input("job_id", "Job", required=True), "by": Input("by", "Asked by", required=True)}, form="(the scheduler's page: Kill)", door="kill"),
+    Action("queue.explain", "write", "EXPLAIN a query on its database", {"job_id": Input("job_id", "Job", required=True), "by": Input("by", "Asked by", required=True)}, form="(the scheduler's page: EXPLAIN)", door="explain"),
+    Action(
+        "queue.auto_accept", "write", "Change a target's auto-accept",
+        {"target": Input("target", "Target", required=True), "enabled": Input("opt_bool", "Auto-accept", required=True), "limit": Input("opt_int", "Limit", required=True, lo=0, hi=10 ** LIMIT_DIGITS - 1), "by": Input("by", "Asked by", required=True)},
+        form="(the scheduler's page: the auto-accept panel; switching it on or raising the limit needs the management password again)", door="auto_accept.set",
+    ),
 )
+
+# The entries of the scheduler's control socket, by name.
+QUEUE_ENTRIES = tuple(name for name, action in TABLE.items() if action.door is not None)
 
 # The source verbs, for which a source name is required (the first of the web side's two stricter places).
 SOURCE_VERBS = ("source.status", "source.progress", "source.error_logs", "run.start", "source.remove")
@@ -349,12 +383,26 @@ def is_run_id(value):
     return isinstance(value, str) and re.fullmatch(RUN_ID_PATTERN, value) is not None
 
 
+def is_job_id(value):
+    """Whether `value` has the form of a job id of the scheduler."""
+    return isinstance(value, str) and re.fullmatch(JOB_ID_PATTERN, value) is not None
+
+
+def is_reason(value):
+    """Whether `value` is a reason the scheduler takes for a rejection: at most 500 characters, no line break or control character."""
+    return isinstance(value, str) and len(value) <= REASON_MAX and not has_control_character(value)
+
+
 def _value_is_valid(spec, value):
     kind = spec.kind
     if kind == "bool":
         return isinstance(value, bool)
     if kind == "int":
         return isinstance(value, int) and not isinstance(value, bool) and spec.lo <= value <= spec.hi
+    if kind == "opt_int":
+        return value is None or (isinstance(value, int) and not isinstance(value, bool) and spec.lo <= value <= spec.hi)
+    if kind == "opt_bool":
+        return value is None or isinstance(value, bool)
     if kind == "secret":
         if not isinstance(value, Hidden):
             return False
@@ -370,6 +418,16 @@ def _value_is_valid(spec, value):
         return re.fullmatch(FILE_FILTER_PATTERN, value) is not None and value.strip(".") != ""
     if kind == "run_id":
         return is_run_id(value)
+    if kind == "job_id":
+        return is_job_id(value)
+    if kind == "digest":
+        return re.fullmatch(DIGEST_PATTERN, value) is not None
+    if kind == "by":
+        return re.fullmatch(BY_PATTERN, value) is not None
+    if kind == "reason":
+        return is_reason(value)
+    if kind == "target":
+        return 1 <= len(value) <= TARGET_MAX_CHARS and not has_control_character(value)
     return False
 
 
@@ -392,8 +450,8 @@ def check_fields(action, fields):
 
 
 def parse_form(action, form):
-    """The fields of a state-changing action from the fields a form posted (every value text): an empty text is an absent field, a checked box is `yes`, a secret is wrapped in `Hidden`; then `check_fields`. Raises Refused for a field the action does not take, a value it refuses, a missing required one and a broken cross-field rule; nothing is asked of the broker."""
-    if not action.state_changing:
+    """The fields of a state-changing action from the fields a form posted (every value text): an empty text is an absent field, a checked box is `yes`, a secret is wrapped in `Hidden`; then `check_fields`. Raises Refused for a field the action does not take, a value it refuses, a missing required one and a broken cross-field rule; nothing is asked of the broker. The scheduler's entries are not made from a form here (see `queue`)."""
+    if not action.state_changing or action.door is not None:
         raise Refused()
     fields = {}
     for name, text in form.items():
@@ -434,7 +492,7 @@ def shown_inputs(action, fields):
 
 
 def call(client, name, fields=None, step_up=None):
-    """Ask the broker through `client` for the entry `name` of the table, with `fields` (secrets in `Hidden`) and, for an entry of the class `step_up`, the management password again. The one way the pages ask the broker anything: a name outside the table, fields the table refuses, or a management password given to an entry that does not take one (or none to one that does) raise NotInTable before anything is sent."""
+    """Ask the broker through `client` for the entry `name` of the table, with `fields` (secrets in `Hidden`) and, for an entry of the class `step_up`, the management password again; for a `queue.*` entry, ask the scheduler's control socket through `client` (a client of that socket) for its operation with exactly `fields`. The one way the pages ask the broker or the scheduler anything: a name outside the table, fields the table refuses, or a management password given to an entry that does not take one (or none to one that does) raise NotInTable before anything is sent."""
     action = TABLE.get(name) if isinstance(name, str) else None
     if action is None:
         raise NotInTable("the page asked for something the table does not hold")
@@ -446,12 +504,16 @@ def call(client, name, fields=None, step_up=None):
     if (action.cls == "step_up") != isinstance(step_up, str):
         raise NotInTable("the management password goes with the step-up entries only")
     plain = {key: value.reveal() if isinstance(value, Hidden) else value for key, value in fields.items()}
+    if action.door is not None:
+        return client.request({"op": action.door, **plain})
     if name == "hello":
         return client.hello()
     if name == "session.set_db_password":
         return client.set_db_password(plain["password"], step_up)
     if name == "session.clear_db_password":
         return client.clear_db_password()
+    if name == "session.check_password":
+        return client.check_password(step_up)
     if step_up is None:
         return client.call(name, plain)
     return client.call(name, plain, step_up=step_up)

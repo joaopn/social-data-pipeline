@@ -1,0 +1,21 @@
+{#- What an action of the Queue came to, when the scheduler took it. -#}
+{%- if outcome.verb == "queue.approve" %}
+<p class="notice">Approved. The scheduler runs the query with the database's admin login when its turn comes.</p>
+{%- elif outcome.verb == "queue.reject" %}
+<p class="notice">Rejected: the job is in the history.</p>
+{%- elif outcome.verb == "queue.kill" %}
+{%- if outcome.door.get("was_running") %}
+<p class="notice">It was running: the scheduler asked the database to stop it. It may still finish by itself.</p>
+{%- else %}
+<p class="notice">It was not running: nothing was stopped.</p>
+{%- endif %}
+{%- elif outcome.verb == "queue.explain" %}
+<h3>Plan</h3>
+<pre class="output">
+{{ outcome.door.get("plan", "") }}</pre>
+{%- if outcome.door.get("plan_cut") %}
+<p class="muted small">Only its start is shown (16 KiB).</p>
+{%- endif %}
+{%- elif outcome.verb == "queue.auto_accept" %}
+<p class="notice">The target's auto-accept settings were changed: the Auto-accept page shows them.</p>
+{%- endif %}

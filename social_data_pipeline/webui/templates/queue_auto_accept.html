@@ -1,0 +1,43 @@
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% import "_queue_macros.html" as q %}
+{% block content %}
+<p class="muted">With auto-accept on, the scheduler approves the queries submitted to a target itself, up to the limit of the target's queries approved or running at a time. {{ step_up_note }}</p>
+{%- if failure %}
+<p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
+{%- elif not rows %}
+<p class="muted">The scheduler has no targets.</p>
+{%- else %}
+<table>
+  <thead><tr><th scope="col">Target</th><th scope="col">Backend</th><th scope="col">Database</th><th scope="col">Auto-accept</th><th scope="col">Limit</th><th scope="col">Change</th></tr></thead>
+  <tbody>
+    {%- for row in rows %}
+    <tr>
+      <td>{{ q.vis(row.shown) }}</td>
+      <td>{{ q.vis(row.backend) }}</td>
+      <td>{{ q.vis(row.database) }}</td>
+      <td>{% if row.enabled %}<span class="state state-on">on</span>{% else %}<span class="state">off</span>{% endif %}</td>
+      <td>{{ row.limit_text }}</td>
+      <td>
+        {%- if row.changeable %}
+        {% call forms.action("queue.auto_accept", "Change...", {"target": row.name}) %}
+        <label>Auto-accept
+          <select name="enabled">
+            <option value="off"{% if not row.enabled %} selected{% endif %}>off</option>
+            <option value="on"{% if row.enabled %} selected{% endif %}>on</option>
+          </select>
+        </label>
+        <label>Limit <small>(0 to {{ max_limit }})</small>
+          <input type="number" name="limit" min="0" max="{{ max_limit }}" value="{{ row.limit }}" required>
+        </label>
+        {% endcall %}
+        {%- else %}
+        <span class="muted">Its name cannot be sent from here: use the scheduler's own page.</span>
+        {%- endif %}
+      </td>
+    </tr>
+    {%- endfor %}
+  </tbody>
+</table>
+{%- endif %}
+{% endblock %}

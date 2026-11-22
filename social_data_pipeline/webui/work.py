@@ -1,7 +1,7 @@
 """What a browser session keeps besides its tokens, in this process's memory only: its pending actions, the outcomes of the actions it confirmed, its output views, and whether a database admin password was kept for it at the broker.
 
-- A pending action is an action the operator chose and has not confirmed yet: its id (random, 16 bytes, url-safe), the action's name, its checked fields (a secret in `actions.Hidden`) and when it was made. It lives five minutes (on the injected clock); a session keeps at most sixteen, and a seventeenth drops the oldest. Taking it out (`take_pending`) is one step under the session's lock, so two confirms of one action at once get it once.
-- An outcome is what one confirmed action came to, written by the thread that runs the call and read by the pages: under way, a result (the exit code and the cleaned end of the output and the errors, at most 16 KiB of each; for `run.start` the run's id), or a refusal (its code, its sentence and, for `failed`, the cleaned end of the errors). A session keeps the newest 32; finished ones are evicted before running ones. An outcome holds no secret: neither the fields of its action nor the management password.
+- A pending action is an action the operator chose and has not confirmed yet: its id (random, 16 bytes, url-safe), the action's name, its checked fields (a secret in `actions.Hidden`), when it was made, whether its confirmation needs the management password again (by the entry's class, or for a change of the scheduler's auto-accept by what it changes), and for the Queue what its page shows (`shown`: for an approval the whole record of the job as the scheduler sent it). It lives five minutes (on the injected clock); a session keeps at most sixteen, and a seventeenth drops the oldest; the oldest are also dropped while the records they hold are more than 4 MiB together. Taking it out (`take_pending`) is one step under the session's lock, so two confirms of one action at once get it once.
+- An outcome is what one confirmed action came to, written by the thread that runs the call and read by the pages: under way, a result (the exit code and the cleaned end of the output and the errors, at most 16 KiB of each; for `run.start` the run's id; for the scheduler's entries what the scheduler answered: whether a killed job was running, the start of an EXPLAIN's plan, at most 16 KiB, the target's new auto-accept settings), or a refusal (its code, its sentence and, for `failed`, the cleaned end of the errors; for the scheduler's `explain_failed` the start of the database's error text, for `not_pending` the job's phase). Whether a refusal came from the scheduler is kept (`from_door`): only the broker's codes end a session or put an action back. A session keeps the newest 32; finished ones are evicted before running ones. An outcome holds no secret: neither the fields of its action nor the management password.
 - An output view is the state of one output of a run that a page shows: the offset it asks for next, the unfinished end of the last piece (at most 64 KiB, held until its line is whole), how many bytes it has shown, and whether it shows pieces or Docker's tail. At most eight per session; the oldest is dropped.
 
 No `repr` here shows a field, a secret or a text. Standard library and this package only.
@@ -12,11 +12,14 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
+from social_data_pipeline.control import client
 from social_data_pipeline.webui import actions, words
 from social_data_pipeline.webui.cleaning import clean_log_text
 
 PENDING_SECONDS = 5 * 60
 PENDING_MAX = 16
+# The most bytes of records the pending actions of one session hold together (an approval keeps the whole record of its job, up to 1 MiB).
+PENDING_WEIGHT_MAX = 4 * 1024 * 1024
 OUTCOMES_MAX = 32
 TEXT_MAX_BYTES = 16 * 1024
 VIEWS_MAX = 8
@@ -48,16 +51,28 @@ def text_end(text, max_bytes=TEXT_MAX_BYTES):
     return kept.decode("utf-8", "ignore")
 
 
+def text_start(text, max_bytes=TEXT_MAX_BYTES):
+    """(the start of `text`, cleaned and cut to `max_bytes` bytes of UTF-8 at a whole character; whether it was cut)."""
+    cleaned = clean_log_text(text).encode("utf-8", "replace").decode("utf-8")
+    data = cleaned.encode("utf-8")
+    if len(data) <= max_bytes:
+        return cleaned, False
+    return data[:max_bytes].decode("utf-8", "ignore"), True
+
+
 class Pending:
-    """An action chosen and not confirmed yet."""
+    """An action chosen and not confirmed yet. `step_up` says whether its confirmation needs the management password again; `shown` is what a Queue action's page shows (None for the others), `weight` the bytes of record it holds."""
 
-    __slots__ = ("id", "action", "fields", "created")
+    __slots__ = ("id", "action", "fields", "created", "step_up", "shown", "weight")
 
-    def __init__(self, pending_id, action, fields, created):
+    def __init__(self, pending_id, action, fields, created, step_up=None, shown=None, weight=0):
         self.id = pending_id
         self.action = action
         self.fields = fields
         self.created = created
+        self.step_up = actions.TABLE[action].cls == "step_up" if step_up is None else step_up
+        self.shown = shown
+        self.weight = weight
 
     def __repr__(self):
         return f"<pending {self.action}>"
@@ -80,6 +95,14 @@ class Outcome:
         self.code = None
         self.sentence = None
         self.field = None
+        self.from_door = False
+        self.sent = False
+        # A Queue action's refusal by the broker's check of the session, before anything else was asked.
+        self.at_session_check = False
+        # Where the outcome page of an action of the Queue links back to: (address, label), or None.
+        self.back = None
+        # What the scheduler answered (its entries only): `was_running`, `plan`, `plan_cut`, `auto_accept`, `phase`, `detail`.
+        self.door = {}
 
     def __repr__(self):
         return f"<outcome {self.action} {'done' if self.done else 'running'}>"
@@ -95,16 +118,55 @@ class Outcome:
     def wait(self, seconds):
         return self._done.wait(seconds)
 
-    def finish(self, kind, value, text_max_bytes=TEXT_MAX_BYTES):
-        """Write the answer of the call: `kind` "ok" with the result, or "error" with the `BrokerError` (as `app._call_broker` gives them)."""
+    def finish(self, kind, value, text_max_bytes=TEXT_MAX_BYTES, from_door=False, sent=False):
+        """Write the answer of the call: `kind` "ok" with the result, or "error" with the `BrokerError` (as `calls.call_broker` gives them); `from_door` when the scheduler's control socket gave it (or could not be asked, or the web UI refused before it); `sent` when it is the answer of the changing request itself, the only one whose lost reply may mean the change was made."""
+        self.from_door = from_door
+        self.sent = sent
         try:
-            if kind == "ok":
+            if kind == "ok" and actions.TABLE[self.action].door is not None:
+                self._door_result(value, text_max_bytes)
+            elif kind == "ok":
                 self._result(value, text_max_bytes)
+            elif from_door:
+                self._door_refusal(value, text_max_bytes)
             else:
                 self._refusal(value, text_max_bytes)
         except Exception:
-            self.kind, self.code, self.sentence = "refusal", "bad_reply", SHAPE_SENTENCE
+            self.kind, self.code = "refusal", "bad_reply"
+            self.sentence = words.DOOR_CODE_SENTENCES["bad_reply"] if from_door else SHAPE_SENTENCE
         self._done.set()
+
+    def _door_result(self, result, text_max_bytes):
+        if not isinstance(result, dict):
+            raise ValueError("not a result")
+        if self.action == "queue.kill":
+            if not isinstance(result.get("was_running"), bool):
+                raise ValueError("no answer")
+            self.door = {"was_running": result["was_running"]}
+        elif self.action == "queue.explain":
+            plan = result.get("plan")
+            if not isinstance(plan, str):
+                raise ValueError("no plan")
+            shown, cut = text_start(plan, text_max_bytes)
+            self.door = {"plan": shown, "plan_cut": cut}
+        elif self.action == "queue.auto_accept":
+            self.door = {"auto_accept": result}
+        self.kind = "result"
+
+    def _door_refusal(self, error, text_max_bytes):
+        self.kind = "refusal"
+        code = getattr(error, "code", None)
+        self.code = code if isinstance(code, str) else None
+        self.sentence = words.door_sentence(error)
+        # A change sent and then no reply: it may have been made; the sentence says so instead of "refused".
+        if self.sent and getattr(error, "reason", None) == client.NO_REPLY and actions.TABLE[self.action].state_changing:
+            self.sentence = words.door_no_answer_sentence(self.action)
+        details = getattr(error, "details", None) or {}
+        if code == "not_pending" and details.get("phase") in (*actions.PHASES, "gone"):
+            self.door = {"phase": details["phase"]}
+        elif code == "explain_failed" and isinstance(details.get("detail"), str):
+            shown, cut = text_start(details["detail"], text_max_bytes)
+            self.door = {"detail": shown, "detail_cut": cut}
 
     def _result(self, result, text_max_bytes):
         if not isinstance(result, dict):
@@ -167,6 +229,8 @@ class SessionWork:
         self._outcomes = OrderedDict()
         self._views = OrderedDict()
         self.db_password_kept = False
+        # When the broker last said that this session still lives, for the Queue's reads (on the application's clock), or None.
+        self.broker_checked_at = None
 
     def __repr__(self):
         return f"<session work: {len(self._pending)} pending, {len(self._outcomes)} outcomes, {len(self._views)} views>"
@@ -175,16 +239,27 @@ class SessionWork:
 
     def _prune(self, now):
         for key in [key for key, pending in self._pending.items() if now - pending.created >= self.pending_seconds]:
-            self._pending.pop(key).fields = None
+            dropped = self._pending.pop(key)
+            dropped.fields = None
+            dropped.shown = None
 
-    def add_pending(self, action, fields, now):
-        """Keep a pending action and return it; the oldest is dropped when sixteen are kept."""
-        pending = Pending(new_id(), action, fields, now)
+    def _drop_oldest(self):
+        _, dropped = self._pending.popitem(last=False)
+        dropped.fields = None
+        dropped.shown = None
+
+    def _weight(self):
+        return sum(kept.weight for kept in self._pending.values())
+
+    def add_pending(self, action, fields, now, step_up=None, shown=None, weight=0):
+        """Keep a pending action and return it, or None (nothing kept, nothing dropped) when it alone weighs more than PENDING_WEIGHT_MAX; the oldest is dropped when sixteen are kept, and while the records kept weigh more than PENDING_WEIGHT_MAX with it."""
+        if weight > PENDING_WEIGHT_MAX:
+            return None
+        pending = Pending(new_id(), action, fields, now, step_up=step_up, shown=shown, weight=weight)
         with self.lock:
             self._prune(now)
-            while len(self._pending) >= self.pending_max:
-                _, dropped = self._pending.popitem(last=False)
-                dropped.fields = None
+            while len(self._pending) >= self.pending_max or (self._pending and self._weight() + weight > PENDING_WEIGHT_MAX):
+                self._drop_oldest()
             self._pending[pending.id] = pending
         return pending
 
@@ -205,10 +280,10 @@ class SessionWork:
         with self.lock:
             if now - pending.created >= self.pending_seconds:
                 pending.fields = None
+                pending.shown = None
                 return
-            while len(self._pending) >= self.pending_max:
-                _, dropped = self._pending.popitem(last=False)
-                dropped.fields = None
+            while len(self._pending) >= self.pending_max or (self._pending and self._weight() + pending.weight > PENDING_WEIGHT_MAX):
+                self._drop_oldest()
             self._pending[pending.id] = pending
 
     def pending_count(self):

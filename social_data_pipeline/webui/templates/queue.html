@@ -1,0 +1,19 @@
+{% extends "frame.html" %}
+{% block content %}
+<nav class="tabs" aria-label="Tabs">
+  {%- for key, label, href in tabs %}
+  <a class="tab{{ ' tab-on' if key == tab else '' }}" href="{{ href }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}{% if counts and key in counts %} <span class="tag">{{ counts[key] }}</span>{% endif %}</a>
+  {%- endfor %}
+</nav>
+{%- if failure %}
+<p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
+{%- else %}
+{%- if counts_failure %}
+<p class="notice">The numbers of the tabs could not be read: {{ counts_failure }}</p>
+{%- endif %}
+{%- if page > 1 %}
+<p class="muted">Page {{ page }}</p>
+{%- endif %}
+{% include "_queue_rows.html" %}
+{%- endif %}
+{% endblock %}

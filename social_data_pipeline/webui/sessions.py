@@ -25,12 +25,13 @@ def _key(session_id):
 
 @dataclass
 class WebSession:
-    """One session: the broker's token, its form token, when it began (on the clock of `WebSessions`) and its work."""
+    """One session: the broker's token, its form token, when it began (on the clock of `WebSessions`), its work, and its number at the broker (from the login's reply; None when the reply had none), which names the session to the scheduler as `web-<number>`."""
 
     token: str = field(repr=False)
     form_token: str = field(repr=False)
     started: float = 0.0
     work: object = field(default=None, repr=False)
+    number: int | None = None
 
 
 class WebSessions:
@@ -42,13 +43,13 @@ class WebSessions:
         self._lock = threading.Lock()
         self._table = OrderedDict()
 
-    def create(self, token):
-        """Keep a new session for a broker token and return (its id, the session). The oldest session is forgotten when the table is full."""
+    def create(self, token, number=None):
+        """Keep a new session for a broker token (and the broker's number of the session) and return (its id, the session). The oldest session is forgotten when the table is full."""
         session_id = self._new_id()
         key = _key(session_id)
         if key is None:
             raise RuntimeError("the id source did not return an id")
-        session = WebSession(token=token, form_token=self._new_id(), started=self._clock(), work=self._new_work())
+        session = WebSession(token=token, form_token=self._new_id(), started=self._clock(), work=self._new_work(), number=number)
         with self._lock:
             if key in self._table:
                 raise RuntimeError("the id source did not return a new id")

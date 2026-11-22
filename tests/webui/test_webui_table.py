@@ -26,7 +26,7 @@ KIND_OF_TYPE = {types.Enum: "enum", types.Bool: "bool", types.Name: "name", type
 
 def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
     """Bug class: a table that drifts from the registry: a verb the broker does not know or does not take over the socket, a class that asks for no management password where the broker wants one (or the reverse), an input the broker refuses, a choice the broker refuses or one it takes that the page does not offer."""
-    verb_entries = [action for action in actions.TABLE.values() if not action.op]
+    verb_entries = [action for action in actions.TABLE.values() if not action.op and action.door is None]
     assert {action.name for action in verb_entries} == {
         "db.status", "db.verify", "source.list", "source.status", "source.progress", "source.error_logs", "run.list", "run.logs", "audit.list",
         "run.start", "db.stop", "run.cancel", "db.start", "db.reset", "db.unsetup", "db.unsetup_mcp", "db.unsetup_jobs", "source.remove",
@@ -51,9 +51,10 @@ def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
 def test_the_operations_that_are_not_verbs_are_the_brokers():
     """Bug class: an operation the broker does not have, or the database password kept without the management password."""
     ops = {action.name: action for action in actions.TABLE.values() if action.op}
-    assert set(ops) == {"hello", "session.set_db_password", "session.clear_db_password"}
+    assert set(ops) == {"hello", "session.set_db_password", "session.clear_db_password", "session.check_password"}
     assert set(ops) <= set(broker_server.OPS)
-    assert ops["session.set_db_password"].cls == "step_up" and ops["session.clear_db_password"].cls == "write" and ops["hello"].cls == "read"
+    assert ops["session.set_db_password"].cls == "step_up" and ops["session.clear_db_password"].cls == "write" and ops["hello"].cls == "read" and ops["session.check_password"].cls == "step_up"
+    assert all(action.door is None for action in ops.values())
 
 
 def test_the_two_places_where_the_web_side_is_stricter_on_purpose():
@@ -64,7 +65,7 @@ def test_the_two_places_where_the_web_side_is_stricter_on_purpose():
     assert not verbs.VERBS["source.status"].socket_inputs["name"].required and not verbs.VERBS["source.progress"].socket_inputs["name"].required
     assert actions.TABLE["run.logs"].inputs["limit"].lo == 4096 > verbs.VERBS["run.logs"].socket_inputs["limit"].type.lo
     narrower = []
-    for action in (action for action in actions.TABLE.values() if not action.op):
+    for action in (action for action in actions.TABLE.values() if not action.op and action.door is None):
         for name, spec in action.inputs.items():
             registered = verbs.VERBS[action.name].socket_inputs[name]
             if spec.required and not registered.required:
@@ -85,6 +86,14 @@ def test_the_patterns_and_choices_are_the_registrys():
 class RecordingClient:
     def __init__(self):
         self.sent = []
+
+    def request(self, document):
+        self.sent.append(("request", document))
+        return {}
+
+    def check_password(self, step_up):
+        self.sent.append(("check_password", step_up))
+        return {}
 
     def call(self, verb, fields=None, step_up=None):
         self.sent.append(("call", verb, fields, step_up))
@@ -207,10 +216,91 @@ def test_the_docs_name_every_action_that_needs_the_management_password_and_no_ot
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    assert set(STEP_UP_IN_THE_DOCS) == {action.name for action in actions.TABLE.values() if action.cls == "step_up"}
+    # `session.check_password` is no action of its own: the Queue asks it before switching auto-accept on or raising its limit, which the guide names apart.
+    assert set(STEP_UP_IN_THE_DOCS) == {action.name for action in actions.TABLE.values() if action.cls == "step_up"} - {"session.check_password"}
+    assert "Switching auto-accept on for a target, or raising its limit, needs the management password again" in (root / "docs/guides/webui.md").read_text()
     phrase = "a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, removing a source, and keeping the database admin password for the session"
     assert all(named in phrase for named in STEP_UP_IN_THE_DOCS.values())
     for path in ("README.md", "docs/guides/webui.md"):
         text = (root / path).read_text()
         assert phrase in text, path
         assert "starts or removes something" not in text, path
+
+
+# ── i. the scheduler's entries against its control socket ───────────────────
+
+
+def test_the_queue_entries_are_operations_of_the_scheduler_with_their_fields():
+    """Bug class: a `queue.*` entry naming an operation the scheduler's control socket does not have, or with other fields than the socket takes (it refuses a request with one field more or less as `bad_request`), so that a button of the Queue can never work; or a change of the scheduler classed as a read, which the pages would then make on a GET."""
+    from social_data_pipeline.jobs import door
+
+    entries = {action.name: action for action in actions.TABLE.values() if action.door is not None}
+    assert set(entries) == set(actions.QUEUE_ENTRIES) and all(name.startswith("queue.") for name in entries)
+    assert {name: action.door for name, action in entries.items()} == {
+        "queue.counts": "counts", "queue.jobs": "jobs", "queue.job": "job", "queue.preview": "preview", "queue.auto_accept_state": "auto_accept",
+        "queue.approve": "approve", "queue.reject": "reject", "queue.kill": "kill", "queue.explain": "explain", "queue.auto_accept": "auto_accept.set",
+    }
+    for name, action in entries.items():
+        assert action.door in door.OPS, name
+        assert set(action.inputs) == set(door.OPS[action.door]), name
+        assert all(spec.required for spec in action.inputs.values()), name
+        assert not action.op and action.command is None
+    assert {name for name, action in entries.items() if action.state_changing} == {"queue.approve", "queue.reject", "queue.kill", "queue.explain", "queue.auto_accept"}
+    assert {action.door for action in entries.values() if action.state_changing} == {"approve", "reject", "kill", "explain", "auto_accept.set"}
+    assert all(action.cls == "write" for action in entries.values() if action.state_changing)
+    assert all(not name.startswith("queue.") for name, action in actions.TABLE.items() if action.door is None)
+
+
+def test_the_queue_patterns_are_the_sockets():
+    """Bug class: a literal copy of the socket's rules that drifted: job ids the socket takes offered as no link (or ids it refuses offered as links), a label or a reason refused by the socket after the operator confirmed."""
+    from social_data_pipeline.jobs import door
+
+    assert actions.JOB_ID_PATTERN == door.JOB_ID.pattern and actions.DIGEST_PATTERN == door.DIGEST.pattern and actions.BY_PATTERN == door.BY_LABEL.pattern
+    assert actions.PHASES == door.PHASES and actions.JOBS_LIMIT_MAX == door.JOBS_LIMIT_MAX and actions.JOBS_OFFSET_MAX == door.JOBS_OFFSET_MAX and actions.REASON_MAX == door.REASON_MAX
+    for reason in ("", "x" * 500, "fine, thanks", "\u00e9t\u00e9"):
+        assert actions.is_reason(reason) and not door._has_line_break_or_control(reason)
+    for reason in ("x" * 501, "a\nb", "a\rb", "a\u2028b", "a\x00b", "a\x85b"):
+        assert not actions.is_reason(reason) and (len(reason) > 500 or door._has_line_break_or_control(reason))
+
+
+DIGEST = "ab" * 32
+
+
+@pytest.mark.parametrize("name, fields, step_up", [
+    ("queue.approve", {"job_id": "pg_0123abcd", "digest": DIGEST}, None),
+    ("queue.approve", {"job_id": "pg_0123abcd", "digest": DIGEST, "by": "web-1", "extra": 1}, None),
+    ("queue.approve", {"job_id": "pg_0123abcdX", "digest": DIGEST, "by": "web-1"}, None),
+    ("queue.approve", {"job_id": "pg_0123abcd", "digest": DIGEST.upper(), "by": "web-1"}, None),
+    ("queue.approve", {"job_id": "pg_0123abcd", "digest": DIGEST, "by": "root"}, None),
+    ("queue.approve", {"job_id": "pg_0123abcd", "digest": DIGEST, "by": "web-1"}, PASSWORD),
+    ("queue.reject", {"job_id": "pg_0123abcd", "reason": "a\nb", "by": "web-1"}, None),
+    ("queue.reject", {"job_id": "pg_0123abcd", "reason": "x" * 501, "by": "web-1"}, None),
+    ("queue.kill", {"job_id": "../etc", "by": "web-1"}, None),
+    ("queue.auto_accept", {"target": "t", "enabled": "yes", "limit": None, "by": "web-1"}, None),
+    ("queue.auto_accept", {"target": "t", "enabled": True, "limit": -1, "by": "web-1"}, None),
+    ("queue.auto_accept", {"target": "a\nb", "enabled": True, "limit": None, "by": "web-1"}, None),
+    ("queue.jobs", {"phase": "trash", "limit": 50, "offset": 0}, None),
+    ("queue.jobs", {"phase": "pending", "limit": 501, "offset": 0}, None),
+    ("queue.made_up", {}, None),
+])
+def test_call_sends_the_scheduler_nothing_outside_the_table(name, fields, step_up):
+    """Bug class: a page that can make the scheduler's socket receive an operation outside the table, a field too many or too few, a malformed id, digest or label, a reason the socket would refuse, or the management password."""
+    made = RecordingClient()
+    with pytest.raises(actions.NotInTable):
+        actions.call(made, name, fields, step_up)
+    assert made.sent == []
+
+
+def test_call_sends_the_scheduler_exactly_the_operation_and_its_fields():
+    """Bug class: a request of the Queue sent with its fields under other names, without its `op`, or with None left out (the socket needs every field; None means "leave it")."""
+    made = RecordingClient()
+    actions.call(made, "queue.approve", {"job_id": "pg_0123abcd", "digest": DIGEST, "by": "web-12"})
+    actions.call(made, "queue.auto_accept", {"target": "warehouse", "enabled": None, "limit": 2, "by": "web-12"})
+    actions.call(made, "queue.counts")
+    actions.call(made, "session.check_password", {}, PASSWORD)
+    assert made.sent == [
+        ("request", {"op": "approve", "job_id": "pg_0123abcd", "digest": DIGEST, "by": "web-12"}),
+        ("request", {"op": "auto_accept.set", "target": "warehouse", "enabled": None, "limit": 2, "by": "web-12"}),
+        ("request", {"op": "counts"}),
+        ("check_password", PASSWORD),
+    ]

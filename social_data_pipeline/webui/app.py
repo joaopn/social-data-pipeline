@@ -1,6 +1,6 @@
-"""The web UI's application: login, logout, the frame, the Overview and the Management pages of `management`, behind the `guard` layer.
+"""The web UI's application: login, logout, the frame, the Overview, the Management pages of `management` and the Queue window of `queue`, behind the `guard` layer.
 
-`create_app(settings, broker=...)` builds it; `from_environment()` is what the container runs (`python -m social_data_pipeline.webui.serve` builds it once and serves it on two ports). `broker(token=None, timeout=...)` returns a client of the broker (`control.client.Client` or a stand-in) with `hello()`, `login(password, channel=...)`, `logout()`, `call(verb, fields, step_up=...)`, `set_db_password(password, step_up)` and `clear_db_password()`; a read gets the time limit `Limits.read_seconds`, a confirmed action none. Every request to the broker but the login and the logout goes through `actions.call`, which holds it to the web UI's table. The clock, the limits, the template and static folders are parameters too.
+`create_app(settings, broker=..., scheduler=...)` builds it; `from_environment()` is what the container runs (`python -m social_data_pipeline.webui.serve` builds it once and serves it on two ports). `broker(token=None, timeout=...)` returns a client of the broker (`control.client.Client` or a stand-in) with `hello()`, `login(password, channel=...)`, `logout()`, `call(verb, fields, step_up=...)`, `set_db_password(password, step_up)` and `clear_db_password()`; a read gets the time limit `Limits.read_seconds`, a confirmed action none. `scheduler` is the way to the query scheduler's control socket (`scheduler.Scheduler`; by default made from the settings' `queue_socket` and `results`). Every request to the broker but the login and the logout, and every request to the scheduler, goes through `actions.call`, which holds it to the web UI's table. The clock, the limits, the template and static folders are parameters too.
 
 Routes, each behind the checks of `guard` (host, origin, body, form token):
 
@@ -10,6 +10,7 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - `POST /logout`: the session forgotten, the broker's `logout` asked (under a bound of its own, waiting a few seconds for a place), the cookie cleared.
 - `GET /`: the Overview, from three read verbs; a block whose read failed says why, and the others stay. A session the broker no longer knows (`unauthorized`, `session_ended`) or a broker that cannot be reached ends the session here too, and the browser is sent to the login page with a line saying why.
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
+- The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
 - `/static/...`: the stylesheet, the script and, in the image, htmx and Pico CSS.
 
 Every broker call runs in a worker thread, never on the event loop, under a bound of its kind (pages; logins on the local port, one place; other logins, two places; logouts; the pieces of the output view; Docker's tails of the output view; confirmed actions and, apart, cancels, in threads of their own): a page or a login that finds its bound full is answered at once with a "busy" page instead of waiting, so a slow broker can stall neither the login page nor the health check, and logins from elsewhere cannot make a local login busy. A choice of an action that is taken, a confirmation that is not refused at once, a login and a logout are answered with a redirect to a GET, so a reload never sends them again. The password is read from the form, given to the broker and dropped; no template, log line or answer gets it, and the broker's token never leaves this process but towards the broker.
@@ -30,9 +31,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from social_data_pipeline.control import client as broker_client
-from social_data_pipeline.webui import actions, config, guard, management, overview, words
+from social_data_pipeline.webui import actions, config, guard, management, overview, queue, words
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker, session_ends, why
 from social_data_pipeline.webui.limiter import LOCAL_KEY, LoginLimiter
+from social_data_pipeline.webui.scheduler import Scheduler
 from social_data_pipeline.webui.sessions import WebSessions
 from social_data_pipeline.webui.work import SessionWork
 
@@ -101,6 +103,9 @@ class Limits:
     views_max: int = 8
     view_held_bytes: int = 64 * 1024
     view_shown_bytes: int = 4 * 1024 * 1024
+    # The scheduler's control socket: the calls of the Queue window (its pages and its confirmed actions) have a bound of their own, and so do the downloads.
+    door_workers: int = 4
+    download_workers: int = 2
 
 
 def arrived_locally(scope, gateway):
@@ -129,10 +134,15 @@ class Context:
     broker: object
     limits: Limits
     clock: object
+    scheduler: object = None
+    door: Gate = None
+    downloads: threading.BoundedSemaphore = None
 
 
-def create_app(settings, *, broker, clock=time.monotonic, limits=Limits(), templates_dir=TEMPLATES_DIR, static_dir=STATIC_DIR):
+def create_app(settings, *, broker, scheduler=None, clock=time.monotonic, limits=Limits(), templates_dir=TEMPLATES_DIR, static_dir=STATIC_DIR):
     """The web UI as an ASGI application: the FastAPI routes inside the `guard` layer."""
+    if scheduler is None:
+        scheduler = Scheduler(settings.queue_socket, settings.results)
     sessions = WebSessions(clock, sessions_max=limits.sessions_max, new_work=lambda: SessionWork(pending_max=limits.pending_max, pending_seconds=limits.pending_seconds, outcomes_max=limits.outcomes_max, views_max=limits.views_max))
     limiter = LoginLimiter(clock, failures_max=limits.login_failures, window_seconds=limits.login_window_seconds, addresses_max=limits.addresses_max)
     pages = Gate(limits.page_workers)
@@ -153,7 +163,9 @@ def create_app(settings, *, broker, clock=time.monotonic, limits=Limits(), templ
         return HTMLResponse(templates.get_template(name).render(**context), status_code=status, headers=headers)
 
     def frame(name, active, session, status=200, **context):
-        return render(name, status, active=active, pages=MANAGEMENT_PAGES, form_token=session.form_token, **context)
+        """A page in the frame: the Queue window's navigation when `active` is one of its pages (`queue:...`), the Management window's otherwise."""
+        window = "queue" if active.startswith("queue:") else "management"
+        return render(name, status, active=active, window=window, pages=queue.QUEUE_PAGES if window == "queue" else MANAGEMENT_PAGES, form_token=session.form_token, **context)
 
     def to_login(request, why=None, clear_cookie=False):
         """The way to the login page: a redirect, or for a request of htmx (`HX-Request`) an empty answer whose `HX-Redirect` makes the browser load the login page, so that the login page is never swapped into a part of a page."""
@@ -200,8 +212,9 @@ def create_app(settings, *, broker, clock=time.monotonic, limits=Limits(), templ
         channel = "local" if local else "remote"
 
         def ask(session):
-            session.login(password, channel=channel)
-            return session.token
+            reply = session.login(password, channel=channel)
+            number = reply.get("session") if isinstance(reply, dict) else None
+            return session.token, number
 
         # The place in the limiter is given back on every way out (a busy bound, any answer, a request cancelled while it waits), and kept as a failure only for a wrong password.
         failed = False
@@ -218,12 +231,16 @@ def create_app(settings, *, broker, clock=time.monotonic, limits=Limits(), templ
                 return login_page(429 if value.code == "throttled" else 503, words.sentence(value))
         finally:
             limiter.end(attempt, failed=failed)
-        if not isinstance(value, str) or not value:
+        token, number = value if isinstance(value, tuple) and len(value) == 2 else (None, None)
+        if not isinstance(token, str) or not token:
             return login_page(503, words.code_sentence("bad_reply"))
+        # The broker's number of the session names it to the scheduler (`web-<number>`); a reply without a usable one leaves the Queue's actions refused, nothing else.
+        if not isinstance(number, int) or isinstance(number, bool) or not 0 <= number < 10 ** 12:
+            number = None
         old_id = request.scope.get("sdp.session_id")
         if old_id:
             sessions.forget(old_id)
-        session_id, _ = sessions.create(value)
+        session_id, _ = sessions.create(token, number)
         response = RedirectResponse("/", status_code=303)
         response.headers.append("set-cookie", f"{guard.COOKIE_NAME}={session_id}; {COOKIE_ATTRIBUTES}")
         return response
@@ -263,8 +280,14 @@ def create_app(settings, *, broker, clock=time.monotonic, limits=Limits(), templ
                 return to_login(request, why(value), clear_cookie=True)
         return frame("overview.html", "overview", session, title="Overview", blocks=overview.build(answers))
 
-    context = Context(render=render, frame=frame, current=current, to_login=to_login, sessions=sessions, pages=pages, pieces=Gate(limits.piece_workers), tails=Gate(limits.tail_workers), action_places=threading.BoundedSemaphore(limits.action_workers), cancel_places=threading.BoundedSemaphore(limits.cancel_workers), broker=broker, limits=limits, clock=clock)
-    management.install(api, context)
+    context = Context(
+        render=render, frame=frame, current=current, to_login=to_login, sessions=sessions, pages=pages, pieces=Gate(limits.piece_workers), tails=Gate(limits.tail_workers),
+        action_places=threading.BoundedSemaphore(limits.action_workers), cancel_places=threading.BoundedSemaphore(limits.cancel_workers), broker=broker, limits=limits, clock=clock,
+        scheduler=scheduler, door=Gate(limits.door_workers), downloads=threading.BoundedSemaphore(limits.download_workers),
+    )
+    # The Queue's routes first: `/queue/auto-accept` and `/queue/running-rows` before `/queue/<job id>`.
+    hooks = queue.install(api, context)
+    management.install(api, context, hooks)
 
     return guard.Guard(api, settings=settings, sessions=sessions, body_max=limits.body_max, body_seconds=limits.body_seconds, clock=clock)
 
@@ -281,4 +304,4 @@ def from_environment():
         # A read is given `Limits.read_seconds`; a state-changing call None, no time limit: it can last many minutes and must not be cut.
         return broker_client.Client(settings.socket_path, timeout=timeout, token=token)
 
-    return create_app(settings, broker=broker)
+    return create_app(settings, broker=broker, scheduler=Scheduler(settings.queue_socket, settings.results))

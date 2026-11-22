@@ -1,0 +1,23 @@
+{#- The preview of a finished job's result, as the scheduler's control socket gives it: every cell text. -#}
+{%- import "_queue_macros.html" as q %}
+{%- if failure %}
+<p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
+{%- else %}
+<p>Format <code>{{ q.vis(preview.format) }}</code>; {{ preview.read_bytes }} read of the first part{% if preview.truncated %}; <strong>truncated</strong>: the first part is longer than what was read{% endif %}.</p>
+<div class="preview-table">
+<table>
+  <thead><tr>{% for cell in preview.columns %}<th scope="col">{{ cell }}</th>{% endfor %}</tr></thead>
+  <tbody>
+    {%- for row in preview.rows %}
+    <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+    {%- endfor %}
+  </tbody>
+</table>
+</div>
+<p>Parts: {{ preview.parts_total }}</p>
+<ul class="parts">
+  {%- for part in preview.parts %}
+  <li><code>{{ q.vis(part.name) }}</code> <span class="muted">{{ part.size }}</span></li>
+  {%- endfor %}
+</ul>
+{%- endif %}

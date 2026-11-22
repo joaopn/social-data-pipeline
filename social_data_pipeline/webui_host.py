@@ -2,7 +2,7 @@
 
 What it keeps, in `<root>/.sdp/webui/` (0700): `config.json` (0600: the port, the listen addresses besides 127.0.0.1, the names, how the certificate came, its SHA-256 fingerprint and end date) and `tls/` (0700: `cert.pem` and `key.pem`, 0600), written by the broker's file rules (`control.files`). The container, the network and the image are all called `sdp-webui`.
 
-The container (`create_arguments`, one pure function) runs as the operator's uid and gid, read-only, without capabilities, without new privileges, with 256 processes, 512 MiB and a 16 MiB `/tmp` at most, on a network of its own without masquerading (so it reaches nothing outside the machine), with two read-only mounts: the broker's socket folder at `/run/sdp` and the certificate folder at `/tls`. It listens on two ports: 127.0.0.1 of the host is published to the local port (8444) and each other listen address the operator named to 8443, so that the web UI tells a login from the machine itself by the port it arrived on and never by the client's address. Docker without user-id mapping is required: rootless Docker and user-namespace remapping are refused (the broker checks the peer's uid, which must be the operator's).
+The container (`create_arguments`, one pure function) runs as the operator's uid and gid, read-only, without capabilities, without new privileges, with 256 processes, 512 MiB and a 16 MiB `/tmp` at most, on a network of its own without masquerading (so it reaches nothing outside the machine), with two read-only mounts: the broker's socket folder at `/run/sdp` and the certificate folder at `/tls`. Two more read-only mounts are added for the Queue window when their folders pass the checks of `_queue_mounts`: the query scheduler's control folder (`data/jobs/control`, made 0700 when missing) at `/run/sdp-jobs`, and its results folder (`JOBS_RESULT_ROOT` of `.env`, by default `./data/jobs/results`) at `/run/sdp-results`; a folder that does not pass is left out with one line saying why. It listens on two ports: 127.0.0.1 of the host is published to the local port (8444) and each other listen address the operator named to 8443, so that the web UI tells a login from the machine itself by the port it arrived on and never by the client's address. Docker without user-id mapping is required: rootless Docker and user-namespace remapping are refused (the broker checks the peer's uid, which must be the operator's).
 
 Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell; no secret is ever in an argument list (the key is a file in the mounted folder). Standard library and this package only; the setup prompts come from `social_data_pipeline.setup.utils`, imported when `setup` runs.
 """
@@ -41,6 +41,14 @@ DOCKERFILE = "Dockerfile.webui"
 LISTEN_PORT = webui_config.LISTEN_PORT
 LOCAL_PORT = webui_config.LOCAL_PORT
 LOG_TAIL_LINES = 20
+# The query scheduler's folders, for the Queue window.
+JOBS_FOLDER = os.path.join("data", "jobs")
+CONTROL_NAME = "control"
+CONTROL_FOLDER = os.path.join(JOBS_FOLDER, CONTROL_NAME)
+RESULTS_KEY = "JOBS_RESULT_ROOT"
+RESULTS_DEFAULT = "./data/jobs/results"
+QUEUE_MOUNT = webui_config.QUEUE_MOUNT
+RESULTS_MOUNT = webui_config.RESULTS_MOUNT
 SOCKET_MOUNT = "/run/sdp"
 TLS_MOUNT = "/tls"
 SOCKET_IN_CONTAINER = SOCKET_MOUNT + "/broker.sock"
@@ -168,8 +176,8 @@ def _publish(address, port, container_port):
     return f"{host}:{port}:{container_port}"
 
 
-def create_arguments(root, uid, gid, cfg, gateway):
-    """The `docker create` argument list of the web UI's container. `root` is the deployment folder (an absolute path without a comma), `gateway` the IPv4 address of the network's gateway. 127.0.0.1 is published to the local port, every other listen address to the other one."""
+def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_folder=None):
+    """The `docker create` argument list of the web UI's container. `root` is the deployment folder (an absolute path without a comma), `gateway` the IPv4 address of the network's gateway; `queue_folder` and `results_folder` are the scheduler's control folder and results folder (absolute paths without a comma) to mount for the Queue window, each None when it is left out. 127.0.0.1 is published to the local port, every other listen address to the other one."""
     arguments = [
         "docker", "create",
         "--name", CONTAINER,
@@ -186,6 +194,10 @@ def create_arguments(root, uid, gid, cfg, gateway):
         "--mount", _mount(os.path.join(root, SOCKET_FOLDER), SOCKET_MOUNT),
         "--mount", _mount(os.path.join(root, TLS_FOLDER), TLS_MOUNT),
     ]
+    if queue_folder is not None:
+        arguments += ["--mount", _mount(queue_folder, QUEUE_MOUNT)]
+    if results_folder is not None:
+        arguments += ["--mount", _mount(results_folder, RESULTS_MOUNT)]
     arguments += ["-p", _publish(LOCAL_ADDRESS, cfg.port, LOCAL_PORT)]
     for address in cfg.addresses:
         arguments += ["-p", _publish(address, cfg.port, LISTEN_PORT)]
@@ -194,8 +206,12 @@ def create_arguments(root, uid, gid, cfg, gateway):
         "-e", f"{webui_config.ENV_PORT}={cfg.port}",
         "-e", f"{webui_config.ENV_SOCKET}={SOCKET_IN_CONTAINER}",
         "-e", f"{webui_config.ENV_GATEWAY}={gateway}",
-        IMAGE,
     ]
+    if queue_folder is not None:
+        arguments += ["-e", f"{webui_config.ENV_QUEUE_SOCKET}={webui_config.QUEUE_SOCKET_IN_CONTAINER}"]
+    if results_folder is not None:
+        arguments += ["-e", f"{webui_config.ENV_RESULTS}={RESULTS_MOUNT}"]
+    arguments.append(IMAGE)
     return arguments
 
 
@@ -573,6 +589,105 @@ def _network_gateway():
     raise Refused(f"the network {NETWORK} has no IPv4 gateway address: remove it with `docker network rm {NETWORK}` and start again")
 
 
+def _is_inside(path, folder):
+    return path == folder or path.startswith(folder.rstrip("/") + "/")
+
+
+def _env_of(root):
+    """The `.env` of the deployment folder `root` as a dict, read by the rules of `setup.utils.load_env` (a line `KEY=value`, both stripped; empty lines and `#` lines skipped; the last of a key wins), which reads only the `.env` of the folder its module lies in and takes no path. A test holds the two to the same answers. Nothing of the file is printed."""
+    path = os.path.join(root, ".env")
+    if not os.path.exists(path):
+        return {}
+    env = {}
+    with open(path) as handle:
+        text = handle.read()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip()
+    return env
+
+
+def _results_setting(root):
+    """The value of `JOBS_RESULT_ROOT` in the `.env` of the deployment folder `root` (read by key; nothing of the file is printed), or the default."""
+    value = _env_of(root).get(RESULTS_KEY)
+    return value if value else RESULTS_DEFAULT
+
+
+def _control_folder(root, uid):
+    """The scheduler's control folder `data/jobs/control` for the mount, made 0700 when it is missing: (its path or None, the lines to print). `data/jobs` must be a real folder (not a link) of the operator, and so must the control folder; each is opened without following a link and looked at through its descriptor. The mode is set explicitly, so the umask does not matter."""
+    queue_off = "Queue: the Queue window will not be available"
+    try:
+        jobs_fd = os.open(os.path.join(root, JOBS_FOLDER), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None, [f"{queue_off}: the scheduler's data folder {JOBS_FOLDER} is not there. Set up and start the scheduler (python sdp.py db setup-jobs, python sdp.py db start jobs), then stop and start the web UI."]
+    except OSError:
+        return None, [f"{queue_off}: {JOBS_FOLDER} is a link, not a folder, or cannot be opened."]
+    try:
+        info = os.fstat(jobs_fd)
+        if info.st_uid != uid:
+            return None, [f"{queue_off}: {JOBS_FOLDER} belongs to another user than you."]
+        made = False
+        try:
+            os.mkdir(CONTROL_NAME, 0o700, dir_fd=jobs_fd)
+            made = True
+        except FileExistsError:
+            pass
+        except OSError:
+            return None, [f"{queue_off}: {CONTROL_FOLDER} could not be made."]
+        try:
+            control_fd = os.open(CONTROL_NAME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=jobs_fd)
+        except OSError:
+            return None, [f"{queue_off}: {CONTROL_FOLDER} is a link or not a folder; it was left as it is."]
+        try:
+            control = os.fstat(control_fd)
+            if control.st_uid != uid:
+                return None, [f"{queue_off}: {CONTROL_FOLDER} belongs to another user than you; it was left as it is."]
+            lines = []
+            if made:
+                # mkdir's mode passes through the umask, which can only take bits away from 0700: this puts them back.
+                os.fchmod(control_fd, 0o700)
+            elif stat.S_IMODE(control.st_mode) & 0o077:
+                lines.append(f"Queue: {CONTROL_FOLDER} is open to the group or to others: the scheduler keeps its control socket closed and the Queue window refuses the folder until you take that away (chmod 700 {CONTROL_FOLDER}).")
+        finally:
+            os.close(control_fd)
+    except OSError:
+        return None, [f"{queue_off}: {CONTROL_FOLDER} cannot be used."]
+    finally:
+        os.close(jobs_fd)
+    return os.path.join(root, CONTROL_FOLDER), lines
+
+
+def _results_folder(root):
+    """The scheduler's results folder for the mount: (its resolved path or None, the lines to print). It must exist, have no comma in its path, and be neither `data/jobs` nor a folder above it nor inside the control folder (compared by resolved paths, so links count)."""
+    downloads_off = "Queue: downloads will not be available"
+    setting = _results_setting(root)
+    path = os.path.normpath(setting if os.path.isabs(setting) else os.path.join(root, setting))
+    if not os.path.isdir(path):
+        return None, [f"{downloads_off}: the scheduler's results folder ({RESULTS_KEY}) is not there."]
+    real = os.path.realpath(path)
+    if "," in real or "\n" in real:
+        return None, [f"{downloads_off}: the path of the scheduler's results folder holds a comma or a line break, which Docker's mount option cannot take."]
+    jobs_real = os.path.realpath(os.path.join(root, JOBS_FOLDER))
+    if _is_inside(jobs_real, real):
+        return None, [f"{downloads_off}: the scheduler's results folder is {JOBS_FOLDER} or a folder above it, which would put the scheduler's own files in the web UI's reach."]
+    if _is_inside(real, os.path.realpath(os.path.join(root, CONTROL_FOLDER))):
+        return None, [f"{downloads_off}: the scheduler's results folder lies inside {CONTROL_FOLDER}."]
+    return real, []
+
+
+def _queue_mounts(root, uid):
+    """(the control folder or None, the results folder or None, the lines to print) for the Queue window's two mounts: none without a usable control folder."""
+    control, lines = _control_folder(root, uid)
+    if control is None:
+        return None, None, lines
+    results, more = _results_folder(root)
+    return control, results, lines + more
+
+
 def _start(root, uid, gid):
     _check_root(root)
     loaded = read_config(root)
@@ -598,7 +713,10 @@ def _start(root, uid, gid):
     except files.BrokerFileError as error:
         raise Refused(f"{SOCKET_FOLDER}: {error.message}") from None
     gateway = _network_gateway()
-    for step in (create_arguments(root, uid, gid, cfg, gateway), ["docker", "start", CONTAINER]):
+    queue_folder, results_folder, queue_lines = _queue_mounts(root, uid)
+    for line in queue_lines:
+        print(f"  {line}")
+    for step in (create_arguments(root, uid, gid, cfg, gateway, queue_folder, results_folder), ["docker", "start", CONTAINER]):
         result = _docker(step)
         if result.returncode != 0:
             _remove_container()
@@ -661,6 +779,21 @@ def cmd_stop(root):
     return 0
 
 
+def _queue_status():
+    """What `status` says of the Queue window's two mounts in the running container."""
+    found = _docker(["docker", "container", "inspect", "--format", "{{json .Mounts}}", CONTAINER])
+    try:
+        mounts = json.loads(found.stdout) if found.returncode == 0 else None
+    except ValueError:
+        mounts = None
+    if not isinstance(mounts, list):
+        return ["Queue: Docker cannot say which folders are mounted."]
+    targets = {mount.get("Destination") for mount in mounts if isinstance(mount, dict)}
+    lines = ["Queue: the scheduler's control folder is mounted" if QUEUE_MOUNT in targets else "Queue: the scheduler's control folder is not mounted, so the Queue window is not available (start the web UI after the scheduler's data folder exists)"]
+    lines.append("Queue: the results folder is mounted (downloads)" if RESULTS_MOUNT in targets else "Queue: the results folder is not mounted, so there are no downloads")
+    return lines
+
+
 def cmd_status(root):
     """`sdp webui status`: set up or not, running or not, where it answers, the certificate. Exit code 0 when it runs, 1 when not."""
     root = os.fspath(root)
@@ -676,6 +809,9 @@ def cmd_status(root):
         state = None
     running = state is not None and state[0] == "running" and _ours(state, root)
     print(f"  Web UI: {'running' if running else 'not running'}")
+    if running:
+        for line in _queue_status():
+            print(f"  {line}")
     if state is not None and not _ours(state, root):
         print(f"  A container named {CONTAINER} belongs to another deployment.")
     if loaded is None:

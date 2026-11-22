@@ -7,7 +7,7 @@ Pages, each read in one worker of the pages' bound, each block failing on its ow
 - `GET /runs`: `run.list`. `GET /runs/<run id>` (either form of a run id, else not found; `?offset=` where a view starts): the run's facts, a cancel form while it is alive, and the output view.
 - `GET /system`: the broker's `hello`, the newest 200 lines of the audit log, the table of actions.
 
-An action, the same for every state-changing one: `POST /pending` with the form (`action` names the table's entry) is checked against the table without asking the broker and kept as a pending action of the session (`work.SessionWork`), answered with a redirect to `GET /pending/<id>`, which shows the `sdp` command, every input (a secret as dots), what a destructive verb destroys, and for a step-up entry a field for the management password. `POST /pending/<id>/confirm` carries that password or nothing; the pending action is taken out of the session before anything is awaited, so two confirms at once start one call. The call runs in a thread of its own, not tied to the request, under a bound of its own (`Limits.action_workers`; a cancel under `Limits.cancel_workers`, so that it gets through while long actions run; "busy" when full), through a client WITHOUT a time limit, and writes its outcome; the confirm waits for it up to `Limits.action_wait_seconds`: a refusal that came at once is shown on the pending page (`step_up_failed` and `step_up_required` put the action back, `unauthorized` and `session_ended` end the session), anything else is a redirect to `GET /actions/<id>`, which shows "under way" (an htmx poll every 2 seconds) and then the outcome. A broker that cannot be reached is an outcome there, not a logout.
+An action, the same for every state-changing one (the Queue's actions too, with what `queue` adds through its `Hooks`: how their pending action is made and shown, and the thread that runs them, which asks the broker whether the session lives before it asks the scheduler): `POST /pending` with the form (`action` names the table's entry) is checked against the table without asking the broker and kept as a pending action of the session (`work.SessionWork`), answered with a redirect to `GET /pending/<id>`, which shows the `sdp` command, every input (a secret as dots), what a destructive verb destroys, and for a step-up entry a field for the management password. `POST /pending/<id>/confirm` carries that password or nothing; the pending action is taken out of the session before anything is awaited, so two confirms at once start one call. The call runs in a thread of its own, not tied to the request, under a bound of its own (`Limits.action_workers`; a cancel under `Limits.cancel_workers`, so that it gets through while long actions run; "busy" when full), through a client WITHOUT a time limit, and writes its outcome; the confirm waits for it up to `Limits.action_wait_seconds`: a refusal that came at once is shown on the pending page (`step_up_failed` and `step_up_required` put the action back, `unauthorized` and `session_ended` end the session), anything else is a redirect to `GET /actions/<id>`, which shows "under way" (an htmx poll every 2 seconds) and then the outcome. A broker that cannot be reached is an outcome there, not a logout.
 
 The output view (`GET /runs/<run id>/output?offset=<n>&view=<id>`, an htmx partial; see `output`): each answer carries the next request itself. Pieces of log files go through a bound of their own (`Limits.piece_workers`) and tails of Docker through another (`Limits.tail_workers`), apart from the pages', and are answered "busy, trying again" when theirs is full. A request for an offset below what the view has shown appends nothing and stops the view; a view that stops on an error shows its unfinished line first. An htmx poll of an outcome that is no longer kept gets a part that says so and polls no more. A request of htmx whose session has ended gets an empty answer with `HX-Redirect` to the login page. Every route here answers GET only (a HEAD is 405): a GET of a run page makes an output view's state, and a HEAD must change nothing.
 """
@@ -23,7 +23,7 @@ import anyio
 from fastapi import Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 
-from social_data_pipeline.webui import actions, output, overview, pages
+from social_data_pipeline.webui import actions, output, overview, pages, queue
 from social_data_pipeline.webui.calls import BUSY_GATE, SESSION_ENDING_CODES, call_broker, session_ends, why
 from social_data_pipeline.webui.work import ID_PATTERN, VIEW_ID_PATTERN, Outcome, View, new_id
 
@@ -85,6 +85,7 @@ def pending_model(pending, now, seconds):
         "note": action.note,
         "also": action.also(fields) if action.also else None,
         "minutes_left": max(1, math.ceil((seconds - (now - pending.created)) / 60)),
+        "queue": False,
     }
 
 
@@ -106,6 +107,10 @@ def outcome_model(outcome):
         "field": outcome.field,
         "op": action.op,
         "gone": None,
+        "queue": action.door is not None,
+        "verb": action.name,
+        "door": outcome.door,
+        "back": outcome.back,
     }
 
 
@@ -113,9 +118,15 @@ def _first_ending(answers):
     return next((value for kind, value in answers.values() if kind == "error" and session_ends(value)), None)
 
 
-def install(api, ctx):
-    """Add the routes of this module to `api`, with what `ctx` (an `app.Context`) gives."""
+def install(api, ctx, queue_hooks):
+    """Add the routes of this module to `api`, with what `ctx` (an `app.Context`) gives; the Queue's actions go through `queue_hooks` (`queue.Hooks`)."""
     limits = ctx.limits
+
+    def is_queue(name):
+        return actions.TABLE[name].door is not None
+
+    def active_of(name):
+        return queue_hooks.active(name) if is_queue(name) else ACTIVE.get(name, "databases")
 
     def asker(session):
         def ask(name, fields=None):
@@ -306,9 +317,13 @@ def install(api, ctx):
 
     # ── actions ──
 
-    def pending_page(session, pending, status=200, line=None, refusal=None):
+    async def pending_page(session, pending, status=200, line=None, refusal=None):
+        """The pending page; a Queue action's is rendered in a worker (its statement can be a megabyte), from the model made once when it was kept."""
+        if is_queue(pending.action):
+            model = queue_hooks.pending_model(pending, ctx.clock(), limits.pending_seconds)
+            return await queue_hooks.render_pending(lambda: ctx.frame("pending.html", active_of(pending.action), session, status, title=model["title"], pending=model, line=line, refusal=refusal))
         model = pending_model(pending, ctx.clock(), limits.pending_seconds)
-        return ctx.frame("pending.html", ACTIVE.get(pending.action, "databases"), session, status, title=model["title"], pending=model, line=line, refusal=refusal)
+        return ctx.frame("pending.html", active_of(pending.action), session, status, title=model["title"], pending=model, line=line, refusal=refusal)
 
     @api.post("/pending")
     async def make_pending(request: Request):
@@ -318,8 +333,10 @@ def install(api, ctx):
         form = dict(request.scope.get("sdp.form", {}))
         name = form.pop("action", None)
         action = actions.TABLE.get(name) if isinstance(name, str) else None
-        if action is None or not action.state_changing:
+        if action is None or not action.state_changing or name == "session.check_password":
             return ctx.frame("refused.html", "overview", session, 400, title="Not taken", line=FORM_REFUSED, field=None)
+        if action.door is not None:
+            return await queue_hooks.make_pending(request, session, name, form)
         try:
             fields = actions.parse_form(action, form)
         except actions.Refused as refused:
@@ -338,11 +355,27 @@ def install(api, ctx):
         pending = session.work.pending(pending_id, ctx.clock())
         if pending is None:
             return _not_found()
-        return pending_page(session, pending)
+        if is_queue(pending.action):
+            # A session the broker ended does not see a Queue action's page (the job's record) any more.
+            stopped = await queue_hooks.guard(request, session_id, session)
+            if stopped is not None:
+                return stopped
+        return await pending_page(session, pending)
 
     def places_of(name):
         """The bound an action runs under: a cancel has its own, so that it gets through while long actions hold the others (as at the broker, where it takes no lock)."""
         return ctx.cancel_places if name == "run.cancel" else ctx.action_places
+
+    def take_place(name):
+        if is_queue(name):
+            return queue_hooks.places.take()
+        return places_of(name).acquire(blocking=False)
+
+    def give_place(name):
+        if is_queue(name):
+            queue_hooks.places.give_back()
+        else:
+            places_of(name).release()
 
     def start_action(session, name, fields, step_up, outcome):
         """Run the call in a thread of its own, through a client without a time limit; the thread writes the outcome and gives the place back."""
@@ -362,6 +395,13 @@ def install(api, ctx):
 
         threading.Thread(target=run, name="sdp-webui-action", daemon=True).start()
 
+    async def queue_busy(request, session_id, session, pending, line):
+        """A confirmation of a Queue action that could not start: after the session's check at the broker, only the line and the way back to the pending page, never the job's record."""
+        stopped = await queue_hooks.guard(request, session_id, session)
+        if stopped is not None:
+            return stopped
+        return ctx.frame("refused.html", active_of(pending.action), session, 503, title="Busy", line=line, field=None, back=(f"/pending/{pending.id}", "Back to the pending action"))
+
     @api.post("/pending/{pending_id}/confirm")
     async def confirm(request: Request, pending_id: str):
         if not re.fullmatch(ID_PATTERN, pending_id):
@@ -375,45 +415,66 @@ def install(api, ctx):
         pending = work.pending(pending_id, ctx.clock())
         if pending is None:
             return _not_found()
-        step_up = actions.TABLE[pending.action].cls == "step_up"
-        if form or (not step_up and password is not None):
-            return pending_page(session, pending, 400, CONFIRM_REFUSED)
-        if step_up and not password:
-            return pending_page(session, pending, 400, STEP_UP_MISSING)
+        step_up = pending.step_up
+        refused_line = CONFIRM_REFUSED if form or (not step_up and password is not None) else STEP_UP_MISSING if step_up and not password else None
+        if refused_line is not None:
+            if is_queue(pending.action):
+                # The page shown again holds the job's record: not for a session the broker has ended.
+                stopped = await queue_hooks.guard(request, session_id, session)
+                if stopped is not None:
+                    return stopped
+            return await pending_page(session, pending, 400, refused_line)
         # Taken out in one step before anything is awaited: a second confirm finds nothing.
         taken = work.take_pending(pending_id, ctx.clock())
         if taken is None:
             return _not_found()
-        if not places_of(taken.action).acquire(blocking=False):
+        queue_action = is_queue(taken.action)
+        if not take_place(taken.action):
             work.put_back(taken, ctx.clock())
-            return pending_page(session, taken, 503, ACTIONS_BUSY)
+            if queue_action:
+                return await queue_busy(request, session_id, session, taken, queue.QUEUE_BUSY)
+            return await pending_page(session, taken, 503, ACTIONS_BUSY)
         command = actions.TABLE[taken.action].command(taken.fields) if actions.TABLE[taken.action].command else None
         outcome = Outcome(new_id(), taken.action, command, ctx.clock())
         work.add_outcome(outcome)
         try:
-            start_action(session, taken.action, taken.fields, password if step_up else None, outcome)
+            if queue_action:
+                queue_hooks.start(session, taken, password if step_up else None, outcome)
+            else:
+                start_action(session, taken.action, taken.fields, password if step_up else None, outcome)
         except Exception as error:
-            places_of(taken.action).release()
+            give_place(taken.action)
             work.remove_outcome(outcome.id)
             work.put_back(taken, ctx.clock())
             log.error("an action could not be started (%s)", type(error).__name__)
-            return pending_page(session, taken, 503, ACTIONS_BUSY)
+            if queue_action:
+                return await queue_busy(request, session_id, session, taken, ACTIONS_BUSY)
+            return await pending_page(session, taken, 503, ACTIONS_BUSY)
         password = None
         deadline = time.monotonic() + limits.action_wait_seconds
         while not outcome.done and time.monotonic() < deadline:
             await anyio.sleep(0.02)
         if outcome.done and outcome.kind == "refusal":
-            if outcome.code in SESSION_ENDING_CODES:
+            # Only the broker's codes end the session or put the action back; the scheduler's are outcomes.
+            if outcome.code in SESSION_ENDING_CODES and not outcome.from_door:
                 ctx.sessions.forget(session_id)
                 return ctx.to_login(request, "ended", clear_cookie=True)
-            if outcome.code in RETRY_CODES:
+            if outcome.code in RETRY_CODES and not outcome.from_door:
                 work.remove_outcome(outcome.id)
                 work.put_back(taken, ctx.clock())
-                return pending_page(session, taken, 403, outcome.sentence)
-            response = pending_page(session, taken, 200, None, outcome_model(outcome))
+                return await pending_page(session, taken, 403, outcome.sentence)
+            if queue_action and outcome.at_session_check:
+                # The broker did not confirm the session (unreachable, internal, stopping...): its sentence and the way back, never the job's record; the action is kept for a retry.
+                work.remove_outcome(outcome.id)
+                work.put_back(taken, ctx.clock())
+                work.broker_checked_at = None
+                return ctx.frame("refused.html", active_of(taken.action), session, 503, title="Not done", line=outcome.sentence, field=None, back=(f"/pending/{taken.id}", "Back to the pending action"))
+            response = await pending_page(session, taken, 200, None, outcome_model(outcome))
             taken.fields = None
+            taken.shown = None
             return response
         taken.fields = None
+        taken.shown = None
         return RedirectResponse(f"/actions/{outcome.id}", status_code=303)
 
     @api.get("/actions/{outcome_id}")
@@ -429,13 +490,13 @@ def install(api, ctx):
             return ctx.render("_outcome.html", outcome={"id": outcome_id, "gone": OUTCOME_GONE, "running": False})
         if outcome is None:
             return _not_found()
-        if outcome.done and outcome.kind == "refusal" and outcome.code in SESSION_ENDING_CODES:
+        if outcome.done and outcome.kind == "refusal" and outcome.code in SESSION_ENDING_CODES and not outcome.from_door:
             ctx.sessions.forget(session_id)
             return ctx.to_login(request, "ended", clear_cookie=True)
         model = outcome_model(outcome)
         if _is_htmx(request):
             return ctx.render("_outcome.html", outcome=model)
-        return ctx.frame("outcome.html", ACTIVE.get(outcome.action, "databases"), session, title=model["title"], outcome=model)
+        return ctx.frame("outcome.html", active_of(outcome.action), session, title=model["title"], outcome=model)
 
 
 def _error_log_profiles(status_answer):

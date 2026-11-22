@@ -1,13 +1,18 @@
-"""Stand-ins and helpers of the web UI's tests: a broker that records every call, a clock, made-up answers of the read verbs, and the login and form-token steps of a client. Imported by `conftest.py` and by the test modules; it imports nothing of FastAPI, Starlette or Jinja2 (the registry, `control.verbs`, is imported to know which verbs need the management password)."""
+"""Stand-ins and helpers of the web UI's tests: a broker that records every call, a scheduler's control socket that records every request, a clock, made-up answers of the read verbs, and the login and form-token steps of a client. Imported by `conftest.py` and by the test modules; it imports nothing of FastAPI, Starlette or Jinja2 (the registry, `control.verbs`, is imported to know which verbs need the management password, and the scheduler's `jobs.door` for its digest and short view)."""
 
 from __future__ import annotations
 
+import copy
+import os
 import re
+import stat
 import threading
 import time
+from types import SimpleNamespace
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.control import verbs
+from social_data_pipeline.jobs import door as jobs_door
 
 PASSWORD = "made-up-management-pw-4e7b"
 TOKEN = "made-up-broker-token-9c1f"
@@ -110,6 +115,10 @@ class StandInBroker:
         self.gate_verbs = None
         self.gate_seconds = 10
         self.entered = 0
+        # Every call in order, shared with the stand-in scheduler: ("broker", kind, verb) and ("door", op).
+        self.timeline = []
+        # The broker's number of the session a login makes (its `session`).
+        self.session_number = 1
 
     def factory(self, token=None, timeout=None):
         return _StandInClient(self, token, timeout)
@@ -130,6 +139,7 @@ class _StandInClient:
     def _record(self, entry, verb=None):
         with self.broker.lock:
             self.broker.calls.append(entry)
+            self.broker.timeline.append(("broker", entry[0], verb))
             self.broker.timeouts.append((entry[0], verb, self.timeout))
             self.broker.entered += 1
         broker = self.broker
@@ -165,6 +175,16 @@ class _StandInClient:
             raise broker_client.BrokerError("step_up_failed", "the management password given again is wrong")
         return self._answer("session.set_db_password", {}) or {}
 
+    def check_password(self, step_up):
+        self._record(("check_password", self.token), "session.check_password")
+        right = self._request("session.check_password", {}, step_up)
+        answer = self.broker.answers.get("session.check_password")
+        if isinstance(answer, BaseException):
+            raise answer
+        if not right:
+            raise broker_client.BrokerError("step_up_failed", "the management password given again is wrong")
+        return {}
+
     def clear_db_password(self):
         self._record(("clear_db_password", self.token), "session.clear_db_password")
         self._request("session.clear_db_password", {}, None)
@@ -178,7 +198,7 @@ class _StandInClient:
         if not right:
             raise broker_client.BrokerError("unauthorized", "not logged in, or the password is wrong")
         self.token = TOKEN
-        return {"token": TOKEN, "session": 1, "expires_in": 28800}
+        return {"token": TOKEN, "session": self.broker.session_number, "expires_in": 28800}
 
     def logout(self):
         self._record(("logout", self.token))
@@ -195,6 +215,157 @@ class _StandInClient:
             if right is False:
                 raise broker_client.BrokerError("step_up_failed", "the management password given again is wrong")
         return self._answer(verb, dict(fields or {}))
+
+
+# ── the scheduler's control socket ──────────────────────────────────────────
+
+JOB_ID = "pg_0123abcd"
+GOOD_FOLDER = os.stat_result((stat.S_IFDIR | 0o700, 0, 0, 2, 1000, 1000, 0, 0, 0, 0))
+GOOD_SOCKET = os.stat_result((stat.S_IFSOCK | 0o600, 0, 0, 1, 1000, 1000, 0, 0, 0, 0))
+
+
+def good_lstat(path):
+    """What the folder check sees in a sound deployment: the control folder 0700 and its socket 0600, both of uid 1000."""
+    return GOOD_SOCKET if str(path).endswith("door.sock") else GOOD_FOLDER
+CHANGING_OPS = {"approve", "reject", "kill", "explain", "auto_accept.set"}
+READ_OPS = {"hello", "counts", "targets", "jobs", "job", "preview", "auto_accept"}
+
+
+def a_job(job_id=JOB_ID, **fields):
+    """A whole record of a job, as the scheduler's `job` sends it."""
+    record = {
+        "job_id": job_id, "target": "warehouse", "backend": "postgres", "sql": "SELECT 1", "output_filename": "result.csv", "overwrite": False, "submitted_at": 1795000000.0,
+        "description": "made-up description", "collection": None, "database": None, "status": "pending", "approved_at": None, "started_at": None, "finished_at": None,
+        "rows": None, "size_bytes": None, "result_path": None, "error": None, "reject_reason": None, "backend_pid": None, "connection_id": None, "extras": {}, "acted_by": {},
+    }
+    record.update(fields)
+    return record
+
+
+def digest_of(record):
+    return jobs_door.digest(SimpleNamespace(**record))
+
+
+def door_error(code, **details):
+    return broker_client.BrokerError(code, jobs_door.MESSAGES.get(code, code), None, details)
+
+
+class StandInDoor:
+    """Stands in for the scheduler's control socket. `requests` records every request document as sent (`op` and its fields), `timeouts` the time limit of each, and `timeline` (shared with the stand-in broker) the order of all calls. `jobs` maps a job id to `[phase, record]`; the requests are answered from it as the socket would (`counts`, `jobs` with its short view, `job` with the digest, `approve` comparing the digest with the record as it is now, `reject`, `kill`, `explain`, `preview`, `auto_accept`, `auto_accept.set`). `answers` maps an op to a reply to give instead: a result, an exception to raise or a function of the request. With `gate` set, a request of `gate_ops` waits for it. Every reply and every error's details pass through the real socket's `jobs.door._clean` (as its replies do: a lone surrogate becomes `?`), its short view is the real `short_view` and its digest the real `digest`, so that the pages see what they see in production."""
+
+    def __init__(self, timeline=None):
+        self.requests = []
+        self.timeouts = []
+        self.timeline = timeline if timeline is not None else []
+        self.lock = threading.Lock()
+        self.jobs = {}
+        self.too_large = set()
+        self.answers = {}
+        self.auto = {"max_limit": 4, "targets": [{"name": "warehouse", "backend": "postgres", "database": "datasets", "enabled": False, "limit": 4}]}
+        self.preview = {"format": "csv", "columns": ["a", "b"], "rows": [["1", "2"]], "parts": [{"name": "result.csv", "size": 8}], "parts_total": 1, "read_bytes": 8, "truncated": False}
+        self.plan = "Result  (cost=0.00..0.01 rows=1 width=4)"
+        self.gate = None
+        self.gate_ops = None
+
+    def add(self, phase, record):
+        self.jobs[record["job_id"]] = [phase, record]
+        return record
+
+    def connect(self, socket_path, timeout):
+        return _DoorClient(self, timeout)
+
+    def ops(self):
+        return [request["op"] for request in self.requests]
+
+
+class _DoorClient:
+    def __init__(self, door, timeout):
+        self.door = door
+        self.timeout = timeout
+
+    def request(self, document):
+        door = self.door
+        with door.lock:
+            door.requests.append(copy.deepcopy(document))
+            door.timeouts.append((document["op"], self.timeout))
+            door.timeline.append(("door", document["op"]))
+        if door.gate is not None and (door.gate_ops is None or document["op"] in door.gate_ops):
+            door.gate.wait(10)
+        answer = door.answers.get(document["op"])
+        try:
+            if answer is not None:
+                if callable(answer) and not isinstance(answer, BaseException):
+                    answer = answer(document)
+                if isinstance(answer, BaseException):
+                    raise answer
+                return jobs_door._clean(copy.deepcopy(answer))
+            with door.lock:
+                return jobs_door._clean(copy.deepcopy(self._answer(document)))
+        except broker_client.BrokerError as error:
+            error.details = jobs_door._clean(error.details)
+            raise
+
+    def _find(self, job_id):
+        found = self.door.jobs.get(job_id)
+        if found is None:
+            raise door_error("not_found")
+        return found
+
+    def _answer(self, document):
+        door, op = self.door, document["op"]
+        if op == "hello":
+            return {"protocol": 1}
+        if op == "counts":
+            phases = [phase for phase, _record in door.jobs.values()]
+            return {name: phases.count(name) for name in ("pending", "approved", "running")}
+        if op == "jobs":
+            listed = [record for phase, record in door.jobs.values() if phase == document["phase"]]
+            end = document["offset"] + document["limit"]
+            return {"phase": document["phase"], "jobs": [jobs_door.short_view(SimpleNamespace(**record)) for record in listed[document["offset"]:end]], "more": len(listed) > end}
+        if op == "job":
+            phase, record = self._find(document["job_id"])
+            if document["job_id"] in door.too_large:
+                raise door_error("too_large")
+            return {"phase": phase, "job": record, "digest": digest_of(record)}
+        if op == "approve":
+            found = self._find(document["job_id"])
+            if found[0] != "pending":
+                raise door_error("not_pending", phase=found[0])
+            if digest_of(found[1]) != document["digest"]:
+                raise door_error("changed")
+            found[0] = "approved"
+            found[1] = {**found[1], "status": "approved", "acted_by": {"approved": document["by"]}}
+            return {}
+        if op == "reject":
+            found = self._find(document["job_id"])
+            if found[0] != "pending":
+                raise door_error("not_pending", phase=found[0])
+            found[0] = "history"
+            found[1] = {**found[1], "status": "rejected", "reject_reason": document["reason"] or None, "acted_by": {"rejected": document["by"]}}
+            return {}
+        if op == "kill":
+            found = door.jobs.get(document["job_id"])
+            return {"was_running": found is not None and found[0] == "running"}
+        if op == "explain":
+            self._find(document["job_id"])
+            return {"plan": door.plan}
+        if op == "preview":
+            phase, record = self._find(document["job_id"])
+            if phase != "history" or record.get("status") != "done":
+                raise door_error("not_done")
+            return door.preview
+        if op == "auto_accept":
+            return door.auto
+        if op == "auto_accept.set":
+            row = next((row for row in door.auto["targets"] if row["name"] == document["target"]), None)
+            if row is None:
+                raise door_error("unknown_target")
+            if document["enabled"] is not None:
+                row["enabled"] = document["enabled"]
+            if document["limit"] is not None:
+                row["limit"] = max(0, min(door.auto["max_limit"], document["limit"]))
+            return door.auto
+        raise door_error("bad_request")
 
 
 def log_in(client, password=PASSWORD):

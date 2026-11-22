@@ -1,4 +1,4 @@
-"""The broker's answers as sentences for the operator: one sentence for every error code the broker can answer, one for every reason `BrokerUnreachable` gives, and a fallback for a code this table does not know.
+"""The broker's answers as sentences for the operator: one sentence for every error code the broker can answer, one for every reason `BrokerUnreachable` gives, and a fallback for a code this table does not know; and the same for the query scheduler's control socket (`DOOR_CODE_SENTENCES`, `DOOR_REASON_SENTENCES`, `door_sentence`), whose reasons also include the web UI's own checks before it asks the socket (no settings, the control folder's check).
 
 The sentences are constants. Nothing the broker sent with an error is put into one: the text that comes with `failed` is the end of a command's error output, which is shown apart, as text, by whoever renders it. Standard library and the broker's client only.
 """
@@ -55,6 +55,76 @@ REASON_SENTENCES = {
 }
 
 FALLBACK = "The broker refused the request for a reason the web UI does not know."
+
+
+# ── the scheduler's control socket ──
+
+_START_SCHEDULER = "Start it in a terminal with: python sdp.py db start jobs (which also rebuilds its image)"
+_RESTART_WEBUI = "python sdp.py webui stop, then python sdp.py webui start"
+
+# One sentence for every code the scheduler's control socket answers with (`jobs/door.py`; a test parses them out of it).
+DOOR_CODE_SENTENCES = {
+    "bad_request": "The scheduler did not take the request: the web UI and the scheduler may be of different versions.",
+    "request_too_large": "The request was larger than the scheduler takes.",
+    "unknown_target": "The target is not one of the scheduler's configured targets.",
+    "not_found": "The scheduler has no job with this id.",
+    "not_pending": "The job is not pending any more, so nothing was done.",
+    "changed": "The job changed at the scheduler since this page read it, so nothing was done: open the job again and look at it anew.",
+    "too_large": "The job's record is too large for the web UI: use the scheduler's own page for it.",
+    "explain_failed": "The database could not explain the query. Its error text:",
+    "explain_timeout": "The database did not answer the EXPLAIN in time: it may still be running there.",
+    "busy": "The scheduler is busy with other requests: try again in a moment.",
+    "not_done": "The job has no finished result to preview.",
+    "preview_not_available": "This result cannot be previewed here (a format or a size the preview does not read).",
+    "preview_failed": "The result could not be previewed.",
+    "timeout": "The scheduler did not take up the request in time: nothing was done.",
+    "outcome_unknown": "The scheduler did not finish the request in time: it may still happen.",
+    "unavailable": "The scheduler is stopping and takes no new request.",
+    "internal": "The scheduler could not answer this request.",
+    "bad_reply": "The scheduler sent an answer the web UI cannot read.",
+    # The web UI's own, at the confirmation of a change of auto-accept.
+    "settings_not_read": "The target's auto-accept settings could not be read again before the change, so nothing was sent: open the auto-accept page again and choose again.",
+    "settings_changed": "The target's auto-accept settings changed since this page read them, so the change would not end as the page said: nothing was sent. Choose again.",
+}
+
+# Why the scheduler's control socket cannot be asked: the settings, the check of its folder, and each reason the client gives.
+DOOR_REASON_SENTENCES = {
+    "no_settings": f"The scheduler's data folder (data/jobs) was not there when the web UI was started, so the Queue window has no way to the scheduler. Set the scheduler up (python sdp.py db setup-jobs) and start it (python sdp.py db start jobs), then restart the web UI ({_RESTART_WEBUI}).",
+    "folder_missing": f"The scheduler's control folder is not there in the web UI's container, so nothing was sent: restart the web UI ({_RESTART_WEBUI}).",
+    "folder_not_a_folder": "The scheduler's control folder is not a real folder (a link or a file is in its place), so nothing was sent to it.",
+    "folder_other_owner": "The scheduler's control folder belongs to another user than the one the web UI runs as, so nothing was sent to it.",
+    "folder_open": "The scheduler's control folder is open to the group or to others, so nothing was sent to it: take those permissions away (chmod 700 data/jobs/control).",
+    "socket_not_a_socket": "Something other than a socket is in the place of the scheduler's control socket (a file or a link), so nothing was sent to it: remove what is at data/jobs/control/door.sock, then restart the scheduler (python sdp.py db start jobs).",
+    "socket_other_owner": "The scheduler's control socket belongs to another user than the one the web UI runs as, so nothing was sent to it: restart the scheduler (python sdp.py db start jobs), which gives the socket to the owner of its data folder.",
+    "socket_open": "The scheduler's control socket is open to the group or to others, so nothing was sent to it: restart the scheduler (python sdp.py db start jobs), which makes it 0600.",
+    client.NO_SOCKET: f"The scheduler's control socket is not there: the scheduler is not running, or its image was built before it had one. {_START_SCHEDULER}",
+    client.REFUSED: f"Nobody listens on the scheduler's control socket: the scheduler is not running. {_START_SCHEDULER}",
+    client.PERMISSION_DENIED: "The web UI may not open the scheduler's control socket: it does not run as the user the scheduler's data folder belongs to.",
+    client.NO_REPLY: "The scheduler closed the connection without answering: it refuses this user (the web UI runs as another user than the one the scheduler's data folder belongs to), or it did not answer in time.",
+    client.NOT_REACHED: "The scheduler's control socket cannot be reached.",
+}
+
+DOOR_FALLBACK = "The scheduler refused the request for a reason the web UI does not know."
+
+# A change that was sent and got no reply: it may have been made.
+DOOR_NO_ANSWER = "No answer came from the scheduler after the request was sent: it may have been done."
+DOOR_NO_ANSWER_LOOK = {"queue.auto_accept": "Open the auto-accept page again to see."}
+DOOR_NO_ANSWER_LOOK_JOB = "Open the job again to see."
+
+
+def door_no_answer_sentence(name):
+    """The sentence for a change of the Queue (the table's entry `name`) whose request was sent and got no reply."""
+    return f"{DOOR_NO_ANSWER} {DOOR_NO_ANSWER_LOOK.get(name, DOOR_NO_ANSWER_LOOK_JOB)}"
+DOOR_UNREACHABLE = "The scheduler cannot be reached."
+
+
+def door_sentence(error):
+    """The sentence for an error of the scheduler's control socket: by its reason when it could not be asked (`BrokerUnreachable`, or the web UI's own `DoorUnavailable` with a `reason`), by its code otherwise, the fallback for anything else."""
+    reason = getattr(error, "reason", None)
+    if isinstance(error, client.BrokerUnreachable) or getattr(error, "code", None) == "unreachable":
+        return DOOR_REASON_SENTENCES.get(reason, DOOR_UNREACHABLE) if isinstance(reason, str) else DOOR_UNREACHABLE
+    code = getattr(error, "code", None)
+    return DOOR_CODE_SENTENCES.get(code, DOOR_FALLBACK) if isinstance(code, str) else DOOR_FALLBACK
 
 
 def sentence(error):

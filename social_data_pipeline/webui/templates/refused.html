@@ -1,5 +1,9 @@
 {% extends "frame.html" %}
 {% block content %}
 <p class="notice notice-bad" role="alert">{{ line }}{% if field %} The field: {{ field }}.{% endif %}</p>
+{%- if back is defined and back %}
+<p><a href="{{ back[0] }}">{{ back[1] }}</a></p>
+{%- else %}
 <p><a href="/">Back to the Overview</a></p>
+{%- endif %}
 {% endblock %}

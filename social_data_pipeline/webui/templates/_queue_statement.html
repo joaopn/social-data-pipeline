@@ -1,0 +1,26 @@
+{#- The statement of a job exactly as the scheduler holds it, its invisible characters made visible, and the hints. Expects `job` (a `queue.job_model`) and `whole` (true on the approval's page: the box then has no height of its own, so the whole statement is on the page). A browser drops one line break right after `<pre>`, so one is written there first: the text shown is the statement's, a first line break included. -#}
+{%- import "_queue_macros.html" as q %}
+<p class="muted small">{{ job.counts }}</p>
+{%- if job.not_text %}
+<p class="notice notice-warn" role="alert">{{ job.not_text_sentence }}</p>
+{%- endif %}
+{%- if job.escaped %}
+<p class="notice notice-warn" role="alert">{{ job.escaped_sentence }} {{ job.escaped }} character{{ "s" if job.escaped != 1 }}.</p>
+{%- endif %}
+<pre class="{{ 'statement-whole' if whole else 'statement' }}">
+{{ q.vis(job.parts) }}</pre>
+<section class="hints" aria-labelledby="hints-{{ job.anchor }}">
+  <h3 id="hints-{{ job.anchor }}">{{ job.hints_label }}</h3>
+  {%- if job.hints is none %}
+  <p>{{ job.hints_not_computed }}</p>
+  {%- elif job.hints %}
+  <ul>
+    {%- for hint in job.hints %}
+    <li><code>{{ hint }}</code></li>
+    {%- endfor %}
+  </ul>
+  {%- else %}
+  <p>{{ job.no_hints }}</p>
+  {%- endif %}
+  <p class="muted small">{{ job.hints_note }}</p>
+</section>

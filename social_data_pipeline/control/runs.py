@@ -10,6 +10,8 @@ What a caller (the host process that serves a browser session) must know:
 - The supervisor is started in a session of its own and is not waited for. It ends when the run has ended; a caller that lives long calls `reap_supervisors` now and then (every `start_run` does), so that ended supervisors do not stay in the process table. A service manager that kills every process of the caller's control group when the caller stops ends the supervisors with it; their runs then read as `detached` or `lost`.
 - What stays open: the pipeline's `mongo_ingest` step asks a question inside its container when it meets a truncated file, which a recorded run cannot answer (the question gets end-of-file). A run started with `sdp run` in a terminal that is still in its checks or its image build has no container yet, so the refusal of a second run cannot see it. A supervisor that dies before it has recorded anything (killed, or unable to start in a damaged installation) leaves the run as the store then reports it, `lost` or `detached`.
 
+`start_task` starts a task the same way: a verb of the allow-list `control.tasks.TASKS` (a CLI action that is not a pipeline profile, such as a download), recorded with kind `task` and the task's label in place of a profile. Its action runs in the supervisor's child; the supervisor never asks Docker about it. What the caller must know is the same as for `start_run`, with every secret field of the request in place of the admin password.
+
 Linux is assumed, as in the run store: the run's lock is a `flock` lock that the supervisor inherits with the descriptor.
 """
 
@@ -21,7 +23,7 @@ import sys
 import threading
 
 from social_data_pipeline import runstore
-from social_data_pipeline.control import errors, verbs
+from social_data_pipeline.control import errors, tasks, verbs
 from social_data_pipeline.control.types import Name, SecretValue
 
 RUN_VERB = "run.start"
@@ -35,6 +37,9 @@ CLI_NOT_LOADABLE = "the CLI module cannot be loaded"
 RECORD_NOT_POSSIBLE = "the fields of the run are not what a record can hold"
 START_FAILED = "the process that supervises the run could not be started"
 STARTED_BY_NOT_VALID = "started_by must be a short label of letters, digits, '_', '.' and '-'"
+NOT_A_TASK = "the verb is not one that runs as a task"
+TASK_ACTIVE = "a task of this verb for the same target is already active"
+TASK_NOT_USABLE = "the task's entry does not fit its verb"
 
 START_FAILED_LINE = b"[run start] the process that supervises the run could not be started\n"
 
@@ -114,6 +119,19 @@ def start_run(root, fields, *, started_by):
     Raises the registry's errors for a request it refuses; ValueError for a `started_by` that is not such a label; RunNotStarted with a constant message and a `code` for everything else, a CLI module that cannot be imported and fields the store cannot record included. When the supervisor could not be started, the run exists and is recorded as `finished` with exit code 1 and one line in its log.
     """
     validated = verbs.validate_request(RUN_VERB, fields)
+    root, sdp = _checked_starter_and_root(root, started_by)
+    service_profiles = sdp._run_service_profiles()
+
+    inputs = verbs.VERBS[RUN_VERB].socket_inputs
+    flags = {name: value for name, value in validated.items() if not inputs[name].type.is_secret and name not in ("profile", "source")}
+    plain = {name: value.reveal() if isinstance(value, SecretValue) else value for name, value in validated.items()}
+
+    record = {"profile": validated["profile"], "source": validated["source"], "flags": flags, "started_by": started_by}
+    return _create_and_spawn(root, record, lambda: _refuse_a_second_run(root, service_profiles, validated["profile"], validated["source"]), lambda run_id: {"verb": RUN_VERB, "fields": plain, "run_id": run_id})
+
+
+def _checked_starter_and_root(root, started_by):
+    """Refuse a starter label that is no label, a CLI module that cannot be loaded and a folder that is not the CLI's deployment; (the root as a string, the CLI module)."""
     try:
         Name().validate(started_by)
     except ValueError:
@@ -130,23 +148,22 @@ def start_run(root, fields, *, started_by):
     # The child acts on the deployment of the CLI module it imports, which is the one in its working directory: a run recorded in another folder would be a record of something else.
     if os.path.realpath(sdp.ROOT) != os.path.realpath(root):
         raise errors.RunNotStarted(NOT_THE_DEPLOYMENT, "not_the_deployment")
-    service_profiles = sdp._run_service_profiles()
+    return root, sdp
 
-    inputs = verbs.VERBS[RUN_VERB].socket_inputs
-    flags = {name: value for name, value in validated.items() if not inputs[name].type.is_secret and name not in ("profile", "source")}
-    plain = {name: value.reveal() if isinstance(value, SecretValue) else value for name, value in validated.items()}
 
+def _create_and_spawn(root, record, refuse_a_second, request_of):
+    """Under the lock of the whole store, look for a second run (`refuse_a_second()` raises) and create the run with its lock held; then start its supervisor with the request `request_of(run_id)`. Returns the run id."""
     reap_supervisors()
     try:
         with runstore.store_lock(root):
-            _refuse_a_second_run(root, service_profiles, validated["profile"], validated["source"])
-            run_id, lock_fd = runstore.create_run_locked(root, {"profile": validated["profile"], "source": validated["source"], "flags": flags, "started_by": started_by})
+            refuse_a_second()
+            run_id, lock_fd = runstore.create_run_locked(root, record)
     except runstore.StoreError as error:
         raise errors.RunNotStarted(error.message, "store_not_usable") from None
     except ValueError:
         raise errors.RunNotStarted(RECORD_NOT_POSSIBLE, "record_not_possible") from None
     try:
-        request = json.dumps({"verb": RUN_VERB, "fields": plain, "run_id": run_id}).encode("utf-8")
+        request = json.dumps(request_of(run_id)).encode("utf-8")
         _spawn_supervisor(root, run_id, lock_fd, request)
     except Exception:
         _record_failed_start(root, run_id)
@@ -154,3 +171,37 @@ def start_run(root, fields, *, started_by):
     finally:
         os.close(lock_fd)
     return run_id
+
+
+def _refuse_a_second_task(root, verb_name, key):
+    """Raise RunNotStarted when a task of the verb with the same key values is alive (its supervisor holds its lock). The recorded runs are read without Docker: a task's state never needs it."""
+    for run in runstore.list_recorded_runs(root, _EVERY_RUN):
+        if run["kind"] != runstore.KIND_TASK or run["task"] != verb_name or run["state"] not in _ALIVE_STATES:
+            continue
+        recorded = {**run["flags"], "source": run["source"]}
+        if all(recorded.get(name) == value for name, value in key.items()):
+            raise errors.RunNotStarted(TASK_ACTIVE, "task_active")
+
+
+def start_task(root, verb_name, fields, *, started_by):
+    """Start the task `verb_name` (a verb of `control.tasks.TASKS`) for the request `fields` in the deployment `root` and return the id of the recorded run. `started_by` is as for `start_run`.
+
+    A verb that is not on the allow-list is refused before its fields are looked at; then the fields are checked with `validate_request(verb_name, fields)`, and the CLI module must have the verb's action. Under the lock of the whole store, a task of the same verb whose key fields have the same values that is alive is refused, and the run is created with its lock taken: kind `task`, the verb, the label made from the key values, the `source` field (when the request has one) as its source, and as `flags` the request's other fields whose type is not a secret. The supervisor gets the request (`{"verb", "fields"}`, every secret in plain text) on its standard input; its child calls the action with the fields.
+
+    Raises the registry's errors for a request it refuses; ValueError for a `started_by` that is not a label; RunNotStarted with a constant message and a `code` for everything else (`not_a_task`, `task_not_usable` for an entry whose key fields are not required plain inputs of the verb or whose verb has no action in the CLI, `task_active`, and the codes of `start_run`).
+    """
+    task = tasks.TASKS.get(verb_name) if isinstance(verb_name, str) else None
+    if task is None:
+        raise errors.RunNotStarted(NOT_A_TASK, "not_a_task")
+    validated = verbs.validate_request(verb_name, fields)
+    root, sdp = _checked_starter_and_root(root, started_by)
+
+    verb = verbs.VERBS[verb_name]
+    inputs = verb.socket_inputs
+    if verb.action is None or not callable(getattr(sdp, verb.action, None)) or not all(name in inputs and not inputs[name].type.is_secret and name in validated for name in task.key):
+        raise errors.RunNotStarted(TASK_NOT_USABLE, "task_not_usable")
+    key = tasks.key_values(task, validated)
+    flags = {name: value for name, value in validated.items() if not inputs[name].type.is_secret and name != "source"}
+    plain = {name: value.reveal() if isinstance(value, SecretValue) else value for name, value in validated.items()}
+    record = {"profile": None, "task": verb_name, "label": tasks.label_of(task, key), "source": validated.get("source"), "flags": flags, "started_by": started_by}
+    return _create_and_spawn(root, record, lambda: _refuse_a_second_task(root, verb_name, key), lambda run_id: {"verb": verb_name, "fields": plain})

@@ -27,6 +27,8 @@ LIVE_ID_PATTERN = r"live-[0-9a-f]{12}"
 
 KIND_RECORDED = "web"
 KIND_TERMINAL = "terminal"
+# The kind of a recorded run whose record names a task (a CLI action that is not a pipeline profile, `control.tasks`) instead of a profile. Its id has the form of any recorded run's, so `run_id_kind` answers KIND_RECORDED for it; its entry in a listing has this kind.
+KIND_TASK = "task"
 
 STATE_STARTING = "starting"
 STATE_RUNNING = "running"
@@ -42,6 +44,10 @@ STATE_UNKNOWN = "unknown"
 STATE_UNREADABLE = "unreadable"
 
 RECORD_FIELDS = ("id", "profile", "source", "flags", "started_by", "state", "started", "ended", "exit_code")
+# The two fields that only the record of a task has, and its entry in a listing: the verb, and the text shown where a pipeline run shows its profile. Such a record has no profile.
+TASK_FIELDS = ("task", "label")
+TASK_PATTERN = r"[a-z][a-z_]{0,31}(\.[a-z][a-z_]{0,31}){1,3}"
+_LABEL_MAX_CHARS = 200
 
 # What `cancel_run` did.
 CANCEL_STOPPED = "stopped"
@@ -308,22 +314,33 @@ def _is_time(value):
     return isinstance(value, str) and re.fullmatch(_TIME_PATTERN, value) is not None
 
 
-def _is_flag_value(item):
-    """Whether a flag of a record holds text, a boolean, nothing, or a whole number that every reader of the JSON gets back exactly."""
+def _is_flag_scalar(item):
     if item is None or isinstance(item, (bool, str)):
         return True
     return _is_whole_number(item) and -_FLAG_NUMBER_MAX <= item <= _FLAG_NUMBER_MAX
 
 
+def _is_flag_value(item):
+    """Whether a flag of a record holds text, a boolean, nothing, a whole number that every reader of the JSON gets back exactly, or a list of those (the columns of an index, for a task)."""
+    return _is_flag_scalar(item) or (isinstance(item, list) and all(_is_flag_scalar(element) for element in item))
+
+
+def _is_task_record(value):
+    return "task" in value or "label" in value
+
+
 def _checked_record(value, run_id):
-    """Return the nine fields of a record as a new dict when every one has the type it must have and the id is the folder's; None otherwise. Other keys are dropped."""
+    """Return the nine fields of a record as a new dict when every one has the type it must have and the id is the folder's; None otherwise. The record of a task (one that has `task` or `label`) has the two TASK_FIELDS as well, a verb's name and a label of at most 200 characters, and no profile. Other keys are dropped."""
     if not isinstance(value, dict):
         return None
-    record = {name: value.get(name) for name in RECORD_FIELDS}
+    task = _is_task_record(value)
+    record = {name: value.get(name) for name in RECORD_FIELDS + (TASK_FIELDS if task else ())}
     flags = record["flags"]
     checks = (
         isinstance(record["id"], str) and record["id"] == run_id,
-        isinstance(record["profile"], str) and record["profile"] != "",
+        record["profile"] is None if task else isinstance(record["profile"], str) and record["profile"] != "",
+        not task or (isinstance(record["task"], str) and re.fullmatch(TASK_PATTERN, record["task"]) is not None),
+        not task or (isinstance(record["label"], str) and 0 < len(record["label"]) <= _LABEL_MAX_CHARS),
         record["source"] is None or isinstance(record["source"], str),
         isinstance(flags, dict) and all(isinstance(key, str) and _is_flag_value(item) for key, item in flags.items()),
         record["started_by"] is None or isinstance(record["started_by"], str),
@@ -388,6 +405,8 @@ def _create_run(root, fields, locked):
         "id": None, "profile": fields.get("profile"), "source": fields.get("source"), "flags": fields.get("flags", {}), "started_by": fields.get("started_by"),
         "state": STATE_STARTING, "started": _now(), "ended": None, "exit_code": None,
     }
+    if _is_task_record(fields):
+        template.update({name: fields.get(name) for name in TASK_FIELDS})
     if _checked_record({**template, "id": ""}, "") is None:
         raise ValueError("the fields of the run are not what a record can hold")
     # Checked with an id of the real length, before the run's folder is made.
@@ -420,7 +439,7 @@ def _create_run(root, fields, locked):
 
 
 def create_run(root, fields):
-    """Create the folder and the record of a new run, in state `starting`, and return its id. `fields` holds `profile`, and may hold `source`, `flags` (the request's fields that are not secret: text, whole numbers up to 2**53 and booleans by name) and `started_by`. Raises ValueError, before anything is created, for fields a record cannot hold and for a record that would be larger than 64 KiB once the run's end is written into it."""
+    """Create the folder and the record of a new run, in state `starting`, and return its id. `fields` holds `profile` (or, for a task, `task` and `label` and no profile), and may hold `source`, `flags` (the request's fields that are not secret: text, whole numbers up to 2**53, booleans and lists of those, by name) and `started_by`. Raises ValueError, before anything is created, for fields a record cannot hold and for a record that would be larger than 64 KiB once the run's end is written into it."""
     return _create_run(root, fields, False)[0]
 
 
@@ -756,16 +775,22 @@ def follow_run_output(root, run_id, fd, since, until):
 # ── runs ────────────────────────────────────────────────────────────────────
 
 
+def is_task(entry):
+    """Whether a record or an entry of a listing is that of a task."""
+    return entry.get("task") is not None
+
+
 def _unreadable_entry(run_id):
     return {"id": run_id, "kind": KIND_RECORDED, "profile": None, "source": None, "flags": None, "started_by": None, "state": STATE_UNREADABLE, "started": None, "ended": None, "exit_code": None}
 
 
 def _recorded_entry(run_fd, run_id, containers_of):
-    """The entry of a recorded run: its record, with the state computed for a run that has not ended. While the run's lock is held, the process that supervises it is alive and the recorded state stands. With the lock free that process is gone: the run is `detached` when a container carries its label and `lost` when none does, `unknown` when Docker cannot be asked. `containers_of(run_id)` returns the container ids, or None for "cannot be asked"; it is not called for a run that has ended or whose lock is held."""
+    """The entry of a recorded run: its record, with the state computed for a run that has not ended. While the run's lock is held, the process that supervises it is alive and the recorded state stands. With the lock free that process is gone: the run is `detached` when a container carries its label and `lost` when none does, `unknown` when Docker cannot be asked. A task has no container of its own (what it does runs in its supervisor's child), so with the lock free it is `lost`, and Docker is not asked. `containers_of(run_id)` returns the container ids, or None for "cannot be asked"; it is not called for a run that has ended, whose lock is held, or that is a task."""
     record = _read_record(run_fd, run_id)
     if record is None:
         return _unreadable_entry(run_id)
-    entry = {"id": run_id, "kind": KIND_RECORDED, **{name: record[name] for name in RECORD_FIELDS[1:]}}
+    task = is_task(record)
+    entry = {"id": run_id, "kind": KIND_TASK if task else KIND_RECORDED, **{name: record[name] for name in RECORD_FIELDS[1:] + (TASK_FIELDS if task else ())}}
     if record["state"] in FINAL_STATES:
         return entry
     try:
@@ -773,6 +798,9 @@ def _recorded_entry(run_fd, run_id, containers_of):
             return entry
     except OSError:
         return _unreadable_entry(run_id)
+    if task:
+        entry["state"] = STATE_LOST
+        return entry
     containers = containers_of(run_id)
     entry["state"] = STATE_UNKNOWN if containers is None else STATE_DETACHED if containers else STATE_LOST
     return entry
@@ -795,10 +823,37 @@ def read_run(root, run_id):
         return _recorded_entry(run_fd, run_id, lambda wanted: _containers_or_none(os.fspath(root), wanted))
 
 
+def list_recorded_runs(root, limit):
+    """The recorded runs alone, newest first and at most `limit` of them, as `list_runs` gives them, without asking Docker: a pipeline run that has not ended and has no live supervisor is `unknown`. A task's state never needs Docker, so for the tasks this is the whole truth. Raises StoreError only when the state folder itself is a link or cannot be opened."""
+    return _recorded_runs(os.fspath(root), limit, lambda run_id: None)
+
+
+def _recorded_runs(root, limit, containers_of):
+    recorded = []
+    with _os_errors_refused(), _folder(root, (_STORE_FOLDER, _RUNS_FOLDER)) as runs_fd:
+        if runs_fd is not None:
+            run_ids = sorted((name for name in os.listdir(runs_fd) if re.fullmatch(RUN_ID_PATTERN, name)), reverse=True)
+            for run_id in run_ids[:limit]:
+                try:
+                    run_fd = _open_folder(run_id, dir_fd=runs_fd)
+                except StoreError:
+                    recorded.append(_unreadable_entry(run_id))
+                    continue
+                if run_fd is None:
+                    continue
+                try:
+                    recorded.append(_recorded_entry(run_fd, run_id, containers_of))
+                except OSError:
+                    recorded.append(_unreadable_entry(run_id))
+                finally:
+                    os.close(run_fd)
+    return recorded
+
+
 def list_runs(root, service_profiles, limit):
     """The runs of the deployment: `{"docker_available": bool, "runs": [...]}`, recorded runs newest first and at most `limit` of them, then the runs started in a terminal that are alive now, oldest first. `service_profiles` maps the compose service of each pipeline profile to the profile.
 
-    Each run is a dict with `id`, `kind` (`web` for a recorded run, `terminal`), `profile`, `source`, `flags`, `started_by`, `state`, `started`, `ended` and `exit_code`. A terminal run is `running`, its source is the container's `SOURCE` variable, and it has no flags, no starter, no end and no exit code; one whose container Docker lists but does not describe has no start time and no source. When Docker cannot be reached nothing is raised: `docker_available` is false, no terminal run is listed, and a recorded run that has not ended and has no live supervisor is `unknown`. A run folder that cannot be used is listed as `unreadable`. Raises StoreError only when the state folder itself is a link or cannot be opened.
+    Each run is a dict with `id`, `kind` (`web` for a recorded pipeline run, `task` for a recorded task, `terminal`), `profile`, `source`, `flags`, `started_by`, `state`, `started`, `ended` and `exit_code`; a task's entry also has `task` (the verb) and `label`, and its profile is None. A terminal run is `running`, its source is the container's `SOURCE` variable, and it has no flags, no starter, no end and no exit code; one whose container Docker lists but does not describe has no start time and no source. When Docker cannot be reached nothing is raised: `docker_available` is false, no terminal run is listed, and a recorded run that has not ended and has no live supervisor is `unknown`. A run folder that cannot be used is listed as `unreadable`. Raises StoreError only when the state folder itself is a link or cannot be opened.
     """
     root = os.fspath(root)
     docker = {"available": True, "labelled": None}
@@ -830,24 +885,7 @@ def list_runs(root, service_profiles, limit):
                 docker["available"] = False
         return docker["labelled"].get(run_id, []) if docker["available"] else None
 
-    recorded = []
-    with _os_errors_refused(), _folder(root, (_STORE_FOLDER, _RUNS_FOLDER)) as runs_fd:
-        if runs_fd is not None:
-            run_ids = sorted((name for name in os.listdir(runs_fd) if re.fullmatch(RUN_ID_PATTERN, name)), reverse=True)
-            for run_id in run_ids[:limit]:
-                try:
-                    run_fd = _open_folder(run_id, dir_fd=runs_fd)
-                except StoreError:
-                    recorded.append(_unreadable_entry(run_id))
-                    continue
-                if run_fd is None:
-                    continue
-                try:
-                    recorded.append(_recorded_entry(run_fd, run_id, containers_of))
-                except OSError:
-                    recorded.append(_unreadable_entry(run_id))
-                finally:
-                    os.close(run_fd)
+    recorded = _recorded_runs(root, limit, containers_of)
     # With Docker out of reach at any point, the first call or a later one, no terminal run is listed: a part of them next to "Docker cannot be reached" would read as all of them.
     return {"docker_available": docker["available"], "runs": recorded + (terminal if docker["available"] else [])}
 
@@ -968,7 +1006,8 @@ def read_run_log(root, service_profiles, run_id, offset, limit):
             return seen["containers"]
 
         try:
-            state = _recorded_entry(run_fd, run_id, containers_of)["state"]
+            entry = _recorded_entry(run_fd, run_id, containers_of)
+            state, kind = entry["state"], entry["kind"]
         except DockerUnavailable:
             state = STATE_UNKNOWN
         if state == STATE_DETACHED:
@@ -1038,6 +1077,9 @@ def cancel_run(root, service_profiles, run_id):
                 raise CancelRefused(RECORD_NOT_READABLE)
             if record["state"] in FINAL_STATES:
                 raise CancelRefused(RUN_ENDED)
+            if is_task(record):
+                # A task's supervisor ended between the look and now without recording an end: the task is lost, as a look made now would say, and nothing is written.
+                raise CancelRefused(RUN_LOST)
             containers = _labelled_containers(root, run_id)
             _request_cancel(run_fd)
             for container in containers:

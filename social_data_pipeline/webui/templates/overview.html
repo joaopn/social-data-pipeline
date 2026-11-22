@@ -33,7 +33,7 @@
     <h3 id="now-title">Right now</h3>
     {%- if runs.ok %}
     {%- for row in runs.rows %}
-    <div class="att"><span class="dot run"></span><p><b class="mono">{{ row.profile }}</b> on {% if row.source_href %}<a href="{{ row.source_href }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %} · {{ row.state }} · since {{ row.started }} <span class="muted small mono">{{ row.id }}</span></p>{% if row.href %}<span class="right"><a class="btn sm" href="{{ row.href }}">Log</a></span>{% endif %}</div>
+    <div class="att"><span class="dot run"></span><p>{% if row.label is not none %}<b>{{ row.label }}</b>{% else %}<b class="mono">{{ row.profile }}</b> on {% if row.source_href %}<a href="{{ row.source_href }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %}{% endif %} · {{ row.state }} · since {{ row.started }} <span class="muted small mono">{{ row.id }}</span></p>{% if row.href %}<span class="right"><a class="btn sm" href="{{ row.href }}">Log</a></span>{% endif %}</div>
     {%- else %}
     <div class="att"><span class="dot"></span><p class="muted">No run is alive.</p></div>
     {%- endfor %}

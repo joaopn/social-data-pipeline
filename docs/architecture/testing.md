@@ -158,6 +158,7 @@ The scheduler's database drivers and FastAPI are replaced by stand-ins (`tests/j
 | `test_control_child.py` | The process that runs one verb's action: the arguments each kind of action gets, the exit codes, every refusal, no secret printed |
 | `test_control_supervise.py` | The process that keeps a recorded run alive: the log, the record's states, the lock, cancel with and without a container, when an end may be recorded. Linux only |
 | `test_control_runs.py` | `start_run`: refusals that create nothing, one live run per profile and source, the lock handed to the supervisor, no secret in the record. Linux only |
+| `test_control_tasks.py` | Tasks (`start_task`, the allow-list) with the real supervisor and child: a verb not on the allow-list creates nothing, one live task per key, the record holding no token, the log and exit code the action's own, a cancel ending the child and what it started (by KILL after the grace time), a task without its supervisor reading `lost` without Docker. Linux only |
 | `test_control_framing.py` | One frame of the broker's socket: size limits, deadlines, repeated keys, `NaN`, nesting beyond 32 levels, refusals that hold nothing of the payload |
 | `test_control_passwords.py` | The management password file: refused forms, its content and modes, the replacement in one step, links and pipes refused, the constant-time comparison, the real scrypt once |
 | `test_control_client.py` | Why a request got no reply, told apart, with constant texts; the channel `login` sends |

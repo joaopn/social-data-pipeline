@@ -13,12 +13,17 @@
   <p class="muted mt">The list of runs does not hold this run: it is not among the newest 1000 recorded runs, or it was started in a terminal and has ended.</p>
   {%- else %}
   {%- set run = block.run %}
-  <div class="row wrap"><h1 id="facts-title"><span class="mono">{{ run.profile }}</span> · {{ run.source }}</h1>{% with row = run %}{% include "_run_pill.html" %}{% endwith %}
+  <div class="row wrap"><h1 id="facts-title">{% if run.label is not none %}{{ run.label }}{% else %}<span class="mono">{{ run.profile }}</span> · {{ run.source }}{% endif %}</h1>{% with row = run %}{% include "_run_pill.html" %}{% endwith %}
     {%- if run.alive %}<span class="right row">{{ forms.button("run.cancel", "Cancel this run", {"run_id": run_id}, "danger") }}</span>{% endif %}</div>
+  {%- if run.label is none %}
   <div class="cli mt"><span>python sdp.py run <b>{{ run.profile }}</b> --source=<b>{{ run.source }}</b></span></div>
+  {%- endif %}
   <dl class="kv mt">
     <dt>Run</dt><dd class="mono">{{ run_id }}</dd>
     <dt>Kind</dt><dd>{{ run.kind }}</dd>
+    {%- if run.task is not none %}
+    <dt>Action</dt><dd class="mono">{{ run.task }}</dd>
+    {%- endif %}
     <dt>Source</dt><dd>{% if run.source_href %}<a href="{{ run.source_href }}">{{ run.source }}</a>{% else %}{{ run.source }}{% endif %}</dd>
     <dt>Fields</dt><dd>{% for key, value in run.flags %}<span class="tag">{{ key }}={{ value }}</span> {% else %}<span class="muted">none</span>{% endfor %}</dd>
     <dt>Started by</dt><dd>{{ run.started_by }}</dd>

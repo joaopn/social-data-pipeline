@@ -207,7 +207,7 @@ def databases_verify_block(result):
 
 
 def run_row(run):
-    """One run of a `run.list` answer as a row: every value as text, the id a link when it has the form of a run id, the source a link when it is a plain name. Raises ShapeError."""
+    """One run of a `run.list` answer as a row: every value as text, the id a link when it has the form of a run id, the source a link when it is a plain name. A task (kind `task`: a CLI action started as a run) has `label` and `task` (its verb), shown where a pipeline run shows its profile; both are None for any other run. Raises ShapeError."""
     _dict(run)
     run_id, source, state, kind = run.get("id"), run.get("source"), run.get("state"), run.get("kind")
     return {
@@ -216,6 +216,8 @@ def run_row(run):
         "href": "/runs/" + run_id if actions.is_run_id(run_id) else None,
         "kind": value_text(kind),
         "profile": value_text(run.get("profile")),
+        "label": value_text(run.get("label")) if kind == "task" else None,
+        "task": value_text(run.get("task")) if kind == "task" else None,
         "source": value_text(source),
         "source_href": link("/sources/", source),
         "state": value_text(state),

@@ -330,6 +330,22 @@ def test_the_runs_and_system_pages_list_what_the_broker_says(client, broker):
         assert f"<td><code>{action.name}</code></td><td>{action.cls}</td>" in page
 
 
+def test_a_task_shows_its_label_on_the_runs_page_its_page_and_the_overview(client, broker):
+    """Bug class: a task (a CLI action started as a run, which has no profile) shown as "-" on "-" or with a `sdp run` command it does not stand for, or without the Cancel form while it is alive. A pipeline run keeps its profile, its source and its command."""
+    task = a_run(kind="task", profile=None, task="source.download", label="download \u00b7 demo", flags={"data_type": "posts"})
+    broker.answers["run.list"] = run_list(task, a_run(id="r20261121T091500-aaaaaa", profile="lingua"))
+
+    runs_page = client.get("/runs").text
+    run_page = client.get(f"/runs/{RUN_ID}").text
+    overview = client.get("/").text
+
+    assert "<td>download \u00b7 demo</td>" in runs_page and '<td class="mono">lingua</td>' in runs_page
+    assert '<h1 id="facts-title">download \u00b7 demo</h1>' in run_page and "python sdp.py run" not in run_page
+    assert '<dd class="mono">source.download</dd>' in run_page and 'name="action" value="run.cancel"' in run_page and "data_type=posts" in run_page
+    assert "<b>download \u00b7 demo</b> \u00b7 running" in overview and '<b class="mono">lingua</b> on <a href="/sources/demo">demo</a>' in overview
+    assert "python sdp.py run <b>lingua</b>" in client.get("/runs/r20261121T091500-aaaaaa").text
+
+
 def test_the_navigation_links_every_management_page(client):
     """Bug class: a Management page that cannot be reached from the frame, or one still marked as coming later."""
     page = client.get("/").text

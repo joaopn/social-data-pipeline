@@ -136,7 +136,7 @@ def sources_block(result):
 
 
 def runs_block(result):
-    """`docker_available` and `rows` (`id`, `href`: the run's page when the id has a run id's form, `kind`, `profile`, `source`, `source_href`, `state`, `started`) of the runs alive now, from a `run.list` answer. Raises ShapeError."""
+    """`docker_available` and `rows` (`id`, `href`: the run's page when the id has a run id's form, `kind`, `profile`, `label`: what a task shows in place of a profile, None for any other run, `source`, `source_href`, `state`, `started`) of the runs alive now, from a `run.list` answer. Raises ShapeError."""
     from social_data_pipeline.webui.actions import is_run_id  # here, not at the top: `actions` imports this module
     data = _data(result)
     runs = data.get("runs")
@@ -153,6 +153,7 @@ def runs_block(result):
             "href": "/runs/" + run["id"] if is_run_id(run.get("id")) else None,
             "kind": text(kind or "-"),
             "profile": text(run.get("profile") or "-"),
+            "label": text(run.get("label") or "-") if kind == "task" else None,
             "source": text(source) if source else "-",
             "source_href": link("/sources/", source),
             "state": text(state or "-"),

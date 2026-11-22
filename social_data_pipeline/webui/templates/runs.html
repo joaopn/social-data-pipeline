@@ -22,12 +22,16 @@
       {%- for row in block.rows %}
       <tr>
         <td>{% include "_run_pill.html" %}</td>
+        {%- if row.label is not none %}
+        <td>{{ row.label }}</td>
+        {%- else %}
         <td class="mono">{{ row.profile }}</td>
+        {%- endif %}
         <td>{% if row.source_href %}<a href="{{ row.source_href }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %}</td>
         <td>{{ row.started }}</td>
         <td>{{ row.ended }}</td>
         <td class="mono">{{ row.exit_code }}</td>
-        <td>{{ "terminal" if row.kind == "terminal" else row.kind }}{% if row.started_by != "-" %} <span class="muted small">· {{ row.started_by }}</span>{% endif %}</td>
+        <td>{{ "web" if row.kind == "task" else row.kind }}{% if row.started_by != "-" %} <span class="muted small">· {{ row.started_by }}</span>{% endif %}</td>
         <td class="mono small">{% if row.href %}<a href="{{ row.href }}">{{ row.id }}</a>{% else %}{{ row.id }}{% endif %}</td>
         <td><div class="row">{% if row.href %}<a class="btn sm" href="{{ row.href }}" title="The run's facts and output">Log</a>{% endif %}{% if row.alive and row.raw_id %}{{ forms.button("run.cancel", "Cancel", {"run_id": row.raw_id}, "danger", "Cancel this run") }}{% endif %}</div></td>
       </tr>

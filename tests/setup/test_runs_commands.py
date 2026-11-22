@@ -353,6 +353,31 @@ class TestList:
         assert captured.out == LIST_TEXT and captured.err == ""
         runstore.release_run_lock(supervisor)
 
+    def test_a_task_shows_its_label_in_the_profile_column(self, project, capsys):
+        """Bug class: a task (a CLI action the web UI started as a run, which has no profile) printed with `-` where its name belongs, or listed as kind `web`, or its fields `task` and `label` missing from `--json`. The lines of the other kinds are pinned whole by `test_the_text` and do not change; a listing with a task differs from one without only by the task's line and by the widths of the columns it widens."""
+        make_run(project.root, RUN_A, "finished", ended="2026-11-21T10:20:00Z", exit_code=0)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(runstore, "new_run_id", lambda: RUN_B)
+            patch.setattr(runstore, "_now", lambda: "2026-11-21T10:16:00Z")
+            runstore.create_run(project.root, {"profile": None, "task": "source.download", "label": "download \u00b7 reddit", "source": "reddit", "flags": {}, "started_by": "web-3"})
+        supervisor = runstore.acquire_run_lock(project.root, RUN_B)
+        runstore.update_record(project.root, RUN_B, state="running")
+
+        assert run_command("list") == 0
+        text = capsys.readouterr().out
+        assert run_command("list", "--json") == 0
+        task = json.loads(capsys.readouterr().out)["runs"][0]
+
+        assert text.splitlines()[4:8] == [
+            "  ID                       KIND  PROFILE            SOURCE  STATE     STARTED               ENDED                 EXIT",
+            "  r20261121T101600-ffffff  task  download \u00b7 reddit  reddit  running   2026-11-21T10:16:00Z  -                     -",
+            "  r20261121T101500-0a1b2c  web   parse              reddit  finished  2026-11-21T10:15:00Z  2026-11-21T10:20:00Z  0",
+            "",
+        ]
+        assert (task["kind"], task["profile"], task["task"], task["label"]) == ("task", None, "source.download", "download \u00b7 reddit")
+        assert "task" not in json.loads(json.dumps(sdp.get_run_list()))["runs"][1] and "label" not in sdp.get_run_list()["runs"][1]
+        runstore.release_run_lock(supervisor)
+
     def test_json_is_the_getters_data(self, project, capsys):
         """Bug class: `--json` printing something other than what a caller of the getter receives (the text mixed in, a field formatted for the terminal), so that a script and the web UI disagree about a run."""
         supervisor = fixed_runs(project)

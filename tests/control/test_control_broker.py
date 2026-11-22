@@ -31,11 +31,13 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
 from social_data_pipeline import runstore
-from social_data_pipeline.control import audit, broker, client, environ, framing, passwords, redact, sessions, verbs
+from social_data_pipeline.control import audit, broker, client, environ, framing, passwords, redact, sessions, tasks, verbs
+from social_data_pipeline.control.types import Name, Secret
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PASSWORD = "management-made-up-7f3a"
@@ -221,6 +223,7 @@ class Rig:
         self.listing = {"docker_available": True, "runs": []}
         self.lister_calls = []
         self.started_runs = []
+        self.started_tasks = []
         self.starter_raises = None
         self.peer = os.geteuid()
         self.private_group = False
@@ -272,6 +275,10 @@ class Rig:
             raise self.starter_raises
         return RUN_ID
 
+    def task_starter(self, root, verb_name, fields, *, started_by):
+        self.started_tasks.append((root, verb_name, dict(fields), started_by))
+        return RUN_ID
+
     def session_clock(self):
         return time.monotonic() + self.clock_offset
 
@@ -286,7 +293,7 @@ class Rig:
     def make(self, **limits):
         settings = {"request_seconds": 5, "send_seconds": 5, "read_seconds": 20, "kill_grace_seconds": 0.5, "drain_seconds": 1, "housekeeping_seconds": 3600, **limits}
         table = sessions.Sessions(verify=fast_verify, now=self.session_clock)
-        return broker.Broker(self.root, sessions=table, child_argv=[sys.executable, str(self.script), str(self.out)], run_starter=self.starter, run_lister=self.lister, peer_uid=lambda connection: self.peer, limits=broker.Limits(**settings), private_group=lambda gid, uid: self.private_group)
+        return broker.Broker(self.root, sessions=table, child_argv=[sys.executable, str(self.script), str(self.out)], run_starter=self.starter, task_starter=self.task_starter, run_lister=self.lister, peer_uid=lambda connection: self.peer, limits=broker.Limits(**settings), private_group=lambda gid, uid: self.private_group)
 
     def start(self, **limits):
         server = self.make(**limits)
@@ -1689,6 +1696,23 @@ class TestRunLogsHeldBack:
         text = rig.login().call("run.logs", {"run_id": RUN_ID})["data"]["text"]
 
         assert DB_PASSWORD not in text and "*" * len(DB_PASSWORD) in text
+
+    def test_a_task_goes_to_the_task_starter_and_its_secret_is_overwritten_in_its_log(self, rig, monkeypatch):
+        """Bug class: a verb of the task allow-list run as a plain state-changing child (no record, no Cancel, the exclusive write lock held for a whole download), handed to the starter without its token, or its token forgotten once the call has run, so that the log of the task, read later, shows it."""
+        token = "made-up-hub-token-31f0c9"
+        task_verb = verbs.Verb(name="test.task", cls="write", cli=("test", "task"), socket_inputs={"source": verbs.Field(Name(), required=True), "token": verbs.Field(Secret())}, socket_enabled=True, action="do_test_task")
+        monkeypatch.setattr(verbs, "VERBS", MappingProxyType({**verbs.VERBS, "test.task": task_verb}))
+        monkeypatch.setattr(tasks, "TASKS", MappingProxyType({"test.task": tasks.Task("test.task", key=("source",), label="test {source}")}))
+        rig.start()
+
+        assert rig.login().call("test.task", {"source": "ok", "token": token}) == {"run_id": RUN_ID}
+        _recorded_run(rig.root, b"x" * 100 + token.encode() + b"\n")
+        text = rig.login().call("run.logs", {"run_id": RUN_ID})["data"]["text"]
+
+        ((root, verb_name, fields, started_by),) = rig.started_tasks
+        assert (root, verb_name, fields) == (os.path.realpath(rig.root), "test.task", {"source": "ok", "token": token}) and started_by.startswith("web-")
+        assert rig.started_runs == [] and not list((rig.broker_dir / "calls").iterdir())
+        assert token not in text and "*" * len(token) in text
 
 
 # ── review round 1: signals, start failures, the password file, accept, stopping ──

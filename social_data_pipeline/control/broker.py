@@ -6,7 +6,7 @@ Files: `<root>/.sdp/socket/broker.sock` (folder 0700), and `<root>/.sdp/broker/`
 
 One connection carries one request and one reply (`framing`). A reply is `{"ok": true, "result": ...}` or `{"ok": false, "error": {"code": ..., "message": <constant text>, "field": <name, when one field is at fault>}}`; a `failed` error also has `exit_code` and `errors` (the end of the command's standard error, overwritten like everything else that leaves). No reply holds a value of the request, a password or a traceback; the token is in the reply of `login` only. Every result that leaves passes `redact.redact_data` with the database passwords the sessions hold or held, the secret variables of the broker's environment and the secrets of the request; a result that cannot be overwritten in full is answered `too_large`, never sent as it is.
 
-Every verb other than `run.start` (started through `control.runs.start_run`), `audit.list` (read from the audit log here) and `run.logs` of a recorded run whose output is in its log file (read here, so that a secret cut by the end of a piece is still overwritten) runs in a process of its own, `control.child`, started in the deployment folder in a session of its own, with the request on standard input and an environment of the allowed names only. A read child's standard output and standard error are pipes, read by two threads, each bounded; a read verb has at most 8 such processes at a time and 60 seconds. A state-changing child writes its standard output and standard error to its two files in `calls/`, not to the broker, so that it runs to its end even when the broker crashed; the broker reads the last 256 KiB of each when it ends. A state-changing verb other than `run.start` and `run.cancel` runs one at a time under `write.lock`, without a time limit, and to its end even when the client has gone.
+Every verb other than `run.start` (started through `control.runs.start_run`), a task of `control.tasks.TASKS` (started through `control.runs.start_task`, with the write lock shared as for `run.start` and every secret of its fields kept for redaction of its log), `audit.list` (read from the audit log here) and `run.logs` of a recorded run whose output is in its log file (read here, so that a secret cut by the end of a piece is still overwritten) runs in a process of its own, `control.child`, started in the deployment folder in a session of its own, with the request on standard input and an environment of the allowed names only. A read child's standard output and standard error are pipes, read by two threads, each bounded; a read verb has at most 8 such processes at a time and 60 seconds. A state-changing child writes its standard output and standard error to its two files in `calls/`, not to the broker, so that it runs to its end even when the broker crashed; the broker reads the last 256 KiB of each when it ends. A state-changing verb other than `run.start` and `run.cancel` runs one at a time under `write.lock`, without a time limit, and to its end even when the client has gone.
 
 What is not bounded or not done, on purpose: the output files of a state-changing action have no size limit (the CLI's actions print little); a process that an action leaves behind after the action ended (outside the group the broker ends on a timeout or a forced stop) is not ended by the broker; whether a group is the operator's private one (see `check_deployment`) is best effort where accounts come from a directory service that is not enumerated.
 
@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from social_data_pipeline.control import REQUEST_MAX_BYTES, audit, environ, errors, files, framing, passwords, redact, verbs
+from social_data_pipeline.control import REQUEST_MAX_BYTES, audit, environ, errors, files, framing, passwords, redact, tasks, verbs
 from social_data_pipeline.control import sessions as session_table
 from social_data_pipeline.control.types import reveal, secrets_in
 
@@ -83,7 +83,7 @@ OPTIONAL_KEYS = {"call": frozenset({"step_up"}), "login": frozenset({"channel"})
 DESTRUCTIVE_VERBS = frozenset({"db.reset", "db.unsetup", "db.unsetup_mcp", "db.stop", "source.remove"})
 # The state-changing verb that takes no write lock: a cancel must get through while something else runs.
 UNLOCKED_VERBS = frozenset({"run.cancel"})
-# The verb that takes the write lock shared: several runs can be started at once, never while a state-changing child runs, and no destructive verb looks for live runs while one is being started.
+# The verb that takes the write lock shared: several runs can be started at once, never while a state-changing child runs, and no destructive verb looks for live runs while one is being started. The verbs of `control.tasks.TASKS` are started as runs too and take it shared as well.
 SHARED_LOCK_VERBS = frozenset({"run.start"})
 # What is refused once a stop was asked; a request that is already being answered finishes.
 REFUSED_WHILE_STOPPING = frozenset({"login", "call", "session.set_db_password", "session.clear_db_password", "session.check_password"})
@@ -539,14 +539,15 @@ class _Child:
 class Broker:
     """The server of one deployment. `start()` checks the deployment, takes the broker's lock, binds the socket and opens the audit log; `serve_forever()` answers connections until `request_stop()`, and then stops as described in the module docstring.
 
-    The parameters are what a test needs to replace: `sessions` (a `Sessions` object, for one with a fast verification), `child_argv` (the command of the generic child), `run_starter(root, fields, started_by)` (`control.runs.start_run`), `run_lister()` (the run store's listing of every run, with the service table of the CLI), `clock` (seconds, never going back), `audit_clock` (seconds since the epoch), `limits`, `peer_uid(connection)` (the kernel's peer credentials), `uid` (the user the broker acts as and accepts) and `prepare(log)` (what is done to the process before any thread exists: `main` passes the environment cut, no core dumps and no tracing), `private_group(gid, uid)` (whether a group is the user's alone; see `check_deployment`).
+    The parameters are what a test needs to replace: `sessions` (a `Sessions` object, for one with a fast verification), `child_argv` (the command of the generic child), `run_starter(root, fields, started_by)` (`control.runs.start_run`), `task_starter(root, verb_name, fields, started_by)` (`control.runs.start_task`, for a verb of `control.tasks.TASKS`), `run_lister()` (the run store's listing of every run, with the service table of the CLI), `clock` (seconds, never going back), `audit_clock` (seconds since the epoch), `limits`, `peer_uid(connection)` (the kernel's peer credentials), `uid` (the user the broker acts as and accepts) and `prepare(log)` (what is done to the process before any thread exists: `main` passes the environment cut, no core dumps and no tracing), `private_group(gid, uid)` (whether a group is the user's alone; see `check_deployment`).
     """
 
-    def __init__(self, root, *, sessions=None, child_argv=CHILD_ARGV, run_starter=None, run_lister=None, clock=time.monotonic, audit_clock=time.time, limits=None, peer_uid=_peer_uid, uid=None, prepare=None, private_group=None):
+    def __init__(self, root, *, sessions=None, child_argv=CHILD_ARGV, run_starter=None, task_starter=None, run_lister=None, clock=time.monotonic, audit_clock=time.time, limits=None, peer_uid=_peer_uid, uid=None, prepare=None, private_group=None):
         self.root = os.path.realpath(os.fspath(root))
         self.sessions = session_table.Sessions() if sessions is None else sessions
         self.child_argv = tuple(child_argv)
         self.run_starter = run_starter or _default_run_starter
+        self.task_starter = task_starter or _default_task_starter
         self.run_lister = run_lister or (lambda: _default_run_lister(self.root))
         self.clock = clock
         self.audit_clock = audit_clock
@@ -1202,9 +1203,10 @@ class Broker:
         if runstore.run_id_kind(run_id) != runstore.KIND_RECORDED:
             return None
         try:
-            state = runstore.read_run(self.root, run_id)["state"]
+            entry = runstore.read_run(self.root, run_id)
         except runstore.StoreError as error:
             return _error("failed", exit_code=None, errors=error.message)
+        state = entry["state"]
         if state == runstore.STATE_DETACHED:
             return None
         context["redacted"] = True
@@ -1232,7 +1234,7 @@ class Broker:
             return _error("failed", exit_code=None, errors=error.message)
         except redact.DataTooLargeToRedact:
             return _error("too_large")
-        return _ok({"data": {"id": run_id, "kind": runstore.KIND_RECORDED, "state": state, "text": text, "next_offset": next_offset, "complete": final}})
+        return _ok({"data": {"id": run_id, "kind": entry["kind"], "state": state, "text": text, "next_offset": next_offset, "complete": final}})
 
     def _getter_reply(self, outcome, exit_code, child):
         if outcome in ("timeout", "too_large"):
@@ -1255,7 +1257,7 @@ class Broker:
         lock_fd = None
         if verb.name not in UNLOCKED_VERBS:
             try:
-                lock_fd = self._take_write_lock(shared=verb.name in SHARED_LOCK_VERBS)
+                lock_fd = self._take_write_lock(shared=verb.name in SHARED_LOCK_VERBS or verb.name in tasks.TASKS)
             except _LockNotUsable:
                 raise self._refuse(number, verb.name, "broker_folder_not_usable") from None
             if lock_fd is None:
@@ -1267,9 +1269,16 @@ class Broker:
             if db_password_from == "fields":
                 # Kept for redaction like a session's password: what a run prints with it is overwritten after the call.
                 self.sessions.remember_secret(context["plain"][DB_PASSWORD_FIELD])
+            if verb.name in tasks.TASKS:
+                # A task's log is read long after this call: every secret it carried is kept for redaction, as a run's admin password is.
+                for secret in context["secrets"]:
+                    if isinstance(secret, SecretValue):
+                        self.sessions.remember_secret(secret)
             try:
                 if verb.name == "run.start":
                     reply, outcome, exit_code = self._start_run(context)
+                elif verb.name in tasks.TASKS:
+                    reply, outcome, exit_code = self._start_run(context, task=True)
                 else:
                     reply, outcome, exit_code = self._run_state_changing_child(context, lock_fd)
             except BaseException:
@@ -1302,10 +1311,14 @@ class Broker:
         os.close(fd)
         return None
 
-    def _start_run(self, context):
-        """Start a recorded run: (reply, outcome for the audit line, exit code)."""
+    def _start_run(self, context, task=False):
+        """Start a recorded run, or with `task` the task of the call's verb: (reply, outcome for the audit line, exit code)."""
+        started_by = f"web-{context['number']}"
         try:
-            run_id = self.run_starter(self.root, context["plain"], started_by=f"web-{context['number']}")
+            if task:
+                run_id = self.task_starter(self.root, context["verb"].name, context["plain"], started_by=started_by)
+            else:
+                run_id = self.run_starter(self.root, context["plain"], started_by=started_by)
         except errors.RunNotStarted as error:
             return _error(error.code, error.message), error.code, None
         except errors.InputError as error:
@@ -1413,6 +1426,12 @@ def _default_run_starter(root, fields, *, started_by):
     from social_data_pipeline.control import runs
 
     return runs.start_run(root, fields, started_by=started_by)
+
+
+def _default_task_starter(root, verb_name, fields, *, started_by):
+    from social_data_pipeline.control import runs
+
+    return runs.start_task(root, verb_name, fields, started_by=started_by)
 
 
 def _default_run_lister(root):

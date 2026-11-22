@@ -13,6 +13,8 @@ Before an end is written, the run's containers are listed once more in every sta
 
 An end is recorded only when it is established: when Docker does not answer, or a container cannot be stopped or does not go away, after a limited number of tries, a line is written into the log and the record is left as it is, so the run store goes on to report the run as `detached`, `lost` or `unknown` from what Docker says later. A cancel request that arrives after the run ended by itself changes nothing: the run is `finished`.
 
+A task (a recorded run whose record names a verb of `control.tasks` instead of a profile) is a CLI action that runs in the child itself and starts no container of the run: Docker is never asked about it. It is `finished` with the child's exit code once the child's whole process group has ended. A cancel sends that group TERM, and KILL once the grace time is over (a group that is still not gone a grace time after KILL is counted as gone, as for a pipeline run); the run is then `cancelled` with the child's exit code (the negative number of the signal), and a line in the log says what a cancel does not undo: files the action wrote stay, and work it handed to a database through `docker compose exec` (an index being built) is not undone and may go on inside the database, since ending the `docker compose exec` client does not end what it started there.
+
 The supervisor's own problems (the child cannot be started, the record cannot be written) are plain lines in the run's log that begin with `[run supervisor]`; no traceback is written, since its frames hold the request. `start_run` also gives the supervisor the run's log as its standard output and standard error, so a supervisor that cannot even be loaded (a damaged installation) leaves the interpreter's own error there; at that point nothing of the request has been read. Every Docker call is made by the run store. A supervisor that is killed with KILL records nothing: the run store then reports the run as `detached` while its container lives and as `lost` afterwards.
 
 Linux is assumed: the lock is a `flock` lock that travels with the inherited descriptor, the child is ended through its process group, and `/proc/<pid>/stat` is read to tell whether a process of that group is still running.
@@ -307,6 +309,44 @@ def _watch(run, processes, feed):
     return None
 
 
+TASK_CANCELLED_LINE = "cancelled: the action's processes were sent TERM, and KILL after the grace time. What it had done until then is not undone: files it wrote stay, and work it handed to a database (an index being built through docker compose exec) may go on inside the database."
+
+
+def _stop_task(run, processes):
+    """A cancel of a task was asked: end the child's process group, TERM first and KILL once the grace time is over, and return the end as (state, exit code)."""
+    processes.signal(signal.SIGTERM)
+    term_at = time.monotonic()
+    kill_at = None
+    while processes.alive():
+        now = time.monotonic()
+        if kill_at is None and now - term_at >= run.grace_seconds:
+            processes.signal(signal.SIGKILL)
+            kill_at = now
+        elif kill_at is not None and now - kill_at >= run.grace_seconds:
+            processes.give_up()
+            break
+        processes.wait(run.poll_seconds)
+    run.say(TASK_CANCELLED_LINE)
+    return runstore.STATE_CANCELLED, processes.child.returncode
+
+
+def _watch_task(run, processes, feed):
+    """Wait for a task to end: the child and everything in its process group. Returns the end as (state, exit code)."""
+    while processes.child_running():
+        feed.push()
+        if run.cancel_seen():
+            feed.close()
+            return _stop_task(run, processes)
+        processes.wait(run.poll_seconds)
+    feed.close()
+    # A process the action started in the child's group can outlive the child; the task has ended when the group has.
+    while processes.alive():
+        if run.cancel_seen():
+            return _stop_task(run, processes)
+        time.sleep(run.poll_seconds)
+    return runstore.STATE_FINISHED, processes.child.returncode
+
+
 def _end(run, state, exit_code):
     """Write the end of the run into its record; the supervisor's exit code."""
     try:
@@ -354,7 +394,7 @@ def _supervise(run, lock_fd, request, child_argv):
             runstore.update_record(run.root, run.run_id, state=runstore.STATE_RUNNING)
         except (runstore.StoreError, ValueError, OSError):
             run.say("the record of the run could not be written: it still says starting")
-        end = _watch(run, _Processes(child), feed)
+        end = (_watch_task if runstore.is_task(record) else _watch)(run, _Processes(child), feed)
     finally:
         feed.close()
     if end is None:

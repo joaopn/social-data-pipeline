@@ -5523,7 +5523,7 @@ def _run_display_safe(value):
 
 
 def get_run_list(*, limit=50):
-    """List the pipeline runs of this deployment. Prints nothing and returns `{"docker_available": bool, "runs": [...]}` for `print_run_list`: the recorded runs, newest first and at most `limit` (1 to 1000) of them, then the runs started with `sdp run` in a terminal that are alive now, oldest first. Each run has `id`, `kind` (`web` for a recorded run, `terminal`), `profile`, `source`, `flags` (the non-secret fields of the request that started a recorded run; None for a terminal run), `started_by`, `state`, `started` and `ended` (ISO-8601 UTC times ending in Z, or None) and `exit_code`. The state of a recorded run is `starting`, `running`, `finished` or `cancelled` as recorded; `detached` when the process that supervised it is gone and its container is alive, `lost` when both are gone, `unknown` when Docker cannot be asked, `unreadable` when its record cannot be used (every other field of it is then None). A terminal run is `running`; its source is the container's `SOURCE` variable, the only part of a container's environment that is read. When Docker cannot be reached nothing is raised: `docker_available` is false and no terminal run is listed. Every string that comes from Docker or a record is display-safe. Raises ActionError for a limit out of range, and when the run state folder is a link or cannot be opened."""
+    """List the pipeline runs of this deployment. Prints nothing and returns `{"docker_available": bool, "runs": [...]}` for `print_run_list`: the recorded runs, newest first and at most `limit` (1 to 1000) of them, then the runs started with `sdp run` in a terminal that are alive now, oldest first. Each run has `id`, `kind` (`web` for a recorded pipeline run, `task` for a recorded task, a CLI action that the web UI started as a run, `terminal`), `profile` (None for a task), `source`, `flags` (the non-secret fields of the request that started a recorded run; None for a terminal run), `started_by`, `state`, `started` and `ended` (ISO-8601 UTC times ending in Z, or None) and `exit_code`; a task also has `task` (its verb) and `label` (what is shown in place of a profile). The state of a recorded run is `starting`, `running`, `finished` or `cancelled` as recorded; `detached` when the process that supervised it is gone and its container is alive, `lost` when both are gone, `unknown` when Docker cannot be asked, `unreadable` when its record cannot be used (every other field of it is then None). A terminal run is `running`; its source is the container's `SOURCE` variable, the only part of a container's environment that is read. When Docker cannot be reached nothing is raised: `docker_available` is false and no terminal run is listed. Every string that comes from Docker or a record is display-safe. Raises ActionError for a limit out of range, and when the run state folder is a link or cannot be opened."""
     _require_whole_number(limit, 1, _RUN_LIST_LIMIT_MAX, _RUN_LIMIT_NOT_VALID)
     runstore = _run_store()
     try:
@@ -5561,13 +5561,19 @@ def do_run_cancel(*, run_id):
     return 0
 
 
+def _run_list_cell(run, key):
+    """One cell of `runs list`: the value, `-` when there is none. A task has no profile and shows its label in that column."""
+    value = run.get("label") if key == "profile" and run["kind"] == "task" else run[key]
+    return "-" if value is None else str(value)
+
+
 def print_run_list(data):
     """Print the text of `runs list` from the data of `get_run_list`: one line per run, the columns aligned, a missing value as `-`."""
     if not data["runs"]:
         print("\n  No runs.\n")
     else:
         rows = [[title for title, _ in _RUN_LIST_COLUMNS]]
-        rows += [["-" if run[key] is None else str(run[key]) for _, key in _RUN_LIST_COLUMNS] for run in data["runs"]]
+        rows += [[_run_list_cell(run, key) for _, key in _RUN_LIST_COLUMNS] for run in data["runs"]]
         widths = [max(len(row[index]) for row in rows) for index in range(len(_RUN_LIST_COLUMNS))]
         print()
         print("  Social Data Pipeline - Runs")

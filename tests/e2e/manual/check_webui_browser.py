@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A check of the web UI in a real browser, run by hand against a running page: `PYTHON tests/e2e/manual/check_webui_browser.py https://127.0.0.1:<port>/` with the management password on standard input, where PYTHON has Playwright and its Chromium, and `PLAYWRIGHT_BROWSERS_PATH` is set in the environment to the folder of its browsers (it has no default). `check_webui.py --browser PYTHON` runs it against the page it starts, whose deployment has a source `demo` whose profile `parse` runs a program that prints a line every second.
 
-It is not collected by pytest. In headless Chromium (the self-signed certificate accepted for this one context), by clicking: it loads the login page, logs in through the form, loads the Overview and the Sources page; starts a run of `parse` from the source's page (a box of its form ticked, its button, then Confirm on the pending page, which shows the command with the flag), opens the run from its outcome, sees the output view grow by itself, cancels the run from a second tab (its pending page, Confirm) and sees the first tab's output view stop with the program's last line; confirms `db.stop` from the Databases page; confirms a step-up action (removing the scheduler's configuration) with a wrong management password first, which is refused, then with the right one; starts a second run, ends the session behind the page's back (a logout sent by a second client with the browser's cookie) and sees the page load the login page by itself at its next poll; logs in again, cancels that run and logs out through the button. It fails on any Content-Security-Policy violation (the `securitypolicyviolation` event, collected by a script Playwright adds to every page before the page's own), any console error (but the one Chromium writes for the 403 of the wrong management password, which is listed apart), any failed request of the page's own origin (a poll that a navigation of the page itself cuts short, `net::ERR_ABORTED`, is listed apart and not counted), and on a page that is not the one expected after each step. It prints what it saw. Standard library and Playwright only.
+It is not collected by pytest. In headless Chromium (the self-signed certificate accepted for this one context), by clicking: it loads the login page, logs in through the form, loads the Overview and the Sources page; starts a run of `parse` from the source's page (a box of its form ticked, its button, then Confirm on the pending page, which shows the command with the flag), opens the run from its outcome, sees the output view grow by itself, cancels the run from a second tab (its pending page, Confirm) and sees the first tab's output view stop with the program's last line; confirms `db.stop` of every configured service from the Databases page; confirms a step-up action (removing the scheduler's configuration, from the Databases page's Queue setup tab) with a wrong management password first, which is refused, then with the right one; starts a second run, ends the session behind the page's back (a logout sent by a second client with the browser's cookie) and sees the page load the login page by itself at its next poll; logs in again, cancels that run and logs out through the button. It fails on any Content-Security-Policy violation (the `securitypolicyviolation` event, collected by a script Playwright adds to every page before the page's own), any console error (but the one Chromium writes for the 403 of the wrong management password, which is listed apart), any failed request of the page's own origin (a poll that a navigation of the page itself cuts short, `net::ERR_ABORTED`, is listed apart and not counted), and on a page that is not the one expected after each step. It prints what it saw. Standard library and Playwright only.
 """
 
 import os
@@ -105,7 +105,7 @@ def main():
             page.check(form + " input[name=skip_lingua_files]")
             page.click(form + " button[type=submit]")
             page.wait_for_load_state("networkidle")
-            expect(path_of(page).startswith("/pending/") and "python sdp.py run parse --source=demo --skip-lingua-files" in page.inner_text("pre.command"), f"the run's pending page is not shown with its command: {page.url}")
+            expect(path_of(page).startswith("/pending/") and "python sdp.py run parse --source=demo --skip-lingua-files" in page.inner_text("section.dialog pre.cli"), f"the run's pending page is not shown with its command: {page.url}")
             confirm(page)
             page.wait_for_selector("a[href^='/runs/r']", timeout=WAIT_MS)
             page.click("a[href^='/runs/r']")
@@ -118,7 +118,7 @@ def main():
         log_in()
         if path_of(page) != "/" or "Overview" not in page.title():
             problems.append(f"after the login the page is {page.url} ({page.title()!r})")
-        print(f"  after the login: {page.url}, title {page.title()!r}, the source demo listed: {page.locator('a[href=\"/sources/demo\"]').count() == 1}")
+        print(f"  after the login: {page.url}, title {page.title()!r}, the source demo listed: {page.locator('a[href=\"/sources/demo\"]:text-is(\"demo\")').count() == 1}")
         violations()
         page.click("a[href='/sources']")
         page.wait_for_load_state("networkidle")
@@ -138,7 +138,7 @@ def main():
         second.goto(run_url)
         second.click("form.action-form:has(input[name=action][value='run.cancel']) button[type=submit]")
         second.wait_for_load_state("networkidle")
-        expect("python sdp.py runs cancel" in second.inner_text("pre.command"), "the cancel's pending page does not show its command")
+        expect("python sdp.py runs cancel" in second.inner_text("section.dialog pre.cli"), "the cancel's pending page does not show its command")
         confirm(second)
         wait_for(second, "!document.body.innerText.includes('under way')", "the outcome")
         print(f"  the cancel, from a second tab: {second.inner_text('section.outcome').strip()!r}")
@@ -152,15 +152,15 @@ def main():
         violations()
 
         page.goto(base + "databases")
-        page.click("form.action-form:has(input[name=action][value='db.stop']) button[type=submit]")
+        page.click("form.action-form:has(input[name=action][value='db.stop']):has(select[name=service]) button[type=submit]")
         page.wait_for_load_state("networkidle")
-        expect(page.inner_text("pre.command").strip() == "python sdp.py db stop", "db.stop's pending page does not show `python sdp.py db stop`")
+        expect(page.inner_text("section.dialog pre.cli").strip() == "python sdp.py db stop", "db.stop's pending page does not show `python sdp.py db stop`")
         confirm(page)
         wait_for(page, "!document.body.innerText.includes('under way')", "the outcome")
         print(f"  db.stop confirmed: {page.inner_text('section.outcome').strip().splitlines()[0]!r}")
         violations()
 
-        page.goto(base + "databases")
+        page.goto(base + "databases?tab=queue")
         page.click("form.action-form:has(input[name=action][value='db.unsetup_jobs']) button[type=submit]")
         page.wait_for_load_state("networkidle")
         pending = page.url

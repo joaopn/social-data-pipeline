@@ -34,7 +34,7 @@ CHAT = Path(".sdp") / "chat"
 
 
 class FakeDocker:
-    """Records every call (its argument list and keywords) and answers like Docker for `build` and `image rm`. `fail_build` names an image whose build fails; `images` the images that exist."""
+    """Records every call (its argument list and keywords) and answers like Docker for `build` and `image rm`, and for the look of unsetup at the chat's containers (there are none). `fail_build` names an image whose build fails; `images` the images that exist."""
 
     def __init__(self):
         self.calls = []
@@ -47,6 +47,10 @@ class FakeDocker:
         self.keywords.append(dict(keywords))
         if arguments[1] == "build":
             return self.answer(1 if arguments[arguments.index("-t") + 1] == self.fail_build else 0)
+        if arguments[1:3] == ["container", "inspect"]:
+            return self.answer(1, stderr=f"Error: No such container: {arguments[-1]}")
+        if arguments[1] == "ps":
+            return self.answer(0, "")
         if arguments[1:3] == ["image", "rm"]:
             if arguments[3] not in self.images:
                 return self.answer(1, stderr=f"Error response from daemon: No such image: {arguments[3]}:latest")
@@ -211,7 +215,7 @@ def test_setup_saves_the_answers_and_prints_the_summary(root, docker, capsys):
     saved = json.loads((root / CHAT / "config.json").read_text())
     assert saved == {"backend": "openai-compatible", "upstream": "https://openrouter.ai/api/v1", "model": "vendor/model-1.5", "work_cap_gib": 25, "claude_code_version": host.CLAUDE_CODE_VERSION}
     out = capsys.readouterr().out
-    for text in ("openai-compatible", "https://openrouter.ai/api/v1", "vendor/model-1.5", "25 GiB", "Set up. Nothing runs yet: starting the chat is not part of this version."):
+    for text in ("openai-compatible", "https://openrouter.ai/api/v1", "vendor/model-1.5", "25 GiB", "Set up. Start the chat with `python sdp.py chat start` (the Chat page itself is not part of this version yet)."):
         assert text in out
     assert set_up(root, ["claude-code", False, "10"])[0] == 0
     assert json.loads((root / CHAT / "config.json").read_text()) == {"backend": "claude-code", "work_cap_gib": 10, "claude_code_version": host.CLAUDE_CODE_VERSION}
@@ -338,7 +342,7 @@ def test_unsetup_removes_exactly_what_it_says_and_keeps_the_chats(root, docker, 
     with_a_chat(root)
     docker.calls.clear()
     assert host.cmd_unsetup(root, lambda: True, lambda: False) == 0
-    assert docker.calls == [["docker", "image", "rm", "sdp-gateway"], ["docker", "image", "rm", "sdp-sandbox"]]
+    assert [call for call in docker.calls if call[1] not in ("container", "ps")] == [["docker", "image", "rm", "sdp-gateway"], ["docker", "image", "rm", "sdp-sandbox"]]
     assert sorted(p.name for p in (root / CHAT).iterdir()) == ["work"]
     assert (root / CHAT / "work" / "chat-1" / "notes.txt").read_text() == "a chat's file\n"
     assert "Kept .sdp/chat/work" in capsys.readouterr().out

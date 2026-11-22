@@ -58,8 +58,9 @@ python sdp.py broker start                  # Start it (stop, status, audit: see
 python sdp.py webui setup                   # Port, addresses, names, certificate; builds its image
 python sdp.py webui start                   # Start it (stop, status, unsetup: see below)
 
-# The chat (an AI assistant in a sandbox; setup only in this version)
+# The chat (an AI assistant in a sandbox; its page is not part of this version yet)
 python sdp.py chat setup                    # Back end, credential (not echoed), work folder's cap; builds its two images
+python sdp.py chat start                    # Start its gateway and sandbox (stop, status, unsetup: see below)
 ```
 
 ---
@@ -305,9 +306,12 @@ The web UI is a page served over HTTPS from a container that holds only the brok
 | Command | Description |
 |---------|-------------|
 | `sdp.py chat setup` | Ask the back end (Claude Code on your own Claude subscription login, or an OpenAI-compatible endpoint with its address and model), the secret (asked without echo, stored in `.sdp/chat/credential/model.token`, mode 0600) and the work folder's soft cap; build the images `sdp-gateway` and `sdp-sandbox` |
-| `sdp.py chat unsetup` | After a confirmation, remove the two images and the chat's settings and credential; after a second one, also all chats and their files (`.sdp/chat/work`) |
+| `sdp.py chat start` | Start the gateway and the sandbox, and attach the running MCP server of each database that is on a read-only user; refuses when no database can be read, saying why for each |
+| `sdp.py chat stop` | Stop and remove both containers and the chat's two networks, and detach the databases (exit code 1 when it does not run) |
+| `sdp.py chat status` | Say whether each container runs, the back end, which databases the chat can read now (and which dropped out since the start) and the work folder's size against its soft cap (exit code 0 when it runs) |
+| `sdp.py chat unsetup` | After a confirmation, remove the two images and the chat's settings and credential; after a second one, also all chats and their files (`.sdp/chat/work`). Refused while the chat's containers exist |
 
-The chat is to be an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential. Starting the chat is not part of this version. See [The chat](docs/guides/chat.md).
+The chat is an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential and reaches the model and the databases' MCP servers for it. The Chat page itself is not part of this version yet: `chat start` runs the containers, and the sandbox idles. See [The chat](docs/guides/chat.md).
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 

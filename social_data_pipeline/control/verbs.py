@@ -42,6 +42,9 @@ TERMINAL_ONLY = MappingProxyType({
     ("webui", "status"): "Says whether the web UI's container runs, which only someone outside the web UI needs to ask.",
     ("webui", "unsetup"): "Removes the web UI itself, which a session of that web UI must not be able to do.",
     ("chat", "setup"): "Asks for the model's secret at the terminal, without echo; a session must never be able to set or see it.",
+    ("chat", "start"): "Starts the chat's gateway, which holds the model's secret, and its sandbox; the web UI's Chat page is to work with a chat started at the terminal.",
+    ("chat", "stop"): "Stops the chat's containers and detaches the databases from it, which only the operator at the terminal decides.",
+    ("chat", "status"): "Says whether the chat's containers run and which databases they can read, which the operator asks at the terminal.",
     ("chat", "unsetup"): "Deletes the model's secret and the chat's settings (and, if asked, all chats), which a session must not be able to do.",
 })
 

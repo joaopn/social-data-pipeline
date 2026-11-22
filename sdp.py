@@ -46,6 +46,9 @@ Usage:
     sdp.py webui unsetup                     Remove the web UI's container, network, image and settings
 
     sdp.py chat setup                        Set up the Chat window: its back end, the model's credential (asked without echo), the work folder's cap; build its two images
+    sdp.py chat start                        Start the chat's gateway and sandbox and attach the databases whose MCP server is on a read-only user
+    sdp.py chat stop                         Stop and remove the chat's containers and networks, and detach the databases
+    sdp.py chat status                       Say whether the chat runs, which databases it can read now and the size of its work folder
     sdp.py chat unsetup                      Remove the chat's images, settings and credential (and, if asked, all chats)
 
     sdp.py setup                             Legacy: full interactive setup (core + classifiers + platform)
@@ -5879,6 +5882,21 @@ def cmd_chat_setup(args):
     return _chat_host().cmd_setup(ROOT)
 
 
+def cmd_chat_start(args):
+    """Start the chat: its two networks, the gateway, the databases attached, the sandbox."""
+    return _chat_host().cmd_start(ROOT)
+
+
+def cmd_chat_stop(args):
+    """Stop and remove the chat's containers and networks, and detach the databases."""
+    return _chat_host().cmd_stop(ROOT)
+
+
+def cmd_chat_status(args):
+    """Say whether the chat runs, which databases it can read now and the size of its work folder."""
+    return _chat_host().cmd_status(ROOT)
+
+
 def cmd_chat_unsetup(args):
     """Remove the chat's images, settings and credential after a confirmation; all chats and their files only after a second one."""
     from social_data_pipeline.setup.utils import ask_bool
@@ -6138,6 +6156,15 @@ def build_parser():
 
     chat_setup_p = chat_sub.add_parser("setup", help="Set up the chat: back end, the model's credential (asked without echo), the work folder's cap; build its two images")
     chat_setup_p.set_defaults(func=cmd_chat_setup)
+
+    chat_start_p = chat_sub.add_parser("start", help="Start the chat's gateway and sandbox and attach the databases whose MCP server is on a read-only user")
+    chat_start_p.set_defaults(func=cmd_chat_start)
+
+    chat_stop_p = chat_sub.add_parser("stop", help="Stop and remove the chat's containers and networks, and detach the databases (exit code 1 when it does not run)")
+    chat_stop_p.set_defaults(func=cmd_chat_stop)
+
+    chat_status_p = chat_sub.add_parser("status", help="Say whether the chat runs, which databases it can read now and the size of its work folder (exit code 0 when it runs, 1 when not)")
+    chat_status_p.set_defaults(func=cmd_chat_status)
 
     chat_unsetup_p = chat_sub.add_parser("unsetup", help="Remove the chat's images, settings and credential (and, if asked, all chats)")
     chat_unsetup_p.set_defaults(func=cmd_chat_unsetup)

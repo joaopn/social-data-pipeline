@@ -2,7 +2,7 @@
 
 What it keeps, in `<root>/.sdp/chat/` (0700): `config.json` (0600: the back end, for an OpenAI-compatible one its address and model, the soft cap of the work folder in GiB, the Claude Code version of the sandbox image), `credential/` (0700) with `model.token` (0600: the model's secret, asked without echo, never printed, logged, put on a command line or in an environment), `work/` (0700: one folder per chat, later) and `socket/` (0700). Every folder is opened relative to the one above it without following a link, must be a real folder of the operator and is given mode 0700 whatever the umask; files are written by the broker's file rules (`control.files`: a temporary file made exclusively with mode 0600, then renamed).
 
-`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which the running MCP container of each database whose MCP server is on a read-only user is attached under an alias; `stop` removes all of it (see `_start`). Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
+`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which the running MCP container of each database whose MCP server is on a read-only user is attached under an alias, and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`). Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
 """
 
 import contextlib
@@ -11,6 +11,7 @@ import itertools
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import time
@@ -607,6 +608,19 @@ NEWER_DOCKER = "This Docker cannot keep the machine itself off the chat's networ
 SETUP_FIRST = "  Set it up first: python sdp.py chat setup"
 NOT_RUNNING = "its MCP server does not run"
 NO_READER = "its MCP server is not on a read-only user"
+# The query scheduler (compose service `jobs`): the assistant's endpoint behind a secret that `start` keeps in the scheduler's control folder and copies into the gateway's folder.
+JOBS_SERVICE = "jobs"
+QUEUE_ALIAS = "sdp-chat-jobs"
+QUEUE_PORT = 8004
+QUEUE_PATHS = ("/assistant/mcp", "/assistant/results/")
+QUEUE_ENV = "SDP_CHAT_QUEUE"
+QUEUE_SECRET_NAME = "assistant.secret"
+JOBS_CONTROL = os.path.join("data", "jobs", "control")
+QUEUE_SECRET_PATH = os.path.join(JOBS_CONTROL, QUEUE_SECRET_NAME)
+QUEUE_SECRET_MAX = 256
+_QUEUE_SECRET = re.compile(r"[0-9a-f]{64,256}")
+DEFAULT_JOBS_PORT = 8050
+ENV_MAX_BYTES = 1024 * 1024
 DATABASE_FIX = "To give the chat a database: set it up with authentication and a read-only user (python sdp.py db setup), set up its MCP server (python sdp.py db setup-mcp) and start it (python sdp.py db start); then run python sdp.py chat start again."
 
 
@@ -672,13 +686,15 @@ def gateway_address(subnet, network_gateway=""):
     raise Refused(f"the subnet of the network {NETWORK} has no room for the gateway: remove it with `docker network rm {NETWORK}` and start again")
 
 
-def gateway_config(listen, settings, databases):
-    """The gateway's config as a dict: it listens on `listen`; the model on port 8080 by the back end of `settings` (the saved settings), and one MCP listener per database of `databases`, which reaches its server by the alias it is attached under."""
+def gateway_config(listen, settings, databases, queue_port=None):
+    """The gateway's config as a dict: it listens on `listen`; the model on port 8080 by the back end of `settings` (the saved settings), one MCP listener per database of `databases`, which reaches its server by the alias it is attached under, and with `queue_port` (the scheduler's own port) one on port 8004 for the scheduler's assistant endpoint, which sends the secret of its copy in the gateway's folder."""
     if settings["backend"] == CLAUDE_CODE:
         model = {"port": MODEL_PORT, "kind": gateway_table.MODEL_ANTHROPIC, "beta_allowed": list(BETA_ALLOWED), "tool_types_allowed": []}
     else:
         model = {"port": MODEL_PORT, "kind": gateway_table.MODEL_OPENAI, "upstream": settings["upstream"], "model": settings["model"]}
     listeners = [model] + [{"port": db.port, "kind": gateway_table.MCP, "upstream": f"http://{db.alias}:{db.server_port}", "paths": list(db.paths)} for db in databases]
+    if queue_port is not None:
+        listeners.append({"port": QUEUE_PORT, "kind": gateway_table.MCP, "upstream": f"http://{QUEUE_ALIAS}:{queue_port}", "paths": list(QUEUE_PATHS), "secret_file": f"{GATEWAY_MOUNT}/{QUEUE_SECRET_NAME}"})
     return {"listen": listen, "credential_file": f"{CREDENTIAL_MOUNT}/{TOKEN_NAME}", "listeners": listeners}
 
 
@@ -701,8 +717,8 @@ def gateway_arguments(root, uid, gid, address):
     ]
 
 
-def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None):
-    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB and, for `openai-compatible`, the model's name (`model`), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
+def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None, queue=False):
+    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`) and, with `queue`, `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
     return [
         *_confined(SANDBOX_CONTAINER, root, uid, gid),
         "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
@@ -712,6 +728,7 @@ def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=No
         "-e", f"{GATEWAY_ENV}={address}", "-e", f"HOME={WORK_MOUNT}",
         "-e", f"SDP_CHAT_BACKEND={backend}", "-e", f"SDP_CHAT_DATABASES={','.join(databases)}", "-e", f"SDP_CHAT_CAP_GIB={cap}",
         *(["-e", f"SDP_CHAT_MODEL={model}"] if backend == OPENAI_COMPATIBLE else []),
+        *(["-e", f"{QUEUE_ENV}=1"] if queue else []),
         SANDBOX_IMAGE,
     ]
 
@@ -823,14 +840,27 @@ def _take_down(network):
 
 
 def _remove_gateway_config(root):
-    """Remove `.sdp/chat/gateway/config.json` (written at each start); a missing one is no error."""
+    """Remove `.sdp/chat/gateway/config.json` and the gateway's copy of the scheduler's secret (both written at each start); a missing one is no error."""
     with _chat_folder(root, create=False) as chat_fd:
         gateway_fd = None if chat_fd is None else _subfolder(chat_fd, GATEWAY_NAME, GATEWAY_FOLDER, create=False)
         if gateway_fd is None:
             return
         try:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(CONFIG_NAME, dir_fd=gateway_fd)
+            for name in (CONFIG_NAME, QUEUE_SECRET_NAME):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(name, dir_fd=gateway_fd)
+        finally:
+            os.close(gateway_fd)
+
+
+def _write_gateway_secret(root, secret):
+    """Write the gateway's copy of the scheduler's secret, `.sdp/chat/gateway/assistant.secret` (0600), which the gateway reads from its read-only mount of that folder."""
+    with _chat_folder(root, create=False) as chat_fd:
+        gateway_fd = _subfolder(chat_fd, GATEWAY_NAME, GATEWAY_FOLDER, create=True)
+        try:
+            files.replace_file(gateway_fd, QUEUE_SECRET_NAME, (secret + "\n").encode("ascii"))
+        except files.BrokerFileError as error:
+            raise Refused(f"{GATEWAY_FOLDER}: {error.message}") from None
         finally:
             os.close(gateway_fd)
 
@@ -886,6 +916,88 @@ def _find_databases(root):
         else:
             attached.append((db, found[0]))
     return attached, left
+
+
+def jobs_port(root):
+    """The scheduler's port: `JOBS_PORT` of the deployment's `.env` as `sdp` reads it (lines `KEY=value`, spaces around stripped, `#` lines skipped, the last one wins), 8050 when there is no file, no such line or an empty value (as Compose's `${JOBS_PORT:-8050}`). The file holds passwords: only that one value is kept, and nothing of the file is printed. Raises Refused for a value that is not a port."""
+    try:
+        with open(os.path.join(root, ".env"), "rb") as env:
+            data = env.read(ENV_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return DEFAULT_JOBS_PORT
+    except OSError:
+        raise Refused("the deployment's .env cannot be read") from None
+    if len(data) > ENV_MAX_BYTES:
+        raise Refused("the deployment's .env is larger than 1 MiB")
+    value = ""
+    for line in data.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        key, sep, rest = line.partition("=")
+        if line and not line.startswith("#") and sep and key.strip() == "JOBS_PORT":
+            value = rest.strip()
+    if not value:
+        return DEFAULT_JOBS_PORT
+    if not re.fullmatch(r"[0-9]{1,5}", value) or not 1 <= int(value) <= 65535:
+        raise Refused("JOBS_PORT in the deployment's .env is not a port number")
+    return int(value)
+
+
+def _find_queue(root):
+    """((the scheduler's container id, its port), None) when exactly one container of the compose service `jobs` of this deployment runs, else (None, why)."""
+    listing = _docker(compose_listing(JOBS_SERVICE))
+    if listing.returncode != 0:
+        return None, f"Docker cannot list the query scheduler's container: {_last_line(listing)}"
+    found = [container for container, service in compose_containers(listing.stdout, root) if service == JOBS_SERVICE]
+    if not found:
+        return None, "the query scheduler does not run (python sdp.py db start jobs)"
+    if len(found) > 1:
+        return None, "more than one container of the query scheduler runs"
+    try:
+        return (found[0], jobs_port(root)), None
+    except Refused as refusal:
+        return None, refusal.message
+
+
+def _read_queue_secret(control_fd):
+    """The secret in `assistant.secret` of the control folder when it is a valid one (a regular file of this user, not open to the group or others, of 64 to 256 lowercase hex digits after stripping), None when there is none or it is not valid (it is then replaced). Raises Refused for a link or anything but a regular file of this user in its place, which is left as it is."""
+    try:
+        info = os.stat(QUEUE_SECRET_NAME, dir_fd=control_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise Refused(f"{QUEUE_SECRET_PATH} cannot be looked at") from None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        raise Refused(f"{QUEUE_SECRET_PATH} is a link or not a regular file of yours: it was left as it is")
+    if info.st_mode & 0o077:
+        return None
+    try:
+        data = files.read_file(control_fd, QUEUE_SECRET_NAME, QUEUE_SECRET_MAX)
+    except files.BrokerFileError:
+        return None
+    value = (data or b"").decode("ascii", "replace").strip()
+    return value if _QUEUE_SECRET.fullmatch(value) else None
+
+
+def _queue_secret(root):
+    """The scheduler's secret for the assistant, made when needed: `data/jobs/control` must be a real folder of this user (not a link; the scheduler makes it) without access for the group or others; a valid `assistant.secret` in it is kept, else one of 32 random bytes as hex is written (0600, a temporary file renamed, no link followed). Raises Refused with why the queue cannot be used. The secret is never printed."""
+    try:
+        with files.folder(os.path.join(root, JOBS_CONTROL)) as control_fd:
+            if control_fd is None:
+                raise Refused(f"{JOBS_CONTROL} is missing (the scheduler makes it when the data folder is yours)")
+            if os.fstat(control_fd).st_mode & 0o077:
+                raise Refused(f"{JOBS_CONTROL} is open to the group or to others")
+            secret = _read_queue_secret(control_fd)
+            if secret is None:
+                secret = secrets.token_hex(32)
+                try:
+                    files.replace_file(control_fd, QUEUE_SECRET_NAME, (secret + "\n").encode("ascii"))
+                except files.BrokerFileError:
+                    raise Refused(f"{QUEUE_SECRET_PATH} could not be written") from None
+            return secret
+    except files.BrokerFileError:
+        raise Refused(f"{JOBS_CONTROL} is a link or not a folder of yours") from None
+    except OSError:
+        raise Refused(f"{JOBS_CONTROL} cannot be used") from None
 
 
 def _step(arguments, what):
@@ -986,6 +1098,13 @@ def _start(root, uid, gid):
     if not attached:
         lines = "".join(f"\n    {db.name}: {why}" for db, why in left)
         raise Refused(f"no database can be read by the chat:{lines}\n  {DATABASE_FIX}")
+    queue, queue_why = _find_queue(root)
+    secret = None
+    if queue is not None:
+        try:
+            secret = _queue_secret(root)
+        except Refused as refusal:
+            queue, queue_why = None, refusal.message
     for name, state in states.items():
         if state is not None:
             _step(["docker", "rm", "--force", name], f"the leftover container {name} could not be removed")
@@ -1000,15 +1119,20 @@ def _start(root, uid, gid):
     made = []
     try:
         address = _make_networks(root, made)
-        _write_gateway_config(root, gateway_config(address, settings, [db for db, _ in attached]))
+        if queue is not None:
+            _write_gateway_secret(root, secret)
+        secret = None
+        _write_gateway_config(root, gateway_config(address, settings, [db for db, _ in attached], queue[1] if queue is not None else None))
         _step(gateway_arguments(root, uid, gid, address), "the gateway's container could not be created")
         made.append(GATEWAY_CONTAINER)
         _step(["docker", "network", "connect", UP_NETWORK, GATEWAY_CONTAINER], f"the gateway could not be connected to the network {UP_NETWORK}")
         _step(["docker", "start", GATEWAY_CONTAINER], "the gateway did not start")
-        _wait_for_gateway(1 + len(attached))
+        _wait_for_gateway(1 + len(attached) + (queue is not None))
         for db, container in attached:
             _step(["docker", "network", "connect", "--alias", db.alias, UP_NETWORK, container], f"the MCP server of {db.name} could not be attached")
-        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"], settings.get("model")), "the sandbox's container could not be created")
+        if queue is not None:
+            _step(["docker", "network", "connect", "--alias", QUEUE_ALIAS, UP_NETWORK, queue[0]], "the query scheduler could not be attached")
+        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"], settings.get("model"), queue=queue is not None), "the sandbox's container could not be created")
         made.append(SANDBOX_CONTAINER)
         _step(["docker", "start", SANDBOX_CONTAINER], "the sandbox did not start")
         after = _state(SANDBOX_CONTAINER)
@@ -1029,6 +1153,10 @@ def _start(root, uid, gid):
         print(f"    {db.name}: left out: {why}")
     if left:
         print(f"  {DATABASE_FIX}")
+    if queue is not None:
+        print("  The query queue is attached: the assistant can submit queries to the scheduler (each waits for a person's approval, never auto-accepted), see its own and fetch their results.")
+    else:
+        print(f"  The assistant cannot use the query queue: {queue_why}.")
     print(f"  {CHAT_WINDOW}")
     return 0
 
@@ -1178,25 +1306,30 @@ def _work_line(root, cap):
     return f"Work folder: {_size_text(size)} of {of_cap}{over}"
 
 
-def _started_databases(root):
-    """The names of the databases the gateway's config (written at start) has a listener for."""
+def _started_ports(root):
+    """The ports of the MCP listeners of the gateway's config (written at start)."""
     try:
         with _chat_folder(root, create=False) as chat_fd:
             gateway_fd = None if chat_fd is None else _subfolder(chat_fd, GATEWAY_NAME, GATEWAY_FOLDER, create=False)
             if gateway_fd is None:
-                return []
+                return set()
             try:
                 table = gateway_table.parse(json.loads(files.read_file(gateway_fd, CONFIG_NAME, CONFIG_MAX_BYTES) or b"null"))
             finally:
                 os.close(gateway_fd)
     except (Refused, files.BrokerFileError, gateway_table.ConfigError, ValueError):
-        return []
-    ports = {lst.port for lst in table.listeners if lst.kind == gateway_table.MCP}
+        return set()
+    return {lst.port for lst in table.listeners if lst.kind == gateway_table.MCP}
+
+
+def _started_databases(root):
+    """The names of the databases the gateway's config (written at start) has a listener for."""
+    ports = _started_ports(root)
     return [db.name for db in DATABASES if db.port in ports]
 
 
 def cmd_status(root):
-    """`sdp chat status`: whether each container runs, the back end, the databases attached now (and those dropped since the start), the work folder's size against the soft cap. Exit code 0 when both containers run, 1 otherwise."""
+    """`sdp chat status`: whether each container runs, the back end, the databases attached now (and those dropped since the start), whether the query scheduler is attached now, the work folder's size against the soft cap. Exit code 0 when both containers run, 1 otherwise."""
     root = os.fspath(root)
     running = {}
     for name, shown in ((GATEWAY_CONTAINER, "Gateway"), (SANDBOX_CONTAINER, "Sandbox")):
@@ -1232,5 +1365,9 @@ def cmd_status(root):
             for name in _started_databases(root):
                 if name not in now:
                     print(f"    {name}: dropped since the start (its container was stopped or replaced). To attach it again: python sdp.py chat stop, then python sdp.py chat start")
+            queue_now = JOBS_SERVICE in services
+            print(f"  Query queue for the assistant: {'attached' if queue_now else 'not attached'}")
+            if not queue_now and QUEUE_PORT in _started_ports(root):
+                print("    the query scheduler: dropped since the start (its container was stopped or replaced). To attach it again: python sdp.py chat stop, then python sdp.py chat start")
     print(f"  {_work_line(root, settings.get('work_cap_gib'))}")
     return 0 if all(running.values()) else 1

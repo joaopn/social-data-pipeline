@@ -39,6 +39,8 @@ _PASS_ALL = ("content-type", "accept")
 _PASS_KIND = {MODEL_ANTHROPIC: ("anthropic-version",), MODEL_OPENAI: (), MCP: ("mcp-session-id", "mcp-protocol-version", "last-event-id")}
 _RESPONSE = {"content-type", "cache-control", "mcp-session-id", "retry-after", "request-id"}
 _ANTHROPIC_PATHS = ("/v1/messages", "/v1/messages/count_tokens")
+# The header an `mcp` listener with a `secret_file` sends upstream; no client's header of this name is ever passed (it is not in the allow-lists).
+SECRET_HEADER = "x-sdp-assistant"
 LOGGED_METHODS = {"GET", "POST", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE"}
 
 
@@ -247,11 +249,13 @@ def _clean(value):
     return value if len(value) <= MAX_VALUE and value.isascii() and not any(c in value for c in "\r\n\0") else None
 
 
-def upstream_headers(listener, head, credential, length):
-    """The headers of the upstream request, built from the table: `Host`, the gateway's `Authorization` for a model kind, a computed `Content-Length` and the allow-listed client headers."""
+def upstream_headers(listener, head, credential, length, secret=""):
+    """The headers of the upstream request, built from the table: `Host`, the gateway's `Authorization` for a model kind, the listener's secret as `x-sdp-assistant` for an `mcp` listener that has one, a computed `Content-Length` and the allow-listed client headers."""
     out = [("Host", listener.upstream.host_header)]
     if listener.kind != MCP:
         out.append(("Authorization", f"Bearer {credential}"))
+    elif secret:
+        out.append((SECRET_HEADER, secret))
     names = _PASS_ALL + _PASS_KIND[listener.kind]
     seen = set()
     for name, value in head.headers:

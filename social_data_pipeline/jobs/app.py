@@ -49,6 +49,18 @@ def _close_door(door):
         log.warning("the control socket could not be closed cleanly (%s)", type(error).__name__)
 
 
+def _build_assistant(cfg, store, runner):
+    """The assistant's endpoint (`assistant.py`): (its MCP server, the gate's class, the MCP server's app), or None. As for the door, nothing about it stops the scheduler: an error while it is built is logged by the name of its kind only, and the endpoint then stays closed (a path under `/assistant/` is then one the page does not have)."""
+    try:
+        from .assistant import AssistantGate
+
+        assistant_mcp = build_mcp(cfg, store, runner, assistant=True)
+        return assistant_mcp, AssistantGate, build_streamable_app(assistant_mcp)
+    except Exception as error:
+        log.warning("the assistant's endpoint stays closed: it could not be built (%s)", type(error).__name__)
+        return None
+
+
 def build_app(cfg: JobsConfig | None = None) -> FastAPI:
     if cfg is None:
         cfg = load_config()
@@ -67,12 +79,13 @@ def build_app(cfg: JobsConfig | None = None) -> FastAPI:
     # Build the ASGI app up front: it is what creates the MCP session manager,
     # which `lifespan` below runs. Mounting happens after `app` exists.
     mcp_app = build_streamable_app(mcp)
+    assistant = _build_assistant(cfg, store, runner)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         # Start MCP session manager + background runner for the lifetime of
         # the ASGI application.
-        async with mcp.session_manager.run():
+        async with mcp.session_manager.run(), (assistant[0].session_manager.run() if assistant else contextlib.nullcontext()):
             runner.start()
             door = _open_door(cfg, store, runner, auto_accept, asyncio.get_running_loop())
             try:
@@ -87,6 +100,9 @@ def build_app(cfg: JobsConfig | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     app.mount("/mcp", mcp_app)
+    if assistant is not None:
+        _mcp, gate, assistant_app = assistant
+        app.add_middleware(gate, store=store, mcp_app=assistant_app, jobs_dir=cfg.jobs_dir)
 
     app.include_router(build_router(cfg, store, runner, auto_accept))
 

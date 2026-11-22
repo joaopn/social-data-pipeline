@@ -12,7 +12,7 @@ The requests (`op`; every listed field is required, nothing else is taken; a job
 - `hello` -> `{"protocol": 1}`
 - `counts` -> `{"pending", "approved", "running"}`, the numbers on the page's tabs
 - `targets` -> `{"targets": [{"name", "backend", "database"}]}`
-- `jobs` `{phase, limit, offset}` (phase `pending`, `approved`, `running` or `history`; limit 1 to 500; offset 0 to 100,000, the number of jobs to skip) -> `{"phase", "jobs": [<short view>], "more"}` (`more`: jobs follow after this page), in the page's order: the three queues oldest first (submission or approval order), the history newest first. The short view cuts `sql`, `description`, `error` and `reject_reason` to 2,000 characters and gives their full lengths as `<name>_length`; other text is cut to 256 characters.
+- `jobs` `{phase, limit, offset}` (phase `pending`, `approved`, `running` or `history`; limit 1 to 500; offset 0 to 100,000, the number of jobs to skip) -> `{"phase", "jobs": [<short view>], "more"}` (`more`: jobs follow after this page), in the page's order: the three queues oldest first (submission or approval order), the history newest first. The short view cuts `sql`, `description`, `error` and `reject_reason` to 2,000 characters and gives their full lengths as `<name>_length`; other text is cut to 256 characters. A job of the chat's assistant adds `"submitted_by": "assistant"` (left out for other jobs, as in the record).
 - `job` `{job_id}` -> `{"phase", "job": <the whole record>, "digest"}` (`too_large` for a record of more than 1 MiB as JSON). `digest` is the SHA-256, in hex, of the JSON of exactly `{target, backend, sql, output_filename, overwrite, collection, database}` with sorted keys, separators `,` and `:` and ASCII only.
 - `approve` `{job_id, digest, by}` -> `{}`; `not_pending` (with `phase`) unless pending; `changed` when the digest of the record as it is now differs or the record names another job id; `by` is written into the record in the same write as the approval.
 - `reject` `{job_id, reason, by}` -> `{}`; the reason at most 500 characters with no line break or control character (Unicode categories Cc, Zl, Zp), empty for none; `not_pending` and `changed` (another job id in the record) as above.
@@ -255,6 +255,9 @@ def short_view(job):
         else:
             view[name] = None
             view[f"{name}_length"] = 0
+    submitted_by = getattr(job, "submitted_by", "")
+    if isinstance(submitted_by, str) and submitted_by:
+        view["submitted_by"] = _clean_text(submitted_by[:OTHER_TEXT_CUT])
     return view
 
 

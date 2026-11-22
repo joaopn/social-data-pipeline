@@ -85,10 +85,12 @@ def _stdout(line):
 class Gateway:
     """Serve every listener of `table` on `table.listen`.
 
+    `secrets` holds, by the listeners' order, the secret read from each `mcp` listener's `secret_file` ('' for one without); it is sent only on that listener.
+
     `test_upstream` (tests only, never reached from the config file or the command line) is a loopback `http://` `Upstream` that replaces the fixed `model-anthropic` upstream and allows `http://` for `model-openai`.
     """
 
-    def __init__(self, table, credential, *, log=_stdout, clock=time.monotonic, sleep=time.sleep, test_upstream=None):
+    def __init__(self, table, credential, *, secrets=None, log=_stdout, clock=time.monotonic, sleep=time.sleep, test_upstream=None):
         if test_upstream is not None and (test_upstream.scheme != "http" or test_upstream.host not in _LOOPBACK):
             raise ValueError("test_upstream must be a loopback http:// address")
         listeners = []
@@ -100,6 +102,13 @@ class Gateway:
             listeners.append(lst)
         if any(lst.kind in MODEL_KINDS for lst in listeners) and not credential:
             raise ConfigError("credential_file: required when a model listener exists")
+        secrets = tuple(secrets) if secrets is not None else ("",) * len(listeners)
+        if len(secrets) != len(listeners):
+            raise ValueError("secrets must hold one entry per listener")
+        for i, (lst, secret) in enumerate(zip(listeners, secrets)):
+            if bool(lst.secret_file) != bool(secret) or (secret and lst.kind != MCP):
+                raise ConfigError(f"listeners[{i}].secret_file: its secret was not read")
+        self._secrets = secrets
         self._listeners = tuple(listeners)
         self._listen = table.listen
         self._limits = table.limits
@@ -246,7 +255,7 @@ class Gateway:
                 rules.check_body(lst, body)
             finally:
                 self._checks.release()
-        headers = rules.upstream_headers(lst, head, self._credential, len(body))
+        headers = rules.upstream_headers(lst, head, self._credential, len(body), self._secrets[index])
         if lst.kind == MCP:
             idle = limits.mcp_stream_idle_timeout if route.stream else limits.mcp_idle_timeout
             return self._forward(client, lst, route, headers, body, idle, rec)

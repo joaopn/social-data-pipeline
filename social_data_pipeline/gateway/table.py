@@ -20,6 +20,8 @@ _BASE = re.compile(r"(?:/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*")
 _PATH = re.compile(r"/[A-Za-z0-9._~/-]{0,255}")
 _TOKEN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _CREDENTIAL_MAX = 64 * 1024
+_SECRET = re.compile(r"[0-9a-f]{64,256}")
+_SECRET_MAX = 256
 
 
 class ConfigError(Exception):
@@ -67,6 +69,8 @@ class Listener:
     tool_types_allowed: frozenset = frozenset()
     model: str = ""
     paths: tuple = ()
+    # An `mcp` listener only: the path of a file whose secret the gateway sends upstream as `x-sdp-assistant` on every request of this listener (read once at start by `read_secret`).
+    secret_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,7 +84,7 @@ class Table:
 _KIND_KEYS = {
     MODEL_ANTHROPIC: ({"port", "kind", "beta_allowed"}, {"tool_types_allowed"}),
     MODEL_OPENAI: ({"port", "kind", "upstream", "model"}, set()),
-    MCP: ({"port", "kind", "upstream", "paths"}, set()),
+    MCP: ({"port", "kind", "upstream", "paths"}, {"secret_file"}),
 }
 
 
@@ -146,7 +150,10 @@ def _listener(doc, i):
         if not isinstance(model, str) or not re.fullmatch(r"[\x21-\x7e]{1,256}", model):
             raise ConfigError(f"{where}.model: must be a model name of visible ASCII characters")
         return Listener(port, kind, upstream, model=model)
-    return Listener(port, kind, upstream, paths=_paths(doc["paths"], f"{where}.paths"))
+    secret_file = doc.get("secret_file", "")
+    if "secret_file" in doc and (not isinstance(secret_file, str) or not secret_file.startswith("/") or len(secret_file) > 4096 or "\0" in secret_file):
+        raise ConfigError(f"{where}.secret_file: must be an absolute path")
+    return Listener(port, kind, upstream, paths=_paths(doc["paths"], f"{where}.paths"), secret_file=secret_file)
 
 
 def _limits(doc):
@@ -217,4 +224,25 @@ def read_credential(path):
         value = ""
     if not value or len(data) > _CREDENTIAL_MAX or not re.fullmatch(r"[\x21-\x7e]+", value):
         raise ConfigError("credential_file: must hold one value of visible ASCII characters")
+    return value
+
+
+def read_secret(path, key):
+    """Return the secret of an `mcp` listener's `secret_file`: a regular file (opened without following a link and without waiting) of at most 256 bytes holding 64 to 256 lowercase hex digits, stripped. Errors name `key` and never hold the file's content."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise ConfigError(f"{key}: cannot be opened (missing, a link or not readable)") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ConfigError(f"{key}: must be a regular file")
+        data = os.read(fd, _SECRET_MAX + 1)
+    finally:
+        os.close(fd)
+    try:
+        value = data.decode("ascii").strip()
+    except UnicodeDecodeError:
+        value = ""
+    if len(data) > _SECRET_MAX or not _SECRET.fullmatch(value):
+        raise ConfigError(f"{key}: must hold one value of 64 to 256 lowercase hex digits")
     return value

@@ -5,7 +5,7 @@ import sys
 import threading
 
 from .server import Gateway
-from .table import ConfigError, load, read_credential
+from .table import ConfigError, load, read_credential, read_secret
 
 
 def main(argv=None):
@@ -16,7 +16,8 @@ def main(argv=None):
     try:
         table = load(args[0])
         credential = read_credential(table.credential_file) if table.credential_file else ""
-        gateway = Gateway(table, credential)
+        secrets = [read_secret(lst.secret_file, f"listeners[{i}].secret_file") if lst.secret_file else "" for i, lst in enumerate(table.listeners)]
+        gateway = Gateway(table, credential, secrets=secrets)
         gateway.start()
     except ConfigError as err:
         print(f"gateway: refusing to start: {err}", file=sys.stderr)

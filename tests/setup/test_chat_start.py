@@ -803,3 +803,155 @@ def test_a_leftover_network_that_cannot_be_removed_prints_every_problem(root, do
     assert start(root) == 1
     out = capsys.readouterr().out
     assert "made-up refusal for aaaa" in out and "made-up refusal for bbbb" in out
+
+
+# ── the query queue ─────────────────────────────────────────────────────────
+
+JOBS_ID = "e" * 64
+QUEUE_SECRET = "0123456789abcdef" * 4
+ENV_MARKER = "made-up-env-password-marker-1f3a"
+
+
+def with_scheduler(root, docker, *, control=True, mode=0o700):
+    """The scheduler's container running and, with `control`, its control folder as the scheduler makes it."""
+    docker.add(JOBS_ID, "jobs")
+    if control:
+        (root / "data" / "jobs" / "control").mkdir(parents=True)
+        os.chmod(root / "data" / "jobs" / "control", mode)
+    return root / "data" / "jobs" / "control" / "assistant.secret"
+
+
+def test_the_sandbox_argument_list_with_the_queue_is_pinned():
+    """Bug class: the sandbox's runner not told the queue is there, or anything else of the list changed with it."""
+    arguments = host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", "claude-code", ["mongo"], 7, queue=True)
+    assert arguments[-3:] == ["-e", "SDP_CHAT_QUEUE=1", "sdp-sandbox"]
+    assert arguments[:-3] == host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", "claude-code", ["mongo"], 7)[:-1]
+
+
+def test_start_attaches_the_scheduler_behind_a_new_secret(root, docker, capsys):
+    """Bug class (security): the scheduler reached without the secret, the secret file open to others, written through a link or left half-written, the gateway's copy different, the secret in an argument, an environment or a line of output; the scheduler attached under another alias or the sandbox not told."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    path = with_scheduler(root, docker)
+    (root / ".env").write_text(f"POSTGRES_PASSWORD={ENV_MARKER}\nJOBS_PORT=9123\n")
+    assert start(root) == 0
+    secret = path.read_text().strip()
+    copy = root / CHAT / "gateway" / "assistant.secret"
+    assert len(secret) == 64 and int(secret, 16) >= 0 and copy.read_text().strip() == secret
+    assert oct(path.stat().st_mode & 0o777) == "0o600" and oct(copy.stat().st_mode & 0o777) == "0o600"
+    assert [name for name in os.listdir(path.parent)] == ["assistant.secret"]
+    table = gateway_table.load(str(root / CHAT / "gateway" / "config.json"))
+    queue = table.listeners[-1]
+    assert (queue.port, queue.kind, queue.upstream, queue.paths, queue.secret_file) == (8004, "mcp", gateway_table.Upstream("http", "sdp-chat-jobs", 9123), ("/assistant/mcp", "/assistant/results/"), "/run/sdp-gateway/assistant.secret")
+    assert ["docker", "network", "connect", "--alias", "sdp-chat-jobs", "sdp-chat-up", JOBS_ID] in docker.calls
+    address = host.gateway_address(docker.networks["sdp-chat"]["subnet"])
+    assert host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], 10, queue=True) in docker.calls
+    out = capsys.readouterr().out
+    assert "The query queue is attached" in out and "cannot use the query queue" not in out
+    assert host.cmd_status(root) == 0 and "Query queue for the assistant: attached" in capsys.readouterr().out
+    assert host.cmd_stop(root) == 0
+    texts = [capsys.readouterr().out, json.dumps(docker.calls), (root / CHAT / "gateway" / "config.json").read_text() if (root / CHAT / "gateway" / "config.json").exists() else ""]
+    assert not any(secret in text or ENV_MARKER in text for text in texts)
+    assert ["docker", "network", "disconnect", "sdp-chat-up", JOBS_ID] in docker.calls
+    assert not copy.exists() and path.read_text().strip() == secret
+
+
+@pytest.mark.parametrize("existing, kept", [(QUEUE_SECRET + "\n", True), (QUEUE_SECRET[:60], False), (QUEUE_SECRET.upper(), False), ("x" * 300, False)])
+def test_a_valid_secret_is_kept_and_an_invalid_one_replaced(root, docker, existing, kept):
+    """Bug class: a restart of the chat changing a secret that is still good, or keeping one that the scheduler refuses (the queue then answers 404 to everything)."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    path = with_scheduler(root, docker)
+    path.write_text(existing)
+    os.chmod(path, 0o600)
+    assert start(root) == 0
+    now = path.read_text().strip()
+    assert (now == QUEUE_SECRET) == kept and len(now) == 64
+    assert (root / CHAT / "gateway" / "assistant.secret").read_text().strip() == now
+
+
+def test_a_secret_open_to_others_is_replaced(root, docker):
+    """Bug class: a secret others could have read kept in use."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    path = with_scheduler(root, docker)
+    path.write_text(QUEUE_SECRET)
+    os.chmod(path, 0o644)
+    assert start(root) == 0
+    assert path.read_text().strip() != QUEUE_SECRET and oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+@pytest.mark.parametrize("case", ["not running", "no control folder", "open control folder", "control folder link", "secret link", "secret fifo", "bad port"])
+def test_without_a_usable_scheduler_start_goes_on_without_the_queue(root, docker, capsys, tmp_path, case):
+    """Bug class: a chat that fails to start because the scheduler is not there, a queue listener without a secret behind it, a secret written through a link or into a folder others can read, or the line not saying why."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    outside = tmp_path / "outside.secret"
+    outside.write_text("left alone\n")
+    if case == "not running":
+        with_scheduler(root, docker)
+    elif case == "no control folder":
+        with_scheduler(root, docker, control=False)
+    elif case == "open control folder":
+        with_scheduler(root, docker, mode=0o750)
+    elif case == "control folder link":
+        with_scheduler(root, docker, control=False)
+        (root / "data" / "jobs").mkdir(parents=True)
+        (tmp_path / "elsewhere").mkdir(mode=0o700)
+        (root / "data" / "jobs" / "control").symlink_to(tmp_path / "elsewhere")
+    elif case == "secret link":
+        with_scheduler(root, docker).symlink_to(outside)
+    elif case == "secret fifo":
+        os.mkfifo(with_scheduler(root, docker))
+    else:
+        with_scheduler(root, docker)
+        (root / ".env").write_text("JOBS_PORT=99999\n")
+    if case == "not running":
+        del docker.compose[JOBS_ID]
+    assert start(root) == 0
+    out = capsys.readouterr().out
+    why = {"not running": "the query scheduler does not run", "no control folder": "data/jobs/control is missing", "open control folder": "open to the group or to others", "control folder link": "is a link or not a folder of yours", "secret link": "is a link or not a regular file of yours", "secret fifo": "is a link or not a regular file of yours", "bad port": "JOBS_PORT in the deployment's .env is not a port number"}[case]
+    line = [text for text in out.splitlines() if "cannot use the query queue" in text]
+    assert len(line) == 1 and why in line[0]
+    assert [lst.port for lst in gateway_table.load(str(root / CHAT / "gateway" / "config.json")).listeners] == [8080, 8002]
+    assert not (root / CHAT / "gateway" / "assistant.secret").exists()
+    assert not any("SDP_CHAT_QUEUE=1" in word for call in docker.calls for word in call)
+    assert not any(JOBS_ID in call for call in docker.calls if call[1:3] == ["network", "connect"])
+    assert outside.read_text() == "left alone\n" and not (tmp_path / "elsewhere" / "assistant.secret").exists()
+
+
+@pytest.mark.parametrize("text, port", [(None, 8050), ("", 8050), ("JOBS_PORT=\n", 8050), ("# JOBS_PORT=1\nJOBS_PORT = 8100\nJOBS_PORT=8200\n", 8200), ("X=1\n  JOBS_PORT=8300  \n", 8300)])
+def test_the_schedulers_port_is_read_as_sdp_reads_the_env(root, text, port):
+    """Bug class: the gateway sent to another port than the scheduler's own (Compose's default when the key is empty, the last line winning as in `sdp`)."""
+    if text is not None:
+        (root / ".env").write_text(text)
+    assert host.jobs_port(str(root)) == port
+
+
+def test_status_shows_the_queue_dropped_when_the_scheduler_left(root, docker, capsys):
+    """Bug class: a status that says the assistant can use the queue after the scheduler's container was replaced."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    with_scheduler(root, docker)
+    assert start(root) == 0
+    docker.networks["sdp-chat-up"]["members"].remove(JOBS_ID)
+    capsys.readouterr()
+    host.cmd_status(root)
+    out = capsys.readouterr().out
+    assert "Query queue for the assistant: not attached" in out and "the query scheduler: dropped since the start" in out
+
+
+def test_a_failed_start_removes_the_gateways_copy_and_unsetup_leaves_the_schedulers(root, docker, capsys, monkeypatch):
+    """Bug class: the secret left in the gateway's folder after a failed start or an unsetup, or the scheduler's own file (in its folder) removed by the chat."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    path = with_scheduler(root, docker)
+    docker.fail = failing(["start"], "sdp-sandbox")
+    assert start(root) == 1
+    assert not (root / CHAT / "gateway" / "assistant.secret").exists() and path.exists()
+    docker.fail = lambda arguments: None
+    assert start(root) == 0 and host.cmd_stop(root) == 0
+    (root / CHAT / "gateway" / "assistant.secret").write_text(QUEUE_SECRET)
+    monkeypatch.setattr(host, "_docker", lambda arguments, **keywords: docker.answer(0) if arguments[1:3] == ["image", "rm"] else docker(arguments, **keywords))
+    assert host.cmd_unsetup(root, lambda: True, lambda: True) == 0
+    assert not (root / CHAT).exists() and path.exists()

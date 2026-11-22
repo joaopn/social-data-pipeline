@@ -67,11 +67,15 @@ class Job:
     extras: dict[str, Any] = field(default_factory=dict)
     # Who approved or rejected the job, or asked to kill it, through the scheduler's control socket: at most the keys "approved", "rejected", "killed", each a label such as "web-12". "killed" names who asked to kill: it is set on a job that may then finish by itself, and it is lost when the scheduler restarts before the job is retired. Left out of the record while empty, so a record without labels is written byte for byte as before.
     acted_by: dict[str, str] = field(default_factory=dict)
+    # Who submitted the job when it was not an ordinary client of `/mcp`: "assistant" for a query of the chat's assistant, submitted through the scheduler's assistant endpoint (such a job is never auto-accepted). Left out of the record while empty, so a record without it is written byte for byte as before.
+    submitted_by: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         if not d["acted_by"]:
             del d["acted_by"]
+        if not d["submitted_by"]:
+            del d["submitted_by"]
         return d
 
     @classmethod
@@ -82,17 +86,27 @@ class Job:
         # Labels of another shape (a hand-edited record) are kept as they were, but not as labels: the transitions add to them.
         if "acted_by" in kwargs and not _is_acted_by(kwargs["acted_by"]):
             extras["acted_by"] = kwargs.pop("acted_by")
+        # Likewise a mark the scheduler does not write.
+        if "submitted_by" in kwargs and not _is_submitted_by(kwargs["submitted_by"]):
+            extras["submitted_by"] = kwargs.pop("submitted_by")
         if extras:
             kwargs.setdefault("extras", {}).update(extras)
         return cls(**kwargs)
 
 
 ACTED_BY_KEYS: frozenset[str] = frozenset({"approved", "rejected", "killed"})
+# The mark of a job submitted by the chat's assistant.
+ASSISTANT = "assistant"
 
 
 def _is_acted_by(value: Any) -> bool:
     """Whether a record's `acted_by` has the shape the scheduler writes: a dict of at most the three known keys, each with a text value."""
     return isinstance(value, dict) and set(value) <= ACTED_BY_KEYS and all(isinstance(label, str) for label in value.values())
+
+
+def _is_submitted_by(value: Any) -> bool:
+    """Whether a record's `submitted_by` is one the scheduler writes: empty or the assistant's mark."""
+    return isinstance(value, str) and value in ("", ASSISTANT)
 
 
 class Store:

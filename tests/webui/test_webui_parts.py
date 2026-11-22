@@ -42,7 +42,16 @@ def test_the_default_https_port_may_be_left_out_only_when_it_is_the_port():
     assert "localhost" not in config.load_settings(GOOD_ENVIRONMENT).allowed_hosts()
 
 
+def test_the_local_host_port_is_optional():
+    """Bug class: today's settings (without it) refused or given extra hosts, or the local host port read into hosts accepted on every port."""
+    assert config.load_settings(GOOD_ENVIRONMENT).local_host_port is None and config.load_settings(GOOD_ENVIRONMENT).local_hosts() == frozenset()
+    settings = config.load_settings({**GOOD_ENVIRONMENT, "SDP_WEBUI_LOCAL_HOST_PORT": "8444"})
+    assert settings.local_host_port == 8444 and settings.local_hosts() == {"127.0.0.1:8444", "localhost:8444"}
+    assert settings.allowed_hosts() == config.load_settings(GOOD_ENVIRONMENT).allowed_hosts()
+
+
 @pytest.mark.parametrize("name, value", [
+    ("SDP_WEBUI_LOCAL_HOST_PORT", "0"), ("SDP_WEBUI_LOCAL_HOST_PORT", "65536"), ("SDP_WEBUI_LOCAL_HOST_PORT", "08444"), ("SDP_WEBUI_LOCAL_HOST_PORT", "8443"), ("SDP_WEBUI_LOCAL_HOST_PORT", "x"),
     ("SDP_WEBUI_HOSTS", None), ("SDP_WEBUI_HOSTS", ""), ("SDP_WEBUI_HOSTS", "localhost,,x"), ("SDP_WEBUI_HOSTS", "*.example"), ("SDP_WEBUI_HOSTS", "Localhost"),
     ("SDP_WEBUI_HOSTS", "2001:db8::5"), ("SDP_WEBUI_HOSTS", "[fe80::1%eth0]"), ("SDP_WEBUI_HOSTS", "localhost,localhost"), ("SDP_WEBUI_HOSTS", "010.0.0.1"),
     ("SDP_WEBUI_PORT", None), ("SDP_WEBUI_PORT", "0"), ("SDP_WEBUI_PORT", "65536"), ("SDP_WEBUI_PORT", "84 43"), ("SDP_WEBUI_PORT", "08443"), ("SDP_WEBUI_PORT", "\u0668\u0664"),

@@ -735,7 +735,7 @@ webui_port:
 webui_addresses:
   prompt: "Listen addresses besides 127.0.0.1 (IP addresses, comma-separated; empty for none)"
   explain: >
-    Addresses of this machine on which the page should also answer, for another machine or a tailnet to reach it. Every-address forms (0.0.0.0, ::, *), multicast, a link-local address with a zone and 127.0.0.1 itself are refused.
+    Addresses of this machine on which the page should also answer, for another machine or a tailnet to reach it; 0.0.0.0 and :: for every IPv4 and IPv6 address (with a warning, and 127.0.0.1 then on the next port). The words all, any and *, multicast, a link-local address with a zone and loopback addresses are refused.
   default: "(empty: this machine only)"
 
 webui_names:

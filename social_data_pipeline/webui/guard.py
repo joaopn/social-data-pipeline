@@ -3,7 +3,7 @@
 In this order, each refusal a constant text answer that asks the broker nothing:
 
 1. Only HTTP. A WebSocket is closed before it is accepted; nothing else is served.
-2. `Host` must be exactly one of the configured values (`Settings.allowed_hosts`), or 400. Against DNS rebinding: a page of another origin that resolves its own name to this machine sends its own name.
+2. `Host` must be exactly one of the configured values (`Settings.allowed_hosts`), or, for a request that arrived on the local port (`config.LOCAL_PORT`), one of `Settings.local_hosts` (127.0.0.1 and localhost with the host port 127.0.0.1 is published on when the operator listed every address), or 400. Against DNS rebinding: a page of another origin that resolves its own name to this machine sends its own name.
 3. A request whose method is not GET or HEAD: its `Origin`, when there is one, must be `https://` and that same host, or 403; without an `Origin`, `Sec-Fetch-Site` must be `same-origin`, or 403.
 4. The body: a `Content-Length` over the limit (64 KiB) is refused with 413 before anything is read, and so is a body that grows past it while it is read; a body that has not arrived whole within ten seconds of the first look at it is refused with 408; it is read whole before the application sees the request. Slow request headers are not bounded here (uvicorn reads them before this layer runs): only by the server's limit on connections.
 5. A request whose method is not GET or HEAD may carry only an `application/x-www-form-urlencoded` body (415 otherwise); it is parsed here, at most 64 fields and each name once (400 otherwise), into `scope["sdp.form"]`.
@@ -17,6 +17,8 @@ import time
 import urllib.parse
 
 import anyio
+
+from social_data_pipeline.webui import config
 
 COOKIE_NAME = "__Host-sdp_session"
 FORM_TOKEN_HEADER = b"x-sdp-form-token"
@@ -112,6 +114,7 @@ class Guard:
     def __init__(self, app, *, settings, sessions, body_max=BODY_MAX_BYTES, body_seconds=BODY_SECONDS, clock=time.monotonic):
         self.app = app
         self.allowed_hosts = settings.allowed_hosts()
+        self.local_hosts = settings.local_hosts()
         self.sessions = sessions
         self.body_max = body_max
         self.body_seconds = body_seconds
@@ -145,7 +148,7 @@ class Guard:
 
     async def _checked(self, scope, receive, send):
         host = _one_header(scope, b"host")
-        if not host or host not in self.allowed_hosts:
+        if not host or not (host in self.allowed_hosts or (host in self.local_hosts and _on_local_port(scope))):
             await _refuse(send, 400, UNKNOWN_HOST)
             return
         method = scope["method"]
@@ -213,6 +216,11 @@ class Guard:
             return await receive()
 
         await self.app(scope, replay, send)
+
+
+def _on_local_port(scope):
+    server = scope.get("server")
+    return bool(server) and len(server) >= 2 and server[1] == config.LOCAL_PORT
 
 
 def _same_origin(scope, host):

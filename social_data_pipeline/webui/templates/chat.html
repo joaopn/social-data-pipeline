@@ -1,35 +1,127 @@
+{#- The Chat window, as the mock-up draws it: three columns at full height, for `/chat` (no chat open: `chat_id` is none) and `/chat/<id>`. Left: a new chat, the chats (a pulsing dot on one whose turn runs, as of the page's load), the data in reach (from `hello`) and the window's note. Middle: the open chat's title and file count, the conversation (it scrolls; `app.js` keeps it at its newest event while the view is at the bottom) and the answer box pinned under it, with `#chat-controls` (the stop button while a turn runs) beside the send form, never inside it: a form inside a form is dropped by the parser, and the stop button would then send the question. Right: the sandbox (from `hello`; its failure is shown here only), the open chat's files and the way to delete it. Below 1150 px wide the side columns stack under the conversation (chat.css). Every text of the runner is drawn through `vis` and escaped; nothing of it becomes markup or an attribute but a checked file's address. -#}
 {% extends "frame.html" %}
 {% from "_queue_macros.html" import vis %}
-{% block content %}
-{%- if failure and not chats %}
-<p class="notice notice-bad" role="alert">{{ failure }}</p>
-{%- else %}
-<section class="card" aria-labelledby="sandbox-title">
-  <h2 id="sandbox-title">The assistant</h2>
-  {%- if hello %}
-  <dl class="facts"><dt>Back end</dt><dd>{{ hello.backend }}</dd><dt>Databases it can read</dt><dd>{{ hello.databases }}</dd><dt>Query queue</dt><dd>{{ hello.queue }}</dd></dl>
-  {%- else %}
-  <p class="notice">{{ hello_failure }}</p>
-  {%- endif %}
-  <p class="muted">The assistant runs in the chat's sandbox. Everything it sends is shown as text: no link, image or markup of its answers is followed.</p>
-  <form method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}"><button type="submit">New chat</button></form>
-</section>
-<section class="card" aria-labelledby="chats-title">
-  <h2 id="chats-title">Chats</h2>
-  {%- if failure %}
-  <p class="notice notice-bad">{{ failure }}</p>
-  {%- elif not chats %}
-  <p class="muted">No chat yet.</p>
-  {%- else %}
-  <table>
-    <thead><tr><th>Chat</th><th>Started</th><th>Turn</th></tr></thead>
-    <tbody>
+{% import "_chat_macros.html" as m %}
+{% block shell %}
+<main class="cw">
+<aside class="left" aria-label="Chats">
+  <form class="new-chat" method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}"><button type="submit" class="btn primary">New chat</button></form>
+  <h4>Chats</h4>
+  {%- if chats %}
+  <nav class="chat-list" aria-label="Chats">
     {%- for row in chats %}
-    <tr><td><a href="{{ row.href }}">{% if row.title %}{{ vis(row.title) }}{% else %}(no question yet){% endif %}</a></td><td>{{ row.created }}</td><td>{% if row.running %}<span class="state state-on">running</span>{% else %}<span class="muted">-</span>{% endif %}</td></tr>
+    <a class="navi{{ ' on' if row.on else '' }}" href="{{ row.href }}"{% if row.on %} aria-current="page"{% endif %}><span class="lbl">{% if row.title %}{{ vis(row.title) }}{% else %}(no question yet){% endif %}</span>{% if row.running %}<span class="dot run" role="img" aria-label="a turn runs" title="a turn of this chat is running"></span>{% endif %}</a>
     {%- endfor %}
-    </tbody>
-  </table>
+  </nav>
+  {%- elif chats is not none %}
+  <p class="side-line small muted">No chat yet.</p>
+  {%- else %}
+  <p class="side-line small muted">The chats could not be read.</p>
+  {%- endif %}
+  <h4>Data in reach</h4>
+  <div class="reach col small ink2">
+    {%- if hello %}
+    {%- for name in hello.databases %}
+    <span class="row"><span class="dot ok"></span>{{ name }} · read-only</span>
+    {%- else %}
+    <span class="row"><span class="dot"></span>No database</span>
+    {%- endfor %}
+    <span class="row"><span class="dot{{ ' ok' if hello.queue else '' }}"></span>{{ hello.queue_line }}</span>
+    {%- else %}
+    <span class="row"><span class="dot bad"></span>Not known: the sandbox did not answer</span>
+    {%- endif %}
+  </div>
+  <span class="grow"></span>
+  <p class="side-note small muted">This window only reads data and draws. Sources and databases are in Management; the queue of long queries is in Queue.</p>
+</aside>
+
+<section class="mid" aria-label="Conversation">
+  {%- if chat_id %}
+  <div class="chead"><b class="chat-name">{% if failure %}Chat{% elif chat_title %}{{ vis(chat_title) }}{% else %}(no question yet){% endif %}</b>{% if files_count %}<span class="right small muted">{{ files_count }}</span>{% endif %}</div>
+  {%- if failure %}
+  <div class="chat"><p class="notice notice-bad" role="alert">{{ failure }}</p></div>
+  {%- else %}
+  <div class="chat" aria-live="polite">
+    {%- if start %}<p class="chat-note small muted">From event {{ start }} on. <a href="/chat/{{ chat_id }}">From the start</a></p>{% endif %}
+    {%- if not events and not trigger and not events_failure %}<p class="chat-note small muted">No question yet.</p>{% endif %}
+    {%- for item in events %}{{ m.event(item) }}{% endfor %}
+    {%- if events_failure %}<p class="note crit">{{ events_failure }}</p>{% endif %}
+    {%- if trigger %}<div id="chat-next" hx-get="{{ next_href }}" hx-trigger="{{ trigger }}" hx-swap="outerHTML"></div>{% endif %}
+    {%- if continue_href %}<p class="chat-note small muted">This view has shown 2,000 events and stops here. <a href="{{ continue_href }}">Continue from here</a></p>{% endif %}
+  </div>
+  {%- endif %}
+  {%- if line %}
+  <p class="composer-line notice notice-bad" role="alert">{{ line }}</p>
+  {%- endif %}
+  {%- if not failure %}
+  <div class="composer">
+    <form class="send" method="post" action="/chat/{{ chat_id }}/send">
+      <input type="hidden" name="form_token" value="{{ form_token }}">
+      <textarea name="text" rows="1" maxlength="{{ text_max }}" required aria-label="Your question" placeholder="Ask about the data, or ask for a plot…">
+{{ draft }}</textarea>
+      <button type="submit" class="btn primary">Send</button>
+    </form>
+    {% include "_chat_controls.html" %}
+  </div>
+  {%- endif %}
+  {%- else %}
+  <div class="chead"><b class="chat-name">No chat open</b></div>
+  <div class="chat">
+    {%- if failure %}
+    <p class="notice notice-bad" role="alert">{{ failure }}</p>
+    {%- else %}
+    <div class="chat-empty">
+      <h2>Start a new chat</h2>
+      <p class="muted">Ask about the data in reach, or ask for a plot. Each chat keeps its own files.</p>
+      <form method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}"><button type="submit" class="btn primary">New chat</button></form>
+    </div>
+    {%- endif %}
+  </div>
+  <div class="composer">
+    <textarea rows="1" disabled aria-label="Your question" placeholder="Open a chat or start a new one to ask"></textarea>
+    <button type="button" class="btn primary" disabled>Send</button>
+  </div>
   {%- endif %}
 </section>
-{%- endif %}
+
+<aside class="rightp" aria-label="Sandbox and files">
+  <div>
+    <h4>Sandbox</h4>
+    <div class="card mt sandbox">
+      {%- if hello %}
+      <div class="row"><span class="dot ok"></span><b>{{ hello.backend }}</b><span class="right small muted">up</span></div>
+      <dl class="kv mt">
+        <dt>Can reach</dt><dd>the model{% if hello.databases %}, the read-only MCP servers{% endif %}{% if hello.queue %}, the queue's submit endpoint{% endif %}: only through the chat's gateway</dd>
+        <dt>Cannot</dt><dd>{% if hello.queue %}approve its own queries; {% endif %}reach Docker, the broker, this machine, the pipeline's files or the internet</dd>
+        <dt>Reads</dt><dd>{% if hello.databases %}the databases in reach, as read-only users{% else %}no database{% endif %}{% if hello.queue %}; results of its own queries once they ran{% endif %}</dd>
+        <dt>Writes to</dt><dd>the chats' folders (<code>.sdp/chat/work</code>, every chat's) and <code>.sdp/chat/socket</code> only</dd>
+      </dl>
+      {%- else %}
+      <div class="row"><span class="dot bad"></span><b>The sandbox did not answer</b></div>
+      {%- if hello_failure %}<p class="small ink2">{{ hello_failure }}</p>{% endif %}
+      {%- endif %}
+      <p class="small muted">Restart or stop the sandbox at the terminal: <code>sdp chat stop</code> / <code>sdp chat start</code></p>
+    </div>
+  </div>
+  {%- if chat_id and not failure %}
+  <div>
+    <h4>This chat's files</h4>
+    <div class="col mt">
+      {%- if files_failure %}
+      <p class="note">{{ files_failure }}</p>
+      {%- elif not files %}
+      <p class="small muted">The chat's folder holds no file.</p>
+      {%- else %}
+      {%- for entry in files %}
+      <a class="thumb row" href="{{ entry.href }}"><span aria-hidden="true">{{ entry.glyph }}</span><span class="name">{{ vis(entry.name) }}</span><span class="right muted">{{ entry.size }}</span></a>
+      {%- endfor %}
+      {%- endif %}
+      {%- if left_out %}<p class="small muted">{{ left_out }} names are not listed: the sandbox lists only names of letters, digits, spaces, dots, dashes and underscores.</p>{% endif %}
+      {%- if more %}<p class="small muted">The folder holds more files than are listed.</p>{% endif %}
+    </div>
+  </div>
+  <div><a class="btn sm danger" href="/chat/{{ chat_id }}/delete">Delete this chat</a></div>
+  {%- endif %}
+</aside>
+</main>
 {% endblock %}

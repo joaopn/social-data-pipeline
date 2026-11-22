@@ -178,12 +178,12 @@ def ask(page, token, chat, question, until, seconds=120):
 def check_pages(d, page, token):
     print("2. a new chat, a turn that writes a plot")
     text = page.request("GET", "/chat")[2]
-    check("claude-code" in text and "mongo" in text and "No chat yet." in text, "the Chat page names the back end and mongo and lists no chat")
+    check("claude-code" in text and "MongoDB · read-only" in text and "No chat yet." in text, "the Chat page names the back end and mongo and lists no chat")
     status, headers, _, _ = page.request("POST", "/chat/new", headers=page.origin, form={"form_token": token})
     chat = headers["location"].rsplit("/", 1)[1]
     check(status == 303 and re.fullmatch(r"c_[0-9a-f]{12}", chat), f"New chat leads to {chat}")
     text = ask(page, token, chat, "PLOT-TURN draw the counts", lambda t: "Stop the turn" not in t and "The turn ended" in t)
-    check("PLOT-TURN draw the counts" in text and '<details class="chat-tool"><summary>Tool call: <code>Bash</code>' in text and "Here is the plot: plot.png" in text, "the page shows the question, the tool call collapsed and the answer")
+    check("PLOT-TURN draw the counts" in text and '<details class="tool call"><summary><span class="gl" aria-hidden="true">▣</span><span class="nm">Bash</span>' in text and "Here is the plot: plot.png" in text, "the page shows the question, the tool call collapsed and the answer")
     check(f'src="/chat/{chat}/image/plot.png"' in text and f'href="/chat/{chat}/file/plot.png"' in text, "the image inline and the download link")
     status, headers, body = raw_get(page, f"/chat/{chat}/image/plot.png")
     check(status == 200 and body == PNG and headers["content-type"] == "image/png" and "sandbox" in headers["content-security-policy"], f"the image is served as image/png with the sandbox policy ({headers.get('content-security-policy')})")

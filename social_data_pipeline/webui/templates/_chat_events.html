@@ -1,7 +1,7 @@
 {#- A part of the conversation, the answer to one request of its events (see `chat`): the events to append, then the element that makes the next request, or nothing once the turn has ended and nothing more came. With `running` known, the controls are replaced out of band (the stop button only while a turn runs). -#}
 {% import "_chat_macros.html" as m %}
 {%- for item in events %}{{ m.event(item) }}{% endfor %}
-{%- if line %}<p class="notice">{{ line }}</p>{% endif %}
+{%- if line %}<p class="note warn">{{ line }}</p>{% endif %}
 {%- if trigger %}<div id="chat-next" hx-get="{{ next_href }}" hx-trigger="{{ trigger }}" hx-swap="outerHTML"></div>{% endif %}
-{%- if continue_href %}<p class="muted">This view has shown 2,000 events and stops here. <a href="{{ continue_href }}">Continue from here</a></p>{% endif %}
+{%- if continue_href %}<p class="chat-note small muted">This view has shown 2,000 events and stops here. <a href="{{ continue_href }}">Continue from here</a></p>{% endif %}
 {%- if running is not none %}{% include "_chat_controls.html" %}{% endif %}

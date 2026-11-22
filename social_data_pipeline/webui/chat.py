@@ -2,8 +2,10 @@
 
 Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule, and nothing of an answer reaches a header or a script.
 
-- `GET /chat`: the chats, newest first (title, whether a turn runs), the back end, the databases the chat can read and whether the assistant can submit to the query queue (`hello`), and a button for a new chat. `POST /chat/new` makes one (`chat.new`) and leads to it.
-- `GET /chat/<id>` (an id of the runner's form, else not found): the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`) with their download links, the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
+Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat and the data in reach (the databases the chat can read and whether the assistant can submit to the query queue, from `hello`); in the middle the open chat; on the right the sandbox (`hello`) and the open chat's files. A failure of `hello` is shown in the side columns only.
+
+- `GET /chat`: the three columns with no chat open (`chat.list`, `hello`). `POST /chat/new` makes one (`chat.new`) and leads to it.
+- `GET /chat/<id>` (an id of the runner's form, else not found): the chats (the list `chat.list` gave when the chat was looked up: the runner is not asked twice), the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`) with their download links, the sandbox (`hello`), the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
 - `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
 - `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. The web UI opens no file for either: the bytes come only through the socket.
 
@@ -27,9 +29,16 @@ from social_data_pipeline.webui.calls import BUSY_GATE
 log = logging.getLogger("social_data_pipeline.webui")
 
 CHAT_PAGES = (("chat:list", "Chats", "/chat"),)
-# Whether the assistant can submit to the query queue, as `hello` says.
-QUEUE_ON = "Attached: the assistant can submit queries to the scheduler, and each one waits until a person approves it in the Queue window."
-QUEUE_OFF = "Not attached: the assistant cannot submit queries to the scheduler."
+# Whether the assistant can submit to the query queue, as `hello` says (the queue's line under "Data in reach").
+QUEUE_ON = "Queue · long queries, after approval"
+QUEUE_OFF = "Queue · not attached"
+# The names the page gives the databases `hello` lists; any other name is shown as it is.
+DATABASE_NAMES = {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}
+# A tool name of the form `mcp__<server>__<tool>` (a tool of an MCP server, as Claude Code names it), shown as "<server> · <tool>".
+MCP_TOOL = re.compile(r"mcp__([A-Za-z0-9.-][A-Za-z0-9_.-]*?)__([A-Za-z0-9_.-]+)")
+# The glyph of a file of the chat by its name's ending (the mock-up's), any other file the last one.
+FILE_GLYPHS = (((".png", ".jpg", ".jpeg", ".svg"), "▨"), ((".csv", ".parquet", ".json", ".jsonl", ".tsv", ".xlsx"), "▦"))
+OTHER_GLYPH = "◧"
 EVENTS_PAGE = 200
 POLL = "load delay:2s"
 NOW = "load"
@@ -97,7 +106,9 @@ def event_model(event, chat_id):
             return {"kind": kind, "blocks": found, "cut": was_cut}
         if kind == "tool":
             name = _text(event["name"], 200)
-            return {"kind": kind, "name": name if TOOL_NAME.fullmatch(name) else None, "input": statements.visible(_text(event["input"]))[0]}
+            shown = name if TOOL_NAME.fullmatch(name) else None
+            server = MCP_TOOL.fullmatch(shown) if shown else None
+            return {"kind": kind, "name": shown, "server": server.group(1) if server else None, "tool": server.group(2) if server else None, "input": statements.visible(_text(event["input"]))[0]}
         if kind == "tool_result":
             if not isinstance(event["is_error"], bool):
                 raise ValueError("not a flag")
@@ -186,6 +197,27 @@ def _status_of(error):
     if code == "not_found":
         return 404
     return 503 if code in ("unreachable", "not_understood", "unavailable", "internal") else 409
+
+
+def glyph_of(name):
+    """The glyph shown before a file of the chat, by its name's ending."""
+    lowered = name.lower()
+    return next((glyph for endings, glyph in FILE_GLYPHS if lowered.endswith(endings)), OTHER_GLYPH)
+
+
+def chat_rows(chats, current=None):
+    """The chat list of the left column from the entries of `chat.list`: the address, the title's runs, whether a turn runs and whether it is the open chat `current`."""
+    return [{"href": f"/chat/{chat['id']}", "title": statements.visible(chat["title"])[0], "running": chat["running"], "on": chat["id"] == current} for chat in chats]
+
+
+def hello_model(hello):
+    """What the side columns show of an answer of `hello`: the back end, the names of the databases the chat reads, whether the queue is attached and its line."""
+    return {"backend": hello["backend"], "databases": [DATABASE_NAMES.get(name, name) for name in hello["databases"]], "queue": hello["queue"], "queue_line": QUEUE_ON if hello["queue"] else QUEUE_OFF}
+
+
+def files_count(count, more):
+    """The header's count of a chat's files."""
+    return f"{count}{'+' if more else ''} file{'' if count == 1 and not more else 's'}"
 
 
 def events_href(chat_id, offset, start):
@@ -286,26 +318,38 @@ def install(api, ctx):
 
     # ── the chats ──
 
-    def list_work(session):
-        model = {"failure": None, "hello": None, "hello_failure": None, "chats": None}
+    def page_model(chat_id=None, **values):
+        """Every field `chat.html` reads, for no chat open (`chat_id` None) or for one."""
+        model = {"chat_id": chat_id, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "more": False, "chat_title": None}
+        model.update(values)
+        return model
+
+    def ask_hello(model):
+        """Ask `hello` and put its answer, or the sentence of its failure, in `model` (the side columns only); returns the error or None."""
         kind, hello = _ask(runner.hello)
-        if kind == "error" and getattr(hello, "code", None) == "unreachable":
-            model["failure"] = words.chat_sentence(hello)
-            return model
         if kind == "ok":
-            model["hello"] = {"backend": hello["backend"], "databases": ", ".join(hello["databases"]) or "none", "queue": QUEUE_ON if hello["queue"] else QUEUE_OFF}
-        else:
-            model["hello_failure"] = words.chat_sentence(hello)
+            model["hello"] = hello_model(hello)
+            return None
+        model["hello_failure"] = words.chat_sentence(hello)
+        return hello
+
+    def list_work(session):
+        model = page_model()
+        error = ask_hello(model)
+        if error is not None and getattr(error, "code", None) == "unreachable":
+            # The runner cannot be reached: the list is not asked for (the same wait again), the page says why in its middle.
+            model["failure"] = model["hello_failure"]
+            return model
         kind, chats = _ask(runner.chats)
         if kind == "error":
             model["failure"] = words.chat_sentence(chats)
             return model
-        model["chats"] = [{"href": f"/chat/{chat['id']}", "title": statements.visible(chat["title"])[0], "created": queue.when(chat["created"]), "running": chat["running"]} for chat in chats]
+        model["chats"] = chat_rows(chats)
         return model
 
     @api.get("/chat")
     async def chats_page(request: Request):
-        return (await checked_run(request, list_work, page=shown("chat.html", "Chats")))[1]
+        return (await checked_run(request, list_work, page=shown("chat.html", "Chat")))[1]
 
     @api.post("/chat/new")
     async def new_chat(request: Request):
@@ -328,19 +372,26 @@ def install(api, ctx):
     # ── one chat ──
 
     def find(chat_id):
-        """("ok", the chat's entry of `chat.list`) or ("error", the error; `not_found` when it is not listed)."""
+        """("ok", the chat's entry of `chat.list`, the list) or ("error", the error; `not_found` when it is not listed, the list or None when it could not be read)."""
         kind, chats = _ask(runner.chats)
         if kind == "error":
-            return kind, chats
+            return kind, chats, None
         found = next((chat for chat in chats if chat["id"] == chat_id), None)
-        return ("ok", found) if found is not None else ("error", client.BrokerError("not_found", "not listed"))
+        return ("ok", found, chats) if found is not None else ("error", client.BrokerError("not_found", "not listed"), chats)
 
     def conversation_work(chat_id, draft="", line=None, start=0):
         def work(_session):
-            model = {"chat_id": chat_id, "start": start, "failure": None, "draft": draft, "line": line, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "left_out": 0, "more": False, "chat_title": None}
-            kind, chat = find(chat_id)
+            model = page_model(chat_id, start=start, draft=draft, line=line)
+            kind, chat, chats = find(chat_id)
+            if chats is not None:
+                model["chats"] = chat_rows(chats, chat_id)
             if kind == "error":
                 model.update(failure=words.chat_sentence(chat), _status=_status_of(chat))
+                if getattr(chat, "code", None) == "unreachable":
+                    # The runner cannot be reached: `hello` is not asked (the same wait again).
+                    model["hello_failure"] = model["failure"]
+                else:
+                    ask_hello(model)
                 return model
             model["chat_title"] = statements.visible(chat["title"])[0] if chat["title"] else None
             kind, value = _ask(lambda: runner.events(chat_id, start, EVENTS_PAGE))
@@ -355,13 +406,15 @@ def install(api, ctx):
                 model["files_failure"] = words.chat_sentence(value)
             else:
                 files, model["left_out"], model["more"] = value
-                model["files"] = [{"name": statements.visible(entry["name"])[0], "size": queue.size_text(entry["size"]), "href": file_href(chat_id, entry["name"])} for entry in files]
+                model["files"] = [{"name": statements.visible(entry["name"])[0], "size": queue.size_text(entry["size"]), "href": file_href(chat_id, entry["name"]), "glyph": glyph_of(entry["name"])} for entry in files]
+                model["files_count"] = files_count(len(files), model["more"])
+            ask_hello(model)
             return model
 
         return work
 
     async def conversation(request, chat_id, draft="", line=None, status=None, cached=True, start=0):
-        return (await checked_run(request, conversation_work(chat_id, draft, line, start), cached, page=shown("chat_conversation.html", "Chat", status)))[1]
+        return (await checked_run(request, conversation_work(chat_id, draft, line, start), cached, page=shown("chat.html", "Chat", status)))[1]
 
     @api.get("/chat/{chat_id}")
     async def chat_page(request: Request, chat_id: str):
@@ -450,7 +503,7 @@ def install(api, ctx):
             return _not_found()
 
         def work(_session):
-            kind, chat = find(chat_id)
+            kind, chat, _chats = find(chat_id)
             if kind == "error":
                 return {"chat_id": chat_id, "failure": words.chat_sentence(chat), "chat_title": None, "running": False, "_status": _status_of(chat)}
             return {"chat_id": chat_id, "failure": None, "chat_title": statements.visible(chat["title"])[0] if chat["title"] else None, "running": chat["running"]}

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import html
+import html.parser
 import importlib.util
 import json
 import re
@@ -289,7 +290,7 @@ def test_the_page_says_whether_the_assistant_can_submit_to_the_queue(client, scr
     """Bug class: the page saying the assistant can submit to the queue when it cannot (or the reverse), or a web UI refusing the hello of a sandbox image of the other version."""
     scripted.answers["hello"] = hello
     text = main_text(client.get("/chat").text)
-    assert NOT_UNDERSTOOD not in text and "mongo" in text
+    assert NOT_UNDERSTOOD not in text and "MongoDB · read-only" in text
     assert (chat.QUEUE_ON in text) is (line == "on") and (chat.QUEUE_OFF in text) is (line == "off")
     assert assistant.Assistant(scripted.path).hello() == {"backend": "claude-code", "databases": ["mongo"], "queue": line == "on"}
 
@@ -370,7 +371,7 @@ def test_hostile_text_is_text_everywhere(client, scripted):
         assert not [value for value in attributes(page) if "javascript:" in value or "<" in value or "\\u" in value]
     page = client.get(f"/chat/{CHAT_ID}").text
     assert '<span class="escape" title="made visible">\\u202e</span>' in page and "&lt;script&gt;" in page
-    assert "Tool call: a tool" in main_text(page) and "<code>mcp__mongo__find</code>" in page
+    assert '<span class="nm">a tool</span>' in page and '<span class="nm">mongo · find</span>' in page
     links = re.findall(r'href="(/chat/[^"]+)"', page)
     images = re.findall(r'src="([^"]+)"', page)
     assert [link for link in links if "/file/" in link or "/image/" in link] == [f"/chat/{CHAT_ID}/file/my%20plot.PNG"] * 2
@@ -388,9 +389,9 @@ def test_the_events_part_pages_by_offset_and_stops_when_the_turn_has_ended(clien
     """Bug class: events shown twice or skipped across pages, a poll that never stops for an ended chat, or one that stops while the turn runs."""
     scripted.events = [an_event("user", n=index, text=f"question {index}") for index in range(250)]
     page = client.get(f"/chat/{CHAT_ID}").text
-    assert page.count('class="chat-user"') == 200 and nexts(page) == [(f"/chat/{CHAT_ID}/events?offset=200&from=0", "load")]
+    assert page.count('class="msg user"') == 200 and nexts(page) == [(f"/chat/{CHAT_ID}/events?offset=200&from=0", "load")]
     part = client.get(f"/chat/{CHAT_ID}/events?offset=200", headers=HX).text
-    assert part.count('class="chat-user"') == 50 and "question 200" in part and "question 199" not in part
+    assert part.count('class="msg user"') == 50 and "question 200" in part and "question 199" not in part
     assert nexts(part) == [(f"/chat/{CHAT_ID}/events?offset=250&from=0", "load")]
     last = client.get(f"/chat/{CHAT_ID}/events?offset=250", headers=HX).text
     assert nexts(last) == [] and "Stop the turn" not in last and 'id="chat-controls" hx-swap-oob="true"' in last
@@ -675,7 +676,7 @@ def test_a_real_turn_through_the_page(make_app, make_client, real_runner):
         time.sleep(0.1)
     page = made.get(location).text
     text = main_text(page)
-    assert page.count('class="chat-user"') == 1 and "What is there?" in text and "Tool call: Bash" in text and "made-up listing" in text
+    assert page.count('class="msg user"') == 1 and "What is there?" in text and '<span class="nm">Bash</span>' in page and "made-up listing" in text
     assert "<strong>Done</strong>: see <code>notes.txt</code>" in page and f'href="/chat/{chat_id}/file/notes.txt"' in page
     assert "cost 0.5000 USD as reported by the back end" in text and chat.NOT_UNDERSTOOD_EVENT not in text and NOT_UNDERSTOOD not in text
     assert nexts(page) == [(f"/chat/{chat_id}/events?offset=6&from=0", "load")]
@@ -717,7 +718,7 @@ def test_an_event_too_long_alone_is_shown_cut_in_a_view_of_its_own(make_app, mak
     assert chat.TOO_LONG_EVENT in main_text(page) and f'href="/chat/{CHAT_ID}?from=1"' in page
     page = made.get(f"/chat/{CHAT_ID}?from=1").text
     text = main_text(page)
-    assert page.count('class="chat-user"') == 1 and chat.SHOWN_CUT in text and chat.TOO_LONG_EVENT not in text and "\\u200b" in text
+    assert page.count('class="msg user"') == 1 and chat.SHOWN_CUT in text and chat.TOO_LONG_EVENT not in text and "\\u200b" in text
     models, units = chat.events_model(scripted.events[1:], CHAT_ID, 5000, 1)
     assert units <= 5000 and models[0]["shown_cut"] == chat.SHOWN_CUT
 
@@ -742,7 +743,7 @@ def test_the_largest_honest_replies_pass(client, scripted):
     scripted.events = [an_event("user", n=index, text="{[\"" * 640) for index in range(200)]
     scripted.files = {f"file {index:03d}.txt": b"x" for index in range(500)}
     page = client.get(f"/chat/{CHAT_ID}").text
-    assert page.count('class="chat-user"') == 200 and page.count(f'href="/chat/{CHAT_ID}/file/file%20') == 500 and NOT_UNDERSTOOD not in main_text(page)
+    assert page.count('class="msg user"') == 200 and page.count(f'href="/chat/{CHAT_ID}/file/file%20') == 500 and NOT_UNDERSTOOD not in main_text(page)
     scripted.chats = [{**GOOD_CHAT, "id": f"c_{index:012x}", "title": "x" * 80} for index in range(200)]
     assert client.get("/chat").text.count('href="/chat/c_') == 200
 
@@ -807,13 +808,13 @@ def test_a_view_appends_at_most_2000_events_then_offers_to_continue(client, scri
     """Bug class: one view that appends events without end (a log of half a million lines held by the browser and asked for by the page)."""
     scripted.events = [an_event("user", n=index, text=f"question {index}") for index in range(2100)]
     part = client.get(f"/chat/{CHAT_ID}/events?offset=1900&from=0", headers=HX).text
-    assert part.count('class="chat-user"') == 100 and nexts(part) == [] and f'<a href="/chat/{CHAT_ID}?from=2000">Continue from here</a>' in part
+    assert part.count('class="msg user"') == 100 and nexts(part) == [] and f'<a href="/chat/{CHAT_ID}?from=2000">Continue from here</a>' in part
     assert scripted.requests[-1]["limit"] == 100
     asked = len(scripted.requests)
     part = client.get(f"/chat/{CHAT_ID}/events?offset=2050&from=50", headers=HX).text
     assert "Continue from here" in part and len(scripted.requests) == asked
     page = client.get(f"/chat/{CHAT_ID}?from=2000").text
-    assert "From event 2000 on." in main_text(page) and page.count('class="chat-user"') == 100 and "question 2000" in page and "question 1999" not in page
+    assert "From event 2000 on." in main_text(page) and page.count('class="msg user"') == 100 and "question 2000" in page and "question 1999" not in page
     assert nexts(page) == [(f"/chat/{CHAT_ID}/events?offset=2100&from=2000", "load")]
 
 
@@ -900,3 +901,102 @@ def test_a_reply_that_dribbles_ends_at_the_time_limit(make_app, make_client, scr
     looks.clear()
     text = main_text(made.get("/chat").text)
     assert "made-up question" in text and NO_REPLY not in text
+
+
+# ── the three columns (the mock-up's layout) ────────────────────────────────
+
+
+class Nesting(html.parser.HTMLParser):
+    """The open elements above each element with an id, and the region of each `class` value seen, as the browser's parser would nest them (void elements never open)."""
+
+    VOID = {"input", "img", "br", "meta", "link", "hr", "source", "area", "base", "col", "embed", "wbr"}
+
+    def __init__(self):
+        super().__init__()
+        self.stack, self.above, self.inside = [], {}, []
+
+    def handle_starttag(self, tag, attrs):
+        found = dict(attrs)
+        if "id" in found:
+            self.above[found["id"]] = [entry[0] for entry in self.stack]
+        if tag not in self.VOID:
+            self.stack.append((tag, found.get("class", ""), found.get("action", "")))
+
+    def handle_endtag(self, tag):
+        while self.stack:
+            if self.stack.pop()[0] == tag:
+                break
+
+
+def nesting(page):
+    parser = Nesting()
+    parser.feed(page)
+    return parser
+
+
+def columns(page):
+    """The classes of the three columns of the window's `<main>`, in order."""
+    return re.findall(r'<(aside|section) class="(left|mid|rightp)"', page)
+
+
+def test_the_conversation_page_shows_the_chats_and_the_data_in_reach_from_one_list(client, scripted):
+    """Bug class: the conversation page without the chat list (or asking the runner for it twice), the running dot or the open chat's mark on the wrong chat, the databases of `hello` missing from "Data in reach"."""
+    other = "c_0123456789ac"
+    scripted.chats = [{**GOOD_CHAT, "title": "the open one"}, {**GOOD_CHAT, "id": other, "title": "the busy one", "running": True}]
+    scripted.answers["hello"] = {"version": 1, "backend": "claude-code", "databases": ["mongo", "starrocks"], "queue": True}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    assert columns(page) == [("aside", "left"), ("section", "mid"), ("aside", "rightp")]
+    assert f'<a class="navi on" href="/chat/{CHAT_ID}" aria-current="page"><span class="lbl">the open one</span></a>' in page
+    assert re.search(rf'<a class="navi" href="/chat/{other}"><span class="lbl">the busy one</span><span class="dot run"', page)
+    assert page.count('class="dot run"') == 1
+    text = main_text(page)
+    assert "MongoDB · read-only" in text and "StarRocks · read-only" in text and chat.QUEUE_ON in text and "claude-code" in text
+    assert scripted.ops().count("chat.list") == 1 and scripted.ops().count("hello") == 1
+
+
+@pytest.mark.parametrize("hello", [refuse("internal"), {"version": 1, "backend": MARK.upper(), "databases": []}])
+def test_a_failed_hello_is_confined_to_the_side_columns(client, scripted, hello):
+    """Bug class: a `hello` that fails (refused, or of another shape) taking the conversation or the chat list down with it, or the side columns claiming what the sandbox can reach without its answer."""
+    scripted.answers["hello"] = hello
+    scripted.events = [an_event("user", text="a question that stays")]
+    page = client.get(f"/chat/{CHAT_ID}")
+    text = main_text(page.text)
+    assert page.status_code == 200 and "a question that stays" in text and 'action="/chat/' + CHAT_ID + '/send"' in page.text
+    assert "The sandbox did not answer" in text and "Can reach" not in text and chat.QUEUE_ON not in text and MARK not in page.text.upper()
+    listing = client.get("/chat")
+    assert listing.status_code == 200 and "made-up question" in main_text(listing.text) and "The sandbox did not answer" in main_text(listing.text)
+
+
+def test_the_chats_page_with_no_chat_open_has_the_three_columns_and_nothing_to_send(client, scripted):
+    """Bug class: `/chat` drawn as another layout than the conversation, or with an answer box that posts to no chat."""
+    page = client.get("/chat").text
+    assert columns(page) == [("aside", "left"), ("section", "mid"), ("aside", "rightp")]
+    assert "Start a new chat" in main_text(page) and "/send" not in page and 'id="chat-controls"' not in page
+    assert page.count('action="/chat/new"') == 2 and re.search(r"<textarea[^>]*disabled", page)
+
+
+def test_the_stop_button_is_never_inside_the_send_form(client, scripted):
+    """Bug class: `#chat-controls` (the stop form) drawn inside the send form: the parser drops the inner form, and Stop then sends the question."""
+    scripted.running = True
+    page = client.get(f"/chat/{CHAT_ID}").text
+    parsed = nesting(page)
+    assert "Stop the turn" in page and "form" not in parsed.above["chat-controls"]
+    assert page.count("<form") == page.count("</form>")
+    sends = [match.start() for match in re.finditer(r'<form class="send"', page)]
+    stops = [match.start() for match in re.finditer(r'<form class="stop"', page)]
+    assert len(sends) == 1 and len(stops) == 1 and page.index("</form>", sends[0]) < stops[0]
+
+
+@pytest.mark.parametrize("name, label", [
+    ("mcp__starrocks__read_query", ("starrocks", "read_query")),
+    ("mcp__sdp-mongo__find__deep", ("sdp-mongo", "find__deep")),
+    ("mcp__jobs", (None, None)),
+    ("mcp____x", (None, None)),
+    ("Bash", (None, None)),
+    ("mcp__a__b<", (None, None)),
+])
+def test_an_mcp_tool_is_labelled_by_its_server_and_tool(name, label):
+    """Bug class: a tool of an MCP server shown as its raw `mcp__server__tool` name, or a label made of anything but a name that is already shown (a name that is not plain gets no label)."""
+    model = chat.event_model(an_event("tool", name=name, input="{}"), CHAT_ID)
+    assert (model["server"], model["tool"]) == label
+    assert model["name"] == (name if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name) else None)

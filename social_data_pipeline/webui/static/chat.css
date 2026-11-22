@@ -1,1 +1,65 @@
-/* The Chat window's own rules, on the kit's tokens of app.css. */
+/* The Chat window's own rules, on the kit's tokens of app.css: the mock-up's three columns (chat.html), at full height under the top bar; below 1150 px wide the side columns stack under the conversation, never hidden. */
+.cw { display: grid; grid-template-columns: 236px minmax(0, 1fr) 330px; flex: 1; min-height: 0; }
+.cw > * { min-height: 0; min-width: 0; }
+
+/* left: new chat, the chats, the data in reach, the note */
+.cw .left { background: var(--surface); border-right: 1px solid var(--line); padding: 12px 8px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.cw .left > h4 { padding: 14px 10px 4px; }
+.cw .new-chat button { width: 100%; justify-content: center; }
+.cw .chat-list { display: flex; flex-direction: column; gap: 2px; }
+.cw .chat-list .navi .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw .side-line { padding: 4px 10px; }
+.cw .reach { padding: 0 10px; }
+.cw .reach .row { align-items: baseline; }
+.cw .reach .dot { transform: translateY(-1px); }
+.cw .side-note { padding: 8px 10px; }
+
+/* middle: the header, the conversation, the answer box */
+.cw .mid { display: flex; flex-direction: column; }
+.cw .mid > * + * { margin-top: 0; }
+.cw .chead { display: flex; align-items: center; gap: 10px; padding: 9px max(16px, calc((100% - 820px) / 2)); border-bottom: 1px solid var(--line); background: var(--surface); flex: none; min-height: 39px; }
+.cw .chead .chat-name { font-weight: 500; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw .mid .chat { padding: 20px max(16px, calc((100% - 820px) / 2)); gap: 8px; }
+.cw .chat > * { max-width: 760px; }
+.cw .chat > .msg.user { max-width: 100%; margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cw .chat > .msg.user:first-child { margin-top: 0; }
+.cw .msg.bot.prose { display: block; margin: 4px 0; }
+.cw .chat details.tool > summary::-webkit-details-marker { display: none; }
+.cw .chat details.tool .gl { width: 14px; text-align: center; color: var(--muted); }
+.cw .chat details.tool[open] > summary .ms { color: var(--ink-2); }
+.cw .chat details.tool.result { margin-left: 22px; max-width: 738px; }
+.cw .chat details.tool.bad { border-color: var(--crit); }
+.cw .chat details.tool.bad .nm { color: var(--serious); }
+.cw .chat .plot { margin: 4px 0; }
+.cw .chat .plot .chat-image { display: block; margin-top: 4px; }
+.cw .chat .chat-end, .cw .chat .chat-note, .cw .chat .chat-unknown { margin: 2px 0 6px; }
+.cw .chat .note.crit { color: var(--ink); }
+.cw .chat-empty { margin: auto; max-width: 420px; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.cw .composer-line { flex: none; margin: 8px max(16px, calc((100% - 820px) / 2)) 0; }
+.cw .mid .composer { padding: 12px max(16px, calc((100% - 820px) / 2)); flex: none; flex-wrap: wrap; }
+.cw .composer .send { display: flex; gap: 8px; align-items: flex-end; flex: 1 1 420px; min-width: 0; }
+.cw .composer .send button { height: 32px; }
+.cw .composer > button { height: 32px; }
+.cw #chat-controls:empty { display: none; }
+.cw #chat-controls .stop { display: flex; align-items: center; gap: 8px; height: 40px; }
+
+/* right: the sandbox, the chat's files, delete */
+.cw .rightp { background: var(--surface); border-left: 1px solid var(--line); padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+.cw .rightp .sandbox { padding: 10px; }
+.cw .rightp .sandbox > * + * { margin-top: 12px; }
+.cw .rightp .kv dd { overflow-wrap: anywhere; }
+.thumb { border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--surface-2); font-size: 12px; }
+a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-decoration: none; }
+.thumb .name { min-width: 0; overflow-wrap: anywhere; }
+.thumb .right { white-space: nowrap; }
+
+/* the delete page */
+.chat-confirm { max-width: 640px; }
+
+@media (max-width: 1150px) {
+  .cw { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; align-content: start; overflow: auto; }
+  .cw > * { min-height: auto; }
+  .cw .mid { order: -1; height: calc(100vh - 46px); }
+  .cw .left, .cw .rightp { overflow: visible; border: 0; border-top: 1px solid var(--line); }
+  .cw .left .grow { display: none; }
+}

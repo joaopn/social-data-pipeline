@@ -1,5 +1,6 @@
+{#- The stop button while a turn runs: a sibling of the send form (never inside it), replaced out of band by each part of the events (`_chat_events.html`); empty otherwise. -#}
 <div id="chat-controls" hx-swap-oob="true">
 {%- if running %}
-<form method="post" action="/chat/{{ chat_id }}/stop"><input type="hidden" name="form_token" value="{{ form_token }}"><span class="muted">A turn is running.</span> <button type="submit" class="secondary">Stop the turn</button></form>
-{%- endif %}
+<form class="stop" method="post" action="/chat/{{ chat_id }}/stop"><input type="hidden" name="form_token" value="{{ form_token }}"><span class="dot run"></span><span class="small muted">A turn is running.</span><button type="submit" class="btn">Stop the turn</button></form>
+{%- endif -%}
 </div>

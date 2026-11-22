@@ -767,3 +767,51 @@ webui_unsetup_confirm:
   prompt: "Remove the web UI's container, network, image and settings (.sdp/webui)?"
   explain: Confirmation before `sdp webui unsetup` removes anything.
   default: "no"
+
+# ===========================================================================
+# sdp chat setup / unsetup
+# ===========================================================================
+
+chat_backend:
+  prompt: "Back end of the chat (claude-code: Claude Code on your own Claude subscription login; openai-compatible: an OpenAI-compatible endpoint such as OpenRouter)"
+  explain: >
+    claude-code: Claude Code with a token from `claude setup-token`, which uses your own Claude subscription under the vendor's terms for it; openai-compatible: an endpoint that speaks the OpenAI API, with its address, a model name and an API key.
+  default: "1 (claude-code)"
+  options:
+    1: claude-code
+    2: openai-compatible
+
+chat_upstream:
+  prompt: "Address of the endpoint (https)"
+  explain: Asked only for openai-compatible. https://host[:port]/path, without a user name, query, fragment, '..' or '%'.
+  default: "https://openrouter.ai/api/v1"
+
+chat_model:
+  prompt: "Model name"
+  explain: Asked only for openai-compatible. 1 to 200 visible ASCII characters, without spaces.
+  default: "(none; the saved one on a second setup)"
+
+chat_secret:
+  prompt: "Claude Code token (not shown as you type) / API key of the endpoint (not shown as you type)"
+  explain: Asked without echo, once. Stored in .sdp/chat/credential/model.token (mode 0600). Refused when empty, longer than 4096 characters or holding anything but visible ASCII.
+  default: "(none)"
+
+chat_replace_credential:
+  prompt: "A credential is stored (.sdp/chat/credential/model.token). Replace it?"
+  explain: Asked only when a credential is stored; no keeps it and asks no secret.
+  default: "no"
+
+chat_work_cap:
+  prompt: "Soft cap of the chats' work folder in GiB (1-10000)"
+  explain: A whole number of GiB from 1 to 10000.
+  default: "10"
+
+chat_unsetup_confirm:
+  prompt: "Remove the chat's images, settings and credential?"
+  explain: Confirmation before `sdp chat unsetup` removes anything.
+  default: "no"
+
+chat_unsetup_work:
+  prompt: "Also delete all chats and their files (.sdp/chat/work)?"
+  explain: Asked after the confirmation of `sdp chat unsetup`; no keeps the work folder.
+  default: "no"

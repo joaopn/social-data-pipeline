@@ -1,0 +1,17 @@
+# The chat's gateway (sdp chat setup builds it as sdp-gateway).
+# The sandbox's only network peer: it holds the model's credential and forwards the sandbox's requests by the table in its config file (social_data_pipeline/gateway). It holds the gateway package only, on the standard library.
+FROM python:3.13-slim
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+COPY social_data_pipeline/__init__.py ./social_data_pipeline/
+COPY social_data_pipeline/gateway/ ./social_data_pipeline/gateway/
+RUN chmod -R a+rX /app
+
+# Nobody by default.
+USER 65534:65534
+
+# The config file is mounted at run time; without it the gateway refuses to start with its own message.
+CMD ["python", "-m", "social_data_pipeline.gateway", "/run/sdp-gateway/config.json"]

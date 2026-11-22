@@ -45,6 +45,9 @@ Usage:
     sdp.py webui status                      Say whether the web UI runs, where it answers and its certificate's fingerprint
     sdp.py webui unsetup                     Remove the web UI's container, network, image and settings
 
+    sdp.py chat setup                        Set up the Chat window: its back end, the model's credential (asked without echo), the work folder's cap; build its two images
+    sdp.py chat unsetup                      Remove the chat's images, settings and credential (and, if asked, all chats)
+
     sdp.py setup                             Legacy: full interactive setup (core + classifiers + platform)
 """
 
@@ -5860,6 +5863,34 @@ def cmd_webui_unsetup(args):
 
 
 # ============================================================================
+# sdp chat
+# ============================================================================
+
+
+def _chat_host():
+    """The chat's host-side module. Imported at first use, so that loading the CLI loads nothing more than before."""
+    from social_data_pipeline import chat_host
+
+    return chat_host
+
+
+def cmd_chat_setup(args):
+    """Set up the Chat window: ask its back end, the model's credential and the work folder's cap, and build its two images."""
+    return _chat_host().cmd_setup(ROOT)
+
+
+def cmd_chat_unsetup(args):
+    """Remove the chat's images, settings and credential after a confirmation; all chats and their files only after a second one."""
+    from social_data_pipeline.setup.utils import ask_bool
+
+    return _chat_host().cmd_unsetup(
+        ROOT,
+        lambda: ask_bool("Remove the chat's images, settings and credential?", default=False, tag="chat_unsetup_confirm"),
+        lambda: ask_bool("Also delete all chats and their files (.sdp/chat/work)?", default=False, tag="chat_unsetup_work"),
+    )
+
+
+# ============================================================================
 # Argument parser
 # ============================================================================
 
@@ -6101,6 +6132,16 @@ def build_parser():
     webui_unsetup_p = webui_sub.add_parser("unsetup", help="Remove the web UI's container, network, image and settings")
     webui_unsetup_p.set_defaults(func=cmd_webui_unsetup)
 
+    # ---- sdp chat ----
+    chat_parser = subparsers.add_parser("chat", help="The Chat window: an AI assistant in a sandbox whose only network peer is a gateway that holds the model's credential")
+    chat_sub = chat_parser.add_subparsers(dest="chat_command", help="Chat command")
+
+    chat_setup_p = chat_sub.add_parser("setup", help="Set up the chat: back end, the model's credential (asked without echo), the work folder's cap; build its two images")
+    chat_setup_p.set_defaults(func=cmd_chat_setup)
+
+    chat_unsetup_p = chat_sub.add_parser("unsetup", help="Remove the chat's images, settings and credential (and, if asked, all chats)")
+    chat_unsetup_p.set_defaults(func=cmd_chat_unsetup)
+
     return parser
 
 
@@ -6134,6 +6175,9 @@ def main():
         return 0
     if args.command == "webui" and not getattr(args, "webui_command", None):
         parser.parse_args(["webui", "-h"])
+        return 0
+    if args.command == "chat" and not getattr(args, "chat_command", None):
+        parser.parse_args(["chat", "-h"])
         return 0
 
     if hasattr(args, "func"):

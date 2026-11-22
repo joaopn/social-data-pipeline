@@ -41,6 +41,8 @@ TERMINAL_ONLY = MappingProxyType({
     ("webui", "stop"): "Stops the web UI's container; a session would stop the page it is using.",
     ("webui", "status"): "Says whether the web UI's container runs, which only someone outside the web UI needs to ask.",
     ("webui", "unsetup"): "Removes the web UI itself, which a session of that web UI must not be able to do.",
+    ("chat", "setup"): "Asks for the model's secret at the terminal, without echo; a session must never be able to set or see it.",
+    ("chat", "unsetup"): "Deletes the model's secret and the chat's settings (and, if asked, all chats), which a session must not be able to do.",
 })
 
 # Literal copies of the CLI parser's choices.

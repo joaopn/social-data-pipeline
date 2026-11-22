@@ -1,0 +1,8 @@
+# Social Data Pipeline - Chat sandbox (Dockerfile.sandbox)
+# Used by: sdp chat setup (builds the image sdp-sandbox)
+
+# The analysis packages the chat's assistant works with
+pandas>=2.2.0
+numpy>=2.0.0
+matplotlib>=3.9.0
+pyarrow>=17.0.0

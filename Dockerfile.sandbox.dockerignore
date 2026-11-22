@@ -1,0 +1,3 @@
+# The build context of Dockerfile.sandbox (Docker reads <Dockerfile>.dockerignore beside a Dockerfile given with -f): everything is left out, the deployment's state folder .sdp with the chat's credential included, but the file the Dockerfile copies.
+*
+!requirements-sandbox.txt

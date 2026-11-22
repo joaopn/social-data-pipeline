@@ -57,6 +57,9 @@ python sdp.py broker start                  # Start it (stop, status, audit: see
 # The web UI (a page in the browser that works through the broker)
 python sdp.py webui setup                   # Port, addresses, names, certificate; builds its image
 python sdp.py webui start                   # Start it (stop, status, unsetup: see below)
+
+# The chat (an AI assistant in a sandbox; setup only in this version)
+python sdp.py chat setup                    # Back end, credential (not echoed), work folder's cap; builds its two images
 ```
 
 ---
@@ -296,6 +299,15 @@ The broker is a host process on a unix socket through which a logged-in session 
 | `sdp.py webui unsetup` | After a confirmation, remove the container, the network, the image and `.sdp/webui/` |
 
 The web UI is a page served over HTTPS from a container that holds only the broker's socket folder, its certificate and, for its Queue window, the query scheduler's control and results folders. It has a login, an Overview (databases, sources, runs alive now, notices for databases without authentication and ports open beyond the machine) and the Management pages for sources, databases, runs and the broker, from which you start and cancel runs, follow their output, start and stop services and reset or remove databases and sources; every action shows its `sdp` command and runs only once you confirm it (with the management password again for a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, removing a source, and keeping the database admin password for the session; starting or cancelling a run and stopping services need none), and a Queue window with the scheduler's queue, where queries are approved, rejected, killed, EXPLAINed and previewed and auto-accept is set. Linux, and a Docker without user-id mapping. See [The web UI](docs/guides/webui.md).
+
+### Chat (`sdp.py chat`)
+
+| Command | Description |
+|---------|-------------|
+| `sdp.py chat setup` | Ask the back end (Claude Code on your own Claude subscription login, or an OpenAI-compatible endpoint with its address and model), the secret (asked without echo, stored in `.sdp/chat/credential/model.token`, mode 0600) and the work folder's soft cap; build the images `sdp-gateway` and `sdp-sandbox` |
+| `sdp.py chat unsetup` | After a confirmation, remove the two images and the chat's settings and credential; after a second one, also all chats and their files (`.sdp/chat/work`) |
+
+The chat is to be an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential. Starting the chat is not part of this version. See [The chat](docs/guides/chat.md).
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 

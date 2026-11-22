@@ -1,3 +1,9 @@
-# The build context of Dockerfile.sandbox (Docker reads <Dockerfile>.dockerignore beside a Dockerfile given with -f): everything is left out, the deployment's state folder .sdp with the chat's credential included, but the file the Dockerfile copies.
+# The build context of Dockerfile.sandbox (Docker reads <Dockerfile>.dockerignore beside a Dockerfile given with -f): everything is left out, the deployment's state folder .sdp with the chat's credential included, but the files the Dockerfile copies (Python's byte-code caches left out too).
 *
 !requirements-sandbox.txt
+!social_data_pipeline/__init__.py
+!social_data_pipeline/control/__init__.py
+!social_data_pipeline/control/errors.py
+!social_data_pipeline/control/framing.py
+!social_data_pipeline/chat/
+**/__pycache__

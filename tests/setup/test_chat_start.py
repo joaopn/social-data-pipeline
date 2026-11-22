@@ -253,14 +253,15 @@ def test_the_gateway_argument_list_is_pinned():
 
 def test_the_sandbox_argument_list_is_pinned():
     """Bug class: the sandbox given the credential, the broker's or Docker's socket, the data folder, a second network, a published port, or a secret in its environment."""
-    assert host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2") == [
+    assert host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", "claude-code", ["mongo", "starrocks"], 7) == [
         "docker", "create", "--name", "sdp-sandbox", "--label", "sdp.chat.root=/srv/d", "--restart", "no",
         "--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-        "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
+        "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
         "--network", "sdp-chat",
         "--mount", "type=bind,source=/srv/d/.sdp/chat/work,target=/work",
         "--mount", "type=bind,source=/srv/d/.sdp/chat/socket,target=/run/sdp-chat",
         "-e", "SDP_CHAT_GATEWAY=10.201.0.2", "-e", "HOME=/work",
+        "-e", "SDP_CHAT_BACKEND=claude-code", "-e", "SDP_CHAT_DATABASES=mongo,starrocks", "-e", "SDP_CHAT_CAP_GIB=7",
         "sdp-sandbox",
     ]
 
@@ -352,7 +353,7 @@ def test_start_attaches_the_database_with_a_read_only_user(root, docker, capsys)
         ["docker", "network", "connect", "sdp-chat-up", "sdp-gateway"],
         ["docker", "start", "sdp-gateway"],
         ["docker", "network", "connect", "--alias", "sdp-chat-mongo-mcp", "sdp-chat-up", MONGO_ID],
-        host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address),
+        host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], host.DEFAULT_CAP_GIB),
         ["docker", "start", "sdp-sandbox"],
     ]
     out = capsys.readouterr().out

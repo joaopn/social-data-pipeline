@@ -699,15 +699,16 @@ def gateway_arguments(root, uid, gid, address):
     ]
 
 
-def sandbox_arguments(root, uid, gid, address):
-    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port, the gateway's address and `HOME` its only environment."""
+def sandbox_arguments(root, uid, gid, address, backend, databases, cap):
+    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`) and the work folder's soft cap in GiB, none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
     return [
         *_confined(SANDBOX_CONTAINER, root, uid, gid),
-        "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
+        "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
         "--network", NETWORK,
         "--mount", f"type=bind,source={os.path.join(root, CHAT_FOLDER, WORK_NAME)},target={WORK_MOUNT}",
         "--mount", f"type=bind,source={os.path.join(root, CHAT_FOLDER, SOCKET_NAME)},target={SOCKET_MOUNT}",
         "-e", f"{GATEWAY_ENV}={address}", "-e", f"HOME={WORK_MOUNT}",
+        "-e", f"SDP_CHAT_BACKEND={backend}", "-e", f"SDP_CHAT_DATABASES={','.join(databases)}", "-e", f"SDP_CHAT_CAP_GIB={cap}",
         SANDBOX_IMAGE,
     ]
 
@@ -1004,7 +1005,7 @@ def _start(root, uid, gid):
         _wait_for_gateway(1 + len(attached))
         for db, container in attached:
             _step(["docker", "network", "connect", "--alias", db.alias, UP_NETWORK, container], f"the MCP server of {db.name} could not be attached")
-        _step(sandbox_arguments(root, uid, gid, address), "the sandbox's container could not be created")
+        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"]), "the sandbox's container could not be created")
         made.append(SANDBOX_CONTAINER)
         _step(["docker", "start", SANDBOX_CONTAINER], "the sandbox did not start")
         after = _state(SANDBOX_CONTAINER)

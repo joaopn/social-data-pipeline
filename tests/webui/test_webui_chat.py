@@ -34,7 +34,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
 from test_webui_pages import inline_code
-from webui_helpers import CHAT_ID, GOOD_FOLDER, ORIGIN, Raw, an_event, form_token, log_in, refuse, wait_until
+from webui_helpers import CHAT_ID, GOOD_FOLDER, ORIGIN, Raw, an_event, form_token, log_in, main_html, refuse, wait_until
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.webui import assistant, chat, queue, words
@@ -306,7 +306,7 @@ def test_events_of_another_shape_are_not_shown(client, scripted, reply):
     """Bug class: a page of events whose offset goes back or jumps (the poll would repeat or skip events, or never end), whose count is beyond the limit asked, or whose flags are not flags, shown in part."""
     scripted.answers["chat.events"] = reply
     page = client.get(f"/chat/{CHAT_ID}")
-    assert NOT_UNDERSTOOD in main_text(page.text) and MARK not in page.text and "hx-get" not in page.text
+    assert NOT_UNDERSTOOD in main_text(page.text) and MARK not in page.text and "hx-get" not in main_html(page.text)
 
 
 EVENT_VARIANTS = [
@@ -381,7 +381,7 @@ def test_hostile_text_is_text_everywhere(client, scripted):
 
 
 def nexts(page):
-    return [(html.unescape(href), trigger) for href, trigger in re.findall(r'hx-get="([^"]+)" hx-trigger="([^"]+)"', page)]
+    return [(html.unescape(href), trigger) for href, trigger in re.findall(r'hx-get="([^"]+)" hx-trigger="([^"]+)"', main_html(page))]
 
 
 def test_the_events_part_pages_by_offset_and_stops_when_the_turn_has_ended(client, scripted):
@@ -608,11 +608,11 @@ def test_no_page_or_part_holds_inline_code_and_every_answer_has_the_headers(clie
 
 
 def test_the_navigation_names_chat_first_as_a_link(client):
-    """Bug class: a Chat window that cannot be reached from the frame, or still shown as not available."""
+    """Bug class: a Chat window that cannot be reached from the frame, or still shown as not available; the windows in another order than the mock-up's (Chat, Management, Queue)."""
     page = client.get("/").text
-    windows = re.search(r'<nav class="windows"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1)
-    assert re.findall(r'href="([^"]+)"', windows) == ["/chat", "/queue", "/"] and "not available" not in page
-    assert '<a class="window window-on" href="/chat" aria-current="page">Chat</a>' in client.get("/chat").text
+    windows = re.search(r'<nav class="wins"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1)
+    assert re.findall(r'href="([^"]+)"', windows) == ["/chat", "/", "/queue"] and "not available" not in page
+    assert '<a class="win on" href="/chat" aria-current="page"><span class="ico" aria-hidden="true">✦</span>Chat</a>' in client.get("/chat").text
 
 
 # ── the real runner ─────────────────────────────────────────────────────────

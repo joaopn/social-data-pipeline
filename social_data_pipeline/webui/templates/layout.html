@@ -1,4 +1,4 @@
-{#- The document around every page: no inline script, no inline style, no style or on... attribute (a test scans for them). htmx reads its settings from the meta tag. -#}
+{#- The document around every page: no inline script, no inline style, no style or on... attribute (a test scans for them). htmx reads its settings from the meta tag. The look is the mock-up's kit (app.css) and each window's own sheet; every page loads all of them. -#}
 <!doctype html>
 <html lang="en">
 <head>
@@ -10,8 +10,10 @@
   <meta name="sdp-form-token" content="{{ form_token }}">
   {%- endif %}
   <title>{{ title }} - SDP</title>
-  <link rel="stylesheet" href="/static/vendor/pico.min.css">
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/chat.css">
+  <link rel="stylesheet" href="/static/queue.css">
+  <link rel="stylesheet" href="/static/manage.css">
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>

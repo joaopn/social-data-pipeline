@@ -80,7 +80,7 @@ It does NOT defend against a program that runs on the host as the operator: such
 | The broker's client and the web package, and FastAPI, Jinja2 and uvicorn | The CLI, the verb registry, the setup code, PyYAML |
 | The operator's user and group id, no capabilities, no new privileges, at most 256 processes and 512 MiB; two listening ports, 8443 and 8444 | A way out to the internet: its network does no masquerading, so it reaches the machine and nothing beyond |
 
-The image pins htmx 2.0.4 and Pico CSS 2.1.1 and checks them against SHA-256 sums written in `Dockerfile.webui` when it is built. Its Python packages (FastAPI, uvicorn, Jinja2) are installed from PyPI with lower bounds in `requirements-webui.txt`, not pinned to versions or checked against hashes, as elsewhere in this project; only the two static files are checked against recorded sums.
+The image pins htmx 2.0.4 and checks it against a SHA-256 sum written in `Dockerfile.webui` when it is built; the stylesheets are the web UI's own. Its Python packages (FastAPI, uvicorn, Jinja2) are installed from PyPI with lower bounds in `requirements-webui.txt`, not pinned to versions or checked against hashes, as elsewhere in this project; only that static file is checked against a recorded sum.
 
 Files on the host, in the deployment folder: `.sdp/webui/` (mode 0700) with `config.json` (0600: the port, addresses, names, the certificate's fingerprint and end date) and `tls/` (0700) with `cert.pem` and `key.pem` (0600).
 

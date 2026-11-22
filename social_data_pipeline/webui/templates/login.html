@@ -1,9 +1,9 @@
 {% extends "layout.html" %}
 {% set title = "Log in" %}
 {% block body %}
-<main class="container login">
-  <h1>SDP web UI</h1>
-  <p class="muted">Log in with the management password (set in a terminal with <code>python sdp.py broker passwd</code>).</p>
+<main class="login card">
+  <h1 class="brand">SDP</h1>
+  <p class="muted small">Log in with the management password (set in a terminal with <code>python sdp.py broker passwd</code>).</p>
   {%- if line %}
   <p class="notice" role="alert">{{ line }}</p>
   {%- endif %}
@@ -11,7 +11,7 @@
     <label>Management password
       <input type="password" name="password" autocomplete="current-password" required autofocus>
     </label>
-    <button type="submit">Log in</button>
+    <button type="submit" class="btn primary">Log in</button>
   </form>
 </main>
 {% endblock %}

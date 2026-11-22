@@ -1,0 +1,17 @@
+{#- The live indicators of the top bar. `indicators` none: the placeholders the frame draws (grey dots), which ask `/status` once the page has loaded; else the answer of `/status` (`status.read`), which replaces them, asks again in 30 seconds and sets the number on the Queue window's tab out of band. -#}
+<span class="status hide-s" hx-get="/status" hx-trigger="{{ 'every 30s' if indicators else 'load, every 30s' }}" hx-swap="outerHTML">
+  {%- for key in ("broker", "scheduler", "sandbox") %}
+  {%- if indicators %}
+  <span class="pill" title="{{ indicators[key].title }}"><span class="dot{{ ' ' ~ indicators[key].dot if indicators[key].dot else '' }}"></span>{{ key }}</span>
+  {%- else %}
+  <span class="pill" title="Not asked yet."><span class="dot"></span>{{ key }}</span>
+  {%- endif %}
+  {%- endfor %}
+</span>
+{%- if indicators %}
+{%- if indicators.pending %}
+<span id="queue-badge" class="n" hx-swap-oob="true" title="{{ indicators.pending }} quer{{ 'y waits' if indicators.pending == 1 else 'ies wait' }} for approval">{{ indicators.pending }}</span>
+{%- else %}
+<span id="queue-badge" hx-swap-oob="true"></span>
+{%- endif %}
+{%- endif %}

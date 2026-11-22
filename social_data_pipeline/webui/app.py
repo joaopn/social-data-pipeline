@@ -12,7 +12,8 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
 - The Chat window (`/chat`, `/chat/new`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
-- `/static/...`: the stylesheet, the script and, in the image, htmx and Pico CSS.
+- `GET /status`: the top bar's live indicators (the broker, scheduler and sandbox pills, the number of queries waiting on the Queue window's tab), a part of the page that the frame asks once the page has loaded and every 30 seconds after, so that a slow or dead service never slows a page: see `status`.
+- `/static/...`: the stylesheets (`app.css`, the mock-up's kit; `chat.css`, `queue.css`, `manage.css`), the script and, in the image, htmx.
 
 Every broker call runs in a worker thread, never on the event loop, under a bound of its kind (pages; logins on the local port, one place; other logins, two places; logouts; the pieces of the output view; Docker's tails of the output view; confirmed actions and, apart, cancels, in threads of their own): a page or a login that finds its bound full is answered at once with a "busy" page instead of waiting, so a slow broker can stall neither the login page nor the health check, and logins from elsewhere cannot make a local login busy. A choice of an action that is taken, a confirmation that is not refused at once, a login and a logout are answered with a redirect to a GET, so a reload never sends them again. The password is read from the form, given to the broker and dropped; no template, log line or answer gets it, and the broker's token never leaves this process but towards the broker.
 """
@@ -32,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from social_data_pipeline.control import client as broker_client
-from social_data_pipeline.webui import actions, chat, config, guard, management, overview, queue, words
+from social_data_pipeline.webui import actions, chat, config, guard, management, overview, queue, status, words
 from social_data_pipeline.webui.assistant import Assistant
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker, session_ends, why
 from social_data_pipeline.webui.limiter import LOCAL_KEY, LoginLimiter
@@ -81,6 +82,8 @@ class Limits:
     login_window_seconds: float = 5 * 60
     addresses_max: int = 4096
     page_workers: int = 4
+    # The top bar's indicators (`/status`) have a bound of their own: a hung scheduler or runner holds a place for up to three time limits, and must never take a page's place.
+    status_workers: int = 2
     local_login_workers: int = 1
     remote_login_workers: int = 2
     logout_workers: int = 2
@@ -164,6 +167,7 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
     sessions = WebSessions(clock, sessions_max=limits.sessions_max, new_work=lambda: SessionWork(pending_max=limits.pending_max, pending_seconds=limits.pending_seconds, outcomes_max=limits.outcomes_max, views_max=limits.views_max))
     limiter = LoginLimiter(clock, failures_max=limits.login_failures, window_seconds=limits.login_window_seconds, addresses_max=limits.addresses_max)
     pages = Gate(limits.page_workers)
+    indicators = Gate(limits.status_workers)
     local_logins = Gate(limits.local_login_workers)
     remote_logins = Gate(limits.remote_login_workers)
     logouts = Gate(limits.logout_workers)
@@ -305,6 +309,20 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
         scheduler=scheduler, door=Gate(limits.door_workers), downloads=threading.BoundedSemaphore(limits.download_workers),
         assistant=assistant, chat_gate=Gate(limits.chat_workers), chat_images=Gate(limits.chat_image_workers),
     )
+    @api.api_route("/status", methods=["GET", "HEAD"])
+    async def status_part(request: Request):
+        """The top bar's live indicators, a part of the page asked by htmx after the page has loaded (see `status`). A full bound answers 204, which leaves the grey placeholders as they are."""
+        session_id, session = current(request)
+        if session is None:
+            return to_login(request, clear_cookie=bool(session_id))
+        made = await indicators.run(lambda: status.read(lambda: queue.broker_session_error(context, session, timeout=status.STATUS_SECONDS), scheduler, assistant))
+        if made is BUSY_GATE:
+            return Response(status_code=204)
+        if isinstance(made, status.SessionEnded):
+            sessions.forget(session_id)
+            return to_login(request, why(made.error), clear_cookie=True)
+        return render("_status.html", indicators=made)
+
     # The Queue's routes first: `/queue/auto-accept` and `/queue/running-rows` before `/queue/<job id>`.
     hooks = queue.install(api, context)
     management.install(api, context, hooks)

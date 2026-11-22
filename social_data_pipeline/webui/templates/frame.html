@@ -1,33 +1,37 @@
-{#- The frame of a page for a logged-in session: the window bar (Chat, Queue, Management), the navigation of the window shown and the logout form. -#}
+{#- The frame of a page for a logged-in session, as the mock-up draws it: the top bar (SDP, the windows Chat, Management and Queue, the live indicators, the operator and the logout form), the tab bar of the open window when it has more than one page, and the window's main area (`shell`, which a window may replace with a layout of its own). The indicators are drawn grey here and filled by `GET /status` once the page has loaded, so that a slow service never slows the page. -#}
 {% extends "layout.html" %}
 {% block body %}
 <header class="topbar">
-  <span class="brand">SDP <span class="brand-sub">web UI</span></span>
-  <nav class="windows" aria-label="Windows">
-    {%- for key, label, address in (("chat", "Chat", "/chat"), ("queue", "Queue", "/queue"), ("management", "Management", "/")) %}
-    {%- if key == window %}
-    <a class="window window-on" href="{{ address }}" aria-current="page">{{ label }}</a>
-    {%- else %}
-    <a class="window" href="{{ address }}">{{ label }}</a>
-    {%- endif %}
+  <div class="brand">SDP</div>
+  <nav class="wins" aria-label="Windows">
+    {%- for key, label, icon, address in (("chat", "Chat", "✦", "/chat"), ("management", "Management", "▤", "/"), ("queue", "Queue", "☑", "/queue")) %}
+    <a class="win{{ ' on' if key == window else '' }}" href="{{ address }}"{% if key == window %} aria-current="page"{% endif %}><span class="ico" aria-hidden="true">{{ icon }}</span>{{ label }}{% if key == "queue" %}<span id="queue-badge"></span>{% endif %}</a>
     {%- endfor %}
   </nav>
-  <form class="logout" method="post" action="/logout">
-    <input type="hidden" name="form_token" value="{{ form_token }}">
-    <button type="submit" class="secondary outline">Log out</button>
-  </form>
+  <span class="right row">
+    {%- with indicators = none %}{% include "_status.html" %}{% endwith %}
+    <span class="pill">operator</span>
+    <form class="logout" method="post" action="/logout">
+      <input type="hidden" name="form_token" value="{{ form_token }}">
+      <button type="submit" class="btn ghost sm">Log out</button>
+    </form>
+  </span>
 </header>
-<div class="shell">
-  <nav class="side" aria-label="{{ {'queue': 'Queue', 'chat': 'Chat'}.get(window, 'Management') }}">
-    <ul>
-      {%- for key, page_title, address in pages %}
-      <li>{% if key == active %}<a class="side-on" href="{{ address }}" aria-current="page">{{ page_title }}</a>{% else %}<a href="{{ address }}">{{ page_title }}</a>{% endif %}</li>
-      {%- endfor %}
-    </ul>
-  </nav>
-  <main class="content">
-    <h1>{{ title }}</h1>
-    {% block content %}{% endblock %}
-  </main>
-</div>
+{%- if pages | length > 1 %}
+<nav class="subbar" aria-label="{{ {'queue': 'Queue', 'chat': 'Chat'}.get(window, 'Management') }}">
+  {%- for key, page_title, address in pages %}
+  {%- if key == active %}
+  <a class="tab on" href="{{ address }}" aria-current="page">{{ page_title }}</a>
+  {%- else %}
+  <a class="tab" href="{{ address }}">{{ page_title }}</a>
+  {%- endif %}
+  {%- endfor %}
+</nav>
+{%- endif %}
+{% block shell %}
+<main class="main">
+  <h1>{{ title }}</h1>
+  {% block content %}{% endblock %}
+</main>
+{% endblock %}
 {% endblock %}

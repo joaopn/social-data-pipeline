@@ -108,6 +108,8 @@ The broker's files under `.sdp/` are listed in [The broker's files](../architect
 
 After the login you get the Management window. The **Overview** shows the databases and whether they run, the configured sources with their profiles, the pipeline runs that are alive now, and standing notices for a database without authentication and for ports open beyond this machine.
 
+The top bar names the three windows (Chat, Management, Queue); the number on Queue is the queries waiting for your approval. On its right, a dot per service says whether it answers: broker, scheduler and sandbox, green when it answered, red when it did not, grey when the web UI was not given it (no query queue or no chat set up). They are read after the page has loaded and every 30 seconds, so a slow service never slows a page; the title of each says what was found. A window with more than one page shows them as tabs under the top bar.
+
 | Page | What it shows | What you can do there |
 |---|---|---|
 | **Sources** (`/sources`) | The configured sources and their profiles (`source list`) | Open a source |

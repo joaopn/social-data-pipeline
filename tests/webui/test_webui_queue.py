@@ -47,6 +47,7 @@ from webui_helpers import (
     form_token,
     good_lstat,
     log_in,
+    main_html,
     pending_path,
     wait_until,
 )
@@ -642,7 +643,7 @@ def test_the_running_tab_asks_for_itself_again_and_an_ended_session_is_sent_to_t
     assert 'hx-get="/queue/running-rows?page=1" hx-trigger="load delay:5s" hx-swap="outerHTML"' in page
     part = client.get("/queue/running-rows?page=1", headers=HX)
     assert part.status_code == 200 and not part.text.startswith("<!doctype") and 'hx-trigger="load delay:5s"' in part.text and f"/queue/{JOB_ID}" in part.text
-    assert 'hx-trigger' not in client.get("/queue?tab=pending").text
+    assert 'hx-trigger' not in main_html(client.get("/queue?tab=pending").text)
     app.sessions.forget(client.cookies.get("__Host-sdp_session"))
     ended = client.get("/queue/running-rows?page=1", headers=HX)
     assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login"
@@ -864,9 +865,10 @@ def test_no_page_or_part_of_the_window_holds_inline_code_and_every_answer_has_th
 def test_the_navigation_links_the_queue(client):
     """Bug class: a Queue window that cannot be reached from the frame, or still marked as not available."""
     page = client.get("/").text
-    assert '<a class="window" href="/queue">Queue</a>' in page and "Queue <small>not available yet</small>" not in page
+    assert '<a class="win" href="/queue"><span class="ico" aria-hidden="true">☑</span>Queue<span id="queue-badge"></span></a>' in page and "not available yet" not in page
     queue_page = client.get("/queue").text
-    assert 'aria-label="Queue"' in queue_page and 'href="/queue/auto-accept"' in queue_page and '<a class="window window-on" href="/queue" aria-current="page">Queue</a>' in queue_page
+    assert '<nav class="subbar" aria-label="Queue">' in queue_page and 'href="/queue/auto-accept"' in queue_page
+    assert '<a class="win on" href="/queue" aria-current="page"><span class="ico" aria-hidden="true">☑</span>Queue<span id="queue-badge"></span></a>' in queue_page
 
 
 def test_a_post_to_the_queue_routes_is_refused(client, token):
@@ -1111,23 +1113,94 @@ def test_a_socket_that_fails_its_check_is_not_used(make_app, make_client, make_s
 # ── round 2: the statement's box ────────────────────────────────────────────
 
 
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
 def css_rules():
+    """(selector, body) of every rule of every stylesheet the pages load (`static/*.css`), at-rule blocks (`@media`) opened so that the rules inside count too."""
     from pathlib import Path
 
-    text = (Path(queue.__file__).resolve().parent / "static" / "app.css").read_text()
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return [(selector.strip(), body) for selector, body in re.findall(r"([^{}]+)\{([^}]*)\}", text)]
+    sheets = sorted((Path(queue.__file__).resolve().parent / "static").glob("*.css"))
+    assert {path.name for path in sheets} >= {"app.css", "chat.css", "queue.css", "manage.css"}
+    rules = []
+    for path in sheets:
+        text = re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.DOTALL)
+        text = re.sub(r"@[a-z-]+[^{;]*\{", "", text)
+        rules += [(selector.strip(), body) for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", text)]
+    return rules
+
+
+def chain_of(page, wanted):
+    """The elements from the first `<pre>` whose class is `wanted` up to the document's root, each (tag, classes, id)."""
+    from html.parser import HTMLParser
+
+    found = []
+
+    class Walk(HTMLParser):
+        stack = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            element = (tag, set((attrs.get("class") or "").split()), attrs.get("id"))
+            if tag == "pre" and attrs.get("class") == wanted and not found:
+                found.extend([element, *reversed(self.stack)])
+            if tag not in VOID:
+                self.stack.append(element)
+
+        def handle_endtag(self, tag):
+            while self.stack and self.stack.pop()[0] != tag:
+                pass
+
+    Walk().feed(page)
+    return found
+
+
+def compound_matches(compound, element):
+    """Whether a compound selector may select `element` (its type, classes and id; pseudo-classes and attribute tests are left out, so a doubt counts as a match)."""
+    compound = re.sub(r"\[[^\]]*\]|::?[\w-]+", "", compound)
+    tag = re.match(r"[a-zA-Z][\w-]*|\*", compound)
+    return (tag.group(0).lower() if tag else None) in (None, "*", element[0]) and set(re.findall(r"\.([\w-]+)", compound)) <= element[1] and set(re.findall(r"#([\w-]+)", compound)) <= {element[2]}
+
+
+def may_match(selector, chain):
+    """Whether one selector of a list may select `chain[0]`, whose ancestors are `chain[1:]`: its last compound matches the element, and each compound before it an ancestor further up (a child combinator taken as a descendant one, and a sibling combinator as always met, so a doubt counts as a match)."""
+    tokens = re.findall(r"[>+~]|[^\s>+~]+", re.sub(r"\([^()]*\)", "", selector))
+    if not tokens or not compound_matches(tokens[-1], chain[0]):
+        return False
+    position = 1
+    for token in reversed(tokens[:-1]):
+        if token in "+~":
+            return True
+        if token == ">":
+            continue
+        while position < len(chain) and not compound_matches(token, chain[position]):
+            position += 1
+        if position >= len(chain):
+            return False
+        position += 1
+    return True
 
 
 def test_the_approvals_statement_box_has_no_height_and_every_box_says_its_size(client, token, door):
-    """Bug class: an approval whose statement sits in a box with its own scroll bar (the end of a long statement is never seen unless scrolled), or a box that does not say how much it holds."""
+    """Bug class: an approval whose statement sits in a box with its own scroll bar or a height of its own (the end of a long statement is never seen unless scrolled), set on the statement or on any element around it, in any of the stylesheets; or a box that does not say how much it holds."""
     door.add("pending", a_job(sql="SELECT 1\nFROM t\nWHERE x"))
     page = client.get(pending_path(choose(client, "queue.approve", token, job_id=JOB_ID))).text
     classes = re.search(r'<pre class="([^"]+)">\nSELECT', page).group(1).split()
     assert classes == ["statement-whole"]
-    for selector, body in css_rules():
-        if any(re.search(r"\." + re.escape(name) + r"(?![\w-])", selector) for name in classes):
-            assert "max-height" not in body and "overflow:" not in body.replace("overflow-wrap", ""), selector
+    chain = chain_of(page, "statement-whole")
+    tags = [tag for tag, _, _ in chain]
+    assert tags[0] == "pre" and "main" in tags and tags[-1] == "html", tags
+    # Between the statement and `<main>`, nothing may have a height or a scroll box; `<main>` is the page's own scrolling area under the top bar (no height of its own either), and so are the elements above it.
+    inside = chain[:tags.index("main")]
+    rules = css_rules()
+    assert any(may_match(selector, chain) for rule, _ in rules for selector in rule.split(",")), "no rule found for the statement: the check would prove nothing"
+    assert not may_match("details.tool pre", chain) and may_match(".card pre", chain) and may_match("pre.statement-whole:hover", chain)
+    for rule, body in rules:
+        for index, element in enumerate(chain):
+            if any(may_match(selector, chain[index:]) for selector in rule.split(",")):
+                assert "max-height" not in body, (rule, element[0])
+                if index < len(inside):
+                    assert not re.search(r"overflow(?!-wrap)|(?<![\w-])height\s*:|line-clamp", body), (rule, element[0])
     assert "3 lines, 23 characters" in main_text(page)
     job_page = client.get(f"/queue/{JOB_ID}").text
     assert '<pre class="statement">\nSELECT' in job_page and "3 lines, 23 characters" in main_text(job_page)
@@ -1370,3 +1443,72 @@ def test_a_label_that_could_not_be_read_is_said_and_the_action_still_goes(client
         assert text.index(queue.EXPLAIN_MAYBE_SENTENCE) < text.index(queue.EXPLAIN_SENTENCE)
     follow(client, confirm(client, path, token))
     assert [request["op"] for request in changes(door)] == [name.split(".", 1)[1]]
+
+
+# ── the top bar's live indicators (GET /status) ─────────────────────────────
+
+
+def pills(part):
+    """{name: (the dot's state, the title)} of the indicators in a part of `/status`."""
+    return {name: (dot, html.unescape(title)) for title, dot, name in re.findall(r'<span class="pill" title="([^"]*)"><span class="dot ?([a-z]*)"></span>(\w+)</span>', part)}
+
+
+def test_the_frame_draws_the_indicators_grey_and_status_needs_a_live_session(client, app, broker, door, make_client):
+    """Bug class: a page whose top bar waits for the scheduler or the sandbox (a slow service slows every page), or indicators shown to a browser without a session, or to a session the broker has ended (the login page swapped into the top bar instead of a redirect)."""
+    door.add("pending", a_job())
+    page = client.get("/").text
+    assert '<span class="status hide-s" hx-get="/status" hx-trigger="load, every 30s" hx-swap="outerHTML">' in page and '<span id="queue-badge"></span>' in page
+    assert {name: dot for name, (dot, _) in pills(page).items()} == {"broker": "", "scheduler": "", "sandbox": ""} and door.requests == []
+    stranger = make_client(app)
+    assert stranger.get("/status").status_code == 303 and stranger.get("/status", headers=HX).headers["hx-redirect"] == "/login"
+    broker.answers["audit.list"] = broker_client.BrokerError("session_ended", "x")
+    ended = client.get("/status", headers=HX)
+    assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended" and the_session(app, client) is None and door.requests == []
+
+
+def test_status_fills_the_pills_and_the_queue_number_with_table_calls_only(make_app, make_client, broker, door, scripted):
+    """Bug class: an indicator that says a service answers when it does not (or the other way), the number of waiting queries missing or wrong, a call outside the web UI's table, or a call without a short time limit (a dead service holding a place of the indicators' bound for minutes)."""
+    from social_data_pipeline.webui import assistant, status
+
+    app = make_app(assistant=assistant.Assistant(scripted.path))
+    client = make_client(app)
+    assert log_in(client).status_code == 303
+    door.add("pending", a_job())
+    door.add("pending", a_job("pg_0123abce"))
+    before = len(broker.calls)
+    part = client.get("/status", headers=HX)
+    assert part.status_code == 200 and not part.text.startswith("<!doctype")
+    assert {name: dot for name, (dot, _) in pills(part.text).items()} == {"broker": "ok", "scheduler": "ok", "sandbox": "ok"}
+    assert 'hx-trigger="every 30s"' in part.text and "load" not in part.text
+    assert re.search(r'<span id="queue-badge" class="n" hx-swap-oob="true" title="2 queries wait for approval">2</span>', part.text)
+    assert [call[2] for call in broker.calls[before:]] == ["audit.list"] and broker.timeouts[-1][2] == status.STATUS_SECONDS
+    assert door.ops() == ["counts"] and door.timeouts == [("counts", status.STATUS_SECONDS)] and [request["op"] for request in scripted.requests] == ["hello"]
+    door.jobs.clear()
+    assert '<span id="queue-badge" hx-swap-oob="true"></span>' in client.get("/status", headers=HX).text
+
+
+def test_status_tells_a_service_not_set_up_from_one_that_does_not_answer(make_app, make_client, broker, door, chat_folder, clock):
+    """Bug class: a queue or chat the operator never set up shown as broken, a dead scheduler or sandbox shown as fine, or the Queue's number shown to a session the broker did not confirm."""
+    from social_data_pipeline.webui import assistant, scheduler
+
+    door.add("pending", a_job())
+    plain = make_client(make_app(scheduler=scheduler.Scheduler(None, None)))
+    assert log_in(plain).status_code == 303
+    part = plain.get("/status", headers=HX).text
+    found = pills(part)
+    assert found["broker"][0] == "ok" and found["scheduler"] == ("", "The query queue is not set up for the web UI.") and found["sandbox"] == ("", "No chat is set up for the web UI.")
+    assert 'class="n"' not in part and door.requests == []
+
+    door.answers["counts"] = broker_client.BrokerUnreachable("no_reply")
+    dead = make_client(make_app(assistant=assistant.Assistant(os.path.join(chat_folder, "runner.sock"))))
+    assert log_in(dead).status_code == 303
+    part = dead.get("/status", headers=HX).text
+    found = pills(part)
+    assert found["broker"][0] == "ok" and found["scheduler"][0] == "bad" and found["sandbox"][0] == "bad" and 'class="n"' not in part
+    assert found["scheduler"][1].startswith("The scheduler did not answer: ") and found["sandbox"][1].startswith("The sandbox did not answer: ")
+
+    clock.now += 60
+    asked = len(door.requests)
+    broker.answers["audit.list"] = broker_client.BrokerUnreachable("no_reply")
+    found = pills(dead.get("/status", headers=HX).text)
+    assert found["broker"][0] == "bad" and found["scheduler"][0] == found["sandbox"][0] == "" and len(door.requests) == asked

@@ -18,14 +18,12 @@ COPY social_data_pipeline/__init__.py ./social_data_pipeline/
 COPY social_data_pipeline/control/__init__.py social_data_pipeline/control/errors.py social_data_pipeline/control/framing.py social_data_pipeline/control/client.py ./social_data_pipeline/control/
 COPY social_data_pipeline/webui/ ./social_data_pipeline/webui/
 
-# htmx and Pico CSS, pinned by version and checked against the sums written here (measured when they were pinned).
+# htmx, pinned by version and checked against the sum written here (measured when it was pinned).
 RUN mkdir -p social_data_pipeline/webui/static/vendor \
     && cd social_data_pipeline/webui/static/vendor \
     && python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js htmx.min.js \
-    && python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.min.css pico.min.css \
     && printf '%s  %s\n' \
         e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447 htmx.min.js \
-        fbc9a63fc9fc9f72d12fd7fc9806e11fa9f77ae4f9cad146b27003a1119ba3db pico.min.css \
        | sha256sum -c - \
     && chmod -R a+rX /app
 

@@ -375,6 +375,12 @@ def log_in(client, password=PASSWORD):
     return client.post("/login", data={"password": password}, headers={"origin": ORIGIN})
 
 
+def main_html(page):
+    """The markup of a page's `<main>` (the whole text for a part without one): the frame's own polls (the top bar's `/status`) left out."""
+    found = re.search(r"<main[^>]*>(.*)</main>", page, re.DOTALL)
+    return found.group(1) if found else page
+
+
 def form_token(client):
     """The current form token, read from the Overview's logout form."""
     page = client.get("/")

@@ -236,9 +236,9 @@ class Assistant:
             raise AssistantUnavailable(problem)
         return self._connect(self.socket_path, timeout).request({"op": op, **(fields or {})})
 
-    def hello(self):
-        """`{"backend", "databases", "queue"}` of `hello`. A runner from before the field `queue` answers without it: that shape is taken too and read as without the queue, so that a web UI and a sandbox image of different versions do not refuse each other; with the field, it must be a flag."""
-        found = self._ask("hello")
+    def hello(self, timeout=READ_SECONDS):
+        """`{"backend", "databases", "queue"}` of `hello`, asked with the time limit `timeout`. A runner from before the field `queue` answers without it: that shape is taken too and read as without the queue, so that a web UI and a sandbox image of different versions do not refuse each other; with the field, it must be a flag."""
+        found = self._ask("hello", timeout=timeout)
         found = _exactly(found, ("version", "backend", "databases", "queue") if isinstance(found, dict) and "queue" in found else ("version", "backend", "databases"))
         queue = found.get("queue", False)
         _require(isinstance(queue, bool))

@@ -354,14 +354,14 @@ class _BrokerRefused:
         self.error = error
 
 
-def broker_session_error(ctx, session, cached=True):
-    """None when the broker still knows the session (asked with `audit.list` and a limit of 1, through the table; its yes believed for SESSION_CHECK_SECONDS unless `cached` is false), else the broker's error. Runs in a worker. The Queue's and the Chat's routes ask it before every page, part, download and change."""
+def broker_session_error(ctx, session, cached=True, timeout=None):
+    """None when the broker still knows the session (asked with `audit.list` and a limit of 1, through the table, with the reads' time limit or `timeout`; its yes believed for SESSION_CHECK_SECONDS unless `cached` is false), else the broker's error. Runs in a worker. The Queue's and the Chat's routes ask it before every page, part, download and change, the top bar's indicators (`status`) before they ask anything."""
     work = session.work
     now = ctx.clock()
     checked = getattr(work, "broker_checked_at", None)
     if cached and checked is not None and 0 <= now - checked < SESSION_CHECK_SECONDS:
         return None
-    kind, value = call_broker(lambda: ctx.broker(token=session.token, timeout=ctx.limits.read_seconds), lambda made: actions.call(made, "audit.list", {"limit": 1}))
+    kind, value = call_broker(lambda: ctx.broker(token=session.token, timeout=ctx.limits.read_seconds if timeout is None else timeout), lambda made: actions.call(made, "audit.list", {"limit": 1}))
     if kind == "error":
         work.broker_checked_at = None
         return value

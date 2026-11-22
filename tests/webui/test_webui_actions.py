@@ -73,7 +73,7 @@ def the_session(app, client):
 
 def main_text(page):
     """The text of the page's main part, markup removed and entities read."""
-    found = re.search(r'<main class="content">(.*)</main>', page, re.DOTALL)
+    found = re.search(r'<main class="main">(.*)</main>', page, re.DOTALL)
     return html.unescape(re.sub(r"<[^>]+>", " ", found.group(1) if found else page))
 
 

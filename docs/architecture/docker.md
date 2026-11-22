@@ -87,7 +87,7 @@ The databases restart only on request (`restart: "no"`) and get long stop grace 
 | `Dockerfile.postgres` | `postgres:18` | none | `pg_parquet`, the first-start scripts in `config/postgres/initdb.d/` |
 | `Dockerfile.mcp-mongo` | `oven/bun:1` build, `node:22-slim` runtime | none | `mcp-mongo-server` at a pinned commit with three patches from `config/mcp/` |
 | `Dockerfile.mcp-starrocks` | `python:3.13-slim` | `mcp-server-starrocks==0.3.0` | none |
-| `Dockerfile.webui` | `python:3.13-slim` | `requirements-webui.txt`: FastAPI, uvicorn, Jinja2 | `openssl`; htmx 2.0.4 and Pico CSS 2.1.1 checked against SHA-256 sums |
+| `Dockerfile.webui` | `python:3.13-slim` | `requirements-webui.txt`: FastAPI, uvicorn, Jinja2 | `openssl`; htmx 2.0.4 checked against a SHA-256 sum |
 | `Dockerfile.gateway` | `python:3.13-slim` | none | The gateway package only |
 | `Dockerfile.sandbox` | `python:3.13-slim` | `requirements-sandbox.txt`: pandas, NumPy, Matplotlib, PyArrow, the `mcp` SDK | Claude Code at a pinned version, checked against a SHA-256 sum |
 

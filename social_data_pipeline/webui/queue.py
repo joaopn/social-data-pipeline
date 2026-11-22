@@ -336,6 +336,41 @@ class _BrokerRefused:
         self.error = error
 
 
+def broker_session_error(ctx, session, cached=True):
+    """None when the broker still knows the session (asked with `audit.list` and a limit of 1, through the table; its yes believed for SESSION_CHECK_SECONDS unless `cached` is false), else the broker's error. Runs in a worker. The Queue's and the Chat's routes ask it before every page, part, download and change."""
+    work = session.work
+    now = ctx.clock()
+    checked = getattr(work, "broker_checked_at", None)
+    if cached and checked is not None and 0 <= now - checked < SESSION_CHECK_SECONDS:
+        return None
+    kind, value = call_broker(lambda: ctx.broker(token=session.token, timeout=ctx.limits.read_seconds), lambda made: actions.call(made, "audit.list", {"limit": 1}))
+    if kind == "error":
+        work.broker_checked_at = None
+        return value
+    work.broker_checked_at = now
+    return None
+
+
+def broker_checked(ctx, session, work, cached=True):
+    """`work(session)` once the broker confirmed the session; a `_BrokerRefused` without calling it otherwise."""
+    error = broker_session_error(ctx, session, cached)
+    if error is not None:
+        return _BrokerRefused(error)
+    return work(session)
+
+
+def is_refused(value):
+    return isinstance(value, _BrokerRefused)
+
+
+def ended_session(ctx, request, session_id, error):
+    """For a session the broker no longer knows (`unauthorized`, `session_ended`): the session forgotten and the way to the login (`HX-Redirect` for htmx). None for any other error, which the caller shows."""
+    if getattr(error, "code", None) in SESSION_ENDING_CODES:
+        ctx.sessions.forget(session_id)
+        return ctx.to_login(request, why(error), clear_cookie=True)
+    return None
+
+
 def install(api, ctx):
     """Add the Queue's routes to `api`; returns the `Hooks` that `management` uses for its actions."""
     limits = ctx.limits
@@ -346,32 +381,13 @@ def install(api, ctx):
         return call_broker(lambda: scheduler, lambda made: made.call(name, fields or {}))
 
     def session_error(session, cached=True):
-        """None when the broker still knows the session (asked with `audit.list` and a limit of 1, through the table; its yes believed for SESSION_CHECK_SECONDS unless `cached` is false), else the broker's error. Runs in a worker."""
-        work = session.work
-        now = ctx.clock()
-        checked = getattr(work, "broker_checked_at", None)
-        if cached and checked is not None and 0 <= now - checked < SESSION_CHECK_SECONDS:
-            return None
-        kind, value = call_broker(lambda: ctx.broker(token=session.token, timeout=limits.read_seconds), lambda made: actions.call(made, "audit.list", {"limit": 1}))
-        if kind == "error":
-            work.broker_checked_at = None
-            return value
-        work.broker_checked_at = now
-        return None
+        return broker_session_error(ctx, session, cached)
 
     def checked(session, work, cached=True):
-        """`work(session)` once the broker confirmed the session; a `_BrokerRefused` without calling it otherwise."""
-        error = session_error(session, cached)
-        if error is not None:
-            return _BrokerRefused(error)
-        return work(session)
+        return broker_checked(ctx, session, work, cached)
 
     def refusal_of(request, session_id, error):
-        """For a session the broker no longer knows (`unauthorized`, `session_ended`): the session forgotten and the way to the login (`HX-Redirect` for htmx). None for any other error, which the caller shows."""
-        if getattr(error, "code", None) in SESSION_ENDING_CODES:
-            ctx.sessions.forget(session_id)
-            return ctx.to_login(request, why(error), clear_cookie=True)
-        return None
+        return ended_session(ctx, request, session_id, error)
 
     def broker_failure(error):
         return {"sentence": words.sentence(error), "code": getattr(error, "code", None)}

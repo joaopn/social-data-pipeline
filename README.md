@@ -58,7 +58,7 @@ python sdp.py broker start                  # Start it (stop, status, audit: see
 python sdp.py webui setup                   # Port, addresses, names, certificate; builds its image
 python sdp.py webui start                   # Start it (stop, status, unsetup: see below)
 
-# The chat (an AI assistant in a sandbox; its page is not part of this version yet)
+# The chat (an AI assistant in a sandbox; ask it in the web UI's Chat window)
 python sdp.py chat setup                    # Back end, credential (not echoed), work folder's cap; builds its two images
 python sdp.py chat start                    # Start its gateway and sandbox (stop, status, unsetup: see below)
 ```
@@ -299,7 +299,7 @@ The broker is a host process on a unix socket through which a logged-in session 
 | `sdp.py webui status` | Say whether it runs, where it answers and the certificate's fingerprint and end date (exit code 0 when it runs) |
 | `sdp.py webui unsetup` | After a confirmation, remove the container, the network, the image and `.sdp/webui/` |
 
-The web UI is a page served over HTTPS from a container that holds only the broker's socket folder, its certificate and, for its Queue window, the query scheduler's control and results folders. It has a login, an Overview (databases, sources, runs alive now, notices for databases without authentication and ports open beyond the machine) and the Management pages for sources, databases, runs and the broker, from which you start and cancel runs, follow their output, start and stop services and reset or remove databases and sources; every action shows its `sdp` command and runs only once you confirm it (with the management password again for a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, removing a source, and keeping the database admin password for the session; starting or cancelling a run and stopping services need none), and a Queue window with the scheduler's queue, where queries are approved, rejected, killed, EXPLAINed and previewed and auto-accept is set. Linux, and a Docker without user-id mapping. See [The web UI](docs/guides/webui.md).
+The web UI is a page served over HTTPS from a container that holds only the broker's socket folder, its certificate and, for its Queue window, the query scheduler's control and results folders and, for its Chat window, the chat's socket folder. It has a login, an Overview (databases, sources, runs alive now, notices for databases without authentication and ports open beyond the machine) and the Management pages for sources, databases, runs and the broker, from which you start and cancel runs, follow their output, start and stop services and reset or remove databases and sources; every action shows its `sdp` command and runs only once you confirm it (with the management password again for a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, removing a source, and keeping the database admin password for the session; starting or cancelling a run and stopping services need none), a Queue window with the scheduler's queue, where queries are approved, rejected, killed, EXPLAINed and previewed and auto-accept is set, and a Chat window where you ask the chat's assistant questions about the data and get its answers, tool calls, files and plots (everything from the sandbox shown as text). Linux, and a Docker without user-id mapping. See [The web UI](docs/guides/webui.md).
 
 ### Chat (`sdp.py chat`)
 
@@ -311,7 +311,7 @@ The web UI is a page served over HTTPS from a container that holds only the brok
 | `sdp.py chat status` | Say whether each container runs, the back end, which databases the chat can read now (and which dropped out since the start) and the work folder's size against its soft cap (exit code 0 when it runs) |
 | `sdp.py chat unsetup` | After a confirmation, remove the two images and the chat's settings and credential; after a second one, also all chats and their files (`.sdp/chat/work`). Refused while the chat's containers exist |
 
-The chat is an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential and reaches the model and the databases' MCP servers for it. The Chat page itself is not part of this version yet: `chat start` runs the containers, and the sandbox idles. See [The chat](docs/guides/chat.md).
+The chat is an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential and reaches the model and the databases' MCP servers for it. You ask it in the web UI's Chat window (start the web UI after `chat start`). See [The chat](docs/guides/chat.md).
 
 `source status` reads pipeline state files to show ingestion progress (datasets processed, in-progress, failed) without querying the database. `source error-logs` shows the full error details and relevant mongoimport log output for failed datasets. Use `--profile` to filter by ingestion profile (`postgres_ingest`, `postgres_ml`, `mongo_ingest`, `sr_ingest`, `sr_ml`).
 

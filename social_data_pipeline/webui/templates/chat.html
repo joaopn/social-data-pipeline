@@ -1,0 +1,35 @@
+{% extends "frame.html" %}
+{% from "_queue_macros.html" import vis %}
+{% block content %}
+{%- if failure and not chats %}
+<p class="notice notice-bad" role="alert">{{ failure }}</p>
+{%- else %}
+<section class="card" aria-labelledby="sandbox-title">
+  <h2 id="sandbox-title">The assistant</h2>
+  {%- if hello %}
+  <dl class="facts"><dt>Back end</dt><dd>{{ hello.backend }}</dd><dt>Databases it can read</dt><dd>{{ hello.databases }}</dd></dl>
+  {%- else %}
+  <p class="notice">{{ hello_failure }}</p>
+  {%- endif %}
+  <p class="muted">The assistant runs in the chat's sandbox. Everything it sends is shown as text: no link, image or markup of its answers is followed.</p>
+  <form method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}"><button type="submit">New chat</button></form>
+</section>
+<section class="card" aria-labelledby="chats-title">
+  <h2 id="chats-title">Chats</h2>
+  {%- if failure %}
+  <p class="notice notice-bad">{{ failure }}</p>
+  {%- elif not chats %}
+  <p class="muted">No chat yet.</p>
+  {%- else %}
+  <table>
+    <thead><tr><th>Chat</th><th>Started</th><th>Turn</th></tr></thead>
+    <tbody>
+    {%- for row in chats %}
+    <tr><td><a href="{{ row.href }}">{% if row.title %}{{ vis(row.title) }}{% else %}(no question yet){% endif %}</a></td><td>{{ row.created }}</td><td>{% if row.running %}<span class="state state-on">running</span>{% else %}<span class="muted">-</span>{% endif %}</td></tr>
+    {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+</section>
+{%- endif %}
+{% endblock %}

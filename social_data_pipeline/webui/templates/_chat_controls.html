@@ -1,0 +1,5 @@
+<div id="chat-controls" hx-swap-oob="true">
+{%- if running %}
+<form method="post" action="/chat/{{ chat_id }}/stop"><input type="hidden" name="form_token" value="{{ form_token }}"><span class="muted">A turn is running.</span> <button type="submit" class="secondary">Stop the turn</button></form>
+{%- endif %}
+</div>

@@ -1,0 +1,43 @@
+{#- Macros of the Chat window: `runs` draws the inline runs of `prose`, `event` one event of `chat.event_model`. Every text is drawn from its runs of `statements.visible` through `vis` and escaped by the template; nothing of the runner becomes markup or an attribute but a checked file's address. -#}
+{% from "_queue_macros.html" import vis %}
+{% macro runs(items) -%}
+{%- for run in items -%}
+{%- if run.code %}<code>{{ vis(run.parts) }}</code>{% elif run.bold and run.italic %}<strong><em>{{ vis(run.parts) }}</em></strong>{% elif run.bold %}<strong>{{ vis(run.parts) }}</strong>{% elif run.italic %}<em>{{ vis(run.parts) }}</em>{% else %}{{ vis(run.parts) }}{% endif -%}
+{%- endfor -%}
+{%- endmacro %}
+{% macro event(item) -%}
+{%- if item.kind == "user" %}
+<div class="chat-user"><span class="chat-who">You</span><div class="text">{{ vis(item.parts) }}</div></div>
+{%- elif item.kind == "text" %}
+<div class="chat-text prose">
+{%- for block in item.blocks %}
+{%- if block.kind == "p" %}<p>{{ runs(block.runs) }}</p>
+{%- elif block.kind == "h" %}<h{{ block.level + 2 }}>{{ runs(block.runs) }}</h{{ block.level + 2 }}>
+{%- elif block.kind == "quote" %}<blockquote>{{ runs(block.runs) }}</blockquote>
+{%- elif block.kind == "code" %}<pre class="chat-code">
+{{ vis(block.parts) }}</pre>
+{%- elif block.kind in ("ul", "ol") %}<{{ block.kind }}>{% for entry in block["items"] %}<li>{{ runs(entry) }}</li>{% endfor %}</{{ block.kind }}>
+{%- endif %}
+{%- endfor %}
+{%- if item.cut %}<p class="muted">(The text is cut here: the page shows its first 64 KiB.)</p>{% endif %}
+</div>
+{%- elif item.kind == "tool" %}
+<details class="chat-tool"><summary>Tool call: {% if item.name %}<code>{{ item.name }}</code>{% else %}a tool{% endif %}</summary><pre class="chat-code">
+{{ vis(item.input) }}</pre></details>
+{%- elif item.kind == "tool_result" %}
+<details class="chat-tool{{ ' chat-bad' if item.is_error else '' }}"><summary>{{ 'Tool result (an error)' if item.is_error else 'Tool result' }}</summary><pre class="chat-code">
+{{ vis(item.parts) }}</pre></details>
+{%- elif item.kind == "file" %}
+<div class="chat-file">File {% if item.href %}<a href="{{ item.href }}">{{ vis(item.name) }}</a>{% else %}<span>{{ vis(item.name) }}</span> <span class="muted">(its name is not one the page links to)</span>{% endif %} <span class="muted">{{ item.size }}</span>
+{%- if item.image %}<br><img class="chat-image" src="{{ item.image }}" alt="an image the assistant made">{% endif %}</div>
+{%- elif item.kind == "end" %}
+<p class="chat-end muted">{{ 'The turn ended with an error' if item.is_error else 'The turn ended' }}{% if item.seconds %} after {{ item.seconds }} s{% endif %}{% if item.turns is not none %}, {{ item.turns }} model turns{% endif %}{% if item.cost %}; cost {{ item.cost }} USD as reported by the back end{% endif %}.</p>
+{%- elif item.kind == "error" %}
+<p class="notice notice-bad chat-error">{{ vis(item.parts) }}</p>
+{%- elif item.kind == "skipped" %}
+<p class="chat-unknown muted">{{ item.line }}{% if item.href %} <a href="{{ item.href }}">Continue from this event</a>{% endif %}</p>
+{%- else %}
+<p class="chat-unknown muted">{{ item.line }}</p>
+{%- endif %}
+{%- if item.get("shown_cut") %}<p class="chat-unknown muted">{{ item.shown_cut }}</p>{% endif %}
+{%- endmacro %}

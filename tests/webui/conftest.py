@@ -5,8 +5,10 @@ Nothing here imports FastAPI, Starlette or Jinja2 at load time: the tests of the
 
 from __future__ import annotations
 
+import os
+
 import pytest
-from webui_helpers import GATEWAY, HOST, HOSTS, LISTEN_PORT, Clock, StandInBroker, StandInDoor, good_lstat
+from webui_helpers import GATEWAY, HOST, HOSTS, LISTEN_PORT, Clock, ScriptedRunner, StandInBroker, StandInDoor, good_lstat
 
 
 @pytest.fixture
@@ -73,11 +75,11 @@ def make_scheduler(door, results):
 
 @pytest.fixture
 def make_app(broker, clock, settings, make_scheduler):
-    """Build the application with the stand-in broker and the stand-in scheduler: `make_app(**limits)`, `settings=` to replace the settings, `scheduler=` the way to the scheduler."""
+    """Build the application with the stand-in broker and the stand-in scheduler: `make_app(**limits)`, `settings=` to replace the settings, `scheduler=` the way to the scheduler, `assistant=` the way to the chat's runner (by default the settings', which have none)."""
     from social_data_pipeline.webui import app as webapp
 
-    def make(settings=settings, scheduler=None, **limits):
-        return webapp.create_app(settings, broker=broker.factory, scheduler=scheduler if scheduler is not None else make_scheduler(), clock=clock, limits=webapp.Limits(**limits))
+    def make(settings=settings, scheduler=None, assistant=None, **limits):
+        return webapp.create_app(settings, broker=broker.factory, scheduler=scheduler if scheduler is not None else make_scheduler(), assistant=assistant, clock=clock, limits=webapp.Limits(**limits))
 
     return make
 
@@ -100,3 +102,23 @@ def make_client():
     yield make
     for client in made:
         client.close()
+
+
+@pytest.fixture
+def chat_folder():
+    """A socket folder for the chat's runner with a short path (a socket's path holds at most 107 bytes), 0700, of this user."""
+    import shutil
+    import tempfile
+
+    folder = tempfile.mkdtemp(prefix="sdpc-", dir="/tmp")
+    os.chmod(folder, 0o700)
+    yield folder
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+@pytest.fixture
+def scripted(chat_folder):
+    """The scripted stand-in of the chat's runner, listening in `chat_folder`."""
+    made = ScriptedRunner(chat_folder)
+    yield made
+    made.close()

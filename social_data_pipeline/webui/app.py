@@ -1,6 +1,6 @@
-"""The web UI's application: login, logout, the frame, the Overview, the Management pages of `management` and the Queue window of `queue`, behind the `guard` layer.
+"""The web UI's application: login, logout, the frame, the Overview, the Management pages of `management`, the Queue window of `queue` and the Chat window of `chat`, behind the `guard` layer.
 
-`create_app(settings, broker=..., scheduler=...)` builds it; `from_environment()` is what the container runs (`python -m social_data_pipeline.webui.serve` builds it once and serves it on two ports). `broker(token=None, timeout=...)` returns a client of the broker (`control.client.Client` or a stand-in) with `hello()`, `login(password, channel=...)`, `logout()`, `call(verb, fields, step_up=...)`, `set_db_password(password, step_up)` and `clear_db_password()`; a read gets the time limit `Limits.read_seconds`, a confirmed action none. `scheduler` is the way to the query scheduler's control socket (`scheduler.Scheduler`; by default made from the settings' `queue_socket` and `results`). Every request to the broker but the login and the logout, and every request to the scheduler, goes through `actions.call`, which holds it to the web UI's table. The clock, the limits, the template and static folders are parameters too.
+`create_app(settings, broker=..., scheduler=...)` builds it; `from_environment()` is what the container runs (`python -m social_data_pipeline.webui.serve` builds it once and serves it on two ports). `broker(token=None, timeout=...)` returns a client of the broker (`control.client.Client` or a stand-in) with `hello()`, `login(password, channel=...)`, `logout()`, `call(verb, fields, step_up=...)`, `set_db_password(password, step_up)` and `clear_db_password()`; a read gets the time limit `Limits.read_seconds`, a confirmed action none. `scheduler` is the way to the query scheduler's control socket (`scheduler.Scheduler`; by default made from the settings' `queue_socket` and `results`), `assistant` the way to the chat's runner (`assistant.Assistant`; by default made from the settings' `chat_socket`). Every request to the broker but the login and the logout, and every request to the scheduler, goes through `actions.call`, which holds it to the web UI's table. The clock, the limits, the template and static folders are parameters too.
 
 Routes, each behind the checks of `guard` (host, origin, body, form token):
 
@@ -11,6 +11,7 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - `GET /`: the Overview, from three read verbs; a block whose read failed says why, and the others stay. A session the broker no longer knows (`unauthorized`, `session_ended`) or a broker that cannot be reached ends the session here too, and the browser is sent to the login page with a line saying why.
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
+- The Chat window (`/chat`, `/chat/new`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
 - `/static/...`: the stylesheet, the script and, in the image, htmx and Pico CSS.
 
 Every broker call runs in a worker thread, never on the event loop, under a bound of its kind (pages; logins on the local port, one place; other logins, two places; logouts; the pieces of the output view; Docker's tails of the output view; confirmed actions and, apart, cancels, in threads of their own): a page or a login that finds its bound full is answered at once with a "busy" page instead of waiting, so a slow broker can stall neither the login page nor the health check, and logins from elsewhere cannot make a local login busy. A choice of an action that is taken, a confirmation that is not refused at once, a login and a logout are answered with a redirect to a GET, so a reload never sends them again. The password is read from the form, given to the broker and dropped; no template, log line or answer gets it, and the broker's token never leaves this process but towards the broker.
@@ -31,7 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from social_data_pipeline.control import client as broker_client
-from social_data_pipeline.webui import actions, config, guard, management, overview, queue, words
+from social_data_pipeline.webui import actions, chat, config, guard, management, overview, queue, words
+from social_data_pipeline.webui.assistant import Assistant
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker, session_ends, why
 from social_data_pipeline.webui.limiter import LOCAL_KEY, LoginLimiter
 from social_data_pipeline.webui.scheduler import Scheduler
@@ -106,6 +108,17 @@ class Limits:
     # The scheduler's control socket: the calls of the Queue window (its pages and its confirmed actions) have a bound of their own, and so do the downloads.
     door_workers: int = 4
     download_workers: int = 2
+    # The chat's runner: the calls of the Chat window's pages and changes, the downloads of its files (and the most they send), its images (and how long one waits for a place).
+    chat_workers: int = 4
+    chat_download_workers: int = 2
+    chat_download_bytes: int = 1 << 30
+    chat_image_bytes: int = 8 << 20
+    chat_image_workers: int = 2
+    chat_image_wait_seconds: float = 20
+    # The most units (runs of text, blocks, items) one page of events is made into; how long a download and an image may take in all.
+    chat_units_max: int = 100_000
+    chat_download_seconds: float = 30 * 60
+    chat_image_seconds: float = 30
 
 
 def arrived_locally(scope, gateway):
@@ -137,12 +150,17 @@ class Context:
     scheduler: object = None
     door: Gate = None
     downloads: threading.BoundedSemaphore = None
+    assistant: object = None
+    chat_gate: Gate = None
+    chat_images: Gate = None
 
 
-def create_app(settings, *, broker, scheduler=None, clock=time.monotonic, limits=Limits(), templates_dir=TEMPLATES_DIR, static_dir=STATIC_DIR):
+def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.monotonic, limits=Limits(), templates_dir=TEMPLATES_DIR, static_dir=STATIC_DIR):
     """The web UI as an ASGI application: the FastAPI routes inside the `guard` layer."""
     if scheduler is None:
         scheduler = Scheduler(settings.queue_socket, settings.results)
+    if assistant is None:
+        assistant = Assistant(settings.chat_socket)
     sessions = WebSessions(clock, sessions_max=limits.sessions_max, new_work=lambda: SessionWork(pending_max=limits.pending_max, pending_seconds=limits.pending_seconds, outcomes_max=limits.outcomes_max, views_max=limits.views_max))
     limiter = LoginLimiter(clock, failures_max=limits.login_failures, window_seconds=limits.login_window_seconds, addresses_max=limits.addresses_max)
     pages = Gate(limits.page_workers)
@@ -163,9 +181,10 @@ def create_app(settings, *, broker, scheduler=None, clock=time.monotonic, limits
         return HTMLResponse(templates.get_template(name).render(**context), status_code=status, headers=headers)
 
     def frame(name, active, session, status=200, **context):
-        """A page in the frame: the Queue window's navigation when `active` is one of its pages (`queue:...`), the Management window's otherwise."""
-        window = "queue" if active.startswith("queue:") else "management"
-        return render(name, status, active=active, window=window, pages=queue.QUEUE_PAGES if window == "queue" else MANAGEMENT_PAGES, form_token=session.form_token, **context)
+        """A page in the frame: the Queue window's navigation when `active` is one of its pages (`queue:...`), the Chat window's for `chat:...`, the Management window's otherwise."""
+        window = "queue" if active.startswith("queue:") else "chat" if active.startswith("chat:") else "management"
+        pages = {"queue": queue.QUEUE_PAGES, "chat": chat.CHAT_PAGES}.get(window, MANAGEMENT_PAGES)
+        return render(name, status, active=active, window=window, pages=pages, form_token=session.form_token, **context)
 
     def to_login(request, why=None, clear_cookie=False):
         """The way to the login page: a redirect, or for a request of htmx (`HX-Request`) an empty answer whose `HX-Redirect` makes the browser load the login page, so that the login page is never swapped into a part of a page."""
@@ -284,10 +303,12 @@ def create_app(settings, *, broker, scheduler=None, clock=time.monotonic, limits
         render=render, frame=frame, current=current, to_login=to_login, sessions=sessions, pages=pages, pieces=Gate(limits.piece_workers), tails=Gate(limits.tail_workers),
         action_places=threading.BoundedSemaphore(limits.action_workers), cancel_places=threading.BoundedSemaphore(limits.cancel_workers), broker=broker, limits=limits, clock=clock,
         scheduler=scheduler, door=Gate(limits.door_workers), downloads=threading.BoundedSemaphore(limits.download_workers),
+        assistant=assistant, chat_gate=Gate(limits.chat_workers), chat_images=Gate(limits.chat_image_workers),
     )
     # The Queue's routes first: `/queue/auto-accept` and `/queue/running-rows` before `/queue/<job id>`.
     hooks = queue.install(api, context)
     management.install(api, context, hooks)
+    chat.install(api, context)
 
     return guard.Guard(api, settings=settings, sessions=sessions, body_max=limits.body_max, body_seconds=limits.body_seconds, clock=clock)
 
@@ -304,4 +325,4 @@ def from_environment():
         # A read is given `Limits.read_seconds`; a state-changing call None, no time limit: it can last many minutes and must not be cut.
         return broker_client.Client(settings.socket_path, timeout=timeout, token=token)
 
-    return create_app(settings, broker=broker, scheduler=Scheduler(settings.queue_socket, settings.results))
+    return create_app(settings, broker=broker, scheduler=Scheduler(settings.queue_socket, settings.results), assistant=Assistant(settings.chat_socket))

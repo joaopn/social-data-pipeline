@@ -1,0 +1,15 @@
+{% extends "frame.html" %}
+{% from "_queue_macros.html" import vis %}
+{% block content %}
+{%- if failure %}
+<p class="notice notice-bad" role="alert">{{ failure }}</p>
+<p><a href="/chat">Back to the chats</a></p>
+{%- else %}
+<section class="card">
+  <p>The chat {% if chat_title %}<strong>{{ vis(chat_title) }}</strong>{% else %}without a question{% endif %} and every file in its folder are removed from the sandbox's work folder. This cannot be undone.</p>
+  {%- if running %}<p class="notice notice-warn">A turn of this chat is running: the sandbox refuses to delete it until the turn has ended (stop it first).</p>{% endif %}
+  <form method="post" action="/chat/{{ chat_id }}/delete"><input type="hidden" name="form_token" value="{{ form_token }}"><button type="submit" class="contrast">Delete the chat</button></form>
+  <p><a href="/chat/{{ chat_id }}">Keep it</a></p>
+</section>
+{%- endif %}
+{% endblock %}

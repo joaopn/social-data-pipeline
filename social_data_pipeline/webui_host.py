@@ -2,7 +2,7 @@
 
 What it keeps, in `<root>/.sdp/webui/` (0700): `config.json` (0600: the port, the listen addresses besides 127.0.0.1, the names, how the certificate came, its SHA-256 fingerprint and end date) and `tls/` (0700: `cert.pem` and `key.pem`, 0600), written by the broker's file rules (`control.files`). The container, the network and the image are all called `sdp-webui`.
 
-The container (`create_arguments`, one pure function) runs as the operator's uid and gid, read-only, without capabilities, without new privileges, with 256 processes, 512 MiB and a 16 MiB `/tmp` at most, on a network of its own without masquerading (so it reaches nothing outside the machine), with two read-only mounts: the broker's socket folder at `/run/sdp` and the certificate folder at `/tls`. Two more read-only mounts are added for the Queue window when their folders pass the checks of `_queue_mounts`: the query scheduler's control folder (`data/jobs/control`, made 0700 when missing) at `/run/sdp-jobs`, and its results folder (`JOBS_RESULT_ROOT` of `.env`, by default `./data/jobs/results`) at `/run/sdp-results`; a folder that does not pass is left out with one line saying why. It listens on two ports: 127.0.0.1 of the host is published to the local port (8444) and each other listen address the operator named to 8443, so that the web UI tells a login from the machine itself by the port it arrived on and never by the client's address. Docker without user-id mapping is required: rootless Docker and user-namespace remapping are refused (the broker checks the peer's uid, which must be the operator's).
+The container (`create_arguments`, one pure function) runs as the operator's uid and gid, read-only, without capabilities, without new privileges, with 256 processes, 512 MiB and a 16 MiB `/tmp` at most, on a network of its own without masquerading (so it reaches nothing outside the machine), with two read-only mounts: the broker's socket folder at `/run/sdp` and the certificate folder at `/tls`. Two more read-only mounts are added for the Queue window when their folders pass the checks of `_queue_mounts`: the query scheduler's control folder (`data/jobs/control`, made 0700 when missing) at `/run/sdp-jobs`, and its results folder (`JOBS_RESULT_ROOT` of `.env`, by default `./data/jobs/results`) at `/run/sdp-results`; a folder that does not pass is left out with one line saying why. One more read-only mount is added for the Chat window when `_chat_folder` passes it: the chat's socket folder (`.sdp/chat/socket`, a real folder of the operator without permission for others) at `/run/sdp-chat`, with the setting of the runner's socket; otherwise one line says why the Chat window will not be available. It listens on two ports: 127.0.0.1 of the host is published to the local port (8444) and each other listen address the operator named to 8443, so that the web UI tells a login from the machine itself by the port it arrived on and never by the client's address. Docker without user-id mapping is required: rootless Docker and user-namespace remapping are refused (the broker checks the peer's uid, which must be the operator's).
 
 Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell; no secret is ever in an argument list (the key is a file in the mounted folder). Standard library and this package only; the setup prompts come from `social_data_pipeline.setup.utils`, imported when `setup` runs.
 """
@@ -49,6 +49,9 @@ RESULTS_KEY = "JOBS_RESULT_ROOT"
 RESULTS_DEFAULT = "./data/jobs/results"
 QUEUE_MOUNT = webui_config.QUEUE_MOUNT
 RESULTS_MOUNT = webui_config.RESULTS_MOUNT
+# The chat's socket folder, for the Chat window.
+CHAT_SOCKET_FOLDER = os.path.join(STATE_FOLDER, "chat", "socket")
+CHAT_MOUNT = webui_config.CHAT_MOUNT
 SOCKET_MOUNT = "/run/sdp"
 TLS_MOUNT = "/tls"
 SOCKET_IN_CONTAINER = SOCKET_MOUNT + "/broker.sock"
@@ -176,8 +179,8 @@ def _publish(address, port, container_port):
     return f"{host}:{port}:{container_port}"
 
 
-def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_folder=None):
-    """The `docker create` argument list of the web UI's container. `root` is the deployment folder (an absolute path without a comma), `gateway` the IPv4 address of the network's gateway; `queue_folder` and `results_folder` are the scheduler's control folder and results folder (absolute paths without a comma) to mount for the Queue window, each None when it is left out. 127.0.0.1 is published to the local port, every other listen address to the other one."""
+def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_folder=None, chat_folder=None):
+    """The `docker create` argument list of the web UI's container. `root` is the deployment folder (an absolute path without a comma), `gateway` the IPv4 address of the network's gateway; `queue_folder` and `results_folder` are the scheduler's control folder and results folder (absolute paths without a comma) to mount for the Queue window, `chat_folder` the chat's socket folder for the Chat window, each None when it is left out. 127.0.0.1 is published to the local port, every other listen address to the other one."""
     arguments = [
         "docker", "create",
         "--name", CONTAINER,
@@ -198,6 +201,8 @@ def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_fo
         arguments += ["--mount", _mount(queue_folder, QUEUE_MOUNT)]
     if results_folder is not None:
         arguments += ["--mount", _mount(results_folder, RESULTS_MOUNT)]
+    if chat_folder is not None:
+        arguments += ["--mount", _mount(chat_folder, CHAT_MOUNT)]
     arguments += ["-p", _publish(LOCAL_ADDRESS, cfg.port, LOCAL_PORT)]
     for address in cfg.addresses:
         arguments += ["-p", _publish(address, cfg.port, LISTEN_PORT)]
@@ -211,6 +216,8 @@ def create_arguments(root, uid, gid, cfg, gateway, queue_folder=None, results_fo
         arguments += ["-e", f"{webui_config.ENV_QUEUE_SOCKET}={webui_config.QUEUE_SOCKET_IN_CONTAINER}"]
     if results_folder is not None:
         arguments += ["-e", f"{webui_config.ENV_RESULTS}={RESULTS_MOUNT}"]
+    if chat_folder is not None:
+        arguments += ["-e", f"{webui_config.ENV_CHAT_SOCKET}={webui_config.CHAT_SOCKET_IN_CONTAINER}"]
     arguments.append(IMAGE)
     return arguments
 
@@ -688,6 +695,29 @@ def _queue_mounts(root, uid):
     return control, results, lines + more
 
 
+def _chat_folder(root, uid):
+    """The chat's socket folder `.sdp/chat/socket` for the mount: (its path or None, the lines to print). Each of `.sdp`, `chat` and `socket` is opened relative to the one above without following a link; the socket folder must be of the operator with no permission for the group or others (the web UI refuses it otherwise). Nothing is made or changed."""
+    chat_off = "Chat: the Chat window will not be available"
+    fds = []
+    try:
+        try:
+            for name in (os.path.join(root, STATE_FOLDER), "chat", "socket"):
+                fds.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fds[-1] if fds else None))
+        except FileNotFoundError:
+            return None, [f"{chat_off}: the chat's socket folder {CHAT_SOCKET_FOLDER} is not there. Set the chat up and start it (python sdp.py chat setup, python sdp.py chat start), then stop and start the web UI."]
+        except OSError:
+            return None, [f"{chat_off}: {CHAT_SOCKET_FOLDER} or a folder above it is a link, not a folder, or cannot be opened."]
+        info = os.fstat(fds[-1])
+        if info.st_uid != uid:
+            return None, [f"{chat_off}: {CHAT_SOCKET_FOLDER} belongs to another user than you."]
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            return None, [f"{chat_off}: {CHAT_SOCKET_FOLDER} is open to the group or to others; take that away (chmod 700 {CHAT_SOCKET_FOLDER}), then stop and start the web UI."]
+    finally:
+        for fd in fds:
+            os.close(fd)
+    return os.path.join(root, CHAT_SOCKET_FOLDER), []
+
+
 def _start(root, uid, gid):
     _check_root(root)
     loaded = read_config(root)
@@ -714,9 +744,10 @@ def _start(root, uid, gid):
         raise Refused(f"{SOCKET_FOLDER}: {error.message}") from None
     gateway = _network_gateway()
     queue_folder, results_folder, queue_lines = _queue_mounts(root, uid)
-    for line in queue_lines:
+    chat_folder, chat_lines = _chat_folder(root, uid)
+    for line in queue_lines + chat_lines:
         print(f"  {line}")
-    for step in (create_arguments(root, uid, gid, cfg, gateway, queue_folder, results_folder), ["docker", "start", CONTAINER]):
+    for step in (create_arguments(root, uid, gid, cfg, gateway, queue_folder, results_folder, chat_folder), ["docker", "start", CONTAINER]):
         result = _docker(step)
         if result.returncode != 0:
             _remove_container()
@@ -780,17 +811,18 @@ def cmd_stop(root):
 
 
 def _queue_status():
-    """What `status` says of the Queue window's two mounts in the running container."""
+    """What `status` says of the Queue window's two mounts and of the Chat window's in the running container."""
     found = _docker(["docker", "container", "inspect", "--format", "{{json .Mounts}}", CONTAINER])
     try:
         mounts = json.loads(found.stdout) if found.returncode == 0 else None
     except ValueError:
         mounts = None
     if not isinstance(mounts, list):
-        return ["Queue: Docker cannot say which folders are mounted."]
+        return ["Queue, Chat: Docker cannot say which folders are mounted."]
     targets = {mount.get("Destination") for mount in mounts if isinstance(mount, dict)}
     lines = ["Queue: the scheduler's control folder is mounted" if QUEUE_MOUNT in targets else "Queue: the scheduler's control folder is not mounted, so the Queue window is not available (start the web UI after the scheduler's data folder exists)"]
     lines.append("Queue: the results folder is mounted (downloads)" if RESULTS_MOUNT in targets else "Queue: the results folder is not mounted, so there are no downloads")
+    lines.append("Chat: the chat's socket folder is mounted" if CHAT_MOUNT in targets else "Chat: the chat's socket folder is not mounted, so the Chat window is not available (start the web UI after python sdp.py chat start)")
     return lines
 
 

@@ -7,6 +7,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - `start`: refused when not set up, under rootless Docker or user-namespace remapping, for a container of another deployment; "already running" with exit code 0; a failed create or start removes the container and returns 1 with Docker's last line; a server that ends right after its start is reported with its last log lines, removed, and the command returns 1; the broker is asked from inside the container. 127.0.0.1 is published to the local port 8444, every other listen address (IPv6 ones included) to 8443.
 - `unsetup` removes nothing through a symbolic link: a linked `.sdp` is refused and what it points at stays.
 - The Queue window's mounts (`_queue_mounts`): the `docker create` list pinned with none, one and both; `start` makes `data/jobs/control` 0700 whatever the umask; a linked or foreign control folder, a missing or linked `data/jobs`: no mount and the line; the results folder from `.env` (by its key), its default, a comma in its path, `data/jobs` itself, a folder above it (through a link too), a folder inside the control folder: each with its line and the right mounts; `.env` is never printed; `status` says which are mounted.
+- The Chat window's mount (`_chat_folder`): pinned with all three optional mounts; `.sdp/chat/socket` present (mounted with its setting), missing, a link (itself or a folder above it), of another user, open to others: the line and no mount; `status` says whether it is mounted.
 - `stop` and `status` exit codes; `unsetup` asks first and removes the container, the network, the image and `.sdp/webui`.
 - `setup` refuses without a management password before asking anything; the state folder and its files have modes 0700 and 0600; no argument list holds the key or a password; every prompt has a tag listed in `tests/e2e/questions.yaml`.
 - `import sdp` loads neither the web package nor the control package; `sdp webui` alone prints the group's help.
@@ -307,6 +308,25 @@ def test_the_create_argument_list_with_the_queue_mounts_is_pinned():
         "sdp-webui",
     ]
     assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1") == [*PINNED_START, *PINNED_PORTS_AND_SETTINGS, "sdp-webui"]
+
+
+def test_the_create_argument_list_with_the_chat_mount_is_pinned():
+    """Bug class: the chat's socket folder mounted writable (the web UI could then replace the runner's socket), at another place, or without its setting; with all three optional mounts, one of them dropped or reordered."""
+    cfg = host.WebuiConfig(port=8443)
+    chat_mount = ["--mount", "type=bind,source=/srv/deploy/.sdp/chat/socket,target=/run/sdp-chat,readonly"]
+    chat_setting = ["-e", "SDP_WEBUI_CHAT_SOCKET=/run/sdp-chat/runner.sock"]
+    assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1", chat_folder="/srv/deploy/.sdp/chat/socket") == [*PINNED_START, *chat_mount, *PINNED_PORTS_AND_SETTINGS, *chat_setting, "sdp-webui"]
+    assert host.create_arguments("/srv/deploy", 1000, 1001, cfg, "172.30.0.1", "/srv/deploy/data/jobs/control", "/srv/results", "/srv/deploy/.sdp/chat/socket") == [
+        *PINNED_START,
+        "--mount", "type=bind,source=/srv/deploy/data/jobs/control,target=/run/sdp-jobs,readonly",
+        "--mount", "type=bind,source=/srv/results,target=/run/sdp-results,readonly",
+        *chat_mount,
+        *PINNED_PORTS_AND_SETTINGS,
+        "-e", "SDP_WEBUI_QUEUE_SOCKET=/run/sdp-jobs/door.sock",
+        "-e", "SDP_WEBUI_RESULTS=/run/sdp-results",
+        *chat_setting,
+        "sdp-webui",
+    ]
 
 
 @pytest.mark.parametrize("address", ["2001:db8::5", "192.0.2.10", "169.254.1.1"])
@@ -892,3 +912,79 @@ def test_the_env_is_read_by_the_projects_rules(tmp_path, monkeypatch, text):
     monkeypatch.setattr(utils, "ROOT", tmp_path)
     assert host._env_of(str(tmp_path)) == utils.load_env()
     assert host._env_of(str(tmp_path / "nowhere")) == {}
+
+
+# ── the Chat window's mount ─────────────────────────────────────────────────
+
+
+def chat_mount(root, docker, capsys):
+    """Start the web UI; returns (the chat's mount source or None, whether its setting was given, the output)."""
+    capsys.readouterr()
+    assert host._start(str(root), *ME) == 0
+    out = capsys.readouterr().out
+    created = next(call for call in docker.calls if call[1] == "create")
+    mounts = [created[index + 1] for index, word in enumerate(created) if word == "--mount" and "target=/run/sdp-chat," in created[index + 1]]
+    setting = "SDP_WEBUI_CHAT_SOCKET=/run/sdp-chat/runner.sock" in created
+    docker.calls.clear()
+    host.cmd_stop(root)
+    return (mount_source(mounts[0]) if mounts else None), setting, out
+
+
+def make_chat_socket(root, mode=0o700):
+    folder = root / ".sdp" / "chat" / "socket"
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder, mode)
+    return folder
+
+
+def test_start_mounts_the_chats_socket_folder_read_only(deployment, docker, capsys):
+    """Bug class: a Chat window without its way to the runner although the chat runs, or the folder mounted without the setting."""
+    folder = make_chat_socket(deployment)
+    source, setting, out = chat_mount(deployment, docker, capsys)
+    assert source == str(folder) and setting and "Chat:" not in out
+
+
+@pytest.mark.parametrize("case, says", [
+    ("missing", "the chat's socket folder .sdp/chat/socket is not there. Set the chat up and start it"),
+    ("linked", ".sdp/chat/socket or a folder above it is a link"),
+    ("linked_above", ".sdp/chat/socket or a folder above it is a link"),
+    ("open", ".sdp/chat/socket is open to the group or to others"),
+    ("foreign", ".sdp/chat/socket belongs to another user than you"),
+])
+def test_a_chat_socket_folder_that_fails_its_check_is_not_mounted(deployment, docker, capsys, tmp_path, monkeypatch, case, says):
+    """Bug class: a folder of someone else's choosing (a link, another user's, one others can enter and plant a socket in) mounted as the chat's, or a mount of a folder that is not there (Docker refuses the start)."""
+    if case in ("linked", "linked_above"):
+        elsewhere = tmp_path / "elsewhere"
+        (elsewhere / "socket").mkdir(parents=True, mode=0o700)
+        if case == "linked":
+            (deployment / ".sdp" / "chat").mkdir()
+            (deployment / ".sdp" / "chat" / "socket").symlink_to(elsewhere / "socket")
+        else:
+            (deployment / ".sdp" / "chat").symlink_to(elsewhere)
+    elif case == "open":
+        make_chat_socket(deployment, 0o750)
+    elif case == "foreign":
+        inode = make_chat_socket(deployment).stat().st_ino
+        real_fstat = os.fstat
+
+        def fstat(fd):
+            info = real_fstat(fd)
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink, ME[0] + 1, info.st_gid, info.st_size, 0, 0, 0)) if info.st_ino == inode else info
+
+        monkeypatch.setattr(host.os, "fstat", fstat)
+    source, setting, out = chat_mount(deployment, docker, capsys)
+    assert source is None and not setting and f"Chat: the Chat window will not be available: {says}" in out
+
+
+def test_status_says_whether_the_chats_folder_is_mounted(deployment, docker, capsys):
+    """Bug class: a status that does not say why the Chat window is missing."""
+    host._start(str(deployment), *ME)
+    capsys.readouterr()
+    host.cmd_status(deployment)
+    assert "Chat: the chat's socket folder is not mounted, so the Chat window is not available" in capsys.readouterr().out
+    host.cmd_stop(deployment)
+    make_chat_socket(deployment)
+    host._start(str(deployment), *ME)
+    capsys.readouterr()
+    host.cmd_status(deployment)
+    assert "Chat: the chat's socket folder is mounted" in capsys.readouterr().out

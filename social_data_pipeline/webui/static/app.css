@@ -40,7 +40,7 @@ small, .muted { color: var(--sdp-muted); }
 .windows { display: flex; gap: 0.25rem; align-items: stretch; }
 .window { padding: 0.6rem 0.9rem; border-bottom: 2px solid transparent; text-decoration: none; }
 .window-on { border-bottom-color: var(--sdp-accent); font-weight: 600; }
-.window-off { color: var(--sdp-muted); cursor: default; }
+
 .logout { margin: 0 0 0 auto; }
 .logout button { margin: 0; padding: 0.3rem 0.8rem; font-size: 0.85rem; }
 
@@ -102,3 +102,13 @@ button.danger { background: var(--sdp-bad); border-color: var(--sdp-bad); color:
 .preview-table { overflow-x: auto; max-height: 28rem; }
 .preview-table td, .preview-table th { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8rem; }
 .pager { margin-top: 0.75rem; }
+.chat-title { font-weight: 600; overflow-wrap: anywhere; }
+.chat-log > div, .chat-log > details, .chat-log > p { margin: 0 0 0.75rem; }
+.chat-user { padding: 0.5rem 0.75rem; border-radius: 6px; background: var(--sdp-accent-soft); }
+.chat-who { font-weight: 600; font-size: 0.85rem; }
+.prose p, .prose blockquote, .prose li { white-space: pre-line; overflow-wrap: anywhere; }
+.chat-code { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; font-size: 0.8rem; margin: 0.25rem 0; }
+.chat-tool summary { font-size: 0.9rem; }
+.chat-bad summary { color: var(--sdp-bad); }
+.chat-image { max-width: 100%; height: auto; margin-top: 0.5rem; border: 1px solid var(--sdp-line); }
+.chat-end, .chat-unknown { font-size: 0.85rem; }

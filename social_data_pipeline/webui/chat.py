@@ -1,0 +1,535 @@
+"""The Chat window: the operator asks questions about the data and an assistant in the chat's sandbox answers, through the chat's runner (`assistant.Assistant`).
+
+Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule, and nothing of an answer reaches a header or a script.
+
+- `GET /chat`: the chats, newest first (title, whether a turn runs), the back end and the databases the chat can read (`hello`), and a button for a new chat. `POST /chat/new` makes one (`chat.new`) and leads to it.
+- `GET /chat/<id>` (an id of the runner's form, else not found): the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`) with their download links, the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
+- `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
+- `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. The web UI opens no file for either: the bytes come only through the socket.
+
+Every route answers GET or POST only (a HEAD is 405); every POST passes the guard's origin and form-token rule. Standard library, anyio, FastAPI, Starlette and this package only.
+"""
+
+import logging
+import re
+import threading
+import urllib.parse
+
+import anyio
+from fastapi import Request
+from fastapi.responses import PlainTextResponse, RedirectResponse
+from starlette.responses import Response
+
+from social_data_pipeline.control import client
+from social_data_pipeline.webui import assistant, prose, queue, results, statements, words
+from social_data_pipeline.webui.calls import BUSY_GATE
+
+log = logging.getLogger("social_data_pipeline.webui")
+
+CHAT_PAGES = (("chat:list", "Chats", "/chat"),)
+EVENTS_PAGE = 200
+POLL = "load delay:2s"
+NOW = "load"
+RETRY = "load delay:5s"
+OFFSET_PATTERN = r"[0-9]{1,7}"
+EVENT_TEXT_MAX = 64 * 1024
+TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,80}")
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
+SIGNATURES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"))
+SANDBOX_POLICY = "sandbox"
+NOT_FOUND = "Not found.\n"
+BUSY = "The web UI is busy with other requests to the chat: try again in a moment."
+DOWNLOADS_BUSY = "The web UI already sends two of the chat's files: try again when one has ended."
+TOO_LARGE = "The file is larger than 1 GiB, the most the web UI sends: copy it from the chat's work folder on this machine (.sdp/chat/work)."
+TEXT_REFUSED = "The question was not sent: it must be 1 to 32,000 characters. It is kept in the box."
+FORM_REFUSED = "The request was not taken: a field of the form was refused. Nothing was sent to the chat."
+NOT_UNDERSTOOD_EVENT = "An event this page does not understand (nothing of it is shown)."
+TOO_LONG_EVENT = "This event is too long to show together with the ones above (a page of events shows at most 100,000 pieces of text and blocks)."
+FOLLOWING_EVENT = "One more event follows here: continue from the event above to see it."
+SHOWN_CUT = "This event is cut here: it is too long to show whole."
+# The field holding an event's text, which is cut when the event alone is too long to show.
+TEXT_FIELDS = {"user": "text", "text": "text", "tool": "input", "tool_result": "text", "error": "message"}
+# The most events one view of a chat appends; then it offers to continue from there in a fresh view.
+VIEW_EVENTS_MAX = 2000
+COST_MAX = 10 ** 9
+EVENT_FIELDS = {
+    "user": {"text"}, "text": {"text"}, "tool": {"name", "input"}, "tool_result": {"text", "is_error"},
+    "file": {"name", "size"}, "end": {"is_error", "cost_usd", "duration_ms", "turns"}, "error": {"message"},
+}
+
+
+def _not_found():
+    return PlainTextResponse(NOT_FOUND, status_code=404)
+
+
+def _text(value, most=EVENT_TEXT_MAX):
+    if not assistant.is_text(value, most):
+        raise ValueError("not text")
+    return value
+
+
+def _optional_whole(value):
+    if value is not None and not assistant.is_whole(value):
+        raise ValueError("not a count")
+    return value
+
+
+def file_href(chat_id, name, route="file"):
+    """The address of a file of a chat whose name follows the runner's rule (checked by the caller), the name quoted."""
+    return f"/chat/{chat_id}/{route}/{urllib.parse.quote(name, safe='')}"
+
+
+def event_model(event, chat_id):
+    """What the page shows of one event of the runner: a dict with `kind` (the event's type, or `unknown` for any event of another type or shape, of which nothing is shown)."""
+    try:
+        kind = event.get("type") if isinstance(event, dict) else None
+        if not isinstance(kind, str) or kind not in EVENT_FIELDS or set(event) != EVENT_FIELDS[kind] | {"n", "t", "type"}:
+            raise ValueError("not an event")
+        if not assistant.is_whole(event["n"], 0, assistant.OFFSET_MAX) or not (event["t"] is None or assistant.is_time(event["t"])):
+            raise ValueError("not an event")
+        if kind == "user":
+            return {"kind": kind, "parts": statements.visible(_text(event["text"]))[0]}
+        if kind == "text":
+            found, was_cut = prose.blocks(_text(event["text"]))
+            return {"kind": kind, "blocks": found, "cut": was_cut}
+        if kind == "tool":
+            name = _text(event["name"], 200)
+            return {"kind": kind, "name": name if TOOL_NAME.fullmatch(name) else None, "input": statements.visible(_text(event["input"]))[0]}
+        if kind == "tool_result":
+            if not isinstance(event["is_error"], bool):
+                raise ValueError("not a flag")
+            return {"kind": kind, "parts": statements.visible(_text(event["text"]))[0], "is_error": event["is_error"]}
+        if kind == "file":
+            name = _text(event["name"], 1024)
+            if not assistant.is_whole(event["size"]):
+                raise ValueError("not a size")
+            usable = assistant.is_file_name(name)
+            return {"kind": kind, "name": statements.visible(name)[0], "size": queue.size_text(event["size"]), "href": file_href(chat_id, name) if usable else None, "image": file_href(chat_id, name, "image") if usable and name.lower().endswith(IMAGE_SUFFIXES) else None}
+        if kind == "end":
+            cost, duration, turns = event["cost_usd"], _optional_whole(event["duration_ms"]), _optional_whole(event["turns"])
+            if not isinstance(event["is_error"], bool) or (cost is not None and (isinstance(cost, bool) or not isinstance(cost, (int, float)))):
+                raise ValueError("not an end")
+            shown_cost = f"{cost:.4f}" if assistant.is_number(cost, 0, COST_MAX) else None
+            return {"kind": kind, "is_error": event["is_error"], "seconds": f"{duration / 1000:.1f}" if duration is not None and duration < 10 ** 12 else None, "cost": shown_cost, "turns": turns if turns is not None and turns < 10 ** 6 else None}
+        return {"kind": kind, "parts": statements.visible(_text(event["message"]))[0]}
+    except Exception:
+        # Any failure in modelling one event (a number no float holds included) is that event's line, never an error of the page.
+        return {"kind": "unknown", "line": NOT_UNDERSTOOD_EVENT}
+
+
+def count_units(value):
+    """The units of one page's budget a model holds: every run of `statements.visible` (a pair of a flag and a text), every block, item and other object or list, walked without recursion."""
+    count, todo = 0, [value]
+    while todo:
+        item = todo.pop()
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], bool) and isinstance(item[1], str):
+            count += 1
+        elif isinstance(item, dict):
+            count += 1
+            todo.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            count += 1
+            todo.extend(item)
+    return count
+
+
+def fitted(event, chat_id, units_max):
+    """(the model of one event and its units) within `units_max`: an event whose model alone is larger is modelled again from the first half of its text, and again, until it fits, and is marked as cut, so that every event can be shown in a page of its own."""
+    model = event_model(event, chat_id)
+    units = count_units(model)
+    field = TEXT_FIELDS.get(model["kind"])
+    if units <= units_max or field is None:
+        return model, units
+    length = len(event[field])
+    while units > units_max and length:
+        length //= 2
+        model = event_model({**event, field: event[field][:length]}, chat_id)
+        units = count_units(model)
+    model["shown_cut"] = SHOWN_CUT
+    return model, units
+
+
+def events_model(events, chat_id, units_max, offset):
+    """(the models of one page of events from `offset` on, the units they hold), at most `units_max` (`count_units`). The first event of a page is always shown, cut when it alone is too long (`fitted`); once the next event would pass the budget, it is the line TOO_LONG_EVENT with a link to a view that starts at it (`/chat/<id>?from=<its offset>`, made from `offset` and its place on the page only), and every later event of the page the line FOLLOWING_EVENT."""
+    models, used, full = [], 0, False
+    for index, event in enumerate(events):
+        if not full:
+            model, units = fitted(event, chat_id, units_max) if not models else (event_model(event, chat_id), None)
+            units = count_units(model) if units is None else units
+            if not models or used + units <= units_max:
+                models.append(model)
+                used += units
+                continue
+            full = True
+            models.append({"kind": "skipped", "line": TOO_LONG_EVENT, "href": f"/chat/{chat_id}?from={offset + index}"})
+            continue
+        models.append({"kind": "skipped", "line": FOLLOWING_EVENT, "href": None})
+    return models, used
+
+
+def _ask(function):
+    """One call of the runner, in the calling worker: ("ok", result) or ("error", the error). An exception of any other kind is an answer this page does not understand."""
+    try:
+        return "ok", function()
+    except client.BrokerError as error:
+        return "error", error
+    except Exception as error:
+        log.error("a call of the chat's runner failed (%s)", type(error).__name__)
+        return "error", assistant.NotUnderstood()
+
+
+def _status_of(error):
+    code = getattr(error, "code", None)
+    if code == "not_found":
+        return 404
+    return 503 if code in ("unreachable", "not_understood", "unavailable", "internal") else 409
+
+
+def events_href(chat_id, offset, start):
+    return f"/chat/{chat_id}/events?offset={offset}&from={start}"
+
+
+def next_of(chat_id, start, offset, events, running):
+    """`{"trigger", "next_href", "continue_href"}` after a page of events up to `offset` of a view that started at `start`: the next request (every 2 seconds while a turn runs, at once after events came), none once the turn has ended and nothing more came, and none but a link to continue in a fresh view once the view has shown VIEW_EVENTS_MAX events."""
+    if offset - start >= VIEW_EVENTS_MAX:
+        return {"trigger": None, "next_href": None, "continue_href": f"/chat/{chat_id}?from={offset}"}
+    trigger = POLL if running else NOW if events else None
+    return {"trigger": trigger, "next_href": events_href(chat_id, offset, start) if trigger else None, "continue_href": None}
+
+
+def whole_in_bounds(text, high=assistant.OFFSET_MAX):
+    """The number a query value writes (ASCII digits only), or None."""
+    if not isinstance(text, str) or not re.fullmatch(OFFSET_PATTERN, text) or int(text) > high:
+        return None
+    return int(text)
+
+
+class ChatFileStream(Response):
+    """The answer that streams a chat's file from the runner's pieces: an attachment of type `application/octet-stream` with a reduced name, `Content-Length` the size the first piece gave. `fetch(offset)` (run in a worker) returns the next piece as `(data, size, end)` or raises; a piece whose size is not the one announced, a piece shorter than a whole piece before the end, the time limit passed on `clock` (`deadline`), or any error ends the answer at once, never past what was announced. `release()` is called when the answer ends, however it ends."""
+
+    media_type = "application/octet-stream"
+
+    def __init__(self, first, size, name, fetch, release, clock, deadline):
+        super().__init__(content=None, status_code=200, headers={"content-disposition": f'attachment; filename="{results.download_name(name)}"', "content-length": str(size), "content-security-policy": SANDBOX_POLICY}, media_type=self.media_type)
+        self.first, self.size, self.fetch, self.release, self.clock, self.deadline = first[:size], size, fetch, release, clock, deadline
+
+    async def __call__(self, scope, receive, send):
+        try:
+            async with anyio.create_task_group() as group:
+
+                async def watch():
+                    while True:
+                        if (await receive())["type"] == "http.disconnect":
+                            group.cancel_scope.cancel()
+                            return
+
+                group.start_soon(watch)
+                await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+                sent, data = 0, self.first
+                while True:
+                    data = data[:self.size - sent]
+                    sent += len(data)
+                    await send({"type": "http.response.body", "body": data, "more_body": sent < self.size})
+                    if sent >= self.size:
+                        break
+                    if self.clock() > self.deadline:
+                        raise OSError("the download took longer than its limit")
+                    data, size, end = await anyio.to_thread.run_sync(self.fetch, sent)
+                    if size != self.size or not data or (len(data) < assistant.PIECE_BYTES and sent + len(data) < self.size):
+                        raise OSError("the file changed while it was sent, or a piece was short")
+                group.cancel_scope.cancel()
+        finally:
+            self.release()
+
+
+def install(api, ctx):
+    """Add the Chat window's routes to `api`."""
+    runner = ctx.assistant
+    gate = ctx.chat_gate
+    limits = ctx.limits
+    downloads = threading.BoundedSemaphore(limits.chat_download_workers)
+
+    def frame(template, session, status=200, **context):
+        return ctx.frame(template, "chat:list", session, status, **context)
+
+    def refused(session, line, status, back):
+        return frame("refused.html", session, status, title="Not done", line=line, field=None, back=back)
+
+    async def checked_run(request, work, cached=True, page=None):
+        """(session, the result of `work(session)` in a worker of the window's bound after the broker's yes, made into the answer by `page(session, result)` in that same worker when given, so that a page's model is built and rendered within the bound) or (None, the answer to give instead: the login, a busy or a refused page)."""
+        session_id, session = ctx.current(request)
+        if session is None:
+            return None, ctx.to_login(request, clear_cookie=bool(session_id))
+
+        def run():
+            made = queue.broker_checked(ctx, session, work, cached)
+            return made if page is None or queue.is_refused(made) else page(session, made)
+
+        made = await gate.run(run)
+        if made is BUSY_GATE:
+            return None, frame("busy.html", session, 503, title="Chat", line=BUSY)
+        if queue.is_refused(made):
+            ending = queue.ended_session(ctx, request, session_id, made.error)
+            return None, ending or frame("busy.html", session, 503, title="Chat", line=words.sentence(made.error))
+        return session, made
+
+    def shown(template, title, status=None):
+        """The `page` of `checked_run` that renders `template` from a model (its `_status`, unless `status` is given)."""
+        def page(session, model):
+            code = model.pop("_status", 200)
+            return frame(template, session, code if status is None else status, title=title, **model)
+
+        return page
+
+    # ── the chats ──
+
+    def list_work(session):
+        model = {"failure": None, "hello": None, "hello_failure": None, "chats": None}
+        kind, hello = _ask(runner.hello)
+        if kind == "error" and getattr(hello, "code", None) == "unreachable":
+            model["failure"] = words.chat_sentence(hello)
+            return model
+        if kind == "ok":
+            model["hello"] = {"backend": hello["backend"], "databases": ", ".join(hello["databases"]) or "none"}
+        else:
+            model["hello_failure"] = words.chat_sentence(hello)
+        kind, chats = _ask(runner.chats)
+        if kind == "error":
+            model["failure"] = words.chat_sentence(chats)
+            return model
+        model["chats"] = [{"href": f"/chat/{chat['id']}", "title": statements.visible(chat["title"])[0], "created": queue.when(chat["created"]), "running": chat["running"]} for chat in chats]
+        return model
+
+    @api.get("/chat")
+    async def chats_page(request: Request):
+        return (await checked_run(request, list_work, page=shown("chat.html", "Chats")))[1]
+
+    @api.post("/chat/new")
+    async def new_chat(request: Request):
+        if request.scope.get("sdp.form"):
+            return _form_refused(request)
+        session, made = await checked_run(request, lambda _session: _ask(runner.new), cached=False)
+        if session is None:
+            return made
+        kind, value = made
+        if kind == "error":
+            return refused(session, words.chat_sentence(value), _status_of(value), ("/chat", "Back to the chats"))
+        return RedirectResponse(f"/chat/{value}", status_code=303)
+
+    def _form_refused(request):
+        _session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request)
+        return refused(session, FORM_REFUSED, 400, ("/chat", "Back to the chats"))
+
+    # ── one chat ──
+
+    def find(chat_id):
+        """("ok", the chat's entry of `chat.list`) or ("error", the error; `not_found` when it is not listed)."""
+        kind, chats = _ask(runner.chats)
+        if kind == "error":
+            return kind, chats
+        found = next((chat for chat in chats if chat["id"] == chat_id), None)
+        return ("ok", found) if found is not None else ("error", client.BrokerError("not_found", "not listed"))
+
+    def conversation_work(chat_id, draft="", line=None, start=0):
+        def work(_session):
+            model = {"chat_id": chat_id, "start": start, "failure": None, "draft": draft, "line": line, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "left_out": 0, "more": False, "chat_title": None}
+            kind, chat = find(chat_id)
+            if kind == "error":
+                model.update(failure=words.chat_sentence(chat), _status=_status_of(chat))
+                return model
+            model["chat_title"] = statements.visible(chat["title"])[0] if chat["title"] else None
+            kind, value = _ask(lambda: runner.events(chat_id, start, EVENTS_PAGE))
+            if kind == "error":
+                model["events_failure"] = words.chat_sentence(value)
+                model["running"] = chat["running"]
+            else:
+                events, offset, running = value
+                model.update(events=events_model(events, chat_id, limits.chat_units_max, start)[0], running=running, **next_of(chat_id, start, offset, events, running))
+            kind, value = _ask(lambda: runner.files(chat_id))
+            if kind == "error":
+                model["files_failure"] = words.chat_sentence(value)
+            else:
+                files, model["left_out"], model["more"] = value
+                model["files"] = [{"name": statements.visible(entry["name"])[0], "size": queue.size_text(entry["size"]), "href": file_href(chat_id, entry["name"])} for entry in files]
+            return model
+
+        return work
+
+    async def conversation(request, chat_id, draft="", line=None, status=None, cached=True, start=0):
+        return (await checked_run(request, conversation_work(chat_id, draft, line, start), cached, page=shown("chat_conversation.html", "Chat", status)))[1]
+
+    @api.get("/chat/{chat_id}")
+    async def chat_page(request: Request, chat_id: str):
+        start_text = request.query_params.get("from")
+        start = 0 if start_text is None else whole_in_bounds(start_text)
+        if not assistant.is_chat_id(chat_id) or start is None:
+            return _not_found()
+        return await conversation(request, chat_id, start=start)
+
+    @api.get("/chat/{chat_id}/events")
+    async def events_part(request: Request, chat_id: str):
+        offset = whole_in_bounds(request.query_params.get("offset"))
+        start = whole_in_bounds(request.query_params.get("from", "0"))
+        if not assistant.is_chat_id(chat_id) or offset is None or start is None or start > offset:
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        part = {"events": [], "line": None, "trigger": None, "next_href": None, "continue_href": None, "running": None, "chat_id": chat_id, "form_token": session.form_token}
+        left = VIEW_EVENTS_MAX - (offset - start)
+
+        def work(_session):
+            """The part, modelled and rendered in the worker that asked: the events of a page and their runs are bounded there."""
+            if left <= 0:
+                part.update(next_of(chat_id, start, offset, [], False))
+                return ctx.render("_chat_events.html", **part)
+            kind, value = _ask(lambda: runner.events(chat_id, offset, min(EVENTS_PAGE, left)))
+            if kind == "error":
+                part["line"] = words.chat_sentence(value)
+            else:
+                events, next_offset, running = value
+                part.update(events=events_model(events, chat_id, limits.chat_units_max, offset)[0], running=running, **next_of(chat_id, start, next_offset, events, running))
+            return ctx.render("_chat_events.html", **part)
+
+        made = await gate.run(lambda: queue.broker_checked(ctx, session, work))
+        if made is BUSY_GATE or queue.is_refused(made):
+            ending = queue.ended_session(ctx, request, session_id, made.error) if made is not BUSY_GATE else None
+            if ending is not None:
+                return ending
+            part.update(line=BUSY if made is BUSY_GATE else words.sentence(made.error), trigger=RETRY, next_href=events_href(chat_id, offset, start))
+            return ctx.render("_chat_events.html", **part)
+        return made
+
+    @api.post("/chat/{chat_id}/send")
+    async def send(request: Request, chat_id: str):
+        form = request.scope.get("sdp.form", {})
+        if not assistant.is_chat_id(chat_id):
+            return _not_found()
+        if set(form) != {"text"}:
+            return _form_refused(request)
+        text = form["text"].replace("\r\n", "\n").replace("\r", "\n")
+        if not 1 <= len(text) <= assistant.TEXT_MAX:
+            return await conversation(request, chat_id, text, TEXT_REFUSED, 400, cached=False)
+        session, made = await checked_run(request, lambda _session: _ask(lambda: runner.send(chat_id, text)), cached=False)
+        if session is None:
+            return made
+        kind, value = made
+        if kind == "error":
+            return await conversation(request, chat_id, text, words.chat_sentence(value), _status_of(value))
+        return RedirectResponse(f"/chat/{chat_id}", status_code=303)
+
+    async def change(request, chat_id, function, done):
+        if not assistant.is_chat_id(chat_id):
+            return _not_found()
+        if request.scope.get("sdp.form"):
+            return _form_refused(request)
+        session, made = await checked_run(request, lambda _session: _ask(function), cached=False)
+        if session is None:
+            return made
+        kind, value = made
+        if kind == "error":
+            return refused(session, words.chat_sentence(value), _status_of(value), (f"/chat/{chat_id}", "Back to the chat"))
+        return RedirectResponse(done, status_code=303)
+
+    @api.post("/chat/{chat_id}/stop")
+    async def stop(request: Request, chat_id: str):
+        return await change(request, chat_id, lambda: runner.stop(chat_id), f"/chat/{chat_id}")
+
+    @api.post("/chat/{chat_id}/delete")
+    async def delete(request: Request, chat_id: str):
+        return await change(request, chat_id, lambda: runner.delete(chat_id), "/chat")
+
+    @api.get("/chat/{chat_id}/delete")
+    async def delete_page(request: Request, chat_id: str):
+        if not assistant.is_chat_id(chat_id):
+            return _not_found()
+
+        def work(_session):
+            kind, chat = find(chat_id)
+            if kind == "error":
+                return {"chat_id": chat_id, "failure": words.chat_sentence(chat), "chat_title": None, "running": False, "_status": _status_of(chat)}
+            return {"chat_id": chat_id, "failure": None, "chat_title": statements.visible(chat["title"])[0] if chat["title"] else None, "running": chat["running"]}
+
+        return (await checked_run(request, work, page=shown("chat_delete.html", "Delete this chat")))[1]
+
+    # ── files ──
+
+    def _name_ok(chat_id, name):
+        return assistant.is_chat_id(chat_id) and assistant.is_file_name(name)
+
+    @api.get("/chat/{chat_id}/file/{name}")
+    async def download(request: Request, chat_id: str, name: str):
+        if not _name_ok(chat_id, name):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        if not downloads.acquire(blocking=False):
+            return PlainTextResponse(DOWNLOADS_BUSY + "\n", status_code=503)
+        handed_over = False
+        try:
+            # A download always asks the broker first: no belief of an earlier answer. Its calls are bounded by the downloads' own places.
+            made = await anyio.to_thread.run_sync(lambda: queue.broker_checked(ctx, session, lambda _session: _ask(lambda: runner.piece(chat_id, name, 0)), cached=False))
+            if queue.is_refused(made):
+                ending = queue.ended_session(ctx, request, session_id, made.error)
+                return ending or PlainTextResponse(words.sentence(made.error) + "\n", status_code=503)
+            kind, value = made
+            if kind == "error":
+                return _not_found() if getattr(value, "code", None) in ("no_such_file", "not_found") else PlainTextResponse(words.chat_sentence(value) + "\n", status_code=_status_of(value))
+            data, size, _end = value
+            if size > limits.chat_download_bytes:
+                return PlainTextResponse(TOO_LARGE + "\n", status_code=413)
+            if len(data) < assistant.PIECE_BYTES and len(data) < size:
+                return PlainTextResponse(words.CHAT_CODE_SENTENCES["not_understood"] + "\n", status_code=503)
+
+            def fetch(offset):
+                return runner.piece(chat_id, name, offset)
+
+            stream = ChatFileStream(data, size, name, fetch, downloads.release, ctx.clock, ctx.clock() + limits.chat_download_seconds)
+            handed_over = True
+            return stream
+        finally:
+            if not handed_over:
+                downloads.release()
+
+    @api.get("/chat/{chat_id}/image/{name}")
+    async def image(request: Request, chat_id: str, name: str):
+        if not _name_ok(chat_id, name):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+
+        def whole(_session):
+            """(the image's type, its bytes), or None: a file that is not a PNG or JPEG by its first bytes, larger than the limit, that changed while it was read, that came in a piece shorter than a whole piece before its end, or that took longer than its time limit."""
+            deadline = ctx.clock() + limits.chat_image_seconds
+            kind, value = _ask(lambda: runner.piece(chat_id, name, 0))
+            if kind == "error":
+                return None
+            data, size, end = value
+            media = next((media for signature, media in SIGNATURES if data.startswith(signature)), None)
+            if media is None or size > limits.chat_image_bytes:
+                return None
+            parts, held = [data], len(data)
+            while held < size and not end:
+                if len(parts[-1]) < assistant.PIECE_BYTES or ctx.clock() > deadline:
+                    return None
+                kind, value = _ask(lambda: runner.piece(chat_id, name, held))
+                if kind == "error" or value[1] != size or not value[0]:
+                    return None
+                parts.append(value[0])
+                held += len(value[0])
+                end = value[2]
+            return (media, b"".join(parts)) if held == size else None
+
+        made = await ctx.chat_images.run(lambda: queue.broker_checked(ctx, session, whole, cached=False), wait_seconds=limits.chat_image_wait_seconds)
+        if made is BUSY_GATE:
+            return PlainTextResponse(BUSY + "\n", status_code=503)
+        if queue.is_refused(made):
+            ending = queue.ended_session(ctx, request, session_id, made.error)
+            return ending or PlainTextResponse(words.sentence(made.error) + "\n", status_code=503)
+        if made is None:
+            return _not_found()
+        return Response(content=made[1], media_type=made[0], headers={"content-security-policy": SANDBOX_POLICY})

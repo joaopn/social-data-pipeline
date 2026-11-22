@@ -9,7 +9,7 @@ In this order, each refusal a constant text answer that asks the broker nothing:
 5. A request whose method is not GET or HEAD may carry only an `application/x-www-form-urlencoded` body (415 otherwise); it is parsed here, at most 64 fields and each name once (400 otherwise), into `scope["sdp.form"]`.
 6. A request whose method is not GET or HEAD, other than `POST /login`, from a browser with a live session must carry that session's form token (the header `X-SDP-Form-Token` or the form field `form_token`), compared in constant time, or 403. The token is one per session and stays the same for its life; a form that changes something is answered with a redirect to a GET, so a reload never sends it again.
 
-The session id of the cookie `__Host-sdp_session` (when exactly one is sent) goes into `scope["sdp.session_id"]`. Every response of the application gets `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy` and `Cache-Control: no-store` (a static file: cacheable for an hour), `charset=utf-8` on a text type, and no `Server` and no `Strict-Transport-Security` header. An exception of the application is answered with a constant 500 when no answer has begun, and logged by the name of its kind only. One log line per request: the method, the path (control and non-ASCII characters replaced, at most 200 characters) and the status, nothing else.
+The session id of the cookie `__Host-sdp_session` (when exactly one is sent) goes into `scope["sdp.session_id"]`. Every response of the application gets `Content-Security-Policy` (an answer's own policy is dropped unless it is exactly `sandbox`, which is kept as a second one), `X-Content-Type-Options`, `Referrer-Policy` and `Cache-Control: no-store` (a static file: cacheable for an hour), `charset=utf-8` on a text type, and no `Server` and no `Strict-Transport-Security` header. An exception of the application is answered with a constant 500 when no answer has begun, and logged by the name of its kind only. One log line per request: the method, the path (control and non-ASCII characters replaced, at most 200 characters) and the status, nothing else.
 """
 
 import logging
@@ -35,6 +35,8 @@ SECURITY_HEADERS = (
     (b"x-content-type-options", b"nosniff"),
     (b"referrer-policy", b"same-origin"),
 )
+# The one policy of the application's own that is kept besides this layer's: `sandbox`, which the Chat window's file and image answers carry (two policies are both enforced, so it only takes away).
+KEPT_POLICY = b"sandbox"
 NO_STORE = b"no-store"
 STATIC_CACHE = b"max-age=3600"
 # Headers of the application's answer that this layer sets itself or that must not leave.
@@ -88,6 +90,9 @@ def _content_type(headers, path):
     kept = []
     for key, value in headers:
         lowered = key.lower()
+        if lowered == b"content-security-policy" and value == KEPT_POLICY:
+            kept.append((key, value))
+            continue
         if lowered in _REPLACED:
             continue
         if lowered == b"content-type":

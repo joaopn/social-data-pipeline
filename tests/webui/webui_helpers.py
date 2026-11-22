@@ -1,10 +1,12 @@
-"""Stand-ins and helpers of the web UI's tests: a broker that records every call, a scheduler's control socket that records every request, a clock, made-up answers of the read verbs, and the login and form-token steps of a client. Imported by `conftest.py` and by the test modules; it imports nothing of FastAPI, Starlette or Jinja2 (the registry, `control.verbs`, is imported to know which verbs need the management password, and the scheduler's `jobs.door` for its digest and short view)."""
+"""Stand-ins and helpers of the web UI's tests: a broker that records every call, a scheduler's control socket that records every request, a scripted chat's runner on a real socket that answers anything, a clock, made-up answers of the read verbs, and the login and form-token steps of a client. Imported by `conftest.py` and by the test modules; it imports nothing of FastAPI, Starlette or Jinja2 (the registry, `control.verbs`, is imported to know which verbs need the management password, and the scheduler's `jobs.door` for its digest and short view)."""
 
 from __future__ import annotations
 
+import base64
 import copy
 import os
 import re
+import socket
 import stat
 import threading
 import time
@@ -428,3 +430,136 @@ def wait_until(condition, seconds=5):
 def state_changing_requests(broker):
     """The requests the stand-in received for anything but a read."""
     return [request for request in broker.requests if verbs.VERBS.get(request["verb"]) is None or verbs.VERBS[request["verb"]].cls != "read"]
+
+
+# ── the chat's runner ───────────────────────────────────────────────────────
+
+CHAT_ID = "c_0123456789ab"
+
+
+def refuse(code):
+    """A refusal of the runner, as its reply document."""
+    return {"ok": False, "error": {"code": code, "message": "made-up message of the stand-in"}}
+
+
+class Raw:
+    """A reply sent as these bytes of JSON in a frame, whatever they hold (NaN, a nesting too deep, any shape)."""
+
+    def __init__(self, payload):
+        self.payload = payload if isinstance(payload, bytes) else payload.encode("utf-8", "surrogatepass")
+
+
+class ScriptedRunner:
+    """A stand-in of the chat's runner on a real unix socket (mode 0600, in `folder`), which can answer anything. `requests` records every request document in order, `opened` counts connections and `sent` the bytes of each reply sent before the other end closed. `answers` maps an op to its result (a dict), to a reply document made by `refuse`, to a `Raw` frame, or to a function of the request returning one of those; ops without one are answered as a small runner with the one chat `CHAT_ID` would (`events` from the list `events`, `chat.file` from the bytes of `files`). With `gate` set, a request of `gate_ops` waits for it."""
+
+    def __init__(self, folder):
+        from social_data_pipeline.control import framing
+
+        self.framing = framing
+        self.path = os.path.join(folder, "runner.sock")
+        self.requests = []
+        self.opened = 0
+        # The bytes of each reply that could be sent before the other end closed.
+        self.sent = []
+        # Seconds between the bytes of a reply, for a runner that dribbles; 0 sends it whole.
+        self.dribble = 0
+        self.answers = {}
+        self.events = []
+        self.running = False
+        self.files = {}
+        self.chats = [{"id": CHAT_ID, "title": "made-up question", "created": 1795000000.0, "running": False}]
+        self.gate = None
+        self.gate_ops = None
+        self.lock = threading.Lock()
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(self.path)
+        os.chmod(self.path, 0o600)
+        self.listener.listen(16)
+        self.listener.settimeout(0.2)
+        self.closing = threading.Event()
+        self.thread = threading.Thread(target=self._accept, daemon=True)
+        self.thread.start()
+
+    def ops(self):
+        return [request.get("op") for request in self.requests]
+
+    def close(self):
+        self.closing.set()
+        self.thread.join(5)
+        self.listener.close()
+
+    def _accept(self):
+        while not self.closing.is_set():
+            try:
+                connection, _ = self.listener.accept()
+            except OSError:
+                continue
+            threading.Thread(target=self._handle, args=(connection,), daemon=True).start()
+
+    def _handle(self, connection):
+        try:
+            connection.settimeout(10)
+            request = self.framing.read_frame(connection.recv, max_bytes=1 << 20, deadline=time.monotonic() + 10)
+            with self.lock:
+                self.opened += 1
+                self.requests.append(copy.deepcopy(request))
+            if self.gate is not None and (self.gate_ops is None or request.get("op") in self.gate_ops):
+                self.gate.wait(10)
+            reply = self._reply(request)
+            frame = len(reply.payload).to_bytes(4, "big") + reply.payload if isinstance(reply, Raw) else self.framing.encode(reply, max_bytes=16 << 20)
+            view, sent = memoryview(frame), 0
+            try:
+                while sent < len(frame):
+                    sent += connection.send(view[sent:sent + (1 if self.dribble else 65536)])
+                    if self.dribble:
+                        time.sleep(self.dribble)
+            finally:
+                with self.lock:
+                    self.sent.append(sent)
+        except Exception:
+            pass
+        finally:
+            connection.close()
+
+    def _reply(self, request):
+        op = request.get("op")
+        answer = self.answers.get(op)
+        if callable(answer):
+            answer = answer(request)
+        if answer is None:
+            answer = self._default(op, request)
+        if isinstance(answer, Raw) or (isinstance(answer, dict) and answer.get("ok") is False):
+            return answer
+        return {"ok": True, "result": answer}
+
+    def _default(self, op, request):
+        if op == "hello":
+            return {"version": 1, "backend": "claude-code", "databases": ["mongo"]}
+        if op == "chat.list":
+            return {"chats": self.chats}
+        if op == "chat.new":
+            return {"chat": CHAT_ID}
+        if op == "chat.send":
+            return {"offset": len(self.events)}
+        if op == "chat.events":
+            first = min(request["offset"], len(self.events))
+            listed = self.events[first:first + request["limit"]]
+            return {"events": listed, "next": first + len(listed), "running": self.running}
+        if op == "chat.stop":
+            return {"stopping": True}
+        if op == "chat.delete":
+            return {}
+        if op == "chat.files":
+            return {"files": [{"name": name, "size": len(data), "mtime": 1795000000.0} for name, data in sorted(self.files.items())], "left_out": 0, "more": False}
+        if op == "chat.file":
+            data = self.files.get(request["name"])
+            if data is None:
+                return refuse("no_such_file")
+            piece = data[request["offset"]:request["offset"] + request["limit"]]
+            return {"data": base64.b64encode(piece).decode("ascii"), "size": len(data), "next": request["offset"] + len(piece), "end": request["offset"] + len(piece) >= len(data)}
+        return refuse("bad_request")
+
+
+def an_event(kind, n=0, **fields):
+    """An event as the runner writes it."""
+    return {"n": n, "t": 1795000000.5, "type": kind, **fields}

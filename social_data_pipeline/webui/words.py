@@ -127,6 +127,59 @@ def door_sentence(error):
     return DOOR_CODE_SENTENCES.get(code, DOOR_FALLBACK) if isinstance(code, str) else DOOR_FALLBACK
 
 
+# ── the chat's runner (the Chat window) ──
+
+_START_CHAT = "Start the chat in a terminal with: python sdp.py chat start"
+
+# One sentence for every code the chat's runner answers with (`chat/runner.py`; a test parses them out of it), and the web UI's own for an answer of another shape.
+CHAT_CODE_SENTENCES = {
+    "bad_request": "The chat's sandbox did not take the request: the web UI and the sandbox may be of different versions (python sdp.py chat setup builds the sandbox again).",
+    "request_too_large": "The request was larger than the chat's sandbox takes.",
+    "not_found": "There is no chat with this id: it may have been deleted.",
+    "no_such_file": "There is no such file in the chat's folder.",
+    "busy": "A turn of this chat is running: wait until it has ended, or stop it.",
+    "too_many": "Two turns are running in the sandbox already: try again when one has ended.",
+    "over_cap": "The chat's work folder is over its soft cap: delete chats to make room.",
+    "chat_full": "This chat's log is full: start a new chat.",
+    "too_many_chats": "There are 200 chats already: delete one first.",
+    "backend_not_available": "The chat's back end is not available in this version, so no question can be sent.",
+    "too_large": "The sandbox's answer was too large to send.",
+    "not_usable": "The chat's folder in the sandbox cannot be used.",
+    "unavailable": "The chat's sandbox is stopping and takes no new request.",
+    "internal": "The chat's sandbox could not answer this request.",
+    "not_understood": "The chat's sandbox answered something this page does not understand, so nothing of it is shown.",
+}
+
+# Why the chat's runner cannot be asked: the setting, the check of its folder and socket, and each reason the client gives.
+CHAT_REASON_SENTENCES = {
+    "no_settings": f"The chat is not set up, or its socket folder (.sdp/chat/socket) was not there when the web UI was started, so the Chat window has no way to the chat. Set it up (python sdp.py chat setup) and start it (python sdp.py chat start), then restart the web UI ({_RESTART_WEBUI}).",
+    "folder_missing": f"The chat's socket folder is not there in the web UI's container, so nothing was sent: restart the web UI ({_RESTART_WEBUI}).",
+    "folder_not_a_folder": "The chat's socket folder is not a real folder (a link or a file is in its place), so nothing was sent to it.",
+    "folder_other_owner": "The chat's socket folder belongs to another user than the one the web UI runs as, so nothing was sent to it.",
+    "folder_open": "The chat's socket folder is open to the group or to others, so nothing was sent to it: take those permissions away (chmod 700 .sdp/chat/socket).",
+    "socket_not_a_socket": f"Something other than a socket is in the place of the chat's socket (a file or a link), so nothing was sent to it: stop the chat (python sdp.py chat stop), remove what is at .sdp/chat/socket/runner.sock, then start it again. {_START_CHAT}",
+    "socket_other_owner": "The chat's socket belongs to another user than the one the web UI runs as, so nothing was sent to it.",
+    "socket_open": "The chat's socket is open to the group or to others, so nothing was sent to it: restart the chat (python sdp.py chat stop, then python sdp.py chat start).",
+    client.NO_SOCKET: f"The chat's socket is not there: the chat is not running. {_START_CHAT}",
+    client.REFUSED: f"Nobody listens on the chat's socket: the chat is not running. {_START_CHAT}",
+    client.PERMISSION_DENIED: "The web UI may not open the chat's socket: it does not run as the user the chat runs as.",
+    client.NO_REPLY: "The chat's sandbox closed the connection without an answer this page can read (none in time, or not one frame of JSON), so nothing of it is shown.",
+    client.NOT_REACHED: "The chat's socket cannot be reached.",
+}
+
+CHAT_FALLBACK = "The chat's sandbox refused the request for a reason the web UI does not know."
+CHAT_UNREACHABLE = "The chat's sandbox cannot be reached."
+
+
+def chat_sentence(error):
+    """The sentence for an error of the chat's runner: by its reason when it could not be asked (`BrokerUnreachable`, or the web UI's own `assistant.AssistantUnavailable`), by its code otherwise (only a text code is looked up), the fallback for anything else. Nothing the runner sent besides its code is used."""
+    reason = getattr(error, "reason", None)
+    if isinstance(error, client.BrokerUnreachable) or getattr(error, "code", None) == "unreachable":
+        return CHAT_REASON_SENTENCES.get(reason, CHAT_UNREACHABLE) if isinstance(reason, str) else CHAT_UNREACHABLE
+    code = getattr(error, "code", None)
+    return CHAT_CODE_SENTENCES.get(code, CHAT_FALLBACK) if isinstance(code, str) else CHAT_FALLBACK
+
+
 def sentence(error):
     """The sentence for a `BrokerError`: by its reason for `BrokerUnreachable`, by its code otherwise, the fallback for anything else."""
     if isinstance(error, client.BrokerUnreachable):

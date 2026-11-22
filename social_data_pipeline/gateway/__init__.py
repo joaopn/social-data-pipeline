@@ -1,0 +1,1 @@
+"""The Chat window's network gateway: the one address the assistant's sandbox can reach, a strict HTTP forwarder to the model provider and to MCP servers that holds the provider's credential (standard library only, imports nothing else of `social_data_pipeline`)."""

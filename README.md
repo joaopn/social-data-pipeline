@@ -124,7 +124,8 @@ python sdp.py webui start
 | [PostgreSQL](https://www.postgresql.org/) 18 with [pg_parquet](https://github.com/CrunchyData/pg_parquet) | The general-purpose database |
 | [MongoDB](https://www.mongodb.com/) 8 and `mongoimport` | The raw-record database |
 | [postgres-mcp](https://github.com/crystaldba/postgres-mcp), [mcp-mongo-server](https://github.com/kiliczsh/mcp-mongo-server) (patched), [mcp-server-starrocks](https://pypi.org/project/mcp-server-starrocks/) 0.3.0 | The read-only MCP servers |
-| [FastAPI](https://fastapi.tiangolo.com/), Jinja2, [htmx](https://htmx.org/) 2.0.4, [Pico CSS](https://picocss.com/) 2 | The query scheduler's page and the web UI |
+| [FastAPI](https://fastapi.tiangolo.com/), Jinja2, [htmx](https://htmx.org/) 2.0.4 | The query scheduler's page and the web UI |
+| [Pico CSS](https://picocss.com/) 2 | The query scheduler's page |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or an OpenAI-compatible endpoint | The chat's assistant |
 
 ## Documentation

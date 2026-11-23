@@ -131,7 +131,7 @@
     </tbody>
   </table>
   {%- endif %}
-  <div class="row mt">{{ forms.button("db.unsetup_mcp", "Remove…", {}, "danger", "Remove the MCP servers' configuration") }}<span class="cli grow">python sdp.py db unsetup-mcp</span></div>
+  <div class="row mt"><a class="btn sm" href="/setup/mcp">Change…</a>{{ forms.button("db.unsetup_mcp", "Remove…", {}, "danger", "Remove the MCP servers' configuration") }}<span class="cli grow">python sdp.py db unsetup-mcp</span></div>
 </div>
 
 <div class="mt-l"{% if tab != "queue" %} hidden{% endif %}>
@@ -147,7 +147,7 @@
     <div class="row mt">{{ forms.button("db.start", "Start", {"service": "jobs"}, "", "Start jobs") }}{{ forms.button("db.stop", "Stop", {"service": "jobs"}, "", "Stop jobs") }}</div>
   </div>
   {%- endif %}
-  <div class="row mt">{{ forms.button("db.unsetup_jobs", "Remove…", {}, "danger", "Remove the scheduler's configuration") }}<span class="cli grow">python sdp.py db unsetup-jobs</span></div>
+  <div class="row mt"><a class="btn sm" href="/setup/queue">Change…</a>{{ forms.button("db.unsetup_jobs", "Remove…", {}, "danger", "Remove the scheduler's configuration") }}<span class="cli grow">python sdp.py db unsetup-jobs</span></div>
 </div>
 {%- endif %}
 

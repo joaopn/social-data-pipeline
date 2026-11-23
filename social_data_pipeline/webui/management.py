@@ -39,6 +39,8 @@ OUTPUT_BUSY = "The web UI is busy: trying again in a moment."
 NOT_FOUND = "Not found.\n"
 OFFSET_PATTERN = r"[0-9]{1,16}"
 RETRY_CODES = ("step_up_failed", "step_up_required")
+# The title of a pending restart (a db.stop with the steps that follow it).
+RESTART_TITLE = "Restart to apply"
 RUN_PAGE_LIST_LIMIT = 1000
 AUDIT_LINES = 200
 # The tabs of a source's page, of the Databases page and of the System page (`?tab=`); the first is the one shown without one.
@@ -80,16 +82,18 @@ def pending_model(pending, now, seconds):
     fields = pending.fields or {}
     return {
         "id": pending.id,
-        "title": action.title,
+        "title": RESTART_TITLE if pending.then else action.title,
         "verb": action.name,
         "command": action.command(fields) if action.command else None,
         "no_command": action.form if action.command is None else None,
         "inputs": actions.shown_inputs(action, fields),
         "destroys": action.destroys(fields) if action.destroys else None,
-        "step_up": action.cls == "step_up",
+        "step_up": pending.step_up,
         "terminal_asks": action.terminal_asks,
         "note": action.note,
         "also": action.also(fields) if action.also else None,
+        "warns": action.warns(fields) if action.warns else None,
+        "then": [{"command": actions.TABLE[name].command(step), "also": actions.TABLE[name].also(step) if actions.TABLE[name].also else None} for name, step in pending.then] if pending.then else None,
         "minutes_left": max(1, math.ceil((seconds - (now - pending.created)) / 60)),
         "queue": False,
     }
@@ -409,14 +413,17 @@ def install(api, ctx, queue_hooks):
         else:
             places_of(name).release()
 
-    def start_action(session, name, fields, step_up, outcome):
-        """Run the call in a thread of its own, through a client without a time limit; the thread writes the outcome and gives the place back."""
+    def start_action(session, name, fields, step_up, outcome, then=None):
+        """Run the call in a thread of its own, through a client without a time limit; the thread writes the outcome and gives the place back. With `then` (a restart) the management password is checked first and the steps follow the call, each only after an exit code 0 (`run_steps`)."""
         token, work = session.token, session.work
         places = places_of(name)
 
         def run():
             try:
-                kind, value = call_broker(lambda: ctx.broker(token=token, timeout=None), lambda made: actions.call(made, name, fields, step_up))
+                if then:
+                    kind, value = run_steps(lambda call: call_broker(lambda: ctx.broker(token=token, timeout=None), call), [(name, fields), *then], step_up)
+                else:
+                    kind, value = call_broker(lambda: ctx.broker(token=token, timeout=None), lambda made: actions.call(made, name, fields, step_up))
                 outcome.finish(kind, value, limits.outcome_text_bytes)
                 if kind == "ok" and name == "session.set_db_password":
                     work.db_password_kept = True
@@ -467,13 +474,15 @@ def install(api, ctx, queue_hooks):
                 return await queue_busy(request, session_id, session, taken, queue.QUEUE_BUSY)
             return await pending_page(session, taken, 503, ACTIONS_BUSY)
         command = actions.TABLE[taken.action].command(taken.fields) if actions.TABLE[taken.action].command else None
+        if taken.then:
+            command = " && ".join([command, *(actions.TABLE[step].command(step_fields) for step, step_fields in taken.then)])
         outcome = Outcome(new_id(), taken.action, command, ctx.clock())
         work.add_outcome(outcome)
         try:
             if queue_action:
                 queue_hooks.start(session, taken, password if step_up else None, outcome)
             else:
-                start_action(session, taken.action, taken.fields, password if step_up else None, outcome)
+                start_action(session, taken.action, taken.fields, password if step_up else None, outcome, then=taken.then)
         except Exception as error:
             give_place(taken.action)
             work.remove_outcome(outcome.id)
@@ -504,9 +513,11 @@ def install(api, ctx, queue_hooks):
             response = await pending_page(session, taken, 200, None, outcome_model(outcome))
             taken.fields = None
             taken.shown = None
+            taken.then = None
             return response
         taken.fields = None
         taken.shown = None
+        taken.then = None
         return RedirectResponse(f"/actions/{outcome.id}", status_code=303)
 
     @api.get("/actions/{outcome_id}")
@@ -529,6 +540,26 @@ def install(api, ctx, queue_hooks):
         if _is_htmx(request):
             return ctx.render("_outcome.html", outcome=model)
         return ctx.frame("outcome.html", active_of(outcome.action), session, title=model["title"], outcome=model)
+
+
+def run_steps(ask, steps, step_up):
+    """Run a restart's steps through `ask(call)` (`calls.call_broker` with a client): the management password checked first (`session.check_password`), then each (action, fields) of `steps`, a step-up one with the password, each only after the one before ended with exit code 0. Returns (kind, value) for the outcome: the first refusal as it came, else a result whose exit code is the last step's and whose output and errors are those of every step that ran, in order."""
+    kind, value = ask(lambda made: actions.call(made, "session.check_password", {}, step_up))
+    if kind != "ok":
+        return kind, value
+    output, errors, exit_code = [], [], None
+    for name, fields in steps:
+        kind, value = ask(lambda made, name=name, fields=fields: actions.call(made, name, fields, step_up if actions.TABLE[name].cls == "step_up" else None))
+        if kind != "ok":
+            return kind, value
+        if not isinstance(value, dict):
+            return kind, value
+        output.append(value.get("output") if isinstance(value.get("output"), str) else "")
+        errors.append(value.get("errors") if isinstance(value.get("errors"), str) else "")
+        exit_code = value.get("exit_code")
+        if exit_code != 0:
+            break
+    return "ok", {"exit_code": exit_code, "output": "".join(output), "errors": "".join(errors)}
 
 
 def _number(value):

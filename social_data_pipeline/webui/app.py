@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from social_data_pipeline.control import client as broker_client
-from social_data_pipeline.webui import actions, chat, config, guard, management, overview, queue, status, words
+from social_data_pipeline.webui import actions, chat, config, guard, llm_setup, management, overview, queue, status, words
 from social_data_pipeline.webui.assistant import Assistant
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker, session_ends, why
 from social_data_pipeline.webui.limiter import LOCAL_KEY, LoginLimiter
@@ -351,6 +351,7 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
     # The Queue's routes first: `/queue/auto-accept` and `/queue/running-rows` before `/queue/<job id>`.
     hooks = queue.install(api, context)
     management.install(api, context, hooks)
+    llm_setup.install(api, context)
     chat.install(api, context)
 
     return guard.Guard(api, settings=settings, sessions=sessions, body_max=limits.body_max, body_seconds=limits.body_seconds, clock=clock)

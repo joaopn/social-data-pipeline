@@ -153,7 +153,7 @@ def test_each_read_failing_alone_leaves_the_other_blocks(client, broker, failing
     assert response.status_code == 200
     blocks = blocks_of(response.text)
     # A failed read is one line of "Needs attention"; what the other reads say stays in its place.
-    labels = {"db.status": "Databases", "source.list": "Sources", "run.list": "Runs"}
+    labels = {"db.status": "Databases", "source.list": "Sources", "run.list": "Runs", "db.restart_needed": "Restart check"}
     assert response.text.count(words.CODE_SENTENCES["timeout"]) == 1
     assert f"<b>{labels[failing]}:</b> {words.CODE_SENTENCES['timeout']}" in blocks["Needs attention"]
     kept = {"db.status": ("Right now", "PostgreSQL running · MongoDB stopped"), "source.list": ("Sources and pipeline profiles", '<table class="t matrix">'), "run.list": ("Right now", "r20261121T101500-0a1b2c")}

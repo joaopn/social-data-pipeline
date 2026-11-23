@@ -70,6 +70,22 @@ def error_logs(profile, files=(), sections=(), name="demo"):
     return {"data": {"name": name, "sources": [{"name": name, "found": True, "warnings": [], "profiles": [{"profile": profile, "files": list(files), "mongoimport_sections": list(sections)}]}]}}
 
 
+def restart_needed(*services, docker_available=True):
+    return {"data": {"docker_available": docker_available, "services": list(services)}}
+
+
+def llm_settings(**jobs):
+    """A `db.llm_settings` answer for PostgreSQL and MongoDB set up, as `get_db_llm_settings` gives it."""
+    data = {
+        "databases": ["postgres", "mongo"],
+        "mcp": {"refusal": None, "servers": {"postgres": {"enabled": True, "port": 8000, "write_access": False}, "mongo": {"enabled": False, "port": 3000, "write_access": False}}},
+        "jobs": {"configured": True, "port": 8050, "result_root": "./data/jobs/results", "max_concurrent": 20, "history_retention": 500, "auth_enabled": False,
+                 "targets": {"postgres": {"add": True, "name": "pg_main", "database": "datasets", "timeout_hours": 0}, "mongo": {"add": True, "name": "mongo_main", "timeout_hours": 0}}},
+    }
+    data["jobs"].update(jobs)
+    return {"data": data}
+
+
 def db_verify(results=None, ok=True, warnings=()):
     results = {"postgres": {"ok": True, "findings": []}, "mongo": {"ok": True, "findings": []}} if results is None else results
     return {"data": {"report": {"ok": ok, "exit_code": 0 if ok else 1, "results": results}, "warnings": list(warnings)}}
@@ -105,6 +121,7 @@ class StandInBroker:
         self.answers = {
             "db.status": db_status(), "db.verify": db_verify(), "source.list": source_list(), "run.list": run_list(), "hello": {"protocol": 1, "password_set": True}, "audit.list": {"data": []},
             "source.status": lambda fields: source_status(fields["name"]), "source.progress": lambda fields: source_progress(fields["name"]), "source.error_logs": lambda fields: error_logs(fields["profile"], name=fields["name"]),
+            "db.restart_needed": restart_needed(), "db.llm_settings": llm_settings(),
             "run.logs": lambda fields: {"data": {"id": fields["run_id"], "kind": "web", "state": "finished", "text": "", "next_offset": fields.get("offset", 0), "complete": True}},
         }
         for verb in ("db.stop", "run.cancel", "db.start", "db.reset", "db.unsetup", "db.unsetup_mcp", "db.unsetup_jobs", "source.remove"):

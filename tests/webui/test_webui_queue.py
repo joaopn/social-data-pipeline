@@ -316,7 +316,7 @@ def test_no_get_or_head_of_the_window_asks_the_socket_for_a_change(client, token
     assert door.requests and set(door.ops()) <= READ_OPS and changes(door) == []
     assert {"counts", "stats", "jobs", "job", "preview", "auto_accept"} <= set(door.ops())
     # The only broker request of the window's reads is the session's check.
-    assert {request["verb"] for request in broker.requests} - {"db.status", "source.list", "run.list"} == {"audit.list"}
+    assert {request["verb"] for request in broker.requests} - {"db.status", "source.list", "run.list", "db.restart_needed"} == {"audit.list"}
     assert all(request["fields"] == {"limit": 1} for request in broker.requests if request["verb"] == "audit.list")
 
 

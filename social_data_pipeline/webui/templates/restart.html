@@ -1,0 +1,24 @@
+{#- The restart that Needs attention offers, in the dialog look: the services whose settings changed after they started, each stopped and started again (`db stop` then `db start`), and the database admin password `db start` asks for. Posts to /restart, which keeps one pending action for all the steps; the confirm page asks for the management password. -#}
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block shell %}
+<main class="main">
+<section class="card dialog" aria-labelledby="restart-title">
+  <h4>Restart to apply</h4>
+  <div class="row"><h2 id="restart-title">Restart {{ services | join(", ") }}</h2><a class="btn ghost sm right" href="/" title="Leave it: nothing is done">✕</a></div>
+  <p class="muted">Each service is stopped and started again, one after the other; each step runs only when the one before ended with exit code 0. Stopping a database also stops its MCP server, and starting it starts them both.</p>
+  <div class="col mt">
+  {%- for service in services %}
+    <div class="cli">python sdp.py db stop {{ service }}</div>
+    <div class="cli">python sdp.py db start {{ service }}</div>
+  {%- endfor %}
+  </div>
+  <form method="post" action="/restart" class="action-form mt">
+    {{ forms.token() }}
+    <input type="hidden" name="services" value="{{ joined }}">
+    {{ forms.admin_password(db_password_kept) }}
+    <div class="row wrap"><span class="tag step">step-up · db.stop, db.start</span><span class="right row"><a class="btn" href="/">Leave it</a><button type="submit" class="btn primary">Next: confirm</button></span></div>
+  </form>
+</section>
+</main>
+{% endblock %}

@@ -28,6 +28,16 @@
   {%- if pending.also %}
   <p class="notice">{{ pending.also }}</p>
   {%- endif %}
+  {%- for warning in pending.warns or [] %}
+  <p class="notice notice-bad"><strong>Warning</strong>: {{ warning }}</p>
+  {%- endfor %}
+  {%- if pending.then %}
+  <h4>Then, each only after the one before ended with exit code 0</h4>
+  {%- for step in pending.then %}
+  <pre class="cli wrap"><code>{{ step.command }}</code></pre>
+  {%- if step.also %}<p class="notice">{{ step.also }}</p>{% endif %}
+  {%- endfor %}
+  {%- endif %}
   {%- if pending.destroys %}
   <p class="notice notice-bad"><strong>{{ pending.destroys[1] }}</strong>: {{ pending.destroys[0] }}</p>
   {%- endif %}

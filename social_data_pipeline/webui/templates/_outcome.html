@@ -29,6 +29,9 @@
   <p class="notice">Done.</p>
   {%- else %}
   <p class="notice {{ '' if outcome.exit_code == 0 else 'notice-bad' }}">{% if outcome.exit_code == 0 %}The command ended with exit code 0.{% else %}The command ended with exit code {{ outcome.exit_code if outcome.exit_code is not none else "unknown" }}.{% endif %}</p>
+  {%- if outcome.verb in ("db.setup_mcp", "db.setup_jobs") and outcome.exit_code == 0 %}
+  <p class="notice">Nothing was restarted. The output's last line names the running services that must restart to apply this; <a href="/">Needs attention on the Overview</a> restarts them.</p>
+  {%- endif %}
   {%- if outcome.output %}
   <h3>Output <small>(its end)</small></h3>
   <pre class="output">{{ outcome.output }}</pre>

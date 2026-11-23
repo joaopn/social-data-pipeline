@@ -4,12 +4,13 @@
 {%- set databases = blocks["db.status"] %}
 {%- set sources = blocks["source.list"] %}
 {%- set runs = blocks["run.list"] %}
+{%- set restarts = blocks["db.restart_needed"] %}
 <main class="main">
 <div class="cards ov-top">
   <section class="card" aria-labelledby="attention-title">
     <h3 id="attention-title">Needs attention</h3>
-    {%- set quiet = databases.ok and sources.ok and runs.ok and not databases.unauthenticated and not databases.open_ports and runs.docker_available %}
-    {%- for label, block in (("Databases", databases), ("Sources", sources), ("Runs", runs)) %}
+    {%- set quiet = databases.ok and sources.ok and runs.ok and not databases.unauthenticated and not databases.open_ports and runs.docker_available and restarts.ok and not restarts.services %}
+    {%- for label, block in (("Databases", databases), ("Sources", sources), ("Runs", runs), ("Restart check", restarts)) %}
     {%- if not block.ok %}
     <div class="att"><span class="dot bad"></span><div class="grow"><p><b>{{ label }}:</b> {{ block.sentence }}</p>
       {%- if block.errors %}<pre class="output mt">{{ block.errors }}</pre>{% endif %}</div></div>
@@ -23,6 +24,10 @@
     <div class="att"><span class="dot warn"></span><p>These services publish their ports on every address of this machine, so other machines can reach them:
       {%- for service in databases.open_ports %} {{ service.service }} ({{ service.ports | join(", ") }}){% if not loop.last %},{% endif %}{% endfor %}.</p></div>
     {%- endif %}
+    {%- endif %}
+    {%- if restarts.ok and restarts.services %}
+    <div class="att"><span class="dot warn"></span><p><b>Restart to apply:</b> the settings of
+      {%- for row in restarts.services %} {{ row.service }} ({{ row.files | join(", ") }}){% if not loop.last %},{% endif %}{% endfor %} changed after it started. Nothing restarts by itself.</p><span class="right"><a class="btn sm" href="/restart?services={{ restarts.restart | join(',') }}">Restart…</a></span></div>
     {%- endif %}
     {%- if runs.ok and not runs.docker_available %}
     <div class="att"><span class="dot warn"></span><p>Docker cannot be asked: runs started in a terminal are not listed.</p></div>

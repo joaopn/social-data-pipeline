@@ -17,7 +17,9 @@ from social_data_pipeline.webui import words
 from social_data_pipeline.webui.calls import SESSION_ENDING_CODES, call_broker
 from social_data_pipeline.webui.cleaning import clean_log_text
 
-READ_VERBS = ("db.status", "source.list", "run.list")
+READ_VERBS = ("db.status", "source.list", "run.list", "db.restart_needed")
+# A literal copy of `actions.SERVICES` (this module is imported by `actions`; a test compares the two): the services a restart names, in the order they are restarted.
+RESTART_SERVICES = ("postgres", "mongo", "starrocks", "postgres-mcp", "mongo-mcp", "starrocks-mcp", "jobs")
 # A literal copy of `control.types.NAME_PATTERN` (the web UI does not import the registry; a test compares the two).
 PLAIN_NAME = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}"
 ALIVE_STATES = ("starting", "running", "detached", "unknown")
@@ -162,7 +164,24 @@ def runs_block(result):
     return {"docker_available": data["docker_available"], "rows": rows}
 
 
-_BLOCKS = {"db.status": databases_block, "source.list": sources_block, "run.list": runs_block}
+def restart_block(result):
+    """`services` (`service`, `files`: the settings files newer than its start) and `restart` (the services a restart stops and starts again, in that order: a database's MCP server is left out when its database is named, since `db stop` and `db start` of a database take its MCP server along) from a `db.restart_needed` answer. Raises ShapeError."""
+    data = _data(result)
+    _need(isinstance(data.get("docker_available"), bool) and isinstance(data.get("services"), list))
+    rows = []
+    for entry in data["services"]:
+        _need(isinstance(entry, dict) and entry.get("service") in RESTART_SERVICES and isinstance(entry.get("files"), list))
+        files = []
+        for item in entry["files"]:
+            _need(isinstance(item, dict))
+            files.append(text(_string(item.get("file"))))
+        rows.append({"service": entry["service"], "files": files})
+    named = {row["service"] for row in rows}
+    restart = [service for service in RESTART_SERVICES if service in named and not (service.endswith("-mcp") and service[:-len("-mcp")] in named)]
+    return {"services": rows, "restart": restart}
+
+
+_BLOCKS = {"db.status": databases_block, "source.list": sources_block, "run.list": runs_block, "db.restart_needed": restart_block}
 
 
 def build(answers):

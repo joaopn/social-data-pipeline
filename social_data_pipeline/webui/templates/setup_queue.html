@@ -1,0 +1,47 @@
+{#- The questions of `python sdp.py db setup-jobs` as one form, in the mock-up's look of a setup step: the port, the results folder, the queries at once, the history kept, one target per configured database (a box that adds it, its name, PostgreSQL's database, its default timeout) and the scheduler page's login, filled with the answers the terminal offers as defaults (`db.llm_settings`). The login can be switched on here only: while it is on, the form posts it on and says how to switch it off. Posts to /setup/queue, which keeps a pending action; nothing is written before the confirm page. -#}
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block shell %}
+<main class="main">
+<div class="row wrap"><h1>Set up the query scheduler</h1><span class="muted small">the same questions <code>python sdp.py db setup-jobs</code> asks in the terminal; both write the same files</span></div>
+{%- if failure %}
+<div class="mt">{% with block = failure %}{% include "_failure.html" %}{% endwith %}</div>
+{%- elif not settings.databases %}
+<p class="notice notice-bad mt" role="alert">No database is set up: the scheduler needs one. Set one up with <code>python sdp.py db setup</code>.</p>
+{%- else %}
+{%- set jobs = settings.jobs %}
+{%- set inputs = table["db.setup_jobs"].inputs %}
+<form method="post" action="/setup/queue" class="setup-form">
+  {{ forms.token() }}
+  <h4 class="mt-l">The scheduler</h4>
+  <div class="form mt">
+    {{ forms.field("port", inputs["port"], jobs.port) }}
+    {{ forms.field("result_root", inputs["result_root"], jobs.result_root, hint="Absolute, or relative to the deployment folder. PostgreSQL and StarRocks write results into it, mounted at /jobs_export.") }}
+    {{ forms.field("max_concurrent", inputs["max_concurrent"], jobs.max_concurrent) }}
+    {{ forms.field("history_retention", inputs["history_retention"], jobs.history_retention) }}
+  </div>
+  <h4 class="mt-l">Targets</h4>
+  <p class="muted small">A target is a named connection that agents pass as <code>target=&lt;name&gt;</code>; one per database.</p>
+  {%- for name, title, key in targets %}{% if name in jobs.targets %}
+  {%- set target = jobs.targets[name] %}
+  <div class="form mt">
+    <label class="row small ink2 wide"><input type="checkbox" name="add_{{ name }}" value="yes"{% if target.add %} checked{% endif %}> Add a {{ title }} target</label>
+    {%- for field, spec in inputs[key].fields.items() %}
+    {{ forms.field(key ~ "[" ~ field ~ "]", spec, target[field], inner=True) }}
+    {%- endfor %}
+  </div>
+  {%- endif %}{% endfor %}
+  <h4 class="mt-l">The scheduler page's login</h4>
+  {%- if jobs.auth_enabled %}
+  <input type="hidden" name="auth_enabled" value="yes">
+  <p class="muted small">On: the scheduler's own page asks for the database admin password. Switching it off is done in a terminal: <code>python sdp.py db setup-jobs</code>.</p>
+  {%- else %}
+  {{ forms.field("auth_enabled", inputs["auth_enabled"], false, label="Ask for the database admin password on the scheduler's own page (anyone who reaches its port can approve, reject and kill queries while this is off; it can be switched off again only in a terminal)") }}
+  {%- endif %}
+  <h4 class="mt-l">What this will do</h4>
+  <div class="col mt narrow"><div class="cli">python sdp.py db setup-jobs</div><p class="muted small">The next page shows the files, the .env keys and the mounts that change, and asks for the management password. A port another service of this deployment uses is refused. Nothing is restarted.</p></div>
+  <div class="row mt narrow"><span class="tag step">step-up · db.setup_jobs</span><span class="right row"><a class="btn" href="{{ back }}">Cancel</a><button type="submit" class="btn primary">Next: confirm</button></span></div>
+</form>
+{%- endif %}
+</main>
+{% endblock %}

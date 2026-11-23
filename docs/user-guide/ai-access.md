@@ -35,6 +35,8 @@ python sdp.py db setup-mcp           # Configure MCP servers (interactive)
 
 It writes `config/db/mcp.yaml` and the MCP settings in `.env`. It needs an existing read-only user when auth is on, and refuses with the recovery command when one is missing.
 
+The same questions can be answered in the web UI (Databases → MCP servers → Change…, with the management password); see [Setting up the MCP servers and the scheduler](webui.md#setting-up-the-mcp-servers-and-the-scheduler). Neither restarts a running server: `python sdp.py db restart-needed` names the services whose settings changed after they started.
+
 **3. Start them.** The servers start with their databases:
 
 ```bash

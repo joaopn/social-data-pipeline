@@ -29,6 +29,8 @@ With a `pipx` install (see [Install](install.md)) the same commands are `sdp <gr
 | `python sdp.py db setup-mcp` | Configure the MCP servers for AI tool access (ports, read-only mode) |
 | `python sdp.py db setup-jobs` | Configure the query scheduler (`jobs` profile): page + MCP for agent query submission |
 | `python sdp.py db setup-llm` | Bundle: runs `setup-mcp` followed by `setup-jobs` |
+| `python sdp.py db restart-needed` | List the running services whose settings files changed after they started (restart them to apply) |
+| `python sdp.py db llm-settings` | Show the current answers of `setup-mcp` and `setup-jobs` (no secrets) |
 | `python sdp.py db start [service]` | Start services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp\|jobs` (all configured if unspecified) |
 | `python sdp.py db stop [service]` | Stop services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp\|jobs` (all configured if unspecified) |
 | `python sdp.py db status [--verbose]` | Show database config, health, MCP and query scheduler status; `--verbose` (`-v`) adds a per-source ingestion breakdown for each configured database |

@@ -40,6 +40,8 @@ python sdp.py db start jobs               # only the scheduler
 
 `python sdp.py db setup-llm` runs `setup-mcp` followed by `setup-jobs`.
 
+The same questions can be answered in the web UI (Databases → Queue setup → Change…, with the management password); see [Setting up the MCP servers and the scheduler](webui.md#setting-up-the-mcp-servers-and-the-scheduler). From there the page's login can be switched on but not off. Neither restarts the scheduler or the databases: `python sdp.py db restart-needed` names the services whose settings changed after they started.
+
 `setup-jobs` writes:
 
 | File | Purpose |

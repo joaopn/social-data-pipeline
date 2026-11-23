@@ -63,9 +63,9 @@ def text_start(text, max_bytes=TEXT_MAX_BYTES):
 class Pending:
     """An action chosen and not confirmed yet. `step_up` says whether its confirmation needs the management password again; `shown` is what a Queue action's page shows (None for the others), `weight` the bytes of record it holds."""
 
-    __slots__ = ("id", "action", "fields", "created", "step_up", "shown", "weight")
+    __slots__ = ("id", "action", "fields", "created", "step_up", "shown", "weight", "then")
 
-    def __init__(self, pending_id, action, fields, created, step_up=None, shown=None, weight=0):
+    def __init__(self, pending_id, action, fields, created, step_up=None, shown=None, weight=0, then=None):
         self.id = pending_id
         self.action = action
         self.fields = fields
@@ -73,6 +73,8 @@ class Pending:
         self.step_up = actions.TABLE[action].cls == "step_up" if step_up is None else step_up
         self.shown = shown
         self.weight = weight
+        # The steps run after this one, each only when the one before ended with exit code 0: a list of (action, fields), or None (a restart: db.stop then db.start).
+        self.then = then
 
     def __repr__(self):
         return f"<pending {self.action}>"
@@ -242,20 +244,22 @@ class SessionWork:
             dropped = self._pending.pop(key)
             dropped.fields = None
             dropped.shown = None
+            dropped.then = None
 
     def _drop_oldest(self):
         _, dropped = self._pending.popitem(last=False)
         dropped.fields = None
         dropped.shown = None
+        dropped.then = None
 
     def _weight(self):
         return sum(kept.weight for kept in self._pending.values())
 
-    def add_pending(self, action, fields, now, step_up=None, shown=None, weight=0):
+    def add_pending(self, action, fields, now, step_up=None, shown=None, weight=0, then=None):
         """Keep a pending action and return it, or None (nothing kept, nothing dropped) when it alone weighs more than PENDING_WEIGHT_MAX; the oldest is dropped when sixteen are kept, and while the records kept weigh more than PENDING_WEIGHT_MAX with it."""
         if weight > PENDING_WEIGHT_MAX:
             return None
-        pending = Pending(new_id(), action, fields, now, step_up=step_up, shown=shown, weight=weight)
+        pending = Pending(new_id(), action, fields, now, step_up=step_up, shown=shown, weight=weight, then=then)
         with self.lock:
             self._prune(now)
             while len(self._pending) >= self.pending_max or (self._pending and self._weight() + weight > PENDING_WEIGHT_MAX):
@@ -281,6 +285,7 @@ class SessionWork:
             if now - pending.created >= self.pending_seconds:
                 pending.fields = None
                 pending.shown = None
+                pending.then = None
                 return
             while len(self._pending) >= self.pending_max or (self._pending and self._weight() + pending.weight > PENDING_WEIGHT_MAX):
                 self._drop_oldest()

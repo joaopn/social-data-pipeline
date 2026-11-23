@@ -1,0 +1,37 @@
+{#- The questions of `python sdp.py db setup-mcp` as one form, in the mock-up's look of a setup step: per configured database a box that switches its MCP server on, its port and (PostgreSQL, MongoDB) its write access, filled with the answers the terminal offers as defaults (`db.llm_settings`). Posts to /setup/mcp, which keeps a pending action; nothing is written before the confirm page. -#}
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block shell %}
+<main class="main">
+<div class="row wrap"><h1>Set up the MCP servers</h1><span class="muted small">the same questions <code>python sdp.py db setup-mcp</code> asks in the terminal; both write the same files</span></div>
+{%- if failure %}
+<div class="mt">{% with block = failure %}{% include "_failure.html" %}{% endwith %}</div>
+{%- elif settings.refusal %}
+<p class="notice notice-bad mt" role="alert">The terminal command refuses now, and so does this form:</p>
+<pre class="output mt">{{ settings.refusal | join("\n") }}</pre>
+<div class="row mt"><a class="btn right" href="{{ back }}">Back</a></div>
+{%- else %}
+<form method="post" action="/setup/mcp" class="setup-form">
+  {{ forms.token() }}
+  {%- set inputs = table["db.setup_mcp"].inputs %}
+  {%- for name, title, writable in mcp_databases %}{% if name in settings.mcp %}
+  {%- set server = settings.mcp[name] %}
+  <h4 class="mt-l">{{ title }}</h4>
+  <div class="form mt">
+    <label class="row small ink2 wide"><input type="checkbox" name="on_{{ name }}" value="yes"{% if server.enabled %} checked{% endif %}> Switch on the {{ title }} MCP server</label>
+    {{ forms.field(name ~ "[port]", inputs[name].fields["port"], server.port, inner=True, label="Port on this machine") }}
+    {%- if writable %}
+    {{ forms.field(name ~ "[write_access]", inputs[name].fields["write_access"], server.write_access, label="Allow write access (read-only when off)") }}
+    {%- endif %}
+  </div>
+  {%- endif %}{% endfor %}
+  {%- for name, title, writable in mcp_databases %}{% if name not in settings.mcp %}
+  <p class="muted small mt">{{ title }} is not set up, so it has no MCP server.</p>
+  {%- endif %}{% endfor %}
+  <h4 class="mt-l">What this will do</h4>
+  <div class="col mt narrow"><div class="cli">python sdp.py db setup-mcp</div><p class="muted small">The next page shows the files and the .env keys it writes, and asks for the management password. A port another service of this deployment uses is refused. Nothing is restarted.</p></div>
+  <div class="row mt narrow"><span class="tag step">step-up · db.setup_mcp</span><span class="right row"><a class="btn" href="{{ back }}">Cancel</a><button type="submit" class="btn primary">Next: confirm</button></span></div>
+</form>
+{%- endif %}
+</main>
+{% endblock %}

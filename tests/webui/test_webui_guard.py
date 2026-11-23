@@ -170,7 +170,8 @@ def test_a_missing_or_wrong_form_token_is_refused_and_the_session_stays(logged_i
     for data in ({}, {"form_token": ""}, {"form_token": token[:-1] + ("A" if token[-1] != "A" else "B")}, {"form_token": token + "x"}):
         response = logged_in.post("/logout", data=data, headers={"origin": ORIGIN})
         assert refused_with(response, 403)
-    assert broker.kinds() == ["call", "call", "call"]
+    # The Overview's reads, made once to read the form token.
+    assert broker.kinds() == ["call"] * len(webapp.overview.READ_VERBS)
     assert logged_in.get("/").status_code == 200
 
 

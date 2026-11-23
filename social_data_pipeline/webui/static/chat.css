@@ -99,6 +99,16 @@ a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-dec
 .vega-embed .chart-wrapper.fit-x { width: 100%; }
 .vega-embed .chart-wrapper.fit-y { height: 100%; }
 .vega-embed svg { display: block; }
+/* a chart wider than the conversation column is scaled down to its width (the SVG has a viewBox; hover, zoom and pan still land on the points); a view being drawn again stays hidden until it replaces the one before */
+.vl-chart svg { max-width: 100%; height: auto; }
+.vl-chart > .vega-embed[hidden] { display: none; }
+/* the "Linear / Log" switch above a chart with a log y axis (plots.js), shown only while the chart is drawn */
+.vl-scale { display: flex; margin-top: 6px; }
+.plot:not(.vl-drawn) .vl-scale { display: none; }
+.vl-scale button { border-radius: 0; color: var(--ink-2); }
+.vl-scale button:first-child { border-radius: 6px 0 0 6px; }
+.vl-scale button + button { margin-left: -1px; border-radius: 0 6px 6px 0; }
+.vl-scale button[aria-pressed="true"] { position: relative; background: var(--accent-soft); border-color: var(--accent); color: var(--ink); font-weight: 600; }
 .vega-embed .vega-bindings { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 6px; font-size: 12px; color: var(--ink-2); }
 .vega-embed .vega-bindings:empty { display: none; }
 .vega-embed .vega-bind { display: flex; align-items: center; gap: 6px; }

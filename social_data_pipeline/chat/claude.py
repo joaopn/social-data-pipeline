@@ -6,6 +6,7 @@ The process gets an environment built from scratch (`environment`): never the ru
 - Settings: with the default setting sources a `.claude/settings.json` planted in the working folder or the home ran its hooks and a planted skill was loaded; `--setting-sources ""` loaded neither. The three plugins built into the binary loaded in every case until `--settings` disabled them (`SETTINGS`, given inline, so no file of the chat can change it; it also switches hooks off). `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` turned the auto-memory folder off (`memory_paths` null). A planted `CLAUDE.md` in either folder reached no request in any variant measured. MCP and the token worked with all of these.
 - The home: with `HOME` the chat's `home/`, a `.bashrc` and a `.bash_profile` planted there ran in the next turn's Bash tool (a marker file written, a variable set); `.profile` did not. Agents, commands, output styles, skills and a `settings.json` planted in `CLAUDE_CONFIG_DIR`, in `$HOME/.claude` or in the working folder's `.claude/` were not loaded with `--setting-sources ""` (the `init` line's lists and the requests unchanged). So `HOME` is a fresh empty folder in the chat's scratch folder, made anew for every turn, while `CLAUDE_CONFIG_DIR` stays the chat's `home/`, where the session files live; measured again, nothing planted took effect and the session still resumed.
 - The transcript: Claude Code keeps its own record of a session (every message, tool call and result, uncut, in its own format) at `<CLAUDE_CONFIG_DIR>/projects/<the working folder, every character but A-Z, a-z and 0-9 made "-">/<session id>.jsonl` (measured with 2.1.328 against a stand-in API: a first turn made it, a resumed turn appended to the same file). `transcript` names it for the runner's `chat.transcript`.
+- The title (`ClaudeCode.title`, the command of `title_command`): measured with 2.1.328 against a stand-in API that recorded each request, in a folder of its own (`HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR` and the working folder all in it), with hooks, a skill, a `CLAUDE.md` and a `.mcp.json` planted in the config folder, in `$HOME/.claude` and in the working folder. One request was sent (`POST /v1/messages?beta=true`, model `claude-haiku-5-5`, keys all among those the gateway takes, its `anthropic-beta` values all among `chat_host.BETA_ALLOWED`), with no tool definitions (`tools` empty) and no MCP server (the `init` line's `tools`, `mcp_servers`, `plugins`, `skills` and `slash_commands` empty with `--disable-slash-commands`; without it the binary's own skills were listed, though none reached the request); no hook ran and no planted file reached the request. With `--system-prompt` the request was 2,176 bytes, its system prompt 291 bytes of text (481 bytes as JSON, with the billing line and one line of the binary's own; about 545 and 73 tokens at 4 bytes a token); with `--append-system-prompt` instead the default system prompt came too: 9,623 bytes, the system prompt 7,695 bytes. The binary adds a message of about 1 KB with the environment (the working folder, the platform, the date) either way. `--effort low` was taken (`output_config.effort` `low` instead of `medium`). With `--no-session-persistence` nothing was written under `projects/` (without it a session file was); the config folder got only `.claude.json` and its backup, the scratch folder a probe file, all removed with the folder. `--input-format stream-json` is refused with `--output-format json`, so the question is given as plain text on standard input.
 """
 
 import contextlib
@@ -14,9 +15,11 @@ import math
 import os
 import re
 import select
+import shutil
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -67,6 +70,16 @@ _POLL_SECONDS = 0.2
 
 MODEL_NOT_REACHED = "the model could not be reached"
 
+# A generated title (`ClaudeCode.title`, and `openai.OpenAICompatible.title` with the same instruction): the model, the instruction, the time limit, the most bytes of output read.
+TITLE_MODEL = "haiku"
+TITLE_INSTRUCTION = "Write a title of at most six words for a chat that starts with the question below, in the question's language. Answer with the title only, no quotes."
+TITLE_SECONDS = 30.0
+TITLE_OUTPUT_MAX = 64 * 1024
+
+
+class TitleFailed(Exception):
+    """A title could not be made; the text names the kind of failure only, never what the back end said."""
+
 
 def role(queue, query_seconds=None):
     """The role text: ROLE, with the query queue its paragraph, and with the query time limit `query_seconds` a sentence naming it after each (the one after the queue's paragraph says that a longer query goes to the scheduler)."""
@@ -113,6 +126,64 @@ def command(executable, home, session, resume, databases, queue=False, model=Non
         "--resume" if resume else "--session-id", session,
         *(["--model", model] if model else []),
     ]
+
+
+def title_command(executable):
+    """The argument list of a title run (measured, see the module's text): `haiku`, no tools, no MCP server, no setting source but `SETTINGS`, no skills or commands, no session kept, low effort, the instruction as the whole system prompt, one JSON result; the question comes on standard input."""
+    return [
+        executable, "-p", "--model", TITLE_MODEL, "--tools", "", "--strict-mcp-config",
+        "--setting-sources", "", "--settings", SETTINGS, "--disable-slash-commands", "--no-session-persistence",
+        "--effort", "low", "--system-prompt", TITLE_INSTRUCTION, "--output-format", "json",
+    ]
+
+
+def run_bounded(argv, env, cwd, data, seconds, limit=TITLE_OUTPUT_MAX):
+    """Run `argv` in a process group of its own with `data` on standard input and return its standard output, read to its end within `seconds` and at most `limit` bytes; standard error is not kept. Past the time or the size the group is killed and TitleFailed raised."""
+    deadline = time.monotonic() + seconds
+    proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    try:
+        with contextlib.suppress(OSError):
+            proc.stdin.write(data)
+        with contextlib.suppress(OSError):
+            proc.stdin.close()
+        out = bytearray()
+        fd = proc.stdout.fileno()
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TitleFailed("the title run took longer than its limit")
+            ready, _, _ = select.select([fd], [], [], min(left, _POLL_SECONDS))
+            if not ready:
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            out += chunk
+            if len(out) > limit:
+                raise TitleFailed("the title run's output is larger than its limit")
+        try:
+            proc.wait(max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise TitleFailed("the title run took longer than its limit") from None
+        return bytes(out)
+    finally:
+        # Not reaped yet, the group's id cannot have been given to another: what is left of it is killed.
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        proc.stdout.close()
+
+
+def title_of(data):
+    """(text, cost) of a title run's JSON result: the text is the `result` of a `result` that is not an error (still model output, which the runner cleans), the cost `total_cost_usd` when it is a finite number, else None. Raises TitleFailed."""
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise TitleFailed("the title run's output is not JSON") from None
+    if not isinstance(doc, dict) or doc.get("type") != "result" or doc.get("is_error") is not False or not isinstance(doc.get("result"), str):
+        raise TitleFailed("the title run gave no title")
+    return doc["result"], _number(doc.get("total_cost_usd"), (int, float))
 
 
 def environment(home, config, tmp, gateway, queue=False, databases=(), query_seconds=None):
@@ -428,6 +499,18 @@ class ClaudeCode:
         self.query_seconds = query_seconds
         self.models = tuple(models)
         self.line_max, self.grace, self.stderr_max, self.join = line_max, grace, stderr_max, join
+
+    def title(self, text, seconds=TITLE_SECONDS):
+        """A title for a chat that starts with `text`: one `claude -p` run of `title_command` with the environment of a turn (the gateway, no databases), in a new folder of its own under the system's temporary folder (its `HOME`, `CLAUDE_CONFIG_DIR`, scratch and working folders; never a chat's), removed afterwards; within `seconds`. Returns (text, cost in USD or None); raises TitleFailed or OSError."""
+        folder = tempfile.mkdtemp(prefix="sdp-title-")
+        try:
+            home, config, tmp, cwd = (os.path.join(folder, name) for name in ("home", "config", "tmp", "cwd"))
+            for path in (home, config, tmp, cwd):
+                os.mkdir(path, 0o700)
+            data = run_bounded(title_command(self.executable), environment(home, config, tmp, self.gateway), cwd, text.encode("utf-8"), seconds)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        return title_of(data)
 
     def transcript(self, files, session):
         """Where the transcript of the session `session` run in the working folder `files` is, for the runner: (the folders under the chat's folder, the folder `files` names under them, the file's name)."""

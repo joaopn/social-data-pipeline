@@ -2,9 +2,10 @@
 
 - Where: `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), mode 0600; a leftover socket in its place is removed, anything else there refuses the start.
 - How much: at most 8 connections at a time (the rest closed at once); one request and one reply per connection, each a `control.framing` frame; a request of at most 64 KiB within 10 seconds; a reply of at most 1 MiB (else `too_large`). A reply is `{"ok": true, "result": ...}` or `{"ok": false, "error": {"code", "message"}}` with a constant message. An unexpected exception is logged by the name of its kind only and answered `internal`.
-- The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `session`, `turns`, `resume`, `model`: the chat's model, null for the back end's default). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
-- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.rename {chat, title}` -> `{"title"}` (the title stored: its runs of whitespace, line breaks included, made one space and its ends trimmed; 1 to 80 characters that UTF-8 can hold, else refused `bad_title`; taken while a turn runs; a later question never changes a title that is set); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "unlisted", "more"}` (a name is a path relative to `files/`, its parts joined by `/`: every regular file directly in `files/`, and those of its subfolders up to three folders down whose names end in one of `LISTED_ENDINGS`, folders whose names start with `.` not looked into; `left_out`: the names that are not of the rule; `unlisted`: the files of subfolders left out by their ending); `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}` (`name` a path of the same rule, of any ending); `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
-- The events (one JSON object per line, each at most 64 KiB, the log at most 16 MiB and 1 line per 32 bytes of that, then one `error` event says the chat is full and the turn's `end` follows): `user {text}`, `text {text}`, `tool {name, input}`, `tool_result {text, is_error}`, `file {name, size}`, `end {is_error, cost_usd, duration_ms, turns}`, `error {message}`; each has `n` (its index) and `t` (seconds since the epoch). Every turn ends with exactly one `end`.
+- The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `title_by`: who set the title, `question` (its first question, also when the field is missing or of another value), `model` (a generated title) or `user` (`chat.rename`), `session`, `turns`, `resume`, `model`: the chat's model, null for the back end's default). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
+- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.rename {chat, title}` -> `{"title"}` (the title stored, `title_by` `user`: its runs of whitespace, line breaks included, made one space and its ends trimmed; 1 to 80 characters that UTF-8 can hold, else refused `bad_title`; taken while a turn runs; a later question never changes a title that is set); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "unlisted", "more"}` (a name is a path relative to `files/`, its parts joined by `/`: every regular file directly in `files/`, and those of its subfolders up to three folders down whose names end in one of `LISTED_ENDINGS`, folders whose names start with `.` not looked into; `left_out`: the names that are not of the rule; `unlisted`: the files of subfolders left out by their ending); `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}` (`name` a path of the same rule, of any ending); `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
+- The events (one JSON object per line, each at most 64 KiB, the log at most 16 MiB and 1 line per 32 bytes of that, then one `error` event says the chat is full and the turn's `end` follows): `user {text}`, `text {text}`, `tool {name, input}`, `tool_result {text, is_error}`, `file {name, size}`, `end {is_error, cost_usd, duration_ms, turns}`, `error {message}`, `title {text, cost_usd}` (a generated title was stored; `cost_usd` a finite number of at least 0 or null; it belongs to no turn and may come between a turn's events); each has `n` (its index) and `t` (seconds since the epoch). Every turn ends with exactly one `end`.
+- Generated titles (`auto_title`, the sandbox's `SDP_CHAT_AUTO_TITLE`): the first question of a chat that has no title makes its start the title (`title_by` `question`) and starts a title job on a thread of its own: at most 2 run at a time (one that cannot start is skipped), and they are not turns. A job asks the back end's `title(text, seconds)` with the question's first 2,000 characters and a limit of 30 seconds; a failure, or an answer after the limit, is logged by its kind only and the title stays. The answer is model output: its first line that is not empty once cleaned (control characters made spaces, format characters such as direction marks dropped, runs of whitespace made one space, quotes, backticks, `*` and `#` taken off its ends), cut to 80 characters and written only when UTF-8 can hold it. It is stored only while `title_by` is still `question`, the chat is still listed and the runner is not stopping (all checked under the runner's lock, then the chat's): `title_by` becomes `model`, `meta.json` is written and a `title` event appended. `close` does not wait for a job.
 
 Standard library and `control.framing`/`errors` only. The runner is not a security boundary: it keeps itself useful and bounded against what the sandbox may do to its folders.
 """
@@ -23,6 +24,7 @@ import stat
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 
@@ -59,6 +61,13 @@ SCRATCH = re.compile(r"sdp-chat-(c_[0-9a-f]{12})")
 _DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 # The most entries of the back end's folder of projects looked at for a chat's transcript when it is not in the folder its working folder names.
 TRANSCRIPT_SCAN = 64
+# Who set a chat's title (`meta.json` `title_by`): its first question, a generated title, the operator.
+TITLE_BY = ("question", "model", "user")
+# The characters taken off the ends of a generated title: spaces, quotes, backticks and markup.
+TITLE_EDGES = " \"'`*#\u201c\u201d\u2018\u2019\u201e\u00ab\u00bb\u2039\u203a\u300c\u300d"
+# The most characters of a back end's answer looked at for a title; the highest cost of a title taken as a number.
+TITLE_ANSWER_MAX = 64 * 1024
+TITLE_COST_MAX = 1000.0
 
 OPS = {
     "hello": frozenset(),
@@ -128,6 +137,9 @@ class Limits:
     piece_bytes: int = 512 * 1024
     turn_seconds: float = 1800.0
     walk_limit: int = 1_000_000
+    titles_max: int = 2
+    title_seconds: float = 30.0
+    title_text_max: int = 2000
 
 
 class _Refusal(Exception):
@@ -423,6 +435,7 @@ class _Chat:
         self.id = chat_id
         self.created = meta.get("created", 0)
         self.title = meta.get("title", "")
+        self.title_by = meta.get("title_by", "question")
         # A chat without a valid session id gets a new one, started afresh.
         self.session = meta.get("session") or str(uuid.uuid4())
         self.turns = meta.get("turns", 0)
@@ -442,7 +455,7 @@ class _Chat:
         self.token = None
 
     def meta(self):
-        return {"created": self.created, "title": self.title, "session": self.session, "turns": self.turns, "resume": self.resume, "model": self.model}
+        return {"created": self.created, "title": self.title, "title_by": self.title_by, "session": self.session, "turns": self.turns, "resume": self.resume, "model": self.model}
 
 
 def _encodable(document):
@@ -454,8 +467,34 @@ def _encodable(document):
     return True
 
 
+def clean_title(answer, title_max):
+    """The title made of a back end's answer (model output, hostile): its first line that is not empty once cleaned (control characters made spaces, format characters dropped, runs of whitespace made one space, the characters of TITLE_EDGES taken off its ends), cut to `title_max` characters; None when there is none or UTF-8 cannot hold it."""
+    if not isinstance(answer, str):
+        return None
+    for line in answer[:TITLE_ANSWER_MAX].splitlines():
+        kept = []
+        for character in line:
+            kind = unicodedata.category(character)
+            if kind == "Cc":
+                kept.append(" ")
+            elif kind != "Cf":
+                kept.append(character)
+        line = " ".join("".join(kept).split()).strip(TITLE_EDGES)
+        if line:
+            title = line[:title_max].strip(TITLE_EDGES)
+            return title if title and _encodable(title) else None
+    return None
+
+
+def clean_cost(value):
+    """A title's cost as the event carries it: a number from 0 to TITLE_COST_MAX, else None (not a number, a flag, not finite, negative or absurd)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if 0 <= value <= TITLE_COST_MAX else None
+
+
 def _checked_meta(data, title_max, models=()):
-    """The fields of a `meta.json` that have the right types; others are dropped (a title that cannot be sent too, a model that is not one of `models`)."""
+    """The fields of a `meta.json` that have the right types; others are dropped (a title that cannot be sent too, a model that is not one of `models`); `title_by` is `question` unless it is one of TITLE_BY."""
     try:
         doc = framing.decode(data)
     except ControlError:
@@ -465,6 +504,7 @@ def _checked_meta(data, title_max, models=()):
         meta["created"] = doc["created"]
     if isinstance(doc.get("title"), str) and _encodable(doc["title"]):
         meta["title"] = doc["title"][:title_max]
+    meta["title_by"] = doc["title_by"] if isinstance(doc.get("title_by"), str) and doc["title_by"] in TITLE_BY else "question"
     if isinstance(doc.get("session"), str):
         with contextlib.suppress(ValueError):
             meta["session"] = str(uuid.UUID(doc["session"]))
@@ -478,9 +518,9 @@ def _checked_meta(data, title_max, models=()):
 
 
 class Runner:
-    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`; its `models` are the models a chat may be given, its `model_default` the model of a chat without one, None for its own default), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap, `queue` whether the query queue is attached (for `hello`)."""
+    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`; its `models` are the models a chat may be given, its `model_default` the model of a chat without one, None for its own default; its `title(text, seconds)` makes a title), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap, `queue` whether the query queue is attached (for `hello`), `auto_title` whether a chat's first question starts a title job (the entry point gives it from `SDP_CHAT_AUTO_TITLE`, on unless switched off)."""
 
-    def __init__(self, work, backend, backend_name, databases, cap_bytes, *, queue=False, tmp=TMP_DEFAULT, limits=None):
+    def __init__(self, work, backend, backend_name, databases, cap_bytes, *, queue=False, tmp=TMP_DEFAULT, limits=None, auto_title=False):
         self.limits = limits or Limits()
         self.work = os.path.abspath(work)
         self.tmp = tmp
@@ -490,11 +530,14 @@ class Runner:
         self.model_default = backend.model_default
         self.databases = list(databases)
         self.queue = bool(queue)
+        self.auto_title = bool(auto_title)
         self.cap_bytes = cap_bytes
         self.work_fd = os.open(self.work, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         self._lock = threading.Lock()
         self._chats = {}
         self._running = 0
+        # The title jobs that run (under `_lock`); they are not turns.
+        self._titling = 0
         self._stopping = False
         self._sweeper = None
         # Whether the sweep thread runs, and whether one more pass was asked for while it ran (at most one is queued).
@@ -506,7 +549,7 @@ class Runner:
         self._sweep_later()
 
     def close(self):
-        """Stop every running turn and wait for them (bounded), then close the work folder. A second call does nothing (its descriptor number may belong to something else by then)."""
+        """Stop every running turn and wait for them (bounded), then close the work folder. A title job is not waited for: it writes only under the runner's lock while the runner is not stopping, so nothing of it lands once this began. A second call does nothing (its descriptor number may belong to something else by then)."""
         with self._lock:
             if self._stopping:
                 return
@@ -1002,8 +1045,10 @@ class Runner:
             if offset is None:
                 raise _Refusal("chat_full")
             with self._chat_fd(chat) as chat_fd, chat.lock:
-                if not chat.title:
+                titled = not chat.title
+                if titled:
                     chat.title = " ".join(text.split())[: self.limits.title_max]
+                    chat.title_by = "question"
                 chat.turns += 1
                 if changed:
                     chat.model = model
@@ -1017,7 +1062,75 @@ class Runner:
                 chat.running = False
                 self._running -= 1
             raise
+        if titled and self.auto_title:
+            self._title_later(chat, text)
         return {"offset": offset}
+
+    # ── generated titles ──────────────────────────────────────────────────
+
+    def _title_later(self, chat, text):
+        """Start a title job for the chat's first question, when fewer than `titles_max` run; else it is skipped and the question's title stays."""
+        with self._lock:
+            if self._stopping:
+                return
+            if self._titling >= self.limits.titles_max:
+                _log("a title was not made: as many titles as may run at once are being made")
+                return
+            self._titling += 1
+        thread = threading.Thread(target=self._title_job, args=(chat, text[: self.limits.title_text_max]), name=f"title-{chat.id}", daemon=True)
+        try:
+            thread.start()
+        except RuntimeError:
+            _log("a title was not made: its thread could not be started")
+            with self._lock:
+                self._titling -= 1
+
+    def _title_job(self, chat, text):
+        """Ask the back end for a title and store it (`_store_title`); whatever fails is logged by its kind only and the question's title stays."""
+        try:
+            started = time.monotonic()
+            try:
+                answer = self.backend.title(text, self.limits.title_seconds)
+            except Exception as error:
+                _log(f"a title could not be made ({type(error).__name__})")
+                return
+            if time.monotonic() - started > self.limits.title_seconds:
+                _log("a title was dropped: it came after the limit")
+                return
+            if not isinstance(answer, tuple) or len(answer) != 2:
+                _log("a title was dropped: the back end's answer is not a title and a cost")
+                return
+            title = clean_title(answer[0], self.limits.title_max)
+            if title is None:
+                _log("a title was dropped: the answer held none that can be used")
+                return
+            self._store_title(chat, title, clean_cost(answer[1]))
+        except Exception as error:
+            _log(f"a title job failed ({type(error).__name__})")
+        finally:
+            with self._lock:
+                self._titling -= 1
+
+    def _store_title(self, chat, title, cost):
+        """Under the runner's lock (so neither a delete nor `close` can come between), then the chat's: only while the runner is not stopping, the chat is still listed and its title is still the question's, set the title, `title_by` `model`, write `meta.json` and append the `title` event."""
+        with self._lock:
+            if self._stopping or self._chats.get(chat.id) is not chat:
+                return
+            try:
+                with self._chat_fd(chat) as chat_fd, chat.lock:
+                    if chat.title_by != "question":
+                        return
+                    old = chat.title
+                    chat.title, chat.title_by = title, "model"
+                    try:
+                        self._save_meta(chat, chat_fd)
+                    except OSError:
+                        chat.title, chat.title_by = old, "question"
+                        raise
+            except (OSError, _Refusal):
+                _log("a title could not be stored: the chat's folder cannot be used")
+                return
+            self._append(chat, "title", {"text": title, "cost_usd": cost})
 
     def _op_chat_events(self, request):
         chat = self._chat_of(request)
@@ -1066,12 +1179,12 @@ class Runner:
         if not 1 <= len(title) <= self.limits.title_max or not _encodable(title):
             raise _Refusal("bad_title")
         with self._chat_fd(chat) as chat_fd, chat.lock:
-            old = chat.title
-            chat.title = title
+            old = chat.title, chat.title_by
+            chat.title, chat.title_by = title, "user"
             try:
                 self._save_meta(chat, chat_fd)
             except OSError:
-                chat.title = old
+                chat.title, chat.title_by = old
                 raise _Refusal("not_usable") from None
         return {"title": title}
 

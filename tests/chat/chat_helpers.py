@@ -1,7 +1,8 @@
-"""Helpers of the runner's tests: the stand-in `claude` script, plan steps, and one exchange on the socket."""
+"""Helpers of the runner's tests: the stand-in `claude` script, plan steps, a scripted `title()` of a back end, and one exchange on the socket."""
 
 import os
 import socket
+import threading
 import time
 
 from social_data_pipeline.control import framing
@@ -67,3 +68,31 @@ def exchange(path, document, *, raw=None, timeout=10):
     finally:
         connection.close()
         os.close(folder_fd)
+
+
+class ScriptedTitles:
+    """A back end's `title(text, seconds)`, scripted: each call takes the next of `steps` (the last one repeats). A step is `("answer", text, cost)`, `("raise", exception)`, `("sleep", seconds, text, cost)` or `("wait", event, text, cost)` (answers once `event` is set). Every call is recorded in `calls` as (text, seconds); `running` and `most` count the calls in progress and the most at once."""
+
+    def __init__(self, *steps):
+        self.steps = list(steps) or [("answer", "A made-up title", 0.001)]
+        self.calls = []
+        self.running = self.most = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, text, seconds):
+        with self._lock:
+            step = self.steps[min(len(self.calls), len(self.steps) - 1)]
+            self.calls.append((text, seconds))
+            self.running += 1
+            self.most = max(self.most, self.running)
+        try:
+            if step[0] == "raise":
+                raise step[1]
+            if step[0] == "sleep":
+                time.sleep(step[1])
+            elif step[0] == "wait":
+                step[1].wait(30)
+            return step[-2], step[-1]
+        finally:
+            with self._lock:
+                self.running -= 1

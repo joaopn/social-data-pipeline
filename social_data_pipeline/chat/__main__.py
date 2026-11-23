@@ -7,6 +7,7 @@
 - `SDP_CHAT_QUEUE`: `1` when the query queue is attached (the gateway's port 8004 reaches the scheduler's assistant endpoint), `0` or absent when not.
 - `SDP_CHAT_MODEL`: the model (for `openai-compatible`, required): 1 to 200 visible ASCII characters, without spaces (the rule of `chat_host.parse_model`).
 - `SDP_CHAT_QUERY_SECONDS`: the query time limit of the chat's MongoDB and StarRocks servers, whole seconds from 1 to 3600 (`sdp chat start` gives it); missing or empty: none is named to the assistant.
+- `SDP_CHAT_AUTO_TITLE`: `on` or `off`, whether a chat's first question gets a generated title (`runner`'s title job); missing or empty: on. `sdp chat start` checks the value before it gives it; any other value is said in one line and taken as off.
 - `SDP_CHAT_MODELS` (required): the models a chat may be given. For `claude-code` a comma list of `opus`, `sonnet`, `haiku`, each at most once; for `openai-compatible` exactly `SDP_CHAT_MODEL`.
 - `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), `SDP_CHAT_WORK` (default `/work`), `SDP_CHAT_TURN_SECONDS` (default 1800).
 """
@@ -23,6 +24,7 @@ from . import claude, openai, runner
 BACKENDS = ("claude-code", "openai-compatible")
 CAP_MAX_GIB = 10000
 MODEL = re.compile(r"[\x21-\x7e]{1,200}")
+AUTO_TITLE_ENV = "SDP_CHAT_AUTO_TITLE"
 
 
 class SettingError(Exception):
@@ -63,11 +65,14 @@ def settings(environ):
     queue = environ.get("SDP_CHAT_QUEUE", "0")
     if queue not in ("0", "1"):
         raise SettingError("SDP_CHAT_QUEUE must be 1 (the query queue is attached) or 0")
+    auto_title = environ.get(AUTO_TITLE_ENV, "")
+    if auto_title not in ("", "on", "off"):
+        print(f"runner: {AUTO_TITLE_ENV} is neither on nor off: generated chat titles are off", file=sys.stderr, flush=True)
     try:
         query_seconds = claude.query_seconds(environ)
     except ValueError as error:
         raise SettingError(str(error)) from None
-    return {"backend": backend, "databases": names, "queue": queue == "1", "query_seconds": query_seconds, "model": model, "models": models, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
+    return {"backend": backend, "databases": names, "queue": queue == "1", "query_seconds": query_seconds, "auto_title": auto_title in ("", "on"), "model": model, "models": models, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
 
 
 def main(environ=None):
@@ -83,7 +88,7 @@ def main(environ=None):
         backend = openai.OpenAICompatible(found["gateway"], found["model"], found["databases"], queue=found["queue"], query_seconds=found["query_seconds"])
     limits = runner.Limits(turn_seconds=found["turn_seconds"])
     try:
-        chats = runner.Runner(found["work"], backend, found["backend"], found["databases"], found["cap_bytes"], queue=found["queue"], limits=limits)
+        chats = runner.Runner(found["work"], backend, found["backend"], found["databases"], found["cap_bytes"], queue=found["queue"], limits=limits, auto_title=found["auto_title"])
     except OSError:
         print("runner: refusing to start: the work folder cannot be opened", file=sys.stderr)
         return 2
@@ -97,7 +102,7 @@ def main(environ=None):
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     server.start()
-    print(f"runner: listening (back end {found['backend']}, databases {', '.join(found['databases']) or 'none'}, query queue {'attached' if found['queue'] else 'not attached'})", flush=True)
+    print(f"runner: listening (back end {found['backend']}, databases {', '.join(found['databases']) or 'none'}, query queue {'attached' if found['queue'] else 'not attached'}, generated titles {'on' if found['auto_title'] else 'off'})", flush=True)
     stop.wait()
     server.close()
     chats.close()

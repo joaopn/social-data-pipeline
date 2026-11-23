@@ -79,7 +79,17 @@
 .cw .panel-head h4 { margin: 0; }
 .cw .panel-head button { margin-right: -6px; }
 .cw .rightp .totals .kv, .cw .rightp .chat-model { grid-template-columns: 64px 1fr; }
-.cw .rightp .chat-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+/* the chat's title (form.chat-title-form): a field that looks like the title line until hovered or focused; its Save button shows while it is focused or differs from the saved title (app.js's class "changed") */
+.cw .rightp .chat-title-form { margin: 0; }
+.cw .rightp .chat-title-form .row { gap: 6px; align-items: center; }
+.cw .rightp .chat-title { margin: 0 0 0 -7px; padding: 3px 6px; width: 100%; font-size: 15px; font-weight: 600; color: var(--ink); background: transparent; border: 1px solid transparent; border-radius: 6px; text-overflow: ellipsis; }
+.cw .rightp .chat-title::placeholder { color: var(--muted); font-weight: 600; }
+.cw .rightp .chat-title:hover { border-color: var(--line-2); }
+.cw .rightp .chat-title:focus { background: var(--page); border-color: var(--accent); outline: none; }
+.cw .rightp .chat-title-form .title-save { display: none; flex: none; }
+.cw .rightp .chat-title-form:focus-within .title-save, .cw .rightp .chat-title-form.changed .title-save { display: inline-flex; }
+.cw .rightp .chat-title[aria-invalid="true"] { border-color: var(--crit); }
+.cw .rightp .title-line { margin: 4px 0 0; color: var(--crit); }
 /* the model picker (`_chat_model.html`), the Model row of the backend's lines */
 .cw .rightp .chat-model { align-items: center; }
 .cw .rightp .chat-model dt label { display: inline; font-size: inherit; color: inherit; }

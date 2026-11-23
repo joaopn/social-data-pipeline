@@ -151,7 +151,7 @@ A chat's files are in `.sdp/chat/work/<chat id>/` (a chat id is `c_` and 12 hexa
 | `files/` | The assistant's working folder, where it writes its plots and other files |
 | `home/` | The back end's home: Claude Code's session files and its `mcp.json`, or the agent's `openai-session.json` |
 | `events.jsonl` | The chat's log: your messages, the assistant's text, each tool call and its result cut to 2,000 characters, each file that is new or changed in `files/` after a turn, and the end of each turn with its cost, for Claude Code |
-| `meta.json` | When it was made, its title (the first message cut to 80 characters), its session id and its number of turns |
+| `meta.json` | When it was made, its title (the first message, its runs of spaces and line breaks made one space and cut to 80 characters, or the title you gave it in the Chat window, which a later message does not change), its session id and its number of turns |
 | `backend.log` | The last turn's error output of Claude Code or of the agent (at most 1 MiB) |
 
 The chats persist on this machine across `chat stop` and `chat start`. A deleted chat leaves the list at once and its files are removed in the background. `chat unsetup` removes all chats only when you say so.

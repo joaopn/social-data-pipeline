@@ -1,6 +1,6 @@
 """How the web UI reaches the chat's runner (`chat/runner.py`, in the sandbox) for the Chat window, and the shape every answer must have before anything of it is used.
 
-Everything the runner says is hostile: the code the assistant writes runs beside it under the same uid, can replace the socket and make it answer anything. So, as the Queue's way to the scheduler does (`scheduler.Scheduler.folder_problem`, reused here), before each connection the socket's folder must be a real folder of this process's user without permission for the group or others, and the socket a socket of this user without them, else a refusal (`AssistantUnavailable` with the reason) and nothing is sent; without the setting (`config.Settings.chat_socket`) the reason is `no_settings`. A call goes through `RunnerClient` (the framing and errors of `control.client`, but a reply of at most about 1 MiB, the most the runner sends, and of at most 20,000 objects and lists, counted before it is parsed) with a time limit (10 seconds, 30 for `chat.send` and `chat.delete`) and blocks: the routes make it in a worker thread. Every result is checked against the exact shape the runner's documentation gives (the keys, their types, lengths, ids by pattern, counts within the runner's bounds); any other shape raises `NotUnderstood` and nothing of it is used. A refusal of the runner is a `BrokerError` whose code alone `words.chat_sentence` looks up. The events themselves are checked one by one where they are shown (`chat.event_model`). Standard library, the broker's client (which speaks the runner's framing) and this package only.
+Everything the runner says is hostile: the code the assistant writes runs beside it under the same uid, can replace the socket and make it answer anything. So, as the Queue's way to the scheduler does (`scheduler.Scheduler.folder_problem`, reused here), before each connection the socket's folder must be a real folder of this process's user without permission for the group or others, and the socket a socket of this user without them, else a refusal (`AssistantUnavailable` with the reason) and nothing is sent; without the setting (`config.Settings.chat_socket`) the reason is `no_settings`. A call goes through `RunnerClient` (the framing and errors of `control.client`, but a reply of at most about 1 MiB, the most the runner sends, and of at most 20,000 objects and lists, counted before it is parsed) with a time limit (10 seconds, 30 for `chat.send`, `chat.delete` and `chat.rename`) and blocks: the routes make it in a worker thread. Every result is checked against the exact shape the runner's documentation gives (the keys, their types, lengths, ids by pattern, counts within the runner's bounds); any other shape raises `NotUnderstood` and nothing of it is used. A refusal of the runner is a `BrokerError` whose code alone `words.chat_sentence` looks up. The events themselves are checked one by one where they are shown (`chat.event_model`). Standard library, the broker's client (which speaks the runner's framing) and this package only.
 """
 
 import base64
@@ -84,6 +84,14 @@ def is_text(value, most):
     except UnicodeEncodeError:
         return False
     return True
+
+
+def collapsed_title(value):
+    """The title the runner stores of `value` (`chat.rename`): its runs of whitespace, line breaks included, made one space and its ends trimmed; None unless that is 1 to TITLE_MAX characters UTF-8 can hold."""
+    if not isinstance(value, str):
+        return None
+    title = " ".join(value.split())
+    return title if title and is_text(title, TITLE_MAX) else None
 
 
 def is_model(value):
@@ -312,6 +320,21 @@ class Assistant:
 
     def delete(self, chat):
         _exactly(self._ask("chat.delete", {"chat": chat}, CHANGE_SECONDS), ())
+
+    def rename(self, chat, title):
+        """Give the chat the title `title` (`chat.rename`); the title the runner stored. The title is collapsed and bounded first by the runner's rule (`collapsed_title`): one that breaks it raises ValueError and nothing is sent. A runner from before the request refuses it `bad_request` (the web UI sends nothing else it could refuse so): that is raised as the web UI's own code `rename_unknown`, whose sentence says to rebuild the sandbox."""
+        title = collapsed_title(title)
+        if title is None:
+            raise ValueError("not a title")
+        try:
+            found = self._ask("chat.rename", {"chat": chat, "title": title}, CHANGE_SECONDS)
+        except client.BrokerError as error:
+            if type(error) is client.BrokerError and error.code == "bad_request":
+                raise client.BrokerError("rename_unknown", "the runner does not know the request") from None
+            raise
+        stored = _exactly(found, ("title",))["title"]
+        _require(is_text(stored, TITLE_MAX))
+        return stored
 
     def files(self, chat):
         """([{"name", "size"}] of `chat.files`, how many names were left out, how many files of subfolders were left out by their type, whether there are more)."""

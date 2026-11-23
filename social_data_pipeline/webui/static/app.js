@@ -288,6 +288,44 @@ var sdpStore = {
   });
 })();
 
+// The chat's title in "This chat" (form.chat-title-form, its own form: Enter in its one text field submits it natively, never the send form). The form carries the class "changed" while the field differs from the saved title (data-saved), which with the field's focus shows the Save button (chat.css); Escape puts the saved title back, takes the class away and leaves the field.
+(function () {
+  function fieldOf(target) {
+    return target && target.matches && target.matches(".cw form.chat-title-form input[name=title]") ? target : null;
+  }
+
+  // The saved title as the field shows it: a text field drops line breaks from its value.
+  function saved(field) {
+    return (field.getAttribute("data-saved") || "").replace(/[\r\n]/g, "");
+  }
+
+  function mark(field) {
+    var form = field.form;
+    if (form) {
+      form.classList.toggle("changed", field.value !== saved(field));
+    }
+  }
+
+  document.addEventListener("input", function (event) {
+    var field = fieldOf(event.target);
+    if (field) {
+      mark(field);
+    }
+  });
+  document.addEventListener("keydown", function (event) {
+    var field = fieldOf(event.target);
+    if (field && event.key === "Escape" && !event.isComposing) {
+      event.preventDefault();
+      field.value = saved(field);
+      mark(field);
+      field.blur();
+    }
+  });
+  document.addEventListener("DOMContentLoaded", function () {
+    Array.prototype.forEach.call(document.querySelectorAll(".cw form.chat-title-form input[name=title]"), mark);
+  });
+})();
+
 // The Chat window's side columns (chat.html). Each can be hidden by its Hide button and shown again by its handle over a top corner of the conversation (the right column, "This chat": data-chat-panel, kept as sdp.chatPanel; the left column, the chats: data-chat-left, kept as sdp.chatLeft; the grid then drops the column, and theme.js draws the kept state on the root before the page shows). Each can be resized by its inner edge (div.col-edge, a focusable separator): a drag with a mouse, a pen or a finger (pointer capture on the edge, the width drawn live, no text selected meanwhile: the root's class col-dragging) or the arrow keys (16 px a press: right widens the left column, left widens the right one; Home and End go to the narrowest and the widest) change the width, kept as sdp.chatLeftWidth / sdp.chatRightWidth when the drag ends or the key changed it; a double-click forgets it and gives the column its default width again. A change is clamped to the column's range and, as far as that range allows, so that the conversation keeps 400 px of the window's width beside the columns shown; a width kept earlier is not rewritten when the window shrinks (the grid's flexible middle gives way). Above 1150 px only: below, chat.css stacks the columns and hides the edges and the left column's controls. The widths reach the page only through window.sdpLook (theme.js), which sets them in the root's style object. The sandbox's facts (details.sandbox) stay open or closed as last left (sdp.sandboxOpen), and so does the left column's data in reach (details.reach-box, sdp.reachOpen), which is open unless this browser closed it last. Once a new end of a turn has come into the conversation, the turn totals are asked again (the event sdp-turn-ended on the body, which their part listens for).
 (function () {
   var MIDDLE = 400;

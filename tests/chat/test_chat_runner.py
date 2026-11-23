@@ -21,7 +21,7 @@ from social_data_pipeline.chat import claude, runner
 
 SAY = ["out", {"type": "assistant", "message": {"content": [{"type": "text", "text": "hello there"}]}}]
 SLEEP = ["sleep", 30]
-CHAT_OPS = [("chat.send", {"text": "hi"}), ("chat.events", {"offset": 0, "limit": 1}), ("chat.stop", {}), ("chat.delete", {}), ("chat.files", {}), ("chat.file", {"name": "a.png", "offset": 0, "limit": 1})]
+CHAT_OPS = [("chat.send", {"text": "hi"}), ("chat.events", {"offset": 0, "limit": 1}), ("chat.stop", {}), ("chat.delete", {}), ("chat.files", {}), ("chat.file", {"name": "a.png", "offset": 0, "limit": 1}), ("chat.rename", {"title": "t"})]
 
 
 def error_of(reply):
@@ -206,6 +206,63 @@ def test_a_log_line_or_a_title_that_cannot_be_sent_is_answered_as_unreadable_not
     r = chat_runner()
     assert [e["type"] for e in r.call("chat.events", chat=chat, offset=0, limit=10)["result"]["events"]] == ["error", "text"]
     assert r.call("chat.list")["result"]["chats"] == [{"id": chat, "title": "", "created": 1, "running": False, "model": None}]
+
+
+# ── renaming ──────────────────────────────────────────────────────────────
+
+
+def title_of(r, chat):
+    return next(c["title"] for c in r.call("chat.list")["result"]["chats"] if c["id"] == chat)
+
+
+def test_a_rename_stores_the_collapsed_title_and_keeps_it_across_a_restart_and_a_later_question(chat_runner):
+    """Bug class: a title stored with its line breaks (the list is one line), lost at the sandbox's restart (only in memory), or overwritten by the next question."""
+    r = chat_runner()
+    chat = r.new()
+    assert r.call("chat.rename", chat=chat, title="  my\n\tfirst   chat \r\n")["result"] == {"title": "my first chat"}
+    assert title_of(r, chat) == "my first chat"
+    assert json.loads((r.work / chat / "meta.json").read_text())["title"] == "my first chat"
+    assert r.call("chat.rename", chat=chat, title=" \n" + "x" * 80 + "\n ")["result"] == {"title": "x" * 80}
+    assert r.call("chat.rename", chat=chat, title="é" * 80)["result"] == {"title": "é" * 80}
+    r.call("chat.send", chat=chat, text="a question that would make a title")
+    r.wait(chat)
+    assert title_of(r, chat) == "é" * 80
+    r.server.close()
+    r.runner.close()
+    r = chat_runner()
+    assert title_of(r, chat) == "é" * 80
+
+
+@pytest.mark.parametrize("title", ["", "   ", "\n\t\r", "x" * 81, "a " * 40 + "bc", "x\ud800", 5, None, ["t"], True])
+def test_a_title_out_of_bounds_is_bad_title_and_the_old_one_stays(chat_runner, title):
+    """Bug class: an empty, over-long, non-text or unwritable title stored (a list line of nothing, a `meta.json` that cannot be read back, a reply that cannot be sent)."""
+    r = chat_runner()
+    chat = r.new()
+    r.call("chat.rename", chat=chat, title="kept")
+    # Asked directly: a lone surrogate cannot be framed by a client, but a reader of the socket may decode one from an escape.
+    assert error_of(r.runner.answer({"op": "chat.rename", "chat": chat, "title": title})) == "bad_title"
+    assert title_of(r, chat) == "kept" and json.loads((r.work / chat / "meta.json").read_text())["title"] == "kept"
+
+
+def test_a_rename_of_an_unknown_chat_or_with_a_field_too_many_is_refused_as_other_ops(chat_runner):
+    r = chat_runner()
+    assert error_of(r.call("chat.rename", chat="c_000000000000", title="t")) == "not_found"
+    assert error_of(r.call("chat.rename", chat=r.new(), title="t", more=1)) == "bad_request"
+    assert error_of(r.call("chat.rename", chat=r.new())) == "bad_request"
+
+
+def test_a_rename_while_a_turn_runs_is_kept_by_the_turns_own_writes(chat_runner):
+    """Bug class: the running turn's own `meta.json` write (when the back end's session starts) putting the question's title back after a rename."""
+    r = chat_runner()
+    chat = r.new()
+    r.plan([["sleep", 1], INIT, result()])
+    r.call("chat.send", chat=chat, text="the question")
+    assert r.call("chat.events", chat=chat, offset=0, limit=1)["result"]["running"] is True
+    assert r.call("chat.rename", chat=chat, title="renamed while running")["result"] == {"title": "renamed while running"}
+    r.wait(chat)
+    meta = json.loads((r.work / chat / "meta.json").read_text())
+    assert meta["title"] == "renamed while running" and meta["resume"] is True and meta["turns"] == 1
+    assert title_of(r, chat) == "renamed while running"
 
 
 def test_garbage_and_a_back_end_ending_without_a_result_give_a_constant_error(chat_runner):

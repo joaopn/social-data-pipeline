@@ -3,7 +3,7 @@
 - Where: `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), mode 0600; a leftover socket in its place is removed, anything else there refuses the start.
 - How much: at most 8 connections at a time (the rest closed at once); one request and one reply per connection, each a `control.framing` frame; a request of at most 64 KiB within 10 seconds; a reply of at most 1 MiB (else `too_large`). A reply is `{"ok": true, "result": ...}` or `{"ok": false, "error": {"code", "message"}}` with a constant message. An unexpected exception is logged by the name of its kind only and answered `internal`.
 - The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `session`, `turns`, `resume`, `model`: the chat's model, null for the back end's default). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
-- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "unlisted", "more"}` (a name is a path relative to `files/`, its parts joined by `/`: every regular file directly in `files/`, and those of its subfolders up to three folders down whose names end in one of `LISTED_ENDINGS`, folders whose names start with `.` not looked into; `left_out`: the names that are not of the rule; `unlisted`: the files of subfolders left out by their ending); `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}` (`name` a path of the same rule, of any ending); `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
+- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.rename {chat, title}` -> `{"title"}` (the title stored: its runs of whitespace, line breaks included, made one space and its ends trimmed; 1 to 80 characters that UTF-8 can hold, else refused `bad_title`; taken while a turn runs; a later question never changes a title that is set); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "unlisted", "more"}` (a name is a path relative to `files/`, its parts joined by `/`: every regular file directly in `files/`, and those of its subfolders up to three folders down whose names end in one of `LISTED_ENDINGS`, folders whose names start with `.` not looked into; `left_out`: the names that are not of the rule; `unlisted`: the files of subfolders left out by their ending); `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}` (`name` a path of the same rule, of any ending); `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
 - The events (one JSON object per line, each at most 64 KiB, the log at most 16 MiB and 1 line per 32 bytes of that, then one `error` event says the chat is full and the turn's `end` follows): `user {text}`, `text {text}`, `tool {name, input}`, `tool_result {text, is_error}`, `file {name, size}`, `end {is_error, cost_usd, duration_ms, turns}`, `error {message}`; each has `n` (its index) and `t` (seconds since the epoch). Every turn ends with exactly one `end`.
 
 Standard library and `control.framing`/`errors` only. The runner is not a security boundary: it keeps itself useful and bounded against what the sandbox may do to its folders.
@@ -71,6 +71,7 @@ OPS = {
     "chat.files": frozenset({"chat"}),
     "chat.file": frozenset({"chat", "name", "offset", "limit"}),
     "chat.transcript": frozenset({"chat", "offset", "limit"}),
+    "chat.rename": frozenset({"chat", "title"}),
 }
 # The fields a request may leave out.
 OPTIONAL = {"chat.new": frozenset({"model"}), "chat.send": frozenset({"model"})}
@@ -88,6 +89,7 @@ MESSAGES = {
     "too_large": "the answer is too large to send",
     "not_usable": "the chat's folder cannot be used",
     "model_not_allowed": "the model is not one this back end allows",
+    "bad_title": "a title must be 1 to 80 characters on one line",
     "unavailable": "the runner is stopping",
     "internal": "the runner could not answer this request",
 }
@@ -559,6 +561,7 @@ class Runner:
             os.close(fd)
 
     def _save_meta(self, chat, chat_fd):
+        """Write the chat's `meta.json` from its fields, replaced whole. A chat that is listed is written under its lock (the caller holds it), with the field it changes set under the same lock, so that a rename and a turn's own writes never put back an older title."""
         _replace(chat_fd, META_NAME, (json.dumps(chat.meta(), ensure_ascii=False) + "\n").encode("utf-8"))
 
     # ── the log ───────────────────────────────────────────────────────────
@@ -738,7 +741,7 @@ class Runner:
                         self._append(chat, kind, fields, token=token)
                     if translator.init and not chat.resume:
                         chat.resume = True
-                        with contextlib.suppress(OSError, _Refusal), self._chat_fd(chat) as meta_fd:
+                        with contextlib.suppress(OSError, _Refusal), self._chat_fd(chat) as meta_fd, chat.lock:
                             self._save_meta(chat, meta_fd)
 
                 try:
@@ -998,7 +1001,7 @@ class Runner:
             offset = self._append(chat, "user", {"text": text})
             if offset is None:
                 raise _Refusal("chat_full")
-            with self._chat_fd(chat) as chat_fd:
+            with self._chat_fd(chat) as chat_fd, chat.lock:
                 if not chat.title:
                     chat.title = " ".join(text.split())[: self.limits.title_max]
                 chat.turns += 1
@@ -1052,6 +1055,25 @@ class Runner:
                 del self._chats[chat.id]
         self._sweep_later()
         return {}
+
+    def _op_chat_rename(self, request):
+        """Set the chat's title (`bad_title` unless 1 to `title_max` characters of text UTF-8 can hold once its whitespace is collapsed) and write `meta.json` under the chat's lock, as a turn writes it; taken while a turn runs."""
+        chat = self._chat_of(request)
+        title = request["title"]
+        if not isinstance(title, str):
+            raise _Refusal("bad_title")
+        title = " ".join(title.split())
+        if not 1 <= len(title) <= self.limits.title_max or not _encodable(title):
+            raise _Refusal("bad_title")
+        with self._chat_fd(chat) as chat_fd, chat.lock:
+            old = chat.title
+            chat.title = title
+            try:
+                self._save_meta(chat, chat_fd)
+            except OSError:
+                chat.title = old
+                raise _Refusal("not_usable") from None
+        return {"title": title}
 
     @contextlib.contextmanager
     def _files_fd(self, chat):

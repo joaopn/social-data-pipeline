@@ -7,6 +7,7 @@ It is not collected by pytest (no test can run the page's script). In headless C
 - every page (the Overview, a source page, Queue, Chat, a chat, a confirm page and the login) in both themes: no Content-Security-Policy violation, no console error, no failed request of the page's own origin; a screenshot of each when a folder is given;
 - the conversation's scroller: only `.convo` scrolls, it opens at its bottom with the answer box (which follows the conversation) in view, and a view scrolled up stays where it is;
 - the answer box: a box of blanks and Enter sends nothing, Shift+Enter makes a new line, an Enter while an input method composes (`isComposing`, and `keyCode` 229) does nothing, Enter sends the question, and the turn totals of the right column are asked again once the turn has ended;
+- the chat's title (the first line of the right column, a field of its own form): idle it has no box and no Save button, focused it shows Save; Enter saves it (one POST to `/title`, none to `/send`) and after the reload the field and the open chat's entry in the left list show it; Escape puts the saved title back, takes the focus away and hides Save again; a title of blanks is refused with the sentence under the field and what was typed kept; an empty field is stopped by the browser (nothing posted); screenshots of the column idle, focused and refused when a folder is given;
 - the right column: the model picker is in it; Hide gives the conversation its width (two grid columns), the handle covers no part of the conversation or the answer box, the state survives a reload (and a click elsewhere on the page does not show it again), the handle shows it again; the sandbox's facts stay open after a reload once opened;
 - the side columns' edges: a mouse drag of the left edge by +80 px and of the right one by -80 px widens each by about that, kept after a reload; a double-click gives the default width back; a drag past the maximum stops at it; a drag that would leave the conversation under 400 px stops there; the arrow keys change a focused edge's width by 16 px;
 - the left column: Hide gives the conversation its width, the handle "Chats" covers no part of the conversation and shows it again, the state survives a reload; both columns hidden at once leave one grid column; at 1000 px wide no edge, no left Hide button and no left handle is shown and the left column is drawn although hidden above.
@@ -191,6 +192,60 @@ def main():
         changed = wait_until("(old) => { const part = document.getElementById('chat-totals'); return part !== null && part.innerText !== old && !part.innerText.includes('Adding up'); }", totals_before)
         expect(changed, f"the turn totals were asked again once the turn ended ({totals_before!r} -> {page.inner_text('#chat-totals')!r})")
         violations()
+
+        # ── the chat's title ──
+        page.goto(base + chat.lstrip("/"))
+        page.wait_for_load_state("networkidle")
+        field, save = page.locator("#chat-title"), page.locator(".chat-title-form .title-save")
+        posts = []
+        page.on("request", lambda request: posts.append(urllib.parse.urlsplit(request.url).path) if request.method == "POST" else None)
+        expect(page.locator("aside.rightp form.chat-title-form #chat-title").count() == 1 and page.locator("form.send #chat-title").count() == 0, "the title's field is in This chat, in its own form")
+        idle = page.evaluate("() => { const style = getComputedStyle(document.getElementById('chat-title')); return [style.borderTopColor, style.backgroundColor]; }")
+        expect(save.is_hidden() and idle == ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"], f"idle, the title has no box and no Save button ({idle})")
+        if shots:
+            page.locator("aside.rightp").screenshot(path=os.path.join(shots, f"title-idle-{theme()}.png"))
+        field.click()
+        expect(save.is_visible(), "focused, the title shows its Save button")
+        if shots:
+            page.locator("aside.rightp").screenshot(path=os.path.join(shots, f"title-focused-{theme()}.png"))
+        renamed = "Renamed by the browser check"
+        field.fill(renamed)
+        with page.expect_navigation():
+            field.press("Enter")
+        page.wait_for_load_state("networkidle")
+        expect(posts.count(urllib.parse.urlsplit(page.url).path + "/title") == 1 and not any(path.endswith("/send") for path in posts), f"Enter in the title posts the title once and never the question ({posts})")
+        expect(field.input_value() == renamed and page.inner_text("aside.left .navi.on .lbl") == renamed, "after the save the field and the chat list show the new title")
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(field.input_value() == renamed and save.is_hidden(), "the title is kept after a reload")
+        field.click()
+        field.fill("not to be kept")
+        expect(page.evaluate("document.querySelector('.chat-title-form').classList.contains('changed')"), "an edited title marks its form changed")
+        field.press("Escape")
+        expect(field.input_value() == renamed and page.evaluate("document.activeElement.id") != "chat-title" and save.is_hidden(), "Escape puts the saved title back, leaves the field and hides Save")
+        before_posts = len(posts)
+        field.fill("")
+        field.press("Enter")
+        page.wait_for_timeout(600)
+        expect(len(posts) == before_posts and page.evaluate("document.getElementById('chat-title').validity.valueMissing"), "an empty field is stopped by the browser: nothing is posted")
+        field.fill("   ")
+        known = len(problems)
+        with page.expect_navigation():
+            field.press("Enter")
+        page.wait_for_load_state("networkidle")
+        # The refusal is answered 400 on purpose, which Chromium logs as a console error of the page: that one line is expected, any other is not.
+        refused = "console error: Failed to load resource: the server responded with a status of 400 (Bad Request)"
+        expect(problems[known:].count(refused) == 1, "the refused title was answered 400 once")
+        problems[known:] = [problem for problem in problems[known:] if problem != refused]
+        line = page.locator("#chat-title-line")
+        expect(line.count() == 1 and "1 to 80 characters" in line.inner_text() and field.input_value() == "   " and save.is_visible(), f"a title of blanks is refused with the sentence under the field, the typed text kept ({line.inner_text() if line.count() else 'no line'!r})")
+        expect(page.inner_text("aside.left .navi.on .lbl") == renamed, "the refused title left the saved one in the list")
+        if shots:
+            page.locator("aside.rightp").screenshot(path=os.path.join(shots, f"title-refused-{theme()}.png"))
+        violations()
+        # Back to the chat by a GET: a reload of the refused page would post the title again.
+        page.goto(base + chat.lstrip("/"))
+        page.wait_for_load_state("networkidle")
 
         # ── data in reach and the chart ──
         expect(wait_until("() => { const part = document.getElementById('chat-reach'); return part !== null && !part.hasAttribute('hx-get') && !part.innerText.includes('checking'); }", None, 30), f"data in reach is filled in ({page.inner_text('#chat-reach') if page.locator('#chat-reach').count() else 'no block'!r})")

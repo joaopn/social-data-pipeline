@@ -149,9 +149,12 @@ CHAT_CODE_SENTENCES = {
     "too_large": "The sandbox's answer was too large to send.",
     "not_usable": "The chat's folder in the sandbox cannot be used.",
     "model_not_allowed": "The chat's sandbox does not offer this model: choose one of the models the page offers.",
+    "bad_title": "The chat's sandbox did not take the title: it must be 1 to 80 characters on one line. The old title is kept.",
     "unavailable": "The chat's sandbox is stopping and takes no new request.",
     "internal": "The chat's sandbox could not answer this request.",
     "not_understood": "The chat's sandbox answered something this page does not understand, so nothing of it is shown.",
+    # The web UI's own, for a runner from before `chat.rename` (it refuses an op it does not know `bad_request`).
+    "rename_unknown": "This chat's sandbox does not know renaming yet: rebuild it with python sdp.py chat rebuild, then save the title again. The old title is kept.",
 }
 
 # Why the chat's runner cannot be asked: the setting, the check of its folder and socket, and each reason the client gives.

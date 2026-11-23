@@ -21,7 +21,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
 from test_webui_pages import inline_code
-from webui_helpers import CHAT_ID, an_event, log_in, main_html
+from webui_helpers import CHAT_ID, ORIGIN, an_event, form_token, log_in, main_html, refuse
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.webui import assistant, chat, queue, words
@@ -259,6 +259,13 @@ def test_no_page_of_the_chat_window_has_a_conversation_header(client, scripted):
         assert 'class="chead"' not in page and "chat-name" not in page
 
 
+def title_field(page):
+    """The title's input (its attributes) and the chain of elements it sits in."""
+    found = [(element, chain) for element, chain in elements(page) if element[1].get("id") == "chat-title"]
+    assert len(found) == 1
+    return found[0]
+
+
 def test_the_title_opens_this_chat_escaped(client, scripted):
     """Bug class: the chat's title lost with the header, drawn below other lines of the column, or a hostile title becoming markup."""
     scripted.answers["hello"] = HELLO
@@ -267,13 +274,106 @@ def test_the_title_opens_this_chat_escaped(client, scripted):
     aside = re.search(r'<aside class="rightp" id="chat-panel"[^>]*>(.*?)</aside>', page, re.DOTALL).group(1)
     body = aside.split("</div>", 1)[1]
     first = re.search(r"<(\w+)[^>]*>", re.sub(r'^\s*<div class="col">', "", body))
-    assert 'id="chat-title"' in first.group(0)
-    title = re.search(r'<[^>]*id="chat-title"[^>]*>(.*?)</', body, re.DOTALL).group(1)
-    assert text_of(title) == "a <i>b</i> & \"c\"" and "<i>b" not in page
+    assert first.group(1) == "form" and 'class="chat-title-form"' in first.group(0)
+    field, _chain = title_field(page)
+    assert field[1]["value"] == "a <i>b</i> & \"c\"" and field[1]["data-saved"] == field[1]["value"] and "<i>b" not in page
     assert body.index('id="chat-title"') < body.index("<dt>Backend</dt>")
     scripted.chats[0]["title"] = ""
-    aside = re.search(r'<aside class="rightp" id="chat-panel"[^>]*>(.*?)</aside>', client.get(f"/chat/{CHAT_ID}").text, re.DOTALL).group(1)
-    assert "(no question yet)" in text_of(re.search(r'<[^>]*id="chat-title"[^>]*>(.*?)</', aside, re.DOTALL).group(1))
+    field, _chain = title_field(client.get(f"/chat/{CHAT_ID}").text)
+    assert field[1]["value"] == "" and field[1]["placeholder"] == "(no question yet)"
+
+
+def test_the_title_field_is_in_this_chat_in_a_form_of_its_own(client, scripted):
+    """Bug class: the title's field put inside the send form (Enter in it would send the question, or post a second field), a form nested in another (the parser drops the inner one), or a second field that posts `model` with the question."""
+    scripted.answers["hello"] = {**HELLO, "models": ["opus", "sonnet", "haiku"], "model_default": None}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    field, chain = title_field(page)
+    assert inside(chain, "aside", "rightp")
+    forms = [outer for outer in chain if outer[0] == "form"]
+    assert len(forms) == 1 and forms[0][1] == {"class": "chat-title-form", "method": "post", "action": f"/chat/{CHAT_ID}/title"}
+    assert field[0] == "input" and {key: field[1].get(key) for key in ("type", "name", "maxlength", "required", "autocomplete", "aria-label")} == {"type": "text", "name": "title", "maxlength": "80", "required": None, "autocomplete": "off", "aria-label": "The chat's title"}
+    assert "required" in field[1] and field[1].get("form") is None
+    found = elements(page)
+    for element, outer in found:
+        if element[0] == "form":
+            assert not any(above[0] == "form" for above in outer), element
+    title_form = [(element, outer) for element, outer in found if any(above[0] == "form" and has_class(above, "chat-title-form") for above in outer)]
+    assert sorted(element[1].get("name") for element, outer in title_form if element[1].get("name")) == ["form_token", "title"]
+    assert [element[1].get("type") for element, outer in title_form if element[0] == "button"] == ["submit"]
+    sent = [element for element, outer in found if element[1].get("name") == "model" and (element[1].get("form") == "chat-send" or any(above[0] == "form" and above[1].get("id") == "chat-send" for above in outer))]
+    assert len(sent) == 1
+
+
+def renames(scripted):
+    return [request for request in scripted.requests if request["op"] == "chat.rename"]
+
+
+def post_title(client, title):
+    return client.post(f"/chat/{CHAT_ID}/title", data={"form_token": form_token(client), "title": title}, headers={"origin": ORIGIN})
+
+
+@pytest.mark.parametrize("typed, sent", [("  a new\r\n\ttitle  ", "a new title"), (" " + "x" * 80 + "\n", "x" * 80), ("a " * 39 + "bc", "a " * 39 + "bc")])
+def test_a_title_is_sent_collapsed_and_leads_back_to_the_chat(client, scripted, typed, sent):
+    """Bug class: a title sent with its line breaks or blanks (the runner stores what it gets), one the runner would take refused here, or an answer a reload would post again."""
+    answer = post_title(client, typed)
+    assert answer.status_code == 303 and answer.headers["location"] == f"/chat/{CHAT_ID}"
+    assert renames(scripted) == [{"op": "chat.rename", "chat": CHAT_ID, "title": sent}]
+
+
+def refusal_line(page):
+    found = re.search(r'<p class="title-line[^"]*"[^>]*id="chat-title-line"[^>]*>(.*?)</p>', page, re.DOTALL)
+    return text_of(found.group(1)) if found else None
+
+
+@pytest.mark.parametrize("typed", ["", "   ", "\n\t", "x" * 81, "a " * 40 + "bc"])
+def test_an_empty_or_too_long_title_is_refused_here_and_kept_in_the_field(client, scripted, typed):
+    """Bug class: a title the runner refuses sent anyway (a wasted call, or an empty title stored by an older runner), the refusal shown nowhere near the field, or what was typed lost."""
+    answer = post_title(client, typed)
+    assert answer.status_code == 400 and renames(scripted) == []
+    assert refusal_line(answer.text) == chat.TITLE_REFUSED
+    field, chain = title_field(answer.text)
+    assert field[1]["value"] == typed and field[1]["data-saved"] == "made-up question" and field[1]["aria-describedby"] == "chat-title-line"
+    assert inside(chain, "aside", "rightp") and chat.TITLE_REFUSED not in text_of(re.search(r'<section class="mid".*?</section>', answer.text, re.DOTALL).group(0))
+
+
+@pytest.mark.parametrize("code, sentence", [("bad_title", "bad_title"), ("bad_request", "rename_unknown"), ("not_found", "not_found"), ("busy", "busy")])
+def test_a_refused_rename_says_why_under_the_field(client, scripted, code, sentence):
+    """Bug class: the runner's refusal shown as a vague fallback, an older sandbox that does not know the request shown as a version mismatch without the command that fixes it, or the typed title lost."""
+    scripted.answers["chat.rename"] = refuse(code)
+    answer = post_title(client, "a <b>title</b>")
+    assert answer.status_code in (404, 409)
+    assert len(renames(scripted)) == 1
+    assert refusal_line(answer.text) == words.CHAT_CODE_SENTENCES[sentence]
+    assert title_field(answer.text)[0][1]["value"] == "a <b>title</b>" and "<b>title" not in answer.text
+    if code == "bad_request":
+        assert "python sdp.py chat rebuild" in words.CHAT_CODE_SENTENCES[sentence]
+
+
+@pytest.mark.parametrize("reply", [{"title": "t", "more": 1}, {}, {"title": 5}, {"title": None}, {"title": "x" * 81}, {"titles": "t"}, ["t"], "t"])
+def test_a_rename_reply_of_another_shape_is_not_understood(client, scripted, reply):
+    """Bug class: a hostile runner's reply to a rename taken as a success, or any of it used."""
+    scripted.answers["chat.rename"] = reply
+    answer = post_title(client, "t")
+    assert answer.status_code == 503 and refusal_line(answer.text) == words.CHAT_CODE_SENTENCES["not_understood"]
+    with pytest.raises(assistant.NotUnderstood):
+        assistant.Assistant(scripted.path).rename(CHAT_ID, "t")
+
+
+@pytest.mark.parametrize("title", ["", " \n ", "x" * 81, "x\ud800", 5, None])
+def test_the_client_bounds_a_title_before_it_is_sent(scripted, title):
+    """Bug class: a caller of `assistant.rename` sending a title the runner refuses (or one that cannot be framed)."""
+    with pytest.raises(ValueError):
+        assistant.Assistant(scripted.path).rename(CHAT_ID, title)
+    assert scripted.requests == []
+    assert assistant.Assistant(scripted.path).rename(CHAT_ID, "  fine\n title ") == "fine title"
+    assert renames(scripted) == [{"op": "chat.rename", "chat": CHAT_ID, "title": "fine title"}]
+
+
+def test_a_form_with_another_field_is_refused_and_sends_nothing(client, scripted):
+    answer = client.post(f"/chat/{CHAT_ID}/title", data={"form_token": form_token(client), "title": "t", "model": "opus"}, headers={"origin": ORIGIN})
+    assert answer.status_code == 400 and renames(scripted) == []
+    answer = client.post(f"/chat/{CHAT_ID}/title", data={"form_token": form_token(client)}, headers={"origin": ORIGIN})
+    assert answer.status_code == 400 and renames(scripted) == []
 
 
 def test_the_picker_is_in_this_chat_and_the_one_model_field_of_the_send_form(client, scripted):

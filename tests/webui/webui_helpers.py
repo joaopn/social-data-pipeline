@@ -587,6 +587,15 @@ class ScriptedRunner:
             return {"stopping": True}
         if op == "chat.delete":
             return {}
+        if op == "chat.rename":
+            title = " ".join(request["title"].split()) if isinstance(request.get("title"), str) else ""
+            if not 1 <= len(title) <= 80:
+                return refuse("bad_title")
+            for chat in self.chats:
+                if chat["id"] == request.get("chat"):
+                    chat["title"] = title
+                    return {"title": title}
+            return refuse("not_found")
         if op == "chat.files":
             return {"files": [{"name": name, "size": len(data), "mtime": 1795000000.0} for name, data in sorted(self.files.items())], "left_out": 0, "unlisted": 0, "more": False}
         if op == "chat.file":

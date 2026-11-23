@@ -170,13 +170,14 @@ ROUTES = [
     ("GET", f"/chat/{CHAT_ID}/file/a.png"), ("GET", f"/chat/{CHAT_ID}/image/a.png"), ("GET", f"/chat/{CHAT_ID}/table/a.csv"), ("GET", f"/chat/{CHAT_ID}/queries"),
     ("GET", f"/chat/{CHAT_ID}/spec/a.vl.json"), ("GET", f"/chat/{CHAT_ID}/export"),
     ("POST", "/chat/new"), ("POST", f"/chat/{CHAT_ID}/send"), ("POST", f"/chat/{CHAT_ID}/stop"), ("POST", f"/chat/{CHAT_ID}/delete"),
+    ("POST", f"/chat/{CHAT_ID}/title"),
 ]
 
 
 def request_route(client, token, method, path, headers=None):
     if method == "GET":
         return client.get(path, headers=headers or {})
-    return post(client, path, token, **({"text": "a question"} if path.endswith("/send") else {}))
+    return post(client, path, token, **({"text": "a question"} if path.endswith("/send") else {"title": "a title"} if path.endswith("/title") else {}))
 
 
 @pytest.mark.parametrize("method, path", ROUTES)
@@ -373,8 +374,13 @@ def test_hostile_text_is_text_everywhere(client, scripted):
     scripted.files = {"my plot.PNG": PNG}
     for page in (client.get("/chat").text, client.get(f"/chat/{CHAT_ID}").text, client.get(f"/chat/{CHAT_ID}/delete").text, client.get(f"/chat/{CHAT_ID}/events?offset=0", headers=HX).text):
         assert not any(mark in page for mark in RAW_MARKS) and "\u202e" not in page and "\u200b" not in page
-        assert not [value for value in attributes(page) if "javascript:" in value or "<" in value or "\\u" in value]
+        # The title's field is the one place a text of the runner is an attribute (an input's value): inert, escaped, and with its invisible characters as escapes; checked on its own below.
+        without_field = re.sub(r'<input type="text" name="title" id="chat-title"[^>]*>', "", page)
+        assert not [value for value in attributes(without_field) if "javascript:" in value or "<" in value or "\\u" in value]
     page = client.get(f"/chat/{CHAT_ID}").text
+    field = re.search(r'<input type="text" name="title" id="chat-title"[^>]*>', page).group(0)
+    shown = TRICKY[:80].replace("\u202e", "\\u202e").replace("\u200b", "\\u200b")
+    assert attributes(field)[-3:-1] == [shown, shown] and 'value="&lt;script&gt;' in field
     assert '<span class="escape" title="made visible">\\u202e</span>' in page and "&lt;script&gt;" in page
     assert '<span class="nm">a tool</span>' in page and '<span class="nm">mongo · find</span>' in page
     links = re.findall(r'href="(/chat/[^"]+)"', page)
@@ -463,10 +469,10 @@ def test_the_delete_page_changes_nothing_and_says_what_goes(client, scripted):
     assert scripted.ops() == ["chat.list"] and client.head(f"/chat/{CHAT_ID}/delete").status_code == 405
 
 
-@pytest.mark.parametrize("path", ["/chat/new", f"/chat/{CHAT_ID}/send", f"/chat/{CHAT_ID}/stop", f"/chat/{CHAT_ID}/delete"])
+@pytest.mark.parametrize("path", ["/chat/new", f"/chat/{CHAT_ID}/send", f"/chat/{CHAT_ID}/stop", f"/chat/{CHAT_ID}/delete", f"/chat/{CHAT_ID}/title"])
 def test_the_guard_refuses_a_post_without_the_token_or_from_another_origin(client, token, scripted, path):
-    """Bug class: a page of another site making the operator's browser send a question, stop or delete a chat."""
-    data = {"text": "x"} if path.endswith("/send") else {}
+    """Bug class: a page of another site making the operator's browser send a question, stop, delete or rename a chat."""
+    data = {"text": "x"} if path.endswith("/send") else {"title": "x"} if path.endswith("/title") else {}
     assert client.post(path, data=data, headers={"origin": ORIGIN}).status_code == 403
     assert client.post(path, data={**data, "form_token": token}, headers={"origin": "https://elsewhere.example"}).status_code == 403
     assert client.post(path, data={**data, "form_token": token, "extra": "1"}, headers={"origin": ORIGIN}).status_code == 400

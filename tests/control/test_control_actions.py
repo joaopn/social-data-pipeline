@@ -37,6 +37,10 @@ ACTIONS = {
     "db.unsetup_mcp": "do_db_unsetup_mcp",
     "db.unsetup_jobs": "do_db_unsetup_jobs",
     "source.remove": "do_source_remove",
+    "db.setup_mcp": "do_db_setup_mcp",
+    "db.setup_jobs": "do_db_setup_jobs",
+    "db.restart_needed": "get_db_restart_needed",
+    "db.llm_settings": "get_db_llm_settings",
 }
 
 # The private parameter an action has for each thing its command asks on the terminal.

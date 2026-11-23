@@ -9,6 +9,8 @@ Usage:
     sdp.py db setup-mcp                      Configure MCP servers for databases
     sdp.py db setup-jobs                     Configure the query scheduler
     sdp.py db setup-llm                      Bundle: setup-mcp then setup-jobs
+    sdp.py db restart-needed                 List the running services whose settings changed after they started
+    sdp.py db llm-settings                   Show the current answers of setup-mcp and setup-jobs
     sdp.py db start [service]                Start services (postgres|mongo|starrocks|postgres-mcp|mongo-mcp|starrocks-mcp|all)
     sdp.py db stop [service]                 Stop services (postgres|mongo|starrocks|postgres-mcp|mongo-mcp|starrocks-mcp|all)
     sdp.py db status                         Show database config and health
@@ -59,6 +61,7 @@ import errno
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -558,6 +561,489 @@ def cmd_db_setup_llm(args):
     mcp_main()
     jobs_main()
     return 0
+
+
+# ============================================================================
+# sdp db setup-mcp / setup-jobs without their questions, for the broker
+# ============================================================================
+
+# The host ports of each service, as docker-compose.yml publishes them: the `.env` key of each and its default there (`${KEY:-default}`); StarRocks's backend HTTP port has no key (None).
+_SERVICE_PORT_KEYS = (
+    ("postgres", (("POSTGRES_PORT", "5432"),)),
+    ("mongo", (("MONGO_PORT", "27017"),)),
+    ("starrocks", (("STARROCKS_PORT", "9030"), ("STARROCKS_FE_HTTP_PORT", "8030"), (None, "8040"))),
+    ("postgres-mcp", (("POSTGRES_MCP_PORT", "8000"),)),
+    ("mongo-mcp", (("MONGO_MCP_PORT", "3000"),)),
+    ("starrocks-mcp", (("STARROCKS_MCP_PORT", "9000"),)),
+    ("jobs", (("JOBS_PORT", "8050"),)),
+)
+_SERVICE_TITLES = {
+    "postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks",
+    "postgres-mcp": "the PostgreSQL MCP server", "mongo-mcp": "the MongoDB MCP server", "starrocks-mcp": "the StarRocks MCP server",
+    "jobs": "the query scheduler", "webui": "the web UI",
+}
+
+
+def _sdp_service_ports():
+    """{service: set of host ports} of the services this deployment has set up, read as `db start` and the compose file read them: each database with a config/db/<db>.yaml, each MCP server enabled in config/db/mcp.yaml and the scheduler when it is configured, with their ports from .env or the compose file's defaults; and the web UI (`webui`) when it is set up, with the port of its settings. A value that is no whole number is left out: it cannot be the same port as a whole number."""
+    env = load_env()
+    configured = set(_get_configured_db_services())
+    configured |= {profile.replace("_", "-") for profile in _get_configured_mcp_services()}
+    if _is_jobs_configured():
+        configured.add("jobs")
+    ports = {}
+    for service, keys in _SERVICE_PORT_KEYS:
+        if service not in configured:
+            continue
+        found = set()
+        for key, default in keys:
+            text = (env.get(key) or default) if key else default
+            if text.isdigit() and len(text) <= 5:
+                found.add(int(text))
+        ports[service] = found
+    try:
+        saved = _webui_host().read_config(str(ROOT))
+    except Exception:
+        saved = None
+    if saved is not None:
+        ports["webui"] = {saved[0].port}
+    return ports
+
+
+def _refuse_ports_in_use(chosen):
+    """Refuse a port chosen for a service (`chosen`: {service: [ports]}, the services being set up, a service switched off with none) that another service of the deployment uses, or that two of the chosen ones share. The services being set up are compared by their new ports only, so a service keeps its own current port. Raises ActionError naming both services."""
+    others = {service: found for service, found in _sdp_service_ports().items() if service not in chosen}
+    taken = {}
+    for service, found in others.items():
+        for port in found:
+            taken.setdefault(port, service)
+    for service, found in chosen.items():
+        for port in found:
+            if port in taken:
+                raise ActionError(f"the port chosen for {_SERVICE_TITLES[service]} is already used by {_SERVICE_TITLES[taken[port]]}: choose another one")
+            taken[port] = service
+
+
+def _refuse_unconfigured(answers, databases):
+    for name, answer in answers:
+        if answer is not None and name not in databases:
+            raise ActionError(f"{_DB_DISPLAY[name]} is not configured: run `python sdp.py db setup` first")
+
+
+def do_db_setup_mcp(*, postgres=None, mongo=None, starrocks=None):
+    """`db setup-mcp` with its answers given: a server given (`{"port", "write_access"}`; StarRocks has no write access question) is switched on, one left out is switched off, as the questionnaire's "Enable ...?" answered no. Writes config/db/mcp.yaml and the .env keys exactly as the terminal does for the same answers, with the terminal's refusals (no database, a database with authentication and no read-only user, a missing read-only credentials file) and its "Nothing to write" when every server is off. Refuses besides, before anything is written, a server of a database that is not configured and a port another service of the deployment uses (the terminal checks neither). Restarts nothing. Asks nothing; returns the exit code."""
+    from social_data_pipeline.setup import mcp as mcp_setup
+    from social_data_pipeline.setup.utils import load_db_setup, update_env_file, write_files
+
+    db_setup = load_db_setup()
+    if not db_setup or not db_setup.get("databases"):
+        print("  Error: No databases configured. Run first: python sdp.py db setup")
+        return 1
+    refusal = _mcp_setup_refusal(mcp_setup, db_setup)
+    if refusal is not None:
+        for line in refusal:
+            print(line)
+        return 1
+    databases = db_setup["databases"]
+    _refuse_unconfigured((("postgres", postgres), ("mongo", mongo), ("starrocks", starrocks)), databases)
+
+    # What the questionnaire returns for these answers (setup/mcp.py run_questionnaire).
+    settings = {}
+    if "postgres" in databases:
+        settings["postgres_mcp_enabled"] = postgres is not None
+        if postgres is not None:
+            settings["postgres_mcp_port"] = postgres["port"]
+            settings["postgres_mcp_access_mode"] = "unrestricted" if postgres.get("write_access") else "restricted"
+    if "mongo" in databases:
+        settings["mongo_mcp_enabled"] = mongo is not None
+        if mongo is not None:
+            settings["mongo_mcp_port"] = mongo["port"]
+            settings["mongo_mcp_read_only"] = not mongo.get("write_access", False)
+    if "starrocks" in databases:
+        settings["starrocks_mcp_enabled"] = starrocks is not None
+        if starrocks is not None:
+            settings["starrocks_mcp_port"] = starrocks["port"]
+    for db in ("postgres", "mongo", "starrocks"):
+        settings[f"{db}_auth"] = db_setup.get(f"{db}_auth", False)
+        settings[f"{db}_ro_username"] = db_setup.get(f"{db}_ro_username")
+
+    _refuse_ports_in_use({f"{db}-mcp": [answer["port"]] if answer is not None else [] for db, answer in (("postgres", postgres), ("mongo", mongo), ("starrocks", starrocks))})
+
+    if not settings.get("postgres_mcp_enabled") and not settings.get("mongo_mcp_enabled") and not settings.get("starrocks_mcp_enabled"):
+        print("\n  No MCP servers enabled. Nothing to write.\n")
+        return 0
+
+    # The write step of setup/mcp.py main, line for line.
+    print()
+    write_files([(mcp_setup.CONFIG_DIR / "db" / "mcp.yaml", mcp_setup.generate_mcp_yaml(settings))])
+    env_updates = {}
+    if settings.get("postgres_mcp_enabled"):
+        env_updates["POSTGRES_MCP_PORT"] = str(settings["postgres_mcp_port"])
+        env_updates["POSTGRES_MCP_ACCESS_MODE"] = settings["postgres_mcp_access_mode"]
+        if settings.get("postgres_auth") and settings.get("postgres_ro_username"):
+            env_updates["POSTGRES_MCP_USER"] = settings["postgres_ro_username"]
+    if settings.get("mongo_mcp_enabled"):
+        env_updates["MONGO_MCP_PORT"] = str(settings["mongo_mcp_port"])
+        env_updates["MONGO_MCP_READ_ONLY"] = str(settings["mongo_mcp_read_only"]).lower()
+        if settings.get("mongo_auth") and settings.get("mongo_ro_username"):
+            env_updates["MONGO_MCP_USER"] = settings["mongo_ro_username"]
+    if settings.get("starrocks_mcp_enabled"):
+        env_updates["STARROCKS_MCP_PORT"] = str(settings["starrocks_mcp_port"])
+        if settings.get("starrocks_auth") and settings.get("starrocks_ro_username"):
+            env_updates["STARROCKS_MCP_USER"] = settings["starrocks_ro_username"]
+    update_env_file(env_updates)
+    print("  Updated:   .env")
+    print("\n  Done! MCP servers have been configured.")
+    _print_restart_after_setup()
+    return 0
+
+
+def _mcp_setup_refusal(mcp_setup, db_setup):
+    """The lines `db setup-mcp` prints before it refuses for a database with authentication (setup/mcp.py main): no read-only user, or a read-only credentials file missing; None when it goes on."""
+    if not (db_setup.get("postgres_auth") or db_setup.get("mongo_auth") or db_setup.get("starrocks_auth")):
+        return None
+    missing_users = [title for db, title in (("postgres", "PostgreSQL"), ("mongo", "MongoDB"), ("starrocks", "StarRocks")) if db_setup.get(f"{db}_auth") and not db_setup.get(f"{db}_ro_username")]
+    if missing_users:
+        return [
+            f"  Error: No read-only user configured for: {', '.join(missing_users)}",
+            "  MCP servers require a read-only database user.",
+            "  Re-run: python sdp.py db setup  (enable authentication with a read-only user)",
+        ]
+    missing_files = mcp_setup._missing_ro_cred_files(db_setup, mcp_setup._load_env_vars())
+    if missing_files:
+        return [
+            "  Error: RO credential file(s) missing for enabled databases:",
+            *[f"    - {db}: {path}" for db, path in missing_files],
+            "",
+            "  MCP servers read these files at startup. Regenerate them with:",
+            "    python sdp.py db recover-password --regenerate-ro",
+        ]
+    return None
+
+
+_JOBS_AUTH_OFF_REFUSED = "the scheduler page's login is on, and it is switched off only in a terminal: run `python sdp.py db setup-jobs` there"
+_RESULT_ROOT_REFUSED = "the results folder must not start with '-', end or start with white space, or hold ':', '$', '#', a quote or a backslash (it goes into .env and into a mount of docker-compose.override.yml)"
+_RESULT_ROOT_BAD = (":", "$", "#", '"', "'", "`", "\\")
+_RESULT_ROOT_HOLDS_JOBS = "the results folder must not be data/jobs, a folder that holds it, or inside data/jobs/control: the scheduler keeps its control socket closed then (the database servers can write into the results folder), and the Queue window does not work"
+
+
+def _result_root_text(path):
+    """The results folder as the files take it: refused when it starts with '-', has white space at an end or holds a character that breaks .env or a compose mount; a relative one written with its leading `./` (a compose mount source without it is the name of a volume, not a folder). Raises ActionError."""
+    if path.startswith("-") or path != path.strip() or any(character in path for character in _RESULT_ROOT_BAD):
+        raise ActionError(_RESULT_ROOT_REFUSED)
+    if path.startswith("/") or path in (".", "..") or path.startswith(("./", "../")):
+        return path
+    return "./" + path
+
+
+def do_db_setup_jobs(*, port, result_root, max_concurrent, history_retention, postgres_target=None, starrocks_target=None, mongo_target=None, auth_enabled=False):
+    """`db setup-jobs` with its answers given: a target given (`{"name", "database", "timeout_hours"}` for PostgreSQL, `{"name", "timeout_hours"}` for StarRocks and MongoDB) is one the operator added, one left out is "Add a ... target?" answered no. Writes config/jobs/config.local.yaml, JOBS_PORT and JOBS_RESULT_ROOT in .env, docker-compose.override.yml and StarRocks's fe.local.conf exactly as the terminal does for the same answers (setup/jobs.py main), and makes the results folder and data/jobs, with the terminal's refusals (no database, no target). Refuses besides, before anything is written: a target of a database that is not configured, the scheduler page's login switched off while it is on (that stays the terminal's), a results folder that would break .env or a mount, and a port another service of the deployment uses. Restarts nothing. Asks nothing; returns the exit code."""
+    from social_data_pipeline.setup import jobs as jobs_setup
+    from social_data_pipeline.setup.utils import load_db_setup, update_env_file, write_files
+
+    db_setup = load_db_setup()
+    if not db_setup or not db_setup.get("databases"):
+        print("  Error: No databases configured. Run first: python sdp.py db setup")
+        return 1
+    eligible = set(db_setup.get("databases", [])) & {"postgres", "starrocks", "mongo"}
+    if not eligible:
+        print("  Error: jobs scheduler requires postgres, starrocks, or mongo configured.")
+        print("  Run `python sdp.py db setup` first.\n")
+        return 1
+    _refuse_unconfigured((("postgres", postgres_target), ("starrocks", starrocks_target), ("mongo", mongo_target)), eligible)
+    existing = jobs_setup._load_existing_jobs_config()
+    if isinstance(existing, dict) and bool(existing.get("auth", False)) and not auth_enabled:
+        raise ActionError(_JOBS_AUTH_OFF_REFUSED)
+    root_text = _result_root_text(result_root)
+    # The scheduler's own rule for its control socket (jobs/door.py), by resolved path: the broker refuses what would keep it closed.
+    results_real = os.path.realpath(root_text if root_text.startswith("/") else jobs_setup.ROOT / root_text)
+    jobs_real = os.path.realpath(jobs_setup.ROOT / "data" / "jobs")
+    if os.path.commonpath([results_real, jobs_real]) == results_real or os.path.commonpath([results_real, os.path.join(jobs_real, "control")]) == os.path.join(jobs_real, "control"):
+        raise ActionError(_RESULT_ROOT_HOLDS_JOBS)
+
+    # What the questionnaire returns for these answers (setup/jobs.py run_questionnaire), in its order.
+    targets = {}
+    if postgres_target is not None:
+        targets[postgres_target["name"]] = {"backend": "postgres", "database": postgres_target["database"]}
+    if starrocks_target is not None:
+        targets[starrocks_target["name"]] = {"backend": "starrocks", "database": ""}
+    if mongo_target is not None:
+        targets[mongo_target["name"]] = {"backend": "mongodb", "database": ""}
+    if not targets:
+        print("\n  Error: at least one target must be configured.\n")
+        return 1
+    backends_seen = sorted({target["backend"] for target in targets.values()})
+    timeouts = {}
+    for backend, target in (("postgres", postgres_target), ("starrocks", starrocks_target), ("mongodb", mongo_target)):
+        if backend in backends_seen:
+            timeouts[backend] = target["timeout_hours"] * 3600
+    settings = {
+        "port": port, "result_root": root_text, "max_concurrent": max_concurrent, "history_retention": history_retention,
+        "default_timeouts": timeouts, "auth_enabled": bool(auth_enabled), "targets": targets, "_backends": backends_seen,
+    }
+
+    _refuse_ports_in_use({"jobs": [port]})
+
+    if auth_enabled and not (db_setup.get("postgres_auth") or db_setup.get("mongo_auth") or db_setup.get("starrocks_auth")):
+        print()
+        print("    Warning: no database has authentication enabled. The")
+        print("    jobs container will refuse to start with UI auth on")
+        print("    unless `sdp db setup` enables auth on at least one DB,")
+        print("    so the admin password can flow into the container at")
+        print("    `sdp db start` time.")
+
+    # The write step of setup/jobs.py main, line for line.
+    files_to_write = [(jobs_setup.CONFIG_DIR / "jobs" / "config.local.yaml", jobs_setup.generate_jobs_yaml(settings))]
+    override_content, _ = jobs_setup.compute_override_update(settings)
+    sr_fe_applicable = "starrocks" in settings["_backends"] and (jobs_setup.CONFIG_DIR / "starrocks" / "fe.local.conf").exists()
+    print()
+    write_files(files_to_write)
+    update_env_file({"JOBS_PORT": str(settings["port"]), "JOBS_RESULT_ROOT": settings["result_root"]})
+    print("  Updated:   .env")
+    (jobs_setup.ROOT / "docker-compose.override.yml").write_text(override_content)
+    print("  Updated:   docker-compose.override.yml")
+    if sr_fe_applicable and jobs_setup.enable_starrocks_outfile_local():
+        print("  Updated:   config/starrocks/fe.local.conf")
+    folder = Path(root_text) if root_text.startswith("/") else jobs_setup.ROOT / root_text
+    folder.mkdir(parents=True, exist_ok=True)
+    print(f"  Ensured:   {root_text}/")
+    (jobs_setup.ROOT / "data" / "jobs").mkdir(parents=True, exist_ok=True)
+    print()
+    print("  Done! Jobs scheduler has been configured.")
+    _print_restart_after_setup()
+    return 0
+
+
+# ============================================================================
+# sdp db restart-needed / llm-settings
+# ============================================================================
+
+# The files each service reads its settings from: .env (which docker-compose.yml interpolates into every service), the compose override (PostgreSQL's and StarRocks's setup and data mounts), the servers' own local configuration files, the MCP settings and the scheduler's.
+_RESTART_SETTINGS = (
+    ("postgres", (".env", "docker-compose.override.yml", "config/postgres/postgresql.local.conf", "config/postgres/pg_hba.local.conf")),
+    ("mongo", (".env",)),
+    ("starrocks", (".env", "docker-compose.override.yml", "config/starrocks/fe.local.conf", "config/starrocks/be.local.conf")),
+    ("postgres-mcp", (".env", "config/db/mcp.yaml")),
+    ("mongo-mcp", (".env", "config/db/mcp.yaml")),
+    ("starrocks-mcp", (".env", "config/db/mcp.yaml")),
+    ("jobs", (".env", "config/jobs/config.local.yaml")),
+)
+_CONTAINER_ID = r"[0-9a-f]{12,64}"
+# One line of the `docker inspect` format below: the compose service and the start time, which Docker writes in UTC with up to nine digits of the second.
+_STARTED_LINE = r"([a-z0-9][a-z0-9_.-]{0,63}) ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?Z"
+_STARTED_FORMAT = '{{index .Config.Labels "com.docker.compose.service"}} {{.State.StartedAt}}'
+
+
+def _running_started_at():
+    """{compose service: when its oldest running container started, in nanoseconds since the epoch} of this deployment, or None when Docker cannot be asked. Only the label and the start time are asked of `docker inspect` (never its whole answer, which holds the containers' environment); a line of another shape is left out."""
+    try:
+        listed = subprocess.run(["docker", "compose", "ps", "-q", "--filter", "status=running"], capture_output=True, text=True, cwd=ROOT)
+        if listed.returncode != 0:
+            return None
+        ids = [line.strip() for line in listed.stdout.splitlines() if re.fullmatch(_CONTAINER_ID, line.strip())]
+        if not ids:
+            return {}
+        inspected = subprocess.run(["docker", "inspect", "--format", _STARTED_FORMAT, *ids], capture_output=True, text=True, cwd=ROOT)
+    except OSError:
+        return None
+    if inspected.returncode != 0:
+        return None
+    started = {}
+    for line in inspected.stdout.splitlines():
+        match = re.fullmatch(_STARTED_LINE, line.strip())
+        if match is None:
+            continue
+        try:
+            seconds = int(datetime.strptime(match.group(2), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
+        except (ValueError, OverflowError):
+            continue
+        when = seconds * 1_000_000_000 + int((match.group(3) or "0").ljust(9, "0"))
+        started[match.group(1)] = min(started.get(match.group(1), when), when)
+    return started
+
+
+def _restart_needed():
+    """What `db restart-needed` reports: `docker_available`, and `services`, one entry per running service (in the order of `db start`'s choices) one of whose settings files (_RESTART_SETTINGS) was modified after its container started: `service`, `started` and `files` (each `file`, relative to the deployment, and `modified`), times as ISO-8601 UTC seconds. A file is compared as a whole: a change to any line of .env counts for every service."""
+    started = _running_started_at()
+    if started is None:
+        return {"docker_available": False, "services": []}
+    services = []
+    for service, files in _RESTART_SETTINGS:
+        when = started.get(service)
+        if when is None:
+            continue
+        newer = []
+        for relative in files:
+            try:
+                modified = (ROOT / relative).stat().st_mtime_ns
+            except OSError:
+                continue
+            if modified > when:
+                newer.append({"file": relative, "modified": _iso_utc_seconds(modified)})
+        if newer:
+            services.append({"service": service, "started": _iso_utc_seconds(when), "files": newer})
+    return {"docker_available": True, "services": services}
+
+
+def _print_restart_after_setup():
+    """The end of a setup action: which running services must restart to use what it wrote. Nothing is restarted."""
+    data = _restart_needed()
+    print()
+    if not data["docker_available"]:
+        print("  Nothing was restarted. Docker cannot be asked which running services must restart to apply this.")
+    elif data["services"]:
+        print(f"  Nothing was restarted. Restart to apply: {', '.join(entry['service'] for entry in data['services'])}.")
+    else:
+        print("  Nothing was restarted, and no running service must restart: the services set up here start with these settings.")
+
+
+def cmd_db_restart_needed(args):
+    print_db_restart_needed(get_db_restart_needed())
+    return 0
+
+
+def get_db_restart_needed():
+    """Which running services' settings files are newer than their containers (see `_restart_needed`). Prints nothing; JSON-serialisable."""
+    return _restart_needed()
+
+
+def print_db_restart_needed(data):
+    print()
+    if not data["docker_available"]:
+        print("  Docker cannot be asked: which services must restart is not known.\n")
+        return
+    if not data["services"]:
+        print("  No running service has settings newer than its start.\n")
+        return
+    print("  Restart to apply: these services run with settings older than their files.")
+    for entry in data["services"]:
+        files = ", ".join(f"{item['file']} ({item['modified']})" for item in entry["files"])
+        print(f"    {entry['service']:14s} started {entry['started']}; newer: {files}")
+    print()
+    print("  Restart each with: python sdp.py db stop <service> && python sdp.py db start <service>")
+    print()
+
+
+def _whole(value, lo, hi):
+    """A value of a settings file as a whole number from lo to hi, or None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi else None
+
+
+def _plain_text(value, max_chars=4096):
+    """A value of a settings file as text fit to send (no control or format character), or None."""
+    if not isinstance(value, str) or len(value) > max_chars or any(unicodedata.category(character) in _DISPLAY_UNSAFE_CATEGORIES for character in value):
+        return None
+    return value
+
+
+def cmd_db_llm_settings(args):
+    print_db_llm_settings(get_db_llm_settings())
+    return 0
+
+
+def get_db_llm_settings():
+    """The answers `db setup-mcp` and `db setup-jobs` would offer as their defaults now, and whether `db setup-mcp` would refuse. Prints nothing; JSON-serialisable; never raises on a damaged settings file (its values are then left out, None).
+
+    `databases` (configured); `mcp`: `refusal` (the lines the terminal prints when it refuses, else None) and `servers` ({db: `enabled`, `port`, `write_access`} for each configured database; StarRocks without write access); `jobs`: `configured`, `port`, `result_root`, `max_concurrent`, `history_retention`, `auth_enabled` and `targets` ({db: `add`, `name`, `timeout_hours` and for PostgreSQL `database`} per configured database). No password, no user name, no credentials file's content."""
+    from social_data_pipeline.setup import jobs as jobs_setup
+    from social_data_pipeline.setup import mcp as mcp_setup
+    from social_data_pipeline.setup.utils import load_db_setup
+
+    try:
+        db_setup = load_db_setup() or {}
+    except Exception:
+        db_setup = {}
+    databases = [db for db in ("postgres", "mongo", "starrocks") if db in (db_setup.get("databases") or [])]
+    data = {"databases": databases, "mcp": {"refusal": None, "servers": {}}, "jobs": None}
+    if not databases:
+        data["mcp"]["refusal"] = ["  Error: No databases configured. Run first: python sdp.py db setup"]
+        return data
+    try:
+        data["mcp"]["refusal"] = _mcp_setup_refusal(mcp_setup, db_setup)
+    except Exception:
+        data["mcp"]["refusal"] = ["  Error: the read-only credentials could not be checked."]
+
+    try:
+        existing = mcp_setup._load_existing_mcp_config()
+    except Exception:
+        existing = {}
+    defaults = {"postgres": 8000, "mongo": 3000, "starrocks": 9000}
+    for db in databases:
+        server = {
+            "enabled": bool(existing.get(f"{db}_mcp_enabled", True)),
+            "port": _whole(existing.get(f"{db}_mcp_port", defaults[db]), 1, 65535),
+        }
+        if db == "postgres":
+            server["write_access"] = existing.get("postgres_mcp_access_mode") == "unrestricted"
+        elif db == "mongo":
+            server["write_access"] = existing.get("mongo_mcp_read_only") is False
+        data["mcp"]["servers"][db] = server
+
+    data["jobs"] = _jobs_defaults(jobs_setup, databases)
+    return data
+
+
+def _jobs_defaults(jobs_setup, databases):
+    """The defaults of `db setup-jobs` (setup/jobs.py run_questionnaire) for the configured databases; a value of the local config of another shape is None."""
+    try:
+        existing = jobs_setup._load_existing_jobs_config()
+    except Exception:
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    jobs = {
+        "configured": _is_jobs_configured(),
+        "port": _whole(existing.get("port", 8050), 1, 65535),
+        "result_root": _plain_text(existing.get("result_root") or jobs_setup.DEFAULT_RESULT_ROOT),
+        "max_concurrent": _whole(existing.get("max_concurrent", 20), 0, 10 ** 9),
+        "history_retention": _whole(existing.get("history_retention", 500), 0, 10 ** 9),
+        "auth_enabled": bool(existing.get("auth", False)),
+        "targets": {},
+    }
+    targets = existing.get("targets") if isinstance(existing.get("targets"), dict) else {}
+    pg_db_default = load_env().get("DB_NAME") or "datasets"
+    for db, backend, fallback_name in (("postgres", "postgres", "pg_main"), ("starrocks", "starrocks", "sr_main"), ("mongo", "mongodb", "mongo_main")):
+        if db not in databases:
+            continue
+        of_backend = [name for name, spec in targets.items() if isinstance(spec, dict) and spec.get("backend") == backend]
+        name = of_backend[0] if of_backend else fallback_name
+        try:
+            if db == "starrocks":
+                hours = (jobs_setup._existing_timeout_seconds(existing, "starrocks", 72 * 3600) // 3600) or 72
+                hours = max(1, min(hours, 72))
+            else:
+                hours = jobs_setup._existing_timeout_seconds(existing, backend, 0) // 3600
+        except Exception:
+            hours = None
+        entry = {"add": True, "name": _plain_text(name, 256), "timeout_hours": _whole(hours, 0, 10 ** 9)}
+        if db == "postgres":
+            spec = targets.get(name) if isinstance(targets.get(name), dict) else {}
+            entry["database"] = _plain_text(spec.get("database") or pg_db_default, 256)
+        jobs["targets"][db] = entry
+    return jobs
+
+
+def print_db_llm_settings(data):
+    print()
+    if not data["databases"]:
+        print("  No databases configured. Run first: python sdp.py db setup\n")
+        return
+    print("  MCP servers (the defaults of python sdp.py db setup-mcp):")
+    if data["mcp"]["refusal"]:
+        print("    setup-mcp refuses now:")
+        for line in data["mcp"]["refusal"]:
+            print(f"  {line}")
+    for db, server in data["mcp"]["servers"].items():
+        write = f", write access {'yes' if server['write_access'] else 'no'}" if "write_access" in server else ""
+        print(f"    {db:10s} {'on' if server['enabled'] else 'off'}, port {server['port']}{write}")
+    jobs = data["jobs"]
+    print()
+    print(f"  Query scheduler (the defaults of python sdp.py db setup-jobs; {'configured' if jobs['configured'] else 'not configured yet'}):")
+    print(f"    Port {jobs['port']}, results folder {jobs['result_root']}, {jobs['max_concurrent']} queries at once, {jobs['history_retention']} jobs of history, login {'on' if jobs['auth_enabled'] else 'off'}")
+    for db, target in jobs["targets"].items():
+        database = f", database {target['database']}" if "database" in target else ""
+        print(f"    Target {target['name']} on {db}{database}, timeout {target['timeout_hours']} hours")
+    print()
 
 
 def cmd_db_unsetup_jobs(args):
@@ -5950,6 +6436,18 @@ def build_parser():
         help="Bundle: run setup-mcp then setup-jobs",
     )
     db_setup_llm_p.set_defaults(func=cmd_db_setup_llm)
+
+    db_restart_needed_p = db_sub.add_parser(
+        "restart-needed",
+        help="List the running services whose settings files changed after they started",
+    )
+    db_restart_needed_p.set_defaults(func=cmd_db_restart_needed)
+
+    db_llm_settings_p = db_sub.add_parser(
+        "llm-settings",
+        help="Show the current answers of setup-mcp and setup-jobs (no secrets)",
+    )
+    db_llm_settings_p.set_defaults(func=cmd_db_llm_settings)
 
     db_start_p = db_sub.add_parser("start", help="Start database services")
     db_start_p.add_argument("service", nargs="?",

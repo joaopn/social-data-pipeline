@@ -28,6 +28,7 @@ ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "Configu
 # The wide types (a host path, any port, free text), and every (verb, field) that uses one, also nested in a container. Each entry is a decision of the maintainer (any path and any port with the management password); a setup unit adds its own here when it lists the input.
 WIDE_TYPE_NAMES = {"Path", "Port", "Text"}
 WIDE_INPUTS = set()
+WIDE_INPUTS |= {("db.setup_mcp", "postgres"), ("db.setup_mcp", "mongo"), ("db.setup_mcp", "starrocks"), ("db.setup_jobs", "port"), ("db.setup_jobs", "result_root")}
 
 # The security classification of every verb: (class, accepted over the socket). Changing one is a decision, so it is made in two places.
 CLASSIFICATION = {
@@ -51,13 +52,15 @@ CLASSIFICATION = {
     "db.unsetup_jobs": ("step_up", True),
     "source.remove": ("step_up", True),
     "db.setup": ("step_up", False),
-    "db.setup_mcp": ("step_up", False),
-    "db.setup_jobs": ("step_up", False),
+    "db.setup_mcp": ("step_up", True),
+    "db.setup_jobs": ("step_up", True),
     "source.add": ("step_up", False),
     "source.configure": ("step_up", False),
     "source.add_classifiers": ("step_up", False),
     "db.create_indexes": ("step_up", False),
     "db.recover_password": ("step_up", False),
+    "db.restart_needed": ("read", True),
+    "db.llm_settings": ("read", True),
 }
 
 ALL_VERBS = sorted(verbs.VERBS)

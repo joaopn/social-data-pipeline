@@ -20,6 +20,9 @@ from social_data_pipeline.control.types import (
     FileFilter,
     IntRange,
     Name,
+    Path,
+    Port,
+    Record,
     RunId,
     Secret,
     SecretValue,
@@ -103,6 +106,32 @@ def _check_run_start(fields):
 _SETUP_NOTE = "Setup becomes available when its questions have typed inputs."
 
 
+def _check_setup_jobs(fields):
+    """The scheduler's targets are one map by name: two targets of one name would leave one of them out of config/jobs/config.local.yaml without a word."""
+    seen = set()
+    for key in ("postgres_target", "starrocks_target", "mongo_target"):
+        if key in fields:
+            if fields[key]["name"] in seen:
+                raise FieldRefused(key, "has the name of another target")
+            seen.add(fields[key]["name"])
+
+
+# The inputs of `db setup-mcp` and `db setup-jobs`, one per question the terminal asks: a server or a target that is present is one the operator switched on (the terminal asks nothing else of one switched off). The bounds of the numbers the terminal takes without one are the web UI's choice: at most 1000 queries at once, 100000 jobs of history, a year (8760 hours) of timeout; StarRocks's 1 to 72 hours are the terminal's own.
+_MCP_SERVER = Record({"port": Field(Port(), required=True), "write_access": Field(Bool())})
+_MCP_STARROCKS = Record({"port": Field(Port(), required=True)})
+_HOURS = IntRange(0, 8760)
+_JOBS_INPUTS = {
+    "port": Field(Port(), required=True),
+    "result_root": Field(Path(), required=True),
+    "max_concurrent": Field(IntRange(1, 1000), required=True),
+    "history_retention": Field(IntRange(1, 100000), required=True),
+    "postgres_target": Field(Record({"name": Field(Name(), required=True), "database": Field(Name(), required=True), "timeout_hours": Field(_HOURS, required=True)})),
+    "starrocks_target": Field(Record({"name": Field(Name(), required=True), "timeout_hours": Field(IntRange(1, 72), required=True)})),
+    "mongo_target": Field(Record({"name": Field(Name(), required=True), "timeout_hours": Field(_HOURS, required=True)})),
+    "auth_enabled": Field(Bool()),
+}
+
+
 def _registry(*verbs):
     by_name = {}
     for verb in verbs:
@@ -168,6 +197,16 @@ VERBS = _registry(
         socket_inputs={"run_id": Field(RunId(), required=True), "offset": Field(IntRange(0, 2**53)), "limit": Field(IntRange(1, 1048576))},
         socket_enabled=True,
         action="get_run_logs",
+    ),
+    Verb(
+        name="db.restart_needed", cls="read", cli=("db", "restart-needed"),
+        socket_enabled=True,
+        action="get_db_restart_needed",
+    ),
+    Verb(
+        name="db.llm_settings", cls="read", cli=("db", "llm-settings"),
+        socket_enabled=True,
+        action="get_db_llm_settings",
     ),
     Verb(
         name="audit.list", cls="read", cli=("broker", "audit"),
@@ -268,13 +307,18 @@ VERBS = _registry(
     ),
     Verb(
         name="db.setup_mcp", cls="step_up", cli=("db", "setup-mcp"),
-        prompted_inputs={"questionnaire"},
-        note=_SETUP_NOTE,
+        prompted_inputs={"postgres", "mongo", "starrocks"},
+        socket_inputs={"postgres": Field(_MCP_SERVER), "mongo": Field(_MCP_SERVER), "starrocks": Field(_MCP_STARROCKS)},
+        socket_enabled=True,
+        action="do_db_setup_mcp",
     ),
     Verb(
         name="db.setup_jobs", cls="step_up", cli=("db", "setup-jobs"),
-        prompted_inputs={"questionnaire"},
-        note=_SETUP_NOTE,
+        prompted_inputs=set(_JOBS_INPUTS),
+        socket_inputs=_JOBS_INPUTS,
+        socket_enabled=True,
+        check=_check_setup_jobs,
+        action="do_db_setup_jobs",
     ),
     Verb(
         name="source.add", cls="step_up", cli=("source", "add"),

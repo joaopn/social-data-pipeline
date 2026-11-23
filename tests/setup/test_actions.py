@@ -157,8 +157,8 @@ FORBIDDEN_NAMES = {
 }
 
 ACTION_NAMES = [
-    "do_db_reset", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_remove",
-    "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status",
+    "do_db_reset", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_remove",
+    "get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status",
 ]
 
 # One helper each walk must have reached, so a walk that follows nothing cannot pass.
@@ -181,6 +181,10 @@ KNOWN_DEEP_HELPER = {
     "get_source_list": "get_source_list",
     "get_source_progress": "_count_stage_files",
     "get_source_status": "_get_source_ingestion_state",
+    "do_db_setup_mcp": "_sdp_service_ports",
+    "do_db_setup_jobs": "_running_started_at",
+    "get_db_restart_needed": "_running_started_at",
+    "get_db_llm_settings": "_jobs_defaults",
 }
 
 

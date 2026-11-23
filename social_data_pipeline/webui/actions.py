@@ -181,6 +181,8 @@ class Action:
     # What else the action acts on for the chosen fields, `also(fields)`: a line for the pending page, or None.
     also: Callable | None = None
     door: str | None = None
+    # Warnings for the pending page, `warns(fields)`: a list of sentences (the MCP servers' write access), or None.
+    warns: Callable | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "inputs", MappingProxyType(dict(self.inputs)))
@@ -216,6 +218,16 @@ def _service_command(word):
         return _command("db", word, *([_q(fields["service"])] if "service" in fields else []))
 
     return build
+
+
+def _check_setup_jobs(fields):
+    """The registry's rule of `db.setup_jobs`: no two targets of one name."""
+    seen = set()
+    for key in ("postgres_target", "starrocks_target", "mongo_target"):
+        if key in fields:
+            if fields[key]["name"] in seen:
+                raise Refused(key)
+            seen.add(fields[key]["name"])
 
 
 def _check_run_start(fields):
@@ -310,6 +322,73 @@ def _start_also(fields):
     return "It rebuilds the scheduler's image before it starts the scheduler."
 
 
+# ── db setup-mcp and db setup-jobs (`sdp.py` `do_db_setup_mcp`, `do_db_setup_jobs`) ──
+
+_ASKS_QUESTIONS = "In a terminal this command asks these questions one by one, with the current values as defaults, then whether to write the files; the answers and the confirmation here take their place."
+_NOTHING_RESTARTS = "Nothing is restarted: a running service keeps its old settings until it is restarted. Needs attention on the Overview names the services that must restart, with a Restart button."
+_MCP_KEYS = {"postgres": "POSTGRES_MCP_PORT and POSTGRES_MCP_ACCESS_MODE", "mongo": "MONGO_MCP_PORT and MONGO_MCP_READ_ONLY", "starrocks": "STARROCKS_MCP_PORT"}
+_MCP_ORDER = ("postgres", "mongo", "starrocks")
+
+
+def _setup_mcp_sentence(fields):
+    """What `do_db_setup_mcp` writes for these fields."""
+    on = [name for name in _MCP_ORDER if name in fields]
+    if not on:
+        return "Every MCP server is off here, so the command writes nothing and says so. To remove the MCP servers' configuration, use Remove… on the MCP servers tab."
+    names = ", ".join(_DATABASE_NAMES[name] for name in on)
+    keys = "; ".join(_MCP_KEYS[name] for name in on)
+    users = ", ".join(f"{name.upper()}_MCP_USER" for name in on)
+    return (
+        f"Writes config/db/mcp.yaml with the MCP servers switched on here ({names}), after copying the file it replaces to config/db/mcp.yaml.bak; a server switched off is left out of it, and db start no longer starts it. "
+        f"Sets in .env: {keys}; and {users} (the read-only user) for each of these databases that has authentication on with a read-only user. The .env keys of a server switched off stay as they are. "
+        "Refused when a database with authentication has no read-only user or no read-only credentials file, and when a port is one another service of this deployment uses. " + _NOTHING_RESTARTS
+    )
+
+
+def _setup_mcp_warns(fields):
+    """The write-access warning of each server switched on with write access."""
+    warns = []
+    for name in ("postgres", "mongo"):
+        if fields.get(name, {}).get("write_access") is True:
+            warns.append(f"Write access for the {_DATABASE_NAMES[name]} MCP server: it takes statements that change data. Any agent that reaches port {fields[name]['port']} can change data in {_DATABASE_NAMES[name]}, unless {_DATABASE_NAMES[name]} has authentication on with a read-only user: the server then logs in as that user, who cannot write.")
+    return warns or None
+
+
+def shown_result_root(path):
+    """The results folder as `do_db_setup_jobs` writes it: a relative one with its leading `./`."""
+    if path.startswith("/") or path in (".", "..") or path.startswith(("./", "../")):
+        return path
+    return "./" + path
+
+
+_TARGETS = (("postgres_target", "postgres", "PostgreSQL"), ("starrocks_target", "starrocks", "StarRocks"), ("mongo_target", "mongo", "MongoDB"))
+
+
+def _setup_jobs_sentence(fields):
+    """What `do_db_setup_jobs` writes for these fields, the mounts that change included."""
+    root = shown_result_root(fields["result_root"])
+    targets = [title for key, _, title in _TARGETS if key in fields]
+    mounted = [title for key, name, title in _TARGETS if key in fields and name in ("postgres", "starrocks")]
+    kept = [title for key, name, title in _TARGETS if key not in fields and name in ("postgres", "starrocks")]
+    override = f"the /jobs_export mount of {' and '.join(mounted)} there becomes {root}:/jobs_export:rw" if mounted else "no /jobs_export mount there is changed"
+    if kept:
+        override += f"; {' and '.join(kept)}, without a target here, keeps the /jobs_export mount it has there, if any"
+    sentence = (
+        f"Writes config/jobs/config.local.yaml with the targets on {', '.join(targets) or 'no database'} and the numbers above, after copying the file it replaces to config/jobs/config.local.yaml.bak; sets JOBS_PORT and JOBS_RESULT_ROOT ({root}) in .env; makes the results folder and data/jobs when they are missing. "
+        f"It rewrites docker-compose.override.yml as YAML (its comments are not kept, its other mounts are): {override}. "
+        f"The mounts that change at each service's next start: the scheduler's /data/jobs/results and StarRocks's /jobs_export (docker-compose.yml mounts JOBS_RESULT_ROOT at both), the /jobs_export mounts of the override, and the web UI's results folder at its next python sdp.py webui start."
+    )
+    if "starrocks_target" in fields:
+        sentence += " With a StarRocks target it also sets enable_outfile_to_local = true in config/starrocks/fe.local.conf when that file exists."
+    if fields.get("auth_enabled") is True:
+        sentence += " The scheduler's own page asks for the database admin password; switching that off again is done in a terminal with python sdp.py db setup-jobs."
+    return sentence + " Refused when a port is one another service of this deployment uses, and when the results folder is data/jobs or holds it (the scheduler would keep its control socket closed). " + _NOTHING_RESTARTS
+
+
+_MCP_SERVER_FIELDS = {"port": Input("port", "Port", required=True), "write_access": Input("bool", "Write access")}
+_HOURS_INPUT = Input("int", "Default timeout (hours, 0 = no limit)", required=True, lo=0, hi=8760)
+
+
 def _table(*actions):
     by_name = {}
     for action in actions:
@@ -331,6 +410,8 @@ TABLE = _table(
     Action("run.list", "read", "List the runs", {"limit": Input("int", "Limit", lo=1, hi=1000)}, form="python sdp.py runs list --limit=<n>"),
     Action("run.logs", "read", "Read a run's output", {"run_id": Input("run_id", "Run", required=True), "offset": Input("int", "Offset", lo=0, hi=LOG_OFFSET_MAX), "limit": Input("int", "Limit", lo=RUN_LOGS_MIN_LIMIT, hi=RUN_LOGS_MAX_LIMIT)}, form="python sdp.py runs logs <run> --offset=<bytes> --limit=<bytes>"),
     Action("audit.list", "read", "The newest lines of the audit log", {"limit": Input("int", "Limit", lo=1, hi=1000)}, form="python sdp.py broker audit --limit=<n>"),
+    Action("db.restart_needed", "read", "The running services whose settings changed after they started", form="python sdp.py db restart-needed"),
+    Action("db.llm_settings", "read", "The current answers of the MCP servers' and the scheduler's setup", form="python sdp.py db llm-settings"),
     # ── write ──
     Action(
         "run.start", "write", "Start a pipeline run",
@@ -386,6 +467,27 @@ TABLE = _table(
     Action(
         "session.set_db_password", "step_up", "Keep the database admin password for this session", {"password": Input("secret", "Database admin password", required=True)},
         form="(no command: a terminal asks for the password each time a command needs it)", op=True,
+    ),
+    Action(
+        "db.setup_mcp", "step_up", "Set up the MCP servers",
+        {"postgres": Input("record", "PostgreSQL MCP server", fields=_MCP_SERVER_FIELDS, absent="off"), "mongo": Input("record", "MongoDB MCP server", fields=_MCP_SERVER_FIELDS, absent="off"), "starrocks": Input("record", "StarRocks MCP server", fields={"port": Input("port", "Port", required=True)}, absent="off")},
+        form="python sdp.py db setup-mcp", command=lambda fields: _command("db", "setup-mcp"),
+        terminal_asks=_ASKS_QUESTIONS, also=_setup_mcp_sentence, warns=_setup_mcp_warns,
+    ),
+    Action(
+        "db.setup_jobs", "step_up", "Set up the query scheduler",
+        {
+            "port": Input("port", "Port of the page and of /mcp", required=True),
+            "result_root": Input("path", "Results folder", required=True),
+            "max_concurrent": Input("int", "Queries at once", required=True, lo=1, hi=1000),
+            "history_retention": Input("int", "Jobs kept in the history", required=True, lo=1, hi=100000),
+            "postgres_target": Input("record", "PostgreSQL target", fields={"name": Input("name", "Target name", required=True), "database": Input("name", "Database", required=True), "timeout_hours": _HOURS_INPUT}, absent="none"),
+            "starrocks_target": Input("record", "StarRocks target", fields={"name": Input("name", "Target name", required=True), "timeout_hours": Input("int", "Default timeout (hours, 1 to 72)", required=True, lo=1, hi=72)}, absent="none"),
+            "mongo_target": Input("record", "MongoDB target", fields={"name": Input("name", "Target name", required=True), "timeout_hours": _HOURS_INPUT}, absent="none"),
+            "auth_enabled": Input("bool", "The scheduler page asks for the database admin password", absent="no"),
+        },
+        form="python sdp.py db setup-jobs", command=lambda fields: _command("db", "setup-jobs"),
+        terminal_asks=_ASKS_QUESTIONS, also=_setup_jobs_sentence, check=_check_setup_jobs,
     ),
     Action("session.check_password", "step_up", "Check the management password again", form="(no command: asked before the Queue's auto-accept is switched on or its limit raised)", op=True),
     # ── the scheduler's control socket ──

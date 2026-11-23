@@ -30,7 +30,7 @@ from social_data_pipeline.setup import utils
 
 SCENARIOS_BY_NAME = {scenario.name: scenario for scenario in golden.SCENARIOS}
 
-GETTER_NAMES = ["get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
+GETTER_NAMES = ["get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
 
 NAME_NOT_VALID = "the source name is not a valid name"
 
@@ -310,6 +310,8 @@ SECRET_CALLS = [
     ("get_source_error_logs", {}, ["print_source_error_logs"]),
     ("get_source_error_logs", {"name": "reddit", "profile": "postgres_ingest"}, ["print_source_error_logs"]),
     ("get_source_error_logs", {"name": "reddit", "profile": "mongo_ingest"}, ["print_source_error_logs"]),
+    ("get_db_restart_needed", {}, ["print_db_restart_needed"]),
+    ("get_db_llm_settings", {}, ["print_db_llm_settings"]),
 ]
 
 

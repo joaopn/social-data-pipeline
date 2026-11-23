@@ -38,6 +38,8 @@ SUBCOMMANDS = [
     ["db", "unsetup-jobs", "--help"],
     ["db", "recover-password", "--help"],
     ["db", "create-indexes", "--help"],
+    ["db", "restart-needed", "--help"],
+    ["db", "llm-settings", "--help"],
     # source group
     ["source", "--help"],
     ["source", "add", "--help"],

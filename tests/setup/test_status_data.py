@@ -569,6 +569,42 @@ def test_ingestion_entries_carry_the_profile_and_data_type_of_their_state_file(t
     assert {profile for facts in list(by_database.values()) + list(by_view.values()) for *_, profile, _ in facts} <= set(sdp.INGESTION_PROFILES) | {None}
 
 
+# ── a source's error log is its own (B3) ────────────────────────────────────
+
+
+def build_errors_of_one_source(p):
+    """Two sources with MongoDB ingestion configured: `reddit` has a state file with failed entries and a mongoimport log that holds a section for one of them; `twitter` has no state file of its own."""
+    p.env(*golden.DATA_PATH_LINES)
+    p.source("reddit", "data_types: [comments]\n", ("mongo_ingest",))
+    p.source("twitter", "data_types: [tweets]\n", ("mongo_ingest",))
+    p.state(golden.MONGO, "reddit_mongo_ingest_comments", golden._state([], [golden._failure("RC_2024-02.ndjson", golden.SEE_LOG.format(name="RC_2024-02.ndjson"))]))
+    p.write(f"{golden.MONGO}/logs/mongoimport_reddit_comments.log", golden.MONGOIMPORT_LOG_FIRST)
+
+
+def test_a_source_without_state_files_shows_no_errors_of_another_source(tmp_path, monkeypatch, capsys):
+    """Bug class: B3, a reader scoped to one source that widens to every source's state files when the named one has none (the legacy glob `*_<profile>_*.json`): the reddit source's Errors tab and `source error-logs reddit` showed other sources' failed files and their mongoimport logs. A source without a state file of its own has no failed entries and no log sections; the other source's report is untouched."""
+    scenario = golden.Scenario("errors-of-one-source", build_errors_of_one_source, "source error-logs")
+    golden.deploy(scenario, tmp_path, monkeypatch)
+    searched = []
+    real_sections = sdp._get_mongoimport_log_sections
+    monkeypatch.setattr(sdp, "_get_mongoimport_log_sections", lambda log_dir, failed: searched.append(list(failed)) or real_sections(log_dir, failed))
+
+    twitter = sdp.get_source_error_logs(name="twitter")
+
+    assert twitter["sources"][0]["profiles"] == [{"profile": "mongo_ingest", "files": [], "mongoimport_sections": []}]
+    assert searched == []
+    sdp.print_source_error_logs(twitter)
+    text = capsys.readouterr().out
+    assert text.endswith("\n  Source: twitter\n    No errors found.\n\n")
+    assert "RC_2024-02" not in text and "reddit" not in text
+
+    reddit = sdp.get_source_error_logs(name="reddit")["sources"][0]["profiles"]
+
+    assert [(checked["profile"], [entry["filename"] for state in checked["files"] for entry in state["failed"]]) for checked in reddit] == [("mongo_ingest", ["RC_2024-02.ndjson"])]
+    assert searched == [["RC_2024-02.ndjson"]]
+    assert [Path(section["log_file"]).name for section in reddit[0]["mongoimport_sections"]] == ["mongoimport_reddit_comments.log"]
+
+
 # ── the source config reader ────────────────────────────────────────────────
 
 

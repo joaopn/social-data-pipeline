@@ -6511,11 +6511,8 @@ def _get_failed_entries(state_dir, source, profile):
         return [], []
 
     prefix = f"{source}_{profile}_"
+    # Only the named source's own state files: a source without one has no failed entries (B3).
     state_files = sorted(f for f in state_dir.glob("*.json") if f.stem.startswith(prefix))
-
-    # Legacy fallback: match by profile substring
-    if not state_files:
-        state_files = sorted(state_dir.glob(f"*_{profile}_*.json"))
 
     if not state_files:
         return [], []

@@ -3,41 +3,5 @@
   ==================================
 
   Source: ../x
-
-    postgres_ingest errors (comments): 2 failed
-
-      RC_2024-02 [2024-03-05T10:11:12.123456]
-        COPY failed: line 7
-        DETAIL: unterminated quoted field
-
-      unknown
-        no error message
-
-    mongo_ingest errors (comments): 2 failed
-
-      RC_2024-02.ndjson [2024-03-05T10:11:12.123456]
-        mongoimport failed for /data/extracted/reddit/comments/RC_2024-02.ndjson -> reddit_comments.comments
-
-      RC_2024-03.parquet [2024-03-05T10:11:12.123456]
-        mongoimport failed for /data/extracted/reddit/comments/RC_2024-03.parquet -> reddit_comments.comments
-
-    Mongoimport logs for failed files (<root>/storage/mongo/logs/mongoimport_reddit_comments.log):
-
-      ============================================================
-      Timestamp: 2024-03-05T10:01:00.000001
-      Command: mongoimport --uri=mongodb://***@mongo:27017 --file /data/extracted/reddit/comments/RC_2024-02.ndjson
-      File: /data/extracted/reddit/comments/RC_2024-02.ndjson
-      ============================================================
-      2024-03-05T10:00:01.000+0000	connected to: mongodb://mongo:27017
-      2024-03-05T10:00:09.000+0000	1000 document(s) imported successfully. 0 document(s) failed to import.
-      2024-03-05T10:01:01.000+0000	connected to: mongodb://mongo:27017
-      2024-03-05T10:01:02.000+0000	Failed: error processing document #7: invalid character 'x' looking for beginning of value
-      2024-03-05T10:01:02.000+0000	0 document(s) imported successfully. 1 document(s) failed to import.
-
-      ============================================================
-      Timestamp: 2024-03-06T11:00:00.000001
-      Command: mongoimport --uri=mongodb://***@mongo:27017 --file /data/extracted/reddit/comments/RC_2024-02.ndjson
-      File: /data/extracted/reddit/comments/RC_2024-02.ndjson
-      ============================================================
-      (no mongoimport output found)
+    No errors found.
 

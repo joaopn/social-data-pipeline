@@ -1,6 +1,6 @@
 """Golden tests for the terminal text of the five read commands: `db status`, `db verify`, `source list`, `source status` and `source error-logs`.
 
-Each scenario builds a fixture deployment in code under a temp folder, points the CLI at it, runs one `cmd_*` function and compares everything it printed, byte for byte, with a file under `golden/`. The exit code is asserted too. The goldens pin today's text as it is, known mistakes included (the read-only user taken from the first database that has one, the failures of another source shown under the named one, the StarRocks ML line for a source without that profile, a source name such as `../x` read as a folder outside `config/sources/`): a change to any of them must show up as a golden diff, never slip through a refactor.
+Each scenario builds a fixture deployment in code under a temp folder, points the CLI at it, runs one `cmd_*` function and compares everything it printed, byte for byte, with a file under `golden/`. The exit code is asserted too. The goldens pin today's text as it is, known mistakes included (the read-only user taken from the first database that has one, the StarRocks ML line for a source without that profile, a source name such as `../x` read as a folder outside `config/sources/`): a change to any of them must show up as a golden diff, never slip through a refactor.
 
 Two parts of the text depend on where and with what the test runs, and are replaced before the comparison: the temp project folder becomes `<root>`, and the message PyYAML gives for the unreadable `platform.yaml` of the fixtures becomes `<yaml error>` (its wording belongs to the installed PyYAML version; the message is taken from parsing the same broken text, so no pattern has to guess it).
 
@@ -323,7 +323,7 @@ SEE_LOG = "mongoimport failed for /data/extracted/reddit/comments/{name} -> redd
 
 
 def build_errors(p):
-    """Failed entries under every ingestion profile, mongoimport logs, a source without state files of its own (the fallback then shows another source's failures) and one that cannot be read."""
+    """Failed entries under every ingestion profile, mongoimport logs, a source without state files of its own (it shows no failures, none of another source's either) and one that cannot be read."""
     p.env(*DATA_PATH_LINES)
     p.source("reddit", "data_types: [submissions, comments]\n", ("postgres_ingest", "postgres_ml", "mongo_ingest", "sr_ingest", "sr_ml"))
     p.source("fresh", "data_types: [posts]\n", ("postgres_ingest",))
@@ -467,7 +467,7 @@ SCENARIOS = [
     _error_logs("error_logs_profile_postgres_ingest", build_errors, "reddit", profile="postgres_ingest"),
     _error_logs("error_logs_profile_mongo_ingest", build_errors, "reddit", profile="mongo_ingest"),
     _error_logs("error_logs_profile_not_configured", build_errors, "fresh", profile="mongo_ingest"),
-    _error_logs("error_logs_fallback_shows_other_source", build_errors, "fresh"),
+    _error_logs("error_logs_source_without_state_files", build_errors, "fresh"),
     _error_logs("error_logs_unreadable_platform", build_errors, "broken"),
     _error_logs("error_logs_unknown_name", build_errors, "nosuch"),
     # The same known bug as in `source status`: `../x` is looked up as `config/x`, and when that folder has a `platform.yaml` the failures of other sources are shown under it.

@@ -118,6 +118,7 @@ The broker is a host process on a unix socket through which a logged-in web UI s
 | `python sdp.py webui setup` | Ask the port, the addresses the page is opened at besides this machine (IP addresses and names, or `all` for every address) and the certificate (generated or your own); build the image `sdp-webui`; print the certificate's fingerprint |
 | `python sdp.py webui start` | Start the web UI's container and say whether the broker answered from inside it |
 | `python sdp.py webui stop` | Stop and remove the container (exit code 1 when it was not running) |
+| `python sdp.py webui rebuild` | Rebuild the image `sdp-webui` from the saved settings, with no questions, then stop the web UI (when it runs) and start it; logged-in sessions end. A failed build leaves the running web UI as it was (exit code 1). Use it to pick up new code; run `webui setup` only to change the settings |
 | `python sdp.py webui status` | Say whether it runs, where it answers and the certificate's fingerprint and end date (exit code 0 when it runs) |
 | `python sdp.py webui unsetup` | After a confirmation, remove the container, the network, the image and `.sdp/webui/` |
 
@@ -130,6 +131,7 @@ See [Web UI](webui.md).
 | `python sdp.py chat setup` | Ask the back end (Claude Code on your own Claude subscription login, or an OpenAI-compatible endpoint with its address and model), the secret (asked without echo, stored in `.sdp/chat/credential/model.token`, mode 0600) and the work folder's soft cap; build the images `sdp-gateway` and `sdp-sandbox` |
 | `python sdp.py chat start` | Start the gateway and the sandbox, and attach the running MCP server of each database that is on a read-only user; refuses when no database can be read, saying why for each |
 | `python sdp.py chat stop` | Stop and remove both containers and the chat's two networks, and detach the databases (exit code 1 when it does not run) |
+| `python sdp.py chat rebuild` | Rebuild the images `sdp-gateway` and `sdp-sandbox` from the saved settings, with no questions, then stop the chat (when it runs) and start it. A failed build leaves the running chat as it was (exit code 1). Use it to pick up new code; run `chat setup` only to change the settings |
 | `python sdp.py chat status` | Say whether each container runs, the back end, which databases the chat can read now (and which dropped out since the start) and the work folder's size against its soft cap (exit code 0 when it runs) |
 | `python sdp.py chat unsetup` | After a confirmation, remove the two images and the chat's settings and credential; after a second one, also all chats and their files (`.sdp/chat/work`). Refused while the chat's containers exist |
 

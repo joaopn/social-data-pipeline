@@ -8,6 +8,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - `unsetup` removes nothing through a symbolic link: a linked `.sdp` is refused and what it points at stays.
 - The Queue window's mounts (`_queue_mounts`): the `docker create` list pinned with none, one and both; `start` makes `data/jobs/control` 0700 whatever the umask; a linked or foreign control folder, a missing or linked `data/jobs`: no mount and the line; the results folder from `.env` (by its key), its default, a comma in its path, `data/jobs` itself, a folder above it (through a link too), a folder inside the control folder: each with its line and the right mounts; `.env` is never printed; `status` says which are mounted.
 - The Chat window's mount (`_chat_folder`): pinned with all three optional mounts; `.sdp/chat/socket` present (mounted with its setting), missing, a link (itself or a folder above it), of another user, open to others: the line and no mount; `status` says whether it is mounted.
+- `rebuild`: the image is built first, as setup builds it, then the container is stopped and started again (the argument lists in order); a web UI that does not run is started; refused before any Docker call when not set up or without the certificate; a failed build stops nothing; a container that could not be stopped is not taken for the web UI started again.
 - `stop` and `status` exit codes; `unsetup` asks first and removes the container, the network, the image and `.sdp/webui`.
 - `setup` refuses without a management password before asking anything; the state folder and its files have modes 0700 and 0600; no argument list holds the key or a password; every prompt has a tag listed in `tests/e2e/questions.yaml`.
 - `import sdp` loads neither the web package nor the control package; `sdp webui` alone prints the group's help.
@@ -487,6 +488,99 @@ def test_start_when_not_set_up_says_how_to_set_it_up(root, docker, capsys):
     assert "not set up" in capsys.readouterr().out and docker.calls == []
 
 
+# ── rebuild ─────────────────────────────────────────────────────────────────
+
+INSPECT = ["docker", "container", "inspect", "--format", "{{json .State.Status}}\n{{json .Config.Labels}}", "sdp-webui"]
+LISTING = ["docker", "ps", "-a", "--filter", "name=^/sdp-webui$", "--format", "{{.ID}}"]
+NETWORK_INSPECT = ["docker", "network", "inspect", "--format", "{{json .Driver}}\n{{json .Options}}\n{{json .IPAM.Config}}", "sdp-webui"]
+
+
+def build_call(root):
+    return ["docker", "build", "-f", str(root / "Dockerfile.webui"), "-t", "sdp-webui", str(root)]
+
+
+def start_calls(root):
+    """What `start` runs from no container, with the network already made."""
+    return [
+        ["docker", "info", "--format", "{{json .SecurityOptions}}"], INSPECT, LISTING, NETWORK_INSPECT,
+        host.create_arguments(str(root), os.getuid(), os.getgid(), host.read_config(str(root))[0], "172.30.0.1"),
+        ["docker", "start", "sdp-webui"],
+        ["docker", "exec", "sdp-webui", "python", "-m", "social_data_pipeline.webui.probe"],
+        INSPECT,
+    ]
+
+
+def test_rebuild_builds_first_then_stops_and_starts(root, docker, capsys):
+    """Bug class: a rebuild that stops the web UI before the build (down for the whole build), builds another image than setup does, or does not start it again on the new image."""
+    set_up(root, docker)
+    assert host.cmd_start(root) == 0
+    docker.calls.clear()
+    capsys.readouterr()
+
+    assert host.cmd_rebuild(root) == 0
+    assert docker.calls == [build_call(root), INSPECT, ["docker", "stop", "-t", "10", "sdp-webui"], ["docker", "rm", "sdp-webui"], *start_calls(root)]
+    assert docker.container == ("running", str(root))
+    out = capsys.readouterr().out
+    assert out.index("Building the image sdp-webui") < out.index("logged-in sessions end") < out.index("The web UI has stopped.") < out.index("The web UI is started.")
+
+
+def test_rebuild_of_a_web_ui_that_does_not_run_starts_it(root, docker, capsys):
+    """Bug class: a rebuild that fails, or stops short of the start, because stop answers 1 for a web UI that did not run."""
+    set_up(root, docker)
+    docker.network = {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+    docker.calls.clear()
+    capsys.readouterr()
+
+    assert host.cmd_rebuild(root) == 0
+    assert docker.calls == [build_call(root), INSPECT, LISTING, INSPECT, LISTING, *start_calls(root)]
+    out = capsys.readouterr().out
+    assert "The web UI is not running." in out and "The web UI is started." in out and "Error" not in out
+
+
+@pytest.mark.parametrize("missing", ["settings", "key"])
+def test_rebuild_when_not_set_up_is_refused_before_any_docker_call(root, docker, capsys, missing):
+    """Bug class: a rebuild that builds and restarts a web UI that cannot start (no settings, no certificate), or that fails with a traceback."""
+    set_up(root, docker)
+    (root / ".sdp" / "webui" / ("config.json" if missing == "settings" else "tls/key.pem")).unlink()
+    docker.calls.clear()
+    capsys.readouterr()
+
+    assert host.cmd_rebuild(root) == 1
+    assert docker.calls == []
+    out = capsys.readouterr().out
+    assert out.startswith("  Error: ") and "python sdp.py webui setup" in out
+
+
+def test_a_failed_rebuild_leaves_the_running_web_ui_untouched(root, docker, capsys):
+    """Bug class: a failed build that stops the web UI anyway, leaving the operator without a page until the build is fixed."""
+    set_up(root, docker)
+    assert host.cmd_start(root) == 0
+    docker.calls.clear()
+    docker.fail["build"] = "failed to solve: process did not complete successfully"
+    capsys.readouterr()
+
+    assert host.cmd_rebuild(root) == 1
+    assert docker.calls == [build_call(root)]
+    assert docker.container == ("running", str(root))
+    out = capsys.readouterr().out
+    assert "the image sdp-webui could not be built (see Docker's output above). The running web UI was not touched" in out
+    assert "sessions end" not in out
+
+
+def test_a_rebuild_whose_stop_fails_does_not_start(root, docker, capsys):
+    """Bug class: "already running" and exit code 0 after a rebuild whose stop failed, the old image still serving."""
+    set_up(root, docker)
+    assert host.cmd_start(root) == 0
+    docker.calls.clear()
+    docker.fail.update(stop="Error response from daemon: cannot stop container", rm="Error response from daemon: cannot remove a running container")
+    capsys.readouterr()
+
+    assert host.cmd_rebuild(root) == 1
+    assert docker.calls[-1] == INSPECT and "create" not in docker.words() and "info" not in docker.words()
+    out = capsys.readouterr().out
+    assert "cannot stop container" in out and "still runs" in out and "The web UI is already running." not in out
+
+
 # ── stop, status, unsetup ───────────────────────────────────────────────────
 
 
@@ -732,7 +826,7 @@ def test_bare_webui_prints_the_groups_help():
         assert command in result.stdout
 
 
-@pytest.mark.parametrize("command, function", [("setup", "cmd_setup"), ("start", "cmd_start"), ("stop", "cmd_stop"), ("status", "cmd_status")])
+@pytest.mark.parametrize("command, function", [("setup", "cmd_setup"), ("start", "cmd_start"), ("stop", "cmd_stop"), ("rebuild", "cmd_rebuild"), ("status", "cmd_status")])
 def test_each_command_reaches_its_function_with_the_deployment_folder(root, monkeypatch, command, function):
     """Bug class: a command wired to the wrong function, or given the current directory instead of the deployment folder."""
     seen = []

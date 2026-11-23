@@ -69,9 +69,9 @@ Three more containers live outside the Compose file:
 
 | Container | Image | Built by | Started by |
 |---|---|---|---|
-| `sdp-webui` | `sdp-webui` from `Dockerfile.webui` | `python sdp.py webui setup` | `python sdp.py webui start` |
-| `sdp-gateway` | `sdp-gateway` from `Dockerfile.gateway` | `python sdp.py chat setup` | `python sdp.py chat start` |
-| `sdp-sandbox` | `sdp-sandbox` from `Dockerfile.sandbox` | `python sdp.py chat setup` | `python sdp.py chat start` |
+| `sdp-webui` | `sdp-webui` from `Dockerfile.webui` | `python sdp.py webui setup` or `webui rebuild` | `python sdp.py webui start` |
+| `sdp-gateway` | `sdp-gateway` from `Dockerfile.gateway` | `python sdp.py chat setup` or `chat rebuild` | `python sdp.py chat start` |
+| `sdp-sandbox` | `sdp-sandbox` from `Dockerfile.sandbox` | `python sdp.py chat setup` or `chat rebuild` | `python sdp.py chat start` |
 
 The databases restart only on request (`restart: "no"`) and get long stop grace periods (10 minutes for PostgreSQL, 5 for MongoDB and StarRocks) so they can shut down cleanly. Each database's healthcheck is a script, `config/<db>/healthcheck.sh`; under authentication it also logs in as the read-only user, and the MCP servers wait for that healthy state (`depends_on: service_healthy`). The scheduler has no `depends_on`: `python sdp.py db start` brings the databases up with `--wait` before it starts the scheduler.
 
@@ -169,8 +169,8 @@ Every call prints the command it runs; passwords are never part of it, they trav
 | `Dockerfile.postgres` or `config/postgres/initdb.d/` | `docker compose --profile postgres build postgres`, then a restart; the first-start scripts run only when the database is first initialized |
 | `Dockerfile.mcp-mongo`, its patches or `config/mcp/entrypoint-mongo.sh` | `docker compose --profile mongo --profile mongo_mcp build mongo-mcp`, then a restart |
 | `Dockerfile.mcp-starrocks` or `config/mcp/entrypoint-starrocks.sh` | `docker compose --profile starrocks --profile starrocks_mcp build starrocks-mcp`, then a restart |
-| The web UI's code, `requirements-webui.txt` or `Dockerfile.webui` | `python sdp.py webui setup` (it builds the image), then `python sdp.py webui stop` and `webui start` |
-| The chat's code, the gateway's code, `requirements-sandbox.txt`, `Dockerfile.gateway` or `Dockerfile.sandbox` | `python sdp.py chat setup` (it builds both images), then `python sdp.py chat stop` and `chat start` |
+| The web UI's code, `requirements-webui.txt` or `Dockerfile.webui` | `python sdp.py webui rebuild`: it builds the image from the saved settings, then stops and starts the web UI (logged-in sessions end) |
+| The chat's code, the gateway's code, `requirements-sandbox.txt`, `Dockerfile.gateway` or `Dockerfile.sandbox` | `python sdp.py chat rebuild`: it builds both images from the saved settings, then stops and starts the chat |
 | The broker's code (`social_data_pipeline/control/`) | `python sdp.py broker stop`, then `python sdp.py broker start`: it runs from the clone, not from an image |
 | YAML under `config/` | Nothing: it is mounted read-only and read at the next run |
 

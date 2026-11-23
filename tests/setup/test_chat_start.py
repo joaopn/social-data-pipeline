@@ -7,6 +7,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - The gateway's config for each back end and each set of attached databases loads with the real `gateway.table` loader; the gateway's address is the second host address of the network's subnet.
 - `start` refuses without a setup, under user-id mapping, while a container runs, with a container of another deployment, and with no attachable database (one "why" line per database), changing nothing; a database without the key is never attached; a step that fails in the middle removes what the start made; the token is in no output, argument or environment.
 - `stop` and `status`: their outputs and exit codes; a database container replaced since the start shows as dropped; a stopped container attached to the network is detached before the network is removed (else it could no longer start).
+- `rebuild`: both images built first, as setup builds them, then the chat stopped and started (the argument lists in order); a chat that does not run is started; refused before any Docker call without a completed setup; a failed build stops nothing.
 - The work folder's size: links are not followed, the walk is bounded; `unsetup` refuses while a container exists; the CLI parses the three commands.
 
 Docker is a stand-in that records every call and answers from a small model of containers and networks; nothing reaches a real Docker.
@@ -98,6 +99,8 @@ class ChatDocker:
             name = arguments[2]
             self.containers[name]["status"] = "exited" if name == host.GATEWAY_CONTAINER and self.gateway_exits else "running"
             return self.answer(0, name)
+        if arguments[1] == "build":
+            return self.answer(0)
         if arguments[1] == "logs":
             if self.gateway_exits:
                 return self.answer(0, "", "gateway: refusing to start: listen: must be one IP address, not a wildcard\n")
@@ -532,6 +535,83 @@ def test_stop_when_nothing_runs_is_exit_code_1(root, docker, capsys):
     assert "The chat is not running." in capsys.readouterr().out
 
 
+def changing_calls(docker):
+    """The calls that build, make, start, stop or remove something, in order."""
+    return [call for call in docker.calls if call[1] in ("build", "create", "start", "stop", "rm") or call[1:3] in (["network", "create"], ["network", "rm"], ["network", "connect"], ["network", "disconnect"])]
+
+
+def test_rebuild_builds_both_images_first_then_stops_and_starts(root, docker, capsys):
+    """Bug class: a rebuild that stops the chat before the build (down for the whole build), builds other images than setup does, or does not start it again on the new images."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    assert start(root) == 0
+    docker.calls.clear()
+    capsys.readouterr()
+
+    assert host.cmd_rebuild(root) == 0
+    address = host.gateway_address(docker.networks["sdp-chat"]["subnet"])
+    assert changing_calls(docker) == [
+        *host.build_arguments(str(root)),
+        ["docker", "stop", "-t", "10", "sdp-sandbox"],
+        ["docker", "rm", "--force", "sdp-sandbox"],
+        ["docker", "stop", "-t", "10", "sdp-gateway"],
+        ["docker", "rm", "--force", "sdp-gateway"],
+        ["docker", "network", "disconnect", "sdp-chat-up", MONGO_ID],
+        ["docker", "network", "rm", "sdp-chat-up"],
+        ["docker", "network", "rm", "sdp-chat"],
+        ["docker", "network", "create", "--driver", "bridge", "--label", f"{host.ROOT_LABEL}={root}", "sdp-chat-up"],
+        host.internal_network_arguments(str(root)),
+        ["docker", "network", "rm", "sdp-chat"],
+        host.internal_network_arguments(str(root), docker.networks["sdp-chat"]["subnet"]),
+        host.gateway_arguments(str(root), os.getuid(), os.getgid(), address),
+        ["docker", "network", "connect", "sdp-chat-up", "sdp-gateway"],
+        ["docker", "start", "sdp-gateway"],
+        ["docker", "network", "connect", "--alias", "sdp-chat-mongo-mcp", "sdp-chat-up", MONGO_ID],
+        host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], host.DEFAULT_CAP_GIB),
+        ["docker", "start", "sdp-sandbox"],
+    ]
+    assert all(docker.containers[name]["status"] == "running" for name in ("sdp-gateway", "sdp-sandbox"))
+    out = capsys.readouterr().out
+    assert out.index("Building the image sdp-gateway") < out.index("Building the image sdp-sandbox") < out.index("The chat has stopped.") < out.index("The chat is started.")
+
+
+def test_rebuild_of_a_chat_that_does_not_run_starts_it(root, docker, capsys):
+    """Bug class: a rebuild that fails, or stops short of the start, because stop answers 1 for a chat that did not run."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    assert host.cmd_rebuild(root) == 0
+    assert [call[1] for call in changing_calls(docker)][:3] == ["build", "build", "network"]
+    out = capsys.readouterr().out
+    assert "The chat is not running." in out and "The chat is started." in out and "Error" not in out
+
+
+@pytest.mark.parametrize("missing", ["config", "token"])
+def test_rebuild_without_a_completed_setup_is_refused_before_any_docker_call(root, docker, capsys, missing):
+    """Bug class: a rebuild that builds and restarts a chat that cannot start (no settings, no credential), or that fails with a traceback."""
+    set_up(root)
+    (root / CHAT / ("config.json" if missing == "config" else "credential/model.token")).unlink()
+    assert host.cmd_rebuild(root) == 1
+    assert docker.calls == []
+    out = capsys.readouterr().out
+    assert out.startswith("  Error: ") and "python sdp.py chat setup" in out
+
+
+@pytest.mark.parametrize("image", ["sdp-gateway", "sdp-sandbox"])
+def test_a_failed_rebuild_leaves_the_running_chat_untouched(root, docker, capsys, image):
+    """Bug class: a failed build that stops the chat anyway, leaving the operator without the assistant until the build is fixed."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    assert start(root) == 0
+    docker.calls.clear()
+    docker.fail = lambda arguments: "failed to solve: process did not complete successfully" if arguments[1] == "build" and arguments[-2] == image else None
+    capsys.readouterr()
+
+    assert host.cmd_rebuild(root) == 1
+    assert docker.calls == host.build_arguments(str(root))[:1 if image == "sdp-gateway" else 2]
+    assert all(docker.containers[name]["status"] == "running" for name in ("sdp-gateway", "sdp-sandbox"))
+    assert f"the image {image} could not be built (see Docker's output above). The running chat was not touched" in capsys.readouterr().out
+
+
 def test_status_names_the_attached_database_and_one_replaced_since(root, docker, capsys):
     """Bug class: a status that shows what start attached rather than what is attached now (a database whose container was replaced is out of the chat's reach)."""
     set_up(root)
@@ -604,7 +684,7 @@ def test_unsetup_refuses_while_a_container_exists(root, docker, capsys, name):
     assert (root / CHAT / "credential" / "model.token").exists() and not any(call[1] == "image" for call in docker.calls)
 
 
-@pytest.mark.parametrize("command", ["start", "stop", "status"])
+@pytest.mark.parametrize("command", ["start", "stop", "rebuild", "status"])
 def test_the_cli_reaches_the_host_module_with_the_deployment_folder(root, monkeypatch, command):
     """Bug class: a command missing from the parser, or wired to the wrong function or folder."""
     seen = []

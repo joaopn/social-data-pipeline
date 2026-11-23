@@ -1,4 +1,4 @@
-"""The host side of the web UI: `sdp webui setup`, `start`, `stop`, `status` and `unsetup` (the `cmd_*` functions; `sdp.py` only passes the deployment folder).
+"""The host side of the web UI: `sdp webui setup`, `start`, `stop`, `rebuild`, `status` and `unsetup` (the `cmd_*` functions; `sdp.py` only passes the deployment folder).
 
 What it keeps, in `<root>/.sdp/webui/` (0700): `config.json` (0600: the port, the listen addresses besides 127.0.0.1 (`0.0.0.0` first for every address), the names, how the certificate came, its SHA-256 fingerprint and end date) and `tls/` (0700: `cert.pem` and `key.pem`, 0600), written by the broker's file rules (`control.files`). The container, the network and the image are all called `sdp-webui`.
 
@@ -524,6 +524,14 @@ def _check_root(root):
         raise Refused("the deployment folder's path holds a comma or a line break, which Docker's mount option cannot take: move the deployment")
 
 
+def _build_image(root, after_failure=""):
+    """Build the image `sdp-webui`, Docker's output printed as it comes. Raises Refused, ending with `after_failure`, when it could not be built."""
+    print(f"\n  Building the image {IMAGE} ...", flush=True)
+    built = _docker(["docker", "build", "-f", os.path.join(root, DOCKERFILE), "-t", IMAGE, root], capture=False, timeout=3600)
+    if built.returncode != 0:
+        raise Refused(f"the image {IMAGE} could not be built (see Docker's output above){after_failure}")
+
+
 def _setup(root, ask, ask_choice, uid, gid):
     _check_root(root)
     if not _management_password_set(root):
@@ -555,10 +563,7 @@ def _setup(root, ask, ask_choice, uid, gid):
             for name in (NEW_CERT_NAME, NEW_KEY_NAME):
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(name, dir_fd=tls_fd)
-            print(f"\n  Building the image {IMAGE} ...", flush=True)
-            built = _docker(["docker", "build", "-f", os.path.join(root, DOCKERFILE), "-t", IMAGE, root], capture=False, timeout=3600)
-            if built.returncode != 0:
-                raise Refused(f"the image {IMAGE} could not be built (see Docker's output above)")
+            _build_image(root)
             if own is None:
                 made = _docker(certificate_arguments(root, uid, gid, cfg))
                 if made.returncode != 0:
@@ -768,14 +773,20 @@ def _chat_folder(root, uid):
     return os.path.join(root, CHAT_SOCKET_FOLDER), []
 
 
-def _start(root, uid, gid):
+def _set_up_or_refuse(root):
+    """The saved settings as `read_config` gives them. Raises Refused when the web UI is not set up, its settings cannot be used, or the certificate or its key is missing."""
     _check_root(root)
     loaded = read_config(root)
     if loaded is None:
         raise Refused(f"the web UI is not set up.\n{SETUP_FIRST}")
-    cfg = loaded[0]
     if _read_tls_file(root, CERT_NAME) is None or _read_tls_file(root, KEY_NAME) is None:
         raise Refused(f"the certificate or its key is missing.\n{SETUP_FIRST}")
+    return loaded
+
+
+def _start(root, uid, gid):
+    loaded = _set_up_or_refuse(root)
+    cfg = loaded[0]
     _check_docker_mapping()
     state = _container_state()
     if state is not None:
@@ -857,6 +868,30 @@ def cmd_stop(root):
         return 1
     print("  The web UI has stopped.")
     return 0
+
+
+def cmd_rebuild(root):
+    """`sdp webui rebuild`: from the saved settings, with no question, build the image as setup does, then stop the web UI (when it runs) and start it; logged-in sessions end. A failed build stops nothing. Exit code: start's, or 1 with one line when the web UI is not set up, the image could not be built or the old container still runs."""
+    root = os.fspath(root)
+    try:
+        _set_up_or_refuse(root)
+        _build_image(root, ". The running web UI was not touched")
+    except Refused as refusal:
+        print(f"  Error: {refusal.message}")
+        return 1
+    print()
+    print("  Restarting the web UI: logged-in sessions end (log in again once it has started).")
+    if cmd_stop(root) != 0:
+        # Stop's exit code 1 for a web UI that did not run is no failure here; a container that still runs is (start would take it for the web UI already running).
+        try:
+            state = _container_state()
+        except Refused as refusal:
+            print(f"  Error: {refusal.message}")
+            return 1
+        if state is not None and state[0] == "running":
+            print(f"  Error: the container {CONTAINER} still runs (see the line above), so the web UI was not started again. The image is rebuilt: once that container is stopped, run `python sdp.py webui start`.")
+            return 1
+    return cmd_start(root)
 
 
 def _queue_status():

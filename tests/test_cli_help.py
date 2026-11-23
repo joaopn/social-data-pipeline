@@ -73,8 +73,11 @@ SUBCOMMANDS = [
     ["webui", "setup", "--help"],
     ["webui", "start", "--help"],
     ["webui", "stop", "--help"],
+    ["webui", "rebuild", "--help"],
     ["webui", "status", "--help"],
     ["webui", "unsetup", "--help"],
+    # chat group
+    ["chat", "rebuild", "--help"],
 ]
 
 

@@ -185,7 +185,7 @@ It does not defend against someone who can run programs on the host as you (that
 
 ### The chat's images
 
-`python sdp.py chat setup` builds two images:
+`python sdp.py chat setup` builds two images (`python sdp.py chat rebuild` builds them again from the saved settings):
 
 | Image | Built from | What it holds |
 |---|---|---|

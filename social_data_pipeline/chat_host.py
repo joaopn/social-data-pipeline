@@ -1,8 +1,8 @@
-"""The host side of the Chat window: `sdp chat setup`, `start`, `stop`, `status` and `unsetup` (the `cmd_*` functions; `sdp.py` only passes the deployment folder and the questions of unsetup).
+"""The host side of the Chat window: `sdp chat setup`, `start`, `stop`, `rebuild`, `status` and `unsetup` (the `cmd_*` functions; `sdp.py` only passes the deployment folder and the questions of unsetup).
 
 What it keeps, in `<root>/.sdp/chat/` (0700): `config.json` (0600: the back end, for an OpenAI-compatible one its address and model, the soft cap of the work folder in GiB, the Claude Code version of the sandbox image), `credential/` (0700) with `model.token` (0600: the model's secret, asked without echo, never printed, logged, put on a command line or in an environment), `work/` (0700: one folder per chat, later) and `socket/` (0700). Every folder is opened relative to the one above it without following a link, must be a real folder of the operator and is given mode 0700 whatever the umask; files are written by the broker's file rules (`control.files`: a temporary file made exclusively with mode 0600, then renamed).
 
-`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which the running MCP container of each database whose MCP server is on a read-only user is attached under an alias, and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`). Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
+`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which the running MCP container of each database whose MCP server is on a read-only user is attached under an alias, and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`); `rebuild` builds both images again from the saved settings, then stops and starts the chat. Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
 """
 
 import contextlib
@@ -290,6 +290,15 @@ def _ask_valid(ask, parse, *arguments, **keywords):
             print(f"    {refusal.message}.")
 
 
+def _build_images(root, after_failure):
+    """Build both images (`build_arguments`), Docker's output printed as it comes. Raises Refused, ending with `after_failure`, at the first image that could not be built."""
+    for image, arguments in zip((GATEWAY_IMAGE, SANDBOX_IMAGE), build_arguments(root)):
+        print(f"\n  Building the image {image} ...", flush=True)
+        built = _docker(arguments, capture=False, timeout=3600)
+        if built.returncode != 0:
+            raise Refused(f"the image {image} could not be built (see Docker's output above). {after_failure}")
+
+
 def _setup(root, ask, ask_choice, ask_bool, ask_secret):
     """`ask_secret(prompt, tag)` asks without echo. The secret is checked, written to its file and dropped; it reaches no output, no argument list and no environment."""
     _check_root(root)
@@ -336,11 +345,7 @@ def _setup(root, ask, ask_choice, ask_bool, ask_secret):
         finally:
             replaced, secret = secret is not None, None
 
-    for image, arguments in zip((GATEWAY_IMAGE, SANDBOX_IMAGE), build_arguments(root)):
-        print(f"\n  Building the image {image} ...", flush=True)
-        built = _docker(arguments, capture=False, timeout=3600)
-        if built.returncode != 0:
-            raise Refused(f"the image {image} could not be built (see Docker's output above). The settings are saved: run `python sdp.py chat setup` again")
+    _build_images(root, "The settings are saved: run `python sdp.py chat setup` again")
 
     print()
     print(f"  Back end: {backend} ({BACKEND_TEXT[backend]})")
@@ -1181,6 +1186,22 @@ def cmd_stop(root):
     except Refused as refusal:
         print(f"  Error: {refusal.message}")
         return 1
+
+
+def cmd_rebuild(root):
+    """`sdp chat rebuild`: from the saved settings, with no question, build both images as setup does, then stop the chat (when it runs) and start it. A failed build stops nothing. Exit code: start's, or 1 with one line when the chat is not set up or an image could not be built."""
+    root = os.fspath(root)
+    try:
+        _check_root(root)
+        _settings_or_refuse(root)
+        _build_images(root, "The running chat was not touched")
+    except Refused as refusal:
+        print(f"  Error: {refusal.message}")
+        return 1
+    print()
+    # Stop's exit code 1 for a chat that did not run is no failure here; when something of the chat could not be stopped, start refuses and says why.
+    cmd_stop(root)
+    return cmd_start(root)
 
 
 def _stop(root):

@@ -48,12 +48,14 @@ Usage:
     sdp.py webui setup                       Set up the web UI: its port, addresses, names and certificate; build its image
     sdp.py webui start                       Start the web UI's container (the broker must run for it to log in)
     sdp.py webui stop                        Stop and remove the web UI's container
+    sdp.py webui rebuild                     Rebuild the web UI's image from the saved settings and restart it (no questions)
     sdp.py webui status                      Say whether the web UI runs, where it answers and its certificate's fingerprint
     sdp.py webui unsetup                     Remove the web UI's container, network, image and settings
 
     sdp.py chat setup                        Set up the Chat window: its back end, the model's credential (asked without echo), the work folder's cap; build its two images
     sdp.py chat start                        Start the chat's gateway and sandbox and attach the databases whose MCP server is on a read-only user
     sdp.py chat stop                         Stop and remove the chat's containers and networks, and detach the databases
+    sdp.py chat rebuild                      Rebuild the chat's images from the saved settings and restart it (no questions)
     sdp.py chat status                       Say whether the chat runs, which databases it can read now and the size of its work folder
     sdp.py chat unsetup                      Remove the chat's images, settings and credential (and, if asked, all chats)
 
@@ -7191,6 +7193,11 @@ def cmd_webui_stop(args):
     return _webui_host().cmd_stop(ROOT)
 
 
+def cmd_webui_rebuild(args):
+    """Rebuild the web UI's image from the saved settings, then stop it (when it runs) and start it. A failed build stops nothing."""
+    return _webui_host().cmd_rebuild(ROOT)
+
+
 def cmd_webui_status(args):
     """Say whether the web UI is set up and runs, where it answers and its certificate. Exit code 0 when it runs, 1 when not."""
     return _webui_host().cmd_status(ROOT)
@@ -7228,6 +7235,11 @@ def cmd_chat_start(args):
 def cmd_chat_stop(args):
     """Stop and remove the chat's containers and networks, and detach the databases."""
     return _chat_host().cmd_stop(ROOT)
+
+
+def cmd_chat_rebuild(args):
+    """Rebuild the chat's two images from the saved settings, then stop the chat (when it runs) and start it. A failed build stops nothing."""
+    return _chat_host().cmd_rebuild(ROOT)
 
 
 def cmd_chat_status(args):
@@ -7513,6 +7525,9 @@ def build_parser():
     webui_stop_p = webui_sub.add_parser("stop", help="Stop and remove the web UI's container (exit code 1 when it does not run)")
     webui_stop_p.set_defaults(func=cmd_webui_stop)
 
+    webui_rebuild_p = webui_sub.add_parser("rebuild", help="Rebuild the web UI's image from the saved settings and restart it (no questions)")
+    webui_rebuild_p.set_defaults(func=cmd_webui_rebuild)
+
     webui_status_p = webui_sub.add_parser("status", help="Say whether the web UI runs, where it answers and its certificate (exit code 0 when it runs, 1 when not)")
     webui_status_p.set_defaults(func=cmd_webui_status)
 
@@ -7531,6 +7546,9 @@ def build_parser():
 
     chat_stop_p = chat_sub.add_parser("stop", help="Stop and remove the chat's containers and networks, and detach the databases (exit code 1 when it does not run)")
     chat_stop_p.set_defaults(func=cmd_chat_stop)
+
+    chat_rebuild_p = chat_sub.add_parser("rebuild", help="Rebuild the chat's images from the saved settings and restart it (no questions)")
+    chat_rebuild_p.set_defaults(func=cmd_chat_rebuild)
 
     chat_status_p = chat_sub.add_parser("status", help="Say whether the chat runs, which databases it can read now and the size of its work folder (exit code 0 when it runs, 1 when not)")
     chat_status_p.set_defaults(func=cmd_chat_status)

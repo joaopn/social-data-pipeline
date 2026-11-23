@@ -196,9 +196,9 @@ The scheduler's database drivers and FastAPI are replaced by stand-ins (`tests/j
 | `test_actions.py` | The state-changing commands as action functions: no prompt without a terminal, confirmation failing closed, a missing password failing before any side effect |
 | `test_runs_commands.py` | `runs list`, `runs logs` and `runs cancel`: malformed ids refused before any path or Docker call, safe printing |
 | `test_broker_commands.py` | `broker passwd`, `start`, `status`, `stop` and `audit` against a real broker in a temp deployment |
-| `test_webui_commands.py` | The `webui` commands with Docker replaced by a recording stand-in: the addresses and names, the port's range, the `docker create` argument list pinned |
+| `test_webui_commands.py` | The `webui` commands with Docker replaced by a recording stand-in: the addresses and names, the port's range, the `docker create` argument list pinned, `rebuild`'s order (build, stop, start) |
 | `test_chat_commands.py` | `chat setup` and `unsetup`: refused endpoint addresses, model names, caps and secrets, the files and their modes |
-| `test_chat_start.py` | `chat start`, `stop` and `status` against a model of containers and networks: the `docker create` argument lists pinned, the networks' checks, the databases attached |
+| `test_chat_start.py` | `chat start`, `stop`, `rebuild` and `status` against a model of containers and networks: the `docker create` argument lists pinned, the networks' checks, the databases attached |
 | `test_cli_help.py` (top level) | Every `sdp.py` subcommand's `--help` exits 0: argparse regressions and import errors |
 | `test_cli_db_start.py` (top level) | `db start`'s probe of `docker compose ps` output for services that exited after `up --wait` returned 0 |
 | `test_runstore.py` (top level) | The run store with Docker replaced by a fake: run ids, private state folders, atomic records, runs started in a terminal found through Docker, cancel |

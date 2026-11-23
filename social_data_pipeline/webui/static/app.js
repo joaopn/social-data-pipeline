@@ -71,6 +71,13 @@ var sdpStore = {
     } catch (error) {
       // Not kept: the open page still shows the change.
     }
+  },
+  remove: function (key) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch (error) {
+      // Not forgotten: the open page still shows the change.
+    }
   }
 };
 
@@ -281,18 +288,119 @@ var sdpStore = {
   });
 })();
 
-// The Chat window's right column ("This chat", chat.html): its button and the handle over the conversation's top right corner hide and show it (the grid then has two columns; the state is kept as sdp.chatPanel and drawn by theme.js before the page shows); the sandbox's facts (details.sandbox) stay open or closed as last left (sdp.sandboxOpen), and so does the left column's data in reach (details.reach-box, sdp.reachOpen), which is open unless this browser closed it last. Once a new end of a turn has come into the conversation, the turn totals are asked again (the event sdp-turn-ended on the body, which their part listens for).
+// The Chat window's side columns (chat.html). Each can be hidden by its Hide button and shown again by its handle over a top corner of the conversation (the right column, "This chat": data-chat-panel, kept as sdp.chatPanel; the left column, the chats: data-chat-left, kept as sdp.chatLeft; the grid then drops the column, and theme.js draws the kept state on the root before the page shows). Each can be resized by its inner edge (div.col-edge, a focusable separator): a drag with a mouse, a pen or a finger (pointer capture on the edge, the width drawn live, no text selected meanwhile: the root's class col-dragging) or the arrow keys (16 px a press: right widens the left column, left widens the right one; Home and End go to the narrowest and the widest) change the width, kept as sdp.chatLeftWidth / sdp.chatRightWidth when the drag ends or the key changed it; a double-click forgets it and gives the column its default width again. A change is clamped to the column's range and, as far as that range allows, so that the conversation keeps 400 px of the window's width beside the columns shown; a width kept earlier is not rewritten when the window shrinks (the grid's flexible middle gives way). Above 1150 px only: below, chat.css stacks the columns and hides the edges and the left column's controls. The widths reach the page only through window.sdpLook (theme.js), which sets them in the root's style object. The sandbox's facts (details.sandbox) stay open or closed as last left (sdp.sandboxOpen), and so does the left column's data in reach (details.reach-box, sdp.reachOpen), which is open unless this browser closed it last. Once a new end of a turn has come into the conversation, the turn totals are asked again (the event sdp-turn-ended on the body, which their part listens for).
 (function () {
-  function panelButtons() {
-    return document.querySelectorAll("[data-chat-panel]");
+  var MIDDLE = 400;
+  var STEP = 16;
+  var root = document.documentElement;
+  // Per column: the attribute of its two buttons, the root's dataset name for its hidden state, its storage key, and which edge of the window it lies on (the left edge's drag to the right widens it).
+  var SIDES = {
+    left: { attribute: "data-chat-left", state: "chatLeft", key: "sdp.chatLeft", grow: 1, other: "right" },
+    right: { attribute: "data-chat-panel", state: "chatPanel", key: "sdp.chatPanel", grow: -1, other: "left" }
+  };
+
+  function hidden(side) {
+    return root.dataset[SIDES[side].state] === "closed";
   }
 
-  function drawPanel(closed) {
+  function drawHidden(side, closed) {
     if (window.sdpLook) {
-      window.sdpLook.setPanel(closed);
+      if (side === "left") {
+        window.sdpLook.setLeft(closed);
+      } else {
+        window.sdpLook.setPanel(closed);
+      }
     }
-    Array.prototype.forEach.call(panelButtons(), function (button) {
+    Array.prototype.forEach.call(document.querySelectorAll(".cw [" + SIDES[side].attribute + "]"), function (button) {
       button.setAttribute("aria-expanded", closed ? "false" : "true");
+    });
+  }
+
+  function widthOf(side) {
+    return window.sdpLook ? window.sdpLook.column(side).width : null;
+  }
+
+  // The widest the column may be now: its own maximum, less what the conversation needs beside the other column (when shown), never under its minimum.
+  function clamp(side, wanted) {
+    var column = window.sdpLook.column(side);
+    var grid = document.querySelector(".cw");
+    var most = column.max;
+    if (grid) {
+      var other = hidden(SIDES[side].other) ? 0 : widthOf(SIDES[side].other);
+      most = Math.min(most, grid.clientWidth - MIDDLE - other);
+    }
+    return Math.max(column.min, Math.min(Math.round(wanted), most));
+  }
+
+  function drawWidth(side, edge, width) {
+    window.sdpLook.setWidth(side, width);
+    edge.setAttribute("aria-valuenow", String(widthOf(side)));
+  }
+
+  function keep(side) {
+    var column = window.sdpLook.column(side);
+    sdpStore.set(column.key, String(column.width));
+  }
+
+  function watchEdge(edge) {
+    var side = edge.classList.contains("edge-left") ? "left" : "right";
+    var grow = SIDES[side].grow;
+    var drag = null;
+    edge.setAttribute("aria-valuenow", String(widthOf(side)));
+
+    function end(event) {
+      if (!drag || event.pointerId !== drag.pointer) {
+        return;
+      }
+      var moved = widthOf(side) !== drag.width;
+      drag = null;
+      root.classList.remove("col-dragging");
+      if (moved) {
+        keep(side);
+      }
+    }
+
+    edge.addEventListener("pointerdown", function (event) {
+      if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      drag = { pointer: event.pointerId, x: event.clientX, width: widthOf(side) };
+      edge.setPointerCapture(event.pointerId);
+      root.classList.add("col-dragging");
+    });
+    edge.addEventListener("pointermove", function (event) {
+      if (drag && event.pointerId === drag.pointer) {
+        drawWidth(side, edge, clamp(side, drag.width + grow * (event.clientX - drag.x)));
+      }
+    });
+    edge.addEventListener("pointerup", end);
+    edge.addEventListener("pointercancel", end);
+    edge.addEventListener("lostpointercapture", end);
+    edge.addEventListener("dblclick", function () {
+      drawWidth(side, edge, null);
+      sdpStore.remove(window.sdpLook.column(side).key);
+    });
+    edge.addEventListener("keydown", function (event) {
+      var column = window.sdpLook.column(side);
+      var wanted;
+      if (event.key === "ArrowRight") {
+        wanted = column.width + grow * STEP;
+      } else if (event.key === "ArrowLeft") {
+        wanted = column.width - grow * STEP;
+      } else if (event.key === "Home") {
+        wanted = column.min;
+      } else if (event.key === "End") {
+        wanted = column.max;
+      } else {
+        return;
+      }
+      event.preventDefault();
+      var width = clamp(side, wanted);
+      if (width !== column.width) {
+        drawWidth(side, edge, width);
+        keep(side);
+      }
     });
   }
 
@@ -303,18 +411,24 @@ var sdpStore = {
   var seen = 0;
 
   document.addEventListener("DOMContentLoaded", function () {
-    drawPanel(document.documentElement.dataset.chatPanel === "closed");
-    Array.prototype.forEach.call(panelButtons(), function (button) {
-      button.addEventListener("click", function () {
-        var closed = button.getAttribute("data-chat-panel") === "close";
-        sdpStore.set("sdp.chatPanel", closed ? "closed" : "open");
-        drawPanel(closed);
-        var other = document.querySelector(closed ? '[data-chat-panel="open"]' : '[data-chat-panel="close"]');
-        if (other) {
-          other.focus();
-        }
+    Object.keys(SIDES).forEach(function (side) {
+      var attribute = SIDES[side].attribute;
+      drawHidden(side, hidden(side));
+      Array.prototype.forEach.call(document.querySelectorAll(".cw [" + attribute + "]"), function (button) {
+        button.addEventListener("click", function () {
+          var closed = button.getAttribute(attribute) === "close";
+          sdpStore.set(SIDES[side].key, closed ? "closed" : "open");
+          drawHidden(side, closed);
+          var other = document.querySelector(".cw [" + attribute + '="' + (closed ? "open" : "close") + '"]');
+          if (other) {
+            other.focus();
+          }
+        });
       });
     });
+    if (window.sdpLook) {
+      Array.prototype.forEach.call(document.querySelectorAll(".cw .col-edge"), watchEdge);
+    }
     var facts = document.querySelector(".cw details.sandbox");
     if (facts) {
       facts.open = sdpStore.get("sdp.sandboxOpen") === "1";

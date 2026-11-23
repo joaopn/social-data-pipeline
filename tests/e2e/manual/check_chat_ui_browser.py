@@ -7,7 +7,9 @@ It is not collected by pytest (no test can run the page's script). In headless C
 - every page (the Overview, a source page, Queue, Chat, a chat, a confirm page and the login) in both themes: no Content-Security-Policy violation, no console error, no failed request of the page's own origin; a screenshot of each when a folder is given;
 - the conversation's scroller: only `.convo` scrolls, it opens at its bottom with the answer box (which follows the conversation) in view, and a view scrolled up stays where it is;
 - the answer box: a box of blanks and Enter sends nothing, Shift+Enter makes a new line, an Enter while an input method composes (`isComposing`, and `keyCode` 229) does nothing, Enter sends the question, and the turn totals of the right column are asked again once the turn has ended;
-- the right column: the model picker is in it; Hide gives the conversation its width (two grid columns), the handle covers no part of the conversation or the answer box, the state survives a reload, the handle shows it again; the sandbox's facts stay open after a reload once opened.
+- the right column: the model picker is in it; Hide gives the conversation its width (two grid columns), the handle covers no part of the conversation or the answer box, the state survives a reload (and a click elsewhere on the page does not show it again), the handle shows it again; the sandbox's facts stay open after a reload once opened;
+- the side columns' edges: a mouse drag of the left edge by +80 px and of the right one by -80 px widens each by about that, kept after a reload; a double-click gives the default width back; a drag past the maximum stops at it; a drag that would leave the conversation under 400 px stops there; the arrow keys change a focused edge's width by 16 px;
+- the left column: Hide gives the conversation its width, the handle "Chats" covers no part of the conversation and shows it again, the state survives a reload; both columns hidden at once leave one grid column; at 1000 px wide no edge, no left Hide button and no left handle is shown and the left column is drawn although hidden above.
 
 Standard library and Playwright only.
 """
@@ -31,12 +33,15 @@ COMPOSING = """(mode) => {
   box.dispatchEvent(event);
   return event.defaultPrevented;
 }"""
+RIGHT_HANDLE = ".panel-handle[data-chat-panel]"
+LEFT_HANDLE = ".panel-handle[data-chat-left]"
+WIDTH = "(selector) => document.querySelector(selector).getBoundingClientRect().width"
 COLUMNS = "() => getComputedStyle(document.querySelector('.cw')).gridTemplateColumns.split(' ').length"
 AT_BOTTOM = "() => { const box = document.querySelector('.cw .convo'); return box.scrollHeight - box.scrollTop - box.clientHeight <= 40; }"
 BOX_SEEN = "() => { const box = document.querySelector('.cw .convo').getBoundingClientRect(); const answer = document.querySelector('.cw .convo .composer').getBoundingClientRect(); return answer.top >= box.top && answer.bottom <= box.bottom + 1; }"
 MID_STILL = "() => { const mid = document.querySelector('.cw .mid'); return mid.scrollHeight <= mid.clientHeight + 1; }"
-UNDER_HANDLE = """() => {
-  const handle = document.querySelector('.panel-handle').getBoundingClientRect();
+UNDER_HANDLE = """(which) => {
+  const handle = document.querySelector('.panel-handle[' + which + ']').getBoundingClientRect();
   const parts = document.querySelectorAll('.cw .chat > *, .cw .convo .composer > *, .cw .composer-line');
   return Array.prototype.filter.call(parts, function (part) {
     const box = part.getBoundingClientRect();
@@ -211,14 +216,16 @@ def main():
         # ── the right column ──
         expect(page.evaluate(COLUMNS) == 3 and page.locator("aside.rightp").is_visible(), "three columns with This chat open")
         page.click("[data-chat-panel='close']")
-        expect(page.evaluate(COLUMNS) == 2 and page.locator("aside.rightp").is_hidden() and page.locator(".panel-handle").is_visible(), "Hide gives the conversation the width; the handle is shown")
+        expect(page.evaluate(COLUMNS) == 2 and page.locator("aside.rightp").is_hidden() and page.locator(RIGHT_HANDLE).is_visible(), "Hide gives the conversation the width; the handle is shown")
         for where in ("0", "document.querySelector('.cw .convo').scrollHeight"):
             page.evaluate(f"document.querySelector('.cw .convo').scrollTop = {where}")
-            expect(page.evaluate(UNDER_HANDLE) == 0, f"the handle covers no part of the conversation (scrolled to {where})")
+            expect(page.evaluate(UNDER_HANDLE, "data-chat-panel") == 0, f"the handle covers no part of the conversation (scrolled to {where})")
         page.reload()
         page.wait_for_load_state("networkidle")
-        expect(page.evaluate(COLUMNS) == 2 and page.get_attribute(".panel-handle", "aria-expanded") == "false", "the column stays hidden after a reload")
-        page.click(".panel-handle")
+        expect(page.evaluate(COLUMNS) == 2 and page.get_attribute(RIGHT_HANDLE, "aria-expanded") == "false", "the column stays hidden after a reload")
+        page.mouse.click(700, 300)
+        expect(page.evaluate(COLUMNS) == 2 and page.evaluate("localStorage.getItem('sdp.chatPanel')") == "closed", "a click elsewhere on the page leaves it hidden")
+        page.click(RIGHT_HANDLE)
         expect(page.evaluate(COLUMNS) == 3 and page.locator("aside.rightp").is_visible(), "the handle shows the column again")
         page.click("details.sandbox > summary")
         # The details' toggle event, which keeps the state, comes a moment after the click.
@@ -227,6 +234,116 @@ def main():
         page.wait_for_load_state("networkidle")
         expect(page.evaluate("document.querySelector('details.sandbox').open") is True, "the sandbox's facts stay open after a reload")
         page.click("details.sandbox > summary")
+        violations()
+
+        # ── the side columns' widths ──
+        def reset_look():
+            page.evaluate("['sdp.chatLeft', 'sdp.chatPanel', 'sdp.chatLeftWidth', 'sdp.chatRightWidth'].forEach(function (key) { localStorage.removeItem(key); })")
+            page.reload()
+            page.wait_for_load_state("networkidle")
+
+        def width(side):
+            return page.evaluate(WIDTH, "aside.left" if side == "left" else "aside.rightp")
+
+        def kept(side):
+            return page.evaluate(f"localStorage.getItem('sdp.chat{side.title()}Width')")
+
+        def drag(side, by):
+            edge = page.locator(f".cw .edge-{side}").bounding_box()
+            x, y = edge["x"] + edge["width"] / 2, edge["y"] + edge["height"] / 2
+            page.mouse.move(x, y)
+            page.mouse.down()
+            page.mouse.move(x + by / 2, y, steps=4)
+            dragging = page.evaluate("document.documentElement.classList.contains('col-dragging')")
+            page.mouse.move(x + by, y, steps=4)
+            page.mouse.up()
+            return dragging
+
+        def near(value, wanted):
+            return abs(value - wanted) <= 2
+
+        reset_look()
+        expect(near(width("left"), 236) and near(width("right"), 330) and page.locator(".cw .col-edge").count() == 2, f"default widths 236 and 330 ({width('left')}, {width('right')})")
+        dragging = drag("left", 80)
+        expect(dragging and not page.evaluate("document.documentElement.classList.contains('col-dragging')"), "a drag marks the root while it runs, and only then")
+        expect(near(width("left"), 316) and kept("left") == "316" and page.get_attribute(".cw .edge-left", "aria-valuenow") == "316", f"the left edge dragged by +80 px widens the column to 316 ({width('left')}, kept {kept('left')})")
+        drag("right", -80)
+        expect(near(width("right"), 410) and kept("right") == "410" and page.get_attribute(".cw .edge-right", "aria-valuenow") == "410", f"the right edge dragged by -80 px widens the column to 410 ({width('right')}, kept {kept('right')})")
+        expect(page.evaluate("window.getSelection().toString()") == "", "nothing was selected by the drags")
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(near(width("left"), 316) and near(width("right"), 410) and page.get_attribute(".cw .edge-left", "aria-valuenow") == "316", "both widths are kept after a reload")
+        if shots:
+            page.screenshot(path=os.path.join(shots, "chat-columns-wide.png"))
+        page.dblclick(".cw .edge-left")
+        page.dblclick(".cw .edge-right")
+        expect(near(width("left"), 236) and near(width("right"), 330) and kept("left") is None and kept("right") is None, "a double-click gives each column its default width and forgets the kept one")
+        drag("left", 400)
+        expect(near(width("left"), 480) and kept("left") == "480", f"a drag past the left column's maximum stops at 480 ({width('left')})")
+        room = page.evaluate("document.querySelector('.cw').clientWidth") - 400 - 480
+        drag("right", -400)
+        expect(near(width("right"), min(640, room)) and page.evaluate(WIDTH, ".cw .mid") >= 399, f"a drag that would leave the conversation under 400 px stops there (right {width('right')}, wanted {min(640, room)}, conversation {page.evaluate(WIDTH, '.cw .mid')})")
+        page.dblclick(".cw .edge-left")
+        page.dblclick(".cw .edge-right")
+        page.focus(".cw .edge-left")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowLeft")
+        expect(near(width("left"), 252) and kept("left") == "252", f"right and left arrows on the left edge: +16, +16, -16 ({width('left')})")
+        page.focus(".cw .edge-right")
+        page.keyboard.press("ArrowLeft")
+        expect(near(width("right"), 346) and kept("right") == "346", f"the left arrow on the right edge widens it by 16 ({width('right')})")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        expect(near(width("right"), 314) and kept("right") == "314", f"the right arrow on the right edge narrows it by 16 ({width('right')})")
+        if shots:
+            reset_look()
+            page.evaluate("localStorage.setItem('sdp.chatLeftWidth', '180'); localStorage.setItem('sdp.chatRightWidth', '260')")
+            page.reload()
+            page.wait_for_load_state("networkidle")
+            page.screenshot(path=os.path.join(shots, "chat-columns-narrow.png"))
+        page.evaluate("localStorage.setItem('sdp.chatLeftWidth', '9999'); localStorage.setItem('sdp.chatRightWidth', '300.5')")
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(near(width("left"), 236) and near(width("right"), 330), "kept widths out of range or not whole are ignored")
+        violations()
+
+        # ── the left column ──
+        reset_look()
+        page.click("[data-chat-left='close']")
+        expect(page.evaluate(COLUMNS) == 2 and page.locator("aside.left").is_hidden() and page.locator(LEFT_HANDLE).is_visible() and page.locator(".cw .edge-left").is_hidden(), "Hide gives the conversation the left column's width; the handle is shown, the edge hidden")
+        expect(page.evaluate("document.activeElement.matches('.panel-handle[data-chat-left]')"), "the focus moves to the handle")
+        for where in ("0", "document.querySelector('.cw .convo').scrollHeight"):
+            page.evaluate(f"document.querySelector('.cw .convo').scrollTop = {where}")
+            expect(page.evaluate(UNDER_HANDLE, "data-chat-left") == 0, f"the left handle covers no part of the conversation (scrolled to {where})")
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(page.evaluate(COLUMNS) == 2 and page.locator("aside.left").is_hidden() and page.get_attribute(LEFT_HANDLE, "aria-expanded") == "false", "the left column stays hidden after a reload")
+        if shots:
+            page.screenshot(path=os.path.join(shots, "chat-left-hidden.png"))
+        page.click("[data-chat-panel='close']")
+        expect(page.evaluate(COLUMNS) == 1 and page.locator(LEFT_HANDLE).is_visible() and page.locator(RIGHT_HANDLE).is_visible() and page.locator(".cw .col-edge:visible").count() == 0, "both columns hidden: one grid column, both handles, no edge")
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(page.evaluate(COLUMNS) == 1, "both stay hidden after a reload")
+        for which in ("data-chat-left", "data-chat-panel"):
+            expect(page.evaluate(UNDER_HANDLE, which) == 0, f"with both hidden the handle [{which}] covers no part of the conversation")
+        if shots:
+            page.screenshot(path=os.path.join(shots, "chat-both-hidden.png"))
+        page.click(LEFT_HANDLE)
+        expect(page.evaluate(COLUMNS) == 2 and page.locator("aside.left").is_visible() and page.evaluate("localStorage.getItem('sdp.chatLeft')") == "open", "the left handle shows the left column again")
+        page.click(RIGHT_HANDLE)
+        expect(page.evaluate(COLUMNS) == 3, "and the right one shows This chat")
+        page.evaluate("localStorage.setItem('sdp.chatLeft', 'closed'); localStorage.setItem('sdp.chatLeftWidth', '400'); localStorage.setItem('sdp.chatRightWidth', '600')")
+        page.set_viewport_size({"width": 1000, "height": 900})
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(page.evaluate(COLUMNS) == 1 and page.locator("aside.left").is_visible() and near(width("left"), page.evaluate(WIDTH, ".cw .mid")), "at 1000 px the left column is stacked at full width although kept hidden and narrow")
+        expect(page.locator(".cw .col-edge:visible").count() == 0 and page.locator(".cw .left-hide").is_hidden() and page.locator(LEFT_HANDLE).is_hidden(), "at 1000 px no edge, no left Hide button and no left handle")
+        if shots:
+            page.screenshot(path=os.path.join(shots, "chat-1000.png"))
+        page.set_viewport_size({"width": 1440, "height": 900})
+        reset_look()
         violations()
 
         # ── the login page in both themes ──

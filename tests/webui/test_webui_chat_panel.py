@@ -308,3 +308,26 @@ def test_the_end_of_a_turn_names_no_cost_while_the_totals_do(client, scripted):
     text = text_of(main_html(client.get(f"/chat/{CHAT_ID}").text))
     assert "The turn ended after 8.4 s, 3 model turns." in text and "USD" not in text
     assert "Cost 0.2500 USD" in text_of(totals(client).text)
+
+
+def test_both_side_columns_have_a_resize_edge_and_the_left_one_a_hide_and_show_pair(client, scripted):
+    """Bug class: a column edge that is not a focusable, labelled vertical separator pointing at an existing column (the keyboard and screen readers lose the resize), or a left column that can be hidden but not shown again (a control missing, not a button, or controlling another id)."""
+    scripted.answers["hello"] = HELLO
+    for path in ("/chat", f"/chat/{CHAT_ID}"):
+        found = elements(client.get(path).text)
+        ids = {element[1]["id"] for element, chain in found if element[1].get("id")}
+        edges = [element[1] for element, chain in found if element[0] == "div" and has_class(element, "col-edge")]
+        assert len(edges) == 2, path
+        for edge in edges:
+            assert edge.get("role") == "separator" and edge.get("aria-orientation") == "vertical" and edge.get("tabindex") == "0"
+            assert edge.get("aria-label") and edge.get("aria-controls") in ids
+        assert sorted(edge["aria-controls"] for edge in edges) == sorted(["chat-left", "chat-panel"])
+        left = [element for element, chain in found if element[0] == "aside" and has_class(element, "left")]
+        assert len(left) == 1 and left[0][1].get("id") == "chat-left"
+        pair = {element[1].get("data-chat-left"): element for element, chain in found if element[0] == "button" and element[1].get("data-chat-left")}
+        assert set(pair) == {"open", "close"}
+        for element in pair.values():
+            assert element[1].get("aria-controls") == "chat-left" and element[1].get("aria-expanded") == "true" and element[1].get("type") == "button"
+        assert has_class(pair["open"], "panel-handle")
+        hide = [chain for element, chain in found if element[1].get("data-chat-left") == "close"][0]
+        assert inside(hide, "aside", "left")

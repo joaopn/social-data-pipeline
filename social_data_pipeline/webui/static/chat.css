@@ -1,8 +1,10 @@
-/* The Chat window's own rules, on the kit's tokens of app.css: the mock-up's three columns (chat.html), at full height under the top bar; below 1150 px wide the side columns stack under the conversation, never hidden. */
-.cw { display: grid; grid-template-columns: 236px minmax(0, 1fr) 330px; flex: 1; min-height: 0; }
+/* The Chat window's own rules, on the kit's tokens of app.css: the mock-up's three columns (chat.html), at full height under the top bar. The side columns' widths are the root's --chat-left-w and --chat-right-w (set by theme.js and app.js from what this browser kept, else the defaults below); either side column can be hidden (the root's data-chat-left / data-chat-panel). Below 1150 px wide the side columns stack under the conversation at full width: the widths, the edges and the left column's hiding do not apply there (the right column's Hide still does). */
+.cw { display: grid; grid-template-columns: var(--chat-left-w, 236px) minmax(0, 1fr) var(--chat-right-w, 330px); flex: 1; min-height: 0; }
 .cw > * { min-height: 0; min-width: 0; }
 
-/* left: new chat, the chats, the data in reach docked at the bottom */
+/* left: new chat (its Hide button beside it), the chats, the data in reach docked at the bottom */
+.cw .left-head { gap: 4px; }
+.cw .left-hide { flex: none; }
 .cw .left { background: var(--surface); border-right: 1px solid var(--line); padding: 12px 8px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .cw .left > h4 { padding: 14px 10px 4px; }
 .cw .new-chat button { width: 100%; justify-content: center; }
@@ -52,15 +54,28 @@
 .cw #chat-controls:empty { display: none; }
 .cw #chat-controls .stop { display: flex; align-items: center; gap: 8px; height: 40px; }
 
-/* right: "This chat" (its title, backend, model picker, turn totals and Export, the sandbox's line, files, queries, delete); hidden by its button, the handle over the conversation's top right corner shows it again (theme.js and app.js set data-chat-panel on the root) */
+/* right: "This chat" (its title, backend, model picker, turn totals and Export, the sandbox's line, files, queries, delete). Each side column is hidden by its button, and the handle over the conversation's top corner on its side shows it again (theme.js and app.js set data-chat-panel and data-chat-left on the root); the grid then drops the column */
 .cw { position: relative; }
-:root[data-chat-panel="closed"] .cw { grid-template-columns: 236px minmax(0, 1fr); }
-:root[data-chat-panel="closed"] .cw .rightp { display: none; }
+:root[data-chat-panel="closed"] .cw { grid-template-columns: var(--chat-left-w, 236px) minmax(0, 1fr); }
+:root[data-chat-left="closed"] .cw { grid-template-columns: minmax(0, 1fr) var(--chat-right-w, 330px); }
+:root[data-chat-left="closed"][data-chat-panel="closed"] .cw { grid-template-columns: minmax(0, 1fr); }
+:root[data-chat-panel="closed"] .cw .rightp, :root[data-chat-left="closed"] .cw .left { display: none; }
 .cw .panel-handle { display: none; position: absolute; top: 6px; right: 10px; z-index: 5; }
-:root[data-chat-panel="closed"] .cw .panel-handle { display: inline-flex; }
-/* the handle lies over the scroller's top right corner: the conversation and the answer box keep clear of its strip (130 px) when the centred column leaves less room on the right */
+.cw .left-handle { right: auto; left: 10px; }
+:root[data-chat-panel="closed"] .cw .panel-handle[data-chat-panel], :root[data-chat-left="closed"] .cw .panel-handle[data-chat-left] { display: inline-flex; }
+/* each handle lies over a top corner of the scroller: the conversation and the answer box keep clear of its strip (130 px on the right, 100 px on the left) when the centred column leaves less room on that side */
 :root[data-chat-panel="closed"] .cw .mid .chat, :root[data-chat-panel="closed"] .cw .mid .composer { padding-right: max(130px, calc((100% - 820px) / 2)); }
 :root[data-chat-panel="closed"] .cw .composer-line { margin-right: max(130px, calc((100% - 820px) / 2)); }
+:root[data-chat-left="closed"] .cw .mid .chat, :root[data-chat-left="closed"] .cw .mid .composer { padding-left: max(100px, calc((100% - 820px) / 2)); }
+:root[data-chat-left="closed"] .cw .composer-line { margin-left: max(100px, calc((100% - 820px) / 2)); }
+/* the side columns' inner edges (div.col-edge, separators that app.js moves by drag and by the arrow keys): a 6 px strip over the column's border, at its current width, with an accent line while pointed at, focused or dragged; hidden with its column. While a drag runs the root has the class col-dragging: nothing is selected and the pointer stays the resize arrow */
+.cw .col-edge { position: absolute; top: 0; bottom: 0; width: 6px; z-index: 4; cursor: col-resize; touch-action: none; outline: none; }
+.cw .edge-left { left: calc(var(--chat-left-w, 236px) - 1px); }
+.cw .edge-right { right: calc(var(--chat-right-w, 330px) - 5px); }
+.cw .col-edge::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: transparent; transition: background-color .12s; }
+.cw .col-edge:hover::after, .cw .col-edge:focus-visible::after, :root.col-dragging .cw .col-edge::after { background: var(--accent); }
+:root[data-chat-left="closed"] .cw .edge-left, :root[data-chat-panel="closed"] .cw .edge-right { display: none; }
+:root.col-dragging, :root.col-dragging * { user-select: none; -webkit-user-select: none; cursor: col-resize !important; }
 .cw .panel-head h4 { margin: 0; }
 .cw .panel-head button { margin-right: -6px; }
 .cw .rightp .totals .kv, .cw .rightp .chat-model { grid-template-columns: 64px 1fr; }
@@ -103,7 +118,12 @@ a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-dec
   .cw .left, .cw .rightp { overflow: visible; border: 0; border-top: 1px solid var(--line); }
   .cw .left .chat-list { flex: none; overflow: visible; }
   .cw .reach-box { margin-top: 8px; }
-  :root[data-chat-panel="closed"] .cw { grid-template-columns: minmax(0, 1fr); }
+  :root[data-chat-panel="closed"] .cw, :root[data-chat-left="closed"] .cw, :root[data-chat-left="closed"][data-chat-panel="closed"] .cw { grid-template-columns: minmax(0, 1fr); }
+  /* stacked: no edges, the left column always shown, without its Hide button or handle, and no strip kept clear for its handle */
+  .cw .col-edge, .cw .left-hide, :root[data-chat-left="closed"] .cw .panel-handle[data-chat-left] { display: none; }
+  :root[data-chat-left="closed"] .cw .left { display: flex; }
+  :root[data-chat-left="closed"] .cw .mid .chat, :root[data-chat-left="closed"] .cw .mid .composer { padding-left: max(16px, calc((100% - 820px) / 2)); }
+  :root[data-chat-left="closed"] .cw .composer-line { margin-left: max(16px, calc((100% - 820px) / 2)); }
 }
 
 /* the plot card's interactive chart (plots.js draws it with vega-embed, whose own style element is turned off: its rules, and the tooltip's, are here on the kit's tokens); a drawn chart hides the card's image, which stays the fallback */

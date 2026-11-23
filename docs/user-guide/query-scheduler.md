@@ -181,7 +181,7 @@ It stops the jobs container, removes `config/jobs/config.local.yaml`, removes `J
 | `port` | int | 8050 | Page and MCP port (host side via `JOBS_PORT` in `.env`) |
 | `result_root` | path | `./data/jobs/results` | Host directory where job output files land. Bind-mounted into PostgreSQL and StarRocks as `/jobs_export` and into the jobs container as `/data/jobs/results` |
 | `max_concurrent` | int | 20 (setup's suggestion; `config/jobs/config.yaml` falls back to 5 when the local file omits it) | Worker pool size: how many jobs run in parallel. Jobs beyond it stay approved until a slot frees up |
-| `history_retention` | int | 500 | Number of completed jobs kept in history; older entries are pruned in submission order |
+| `history_retention` | int | 500 | Number of finished jobs the History tab shows, newest first; the history file itself keeps every entry and is never pruned |
 | `default_timeouts.postgres` | seconds | 0 | 0 = no limit |
 | `default_timeouts.mongodb` | seconds | 0 | 0 = no limit |
 | `default_timeouts.starrocks` | seconds | 259200 | StarRocks caps at 72h, rejects 0 |

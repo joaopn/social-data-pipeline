@@ -11,7 +11,7 @@ Three pieces let a person drive one deployment from a browser without giving the
 
 ```mermaid
 flowchart LR
-    B[Browser] -->|HTTPS 8443 / 8444| W[web UI container]
+    B[Browser] -->|"HTTPS on the web UI's port"| W["web UI container (network sdp-webui)"]
     W -->|".sdp/socket/broker.sock"| BR[broker on the host]
     BR -->|one process per action| CLI[CLI actions]
     CLI --> D[(Docker, databases, files)]
@@ -254,3 +254,19 @@ The history of an `openai-compatible` chat is kept in the chat's folder, `home/o
 ### How chat unsetup removes
 
 Nothing is removed through a symbolic link: a link in place of a piece is refused and left; inside a removed folder, files, FIFOs, sockets and links are unlinked without being opened or followed, folders of any mode (000 included) and any depth are removed, one folder at a time. A folder on another file system, one of another user, and one that changes while it is removed are not entered and are left; the command then says how many entries could not be removed and exits with 1. A piece that is already gone is not an error. The exit code is 0, or 1 when something could not be removed.
+
+## Design decisions
+
+**The broker runs as you, on the host, not in a container.** It has to drive Docker and edit the deployment's files exactly as the CLI does, and putting that power in a container a browser can reach was the thing to avoid: the web UI's container gets a socket and nothing else. The cost is that the broker runs on Linux only, and it cannot defend against a program that already runs on the host as you.
+
+**Nothing of a request is ever on a command line.** Each action runs in a process of its own with the request on its standard input and an environment cut down to a short list of names, so a process listing shows no input and no password. The cost is one process per action, which is why read actions are bounded to 60 seconds and 8 at a time.
+
+**What leaves the broker is overwritten where it holds a secret.** The database passwords a session holds or held, those a request carried, and the `HF_TOKEN` are overwritten with `*` in every reply and in run logs as they are read. The cost is that this is best effort: a password shorter than 8 characters is overwritten only in its own request's reply, the end of a live log is held back, and an answer too large to search is refused rather than sent.
+
+**The session is the broker's, and the web UI holds a socket, not power.** The web UI's container has no Docker socket, no deployment folder and no database password, and every page, download and action asks the broker on its way, so a session the broker has ended (a password change, a restart) sees nothing more. The cost is a broker round trip for every page (the Queue and Chat windows believe a yes for 5 seconds), and a taken-over web UI process still holds the broker token of every live session.
+
+**Wrong passwords at the machine and from elsewhere are counted apart.** A login counts as `local` only when it arrived on port 8444 from the address of the container network's gateway, and each channel has its own budget of five failed logins, so guesses from the network never lock out a login at the machine itself. The cost is that "local" means anyone on this machine who can reach 127.0.0.1, and with `all` as listen address every login counts as remote.
+
+**The sandbox holds no credential and reaches only the gateway.** The sandbox gets a placeholder in place of a token on an internal network where this machine has no IPv4 address, and the gateway swaps in the real credential for the model's address only and forwards a fixed table of paths. The cost is that `chat start` needs a Docker that supports the isolated gateway mode and refuses on one that does not, with no fallback to a plain internal network.
+
+**The MCP servers are attached to the chat's network, not the other way round.** `chat start` connects each database's MCP container to `sdp-chat-up` under an alias and never touches the compose project's own network, so `python sdp.py db start` and `db stop` behave exactly as without the chat. The cost is that a database restarted later drops out of the chat (which `python sdp.py chat status` reports) until `python sdp.py chat stop` and `chat start`.

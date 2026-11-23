@@ -34,6 +34,10 @@ WIDE_INPUTS = {
     ("source.add", "dumps_path"), ("source.add", "extracted_path"), ("source.add", "parsed_path"), ("source.add", "output_path"),
     # The classifiers' exact strings and regular expressions to remove are free text in the terminal too (one line each).
     ("source.add", "remove_strings"), ("source.add", "remove_patterns"),
+    # `db setup`: the data paths, the ports, the tablespaces' and extra disks' folders and the pasted PGTune output (PLAN_WEBUI_MOCK_SETUP, F5a).
+    ("db.setup", "data_path"), ("db.setup", "export_path"), ("db.setup", "pgdata_path"), ("db.setup", "mongo_data_path"), ("db.setup", "starrocks_data_path"),
+    ("db.setup", "pg_port"), ("db.setup", "mongo_port"), ("db.setup", "starrocks_port"), ("db.setup", "starrocks_fe_http_port"),
+    ("db.setup", "tablespaces"), ("db.setup", "starrocks_storage_paths"), ("db.setup", "pgtune"),
 }
 
 # The security classification of every verb: (class, accepted over the socket). Changing one is a decision, so it is made in two places.
@@ -57,7 +61,7 @@ CLASSIFICATION = {
     "db.unsetup_mcp": ("step_up", True),
     "db.unsetup_jobs": ("step_up", True),
     "source.remove": ("step_up", True),
-    "db.setup": ("step_up", False),
+    "db.setup": ("step_up", True),
     "db.setup_mcp": ("step_up", True),
     "db.setup_jobs": ("step_up", True),
     "source.add": ("step_up", True),
@@ -75,6 +79,11 @@ DISABLED_VERBS = [name for name in ALL_VERBS if not verbs.VERBS[name].socket_ena
 
 # Other fields a request needs so that a given field is admissible (a cross-field rule would refuse it otherwise).
 COMPANIONS = {("run.start", "classifier"): {"profile": "ml"}}
+# The fields every request of a verb carries so that its cross-field rules take it, and the ones a given field cannot go with.
+BASES = {"db.setup": {"databases": ["postgres", "mongo", "starrocks"], "auth": True, "new_password": "correct horse", "new_password_confirm": "correct horse", "ro_user": True, "ro_password_mode": "typed", "ro_password": "correct-horse", "ro_password_confirm": "correct-horse"}}
+WITHOUT = {("db.setup", "add"): {"databases"}, ("db.setup", "ro_password_mode"): {"ro_password", "ro_password_confirm"}}
+# A valid value where the type's sample would break a cross-field rule (an empty list of databases, a password with a space).
+VALID_VALUES = {("db.setup", "databases"): ["mongo"], ("db.setup", "ro_password"): "correct-horse", ("db.setup", "ro_password_confirm"): "correct-horse"}
 
 LINE_BREAK_VALUES = ["a\nB=c", "a\rB=c", "a\u2028B=c", "a\x85B=c", "ok\n"]
 PATH_VALUES = ["/etc/passwd", "..", "../x", "a/b"]
@@ -145,13 +154,15 @@ def _valid_value(kind):
 
 
 def _minimal(verb):
-    """The smallest request the verb accepts: its required fields only."""
-    return {name: _valid_value(spec.type) for name, spec in verb.socket_inputs.items() if spec.required}
+    """The smallest request the verb accepts: its required fields only, and the base its cross-field rules need."""
+    return {**{name: _valid_value(spec.type) for name, spec in verb.socket_inputs.items() if spec.required}, **BASES.get(verb.name, {})}
 
 
 def _request_with(verb, field, value):
     """A request that is valid apart from `field`, which carries `value`."""
     request = _minimal(verb)
+    for name in WITHOUT.get((verb.name, field), ()):
+        request.pop(name, None)
     request.update(COMPANIONS.get((verb.name, field), {}))
     request[field] = value
     return request
@@ -237,9 +248,12 @@ class TestSocketInputsAreNarrowerThanTheCli:
         for name, verb in verbs.VERBS.items():
             actions = {action.dest: action for action in leaves[verb.cli]._actions}
             for field, spec in verb.socket_inputs.items():
+                if field in verb.prompted_inputs:
+                    # An answer the command asks (a question of `source add`, `db setup` or `db create-indexes`): no parser destination holds it, so there are no parser choices to mirror.
+                    assert field not in actions, f"{name}.{field} is asked and also a parser destination"
+                    continue
                 parser_choices = actions[field].choices if field in actions else None
-                # An answer to a prompt (not a parser destination) has no parser choices to mirror.
-                if isinstance(spec.type, types.Enum) and field in verb.cli_inputs:
+                if isinstance(spec.type, types.Enum):
                     assert parser_choices is not None, f"{name}.{field} is an Enum with nothing in the parser to mirror"
                     assert spec.type.choices == tuple(parser_choices), f"{name}.{field}"
                     compared.add((name, field))
@@ -344,7 +358,7 @@ class TestBoundary:
     def test_each_socket_input_accepts_a_valid_value(self, source_tree, name, field):
         """Bug class: a registry entry no honest request can satisfy (a type or cross-field rule that refuses the legitimate value). It is also the control for the refusals below: the same request with a good value passes."""
         verb = verbs.VERBS[name]
-        value = _valid_value(verb.socket_inputs[field].type)
+        value = VALID_VALUES.get((name, field), _valid_value(verb.socket_inputs[field].type))
 
         result = verbs.validate_request(name, _request_with(verb, field, value))
 

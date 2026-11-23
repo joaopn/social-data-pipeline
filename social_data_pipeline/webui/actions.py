@@ -183,6 +183,8 @@ class Action:
     door: str | None = None
     # Warnings for the pending page, `warns(fields)`: a list of sentences (the MCP servers' write access), or None.
     warns: Callable | None = None
+    # What a setup writes for the chosen fields, `writes(fields)`: the confirm page's list of lines (files, .env keys, folders, passwords), or None.
+    writes: Callable | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "inputs", MappingProxyType(dict(self.inputs)))
@@ -475,6 +477,13 @@ def source_add_sentence(fields):
     return " ".join(parts)
 
 
+def _db_setup_entry():
+    """The entry of `db.setup`, kept in its own module (`setup_db_table`), which imports nothing of this one."""
+    from social_data_pipeline.webui import setup_db_table
+
+    return setup_db_table.entry(Input, Action, Refused)
+
+
 def _table(*actions):
     by_name = {}
     for action in actions:
@@ -598,6 +607,7 @@ TABLE = _table(
         form="python sdp.py source add <name> (Reddit dumps or your own files; the questions are the wizard's steps)", command=lambda fields: _command("source", "add", _q(fields["name"])),
         also=lambda fields: source_add_sentence(fields),
     ),
+    _db_setup_entry(),
 )
 
 # The entries of the scheduler's control socket, by name.

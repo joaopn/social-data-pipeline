@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Callable, Mapping
 
+from social_data_pipeline.control import dbsetup
 from social_data_pipeline.control.errors import InputError, UnknownVerb, VerbNotAvailable
 # `Field` lives in `types` (a Record's keys are Fields too) and is used here as `verbs.Field`.
 from social_data_pipeline.control.types import (
@@ -196,6 +197,53 @@ SOURCE_ADD_QUESTIONS = {
 }
 
 
+def _check_db_setup(fields):
+    """Cross-field rules of `db setup` (`control.dbsetup.check`): the first-time inputs or `add`, each database's inputs with its database only, the passwords typed twice alike, the names and paths the generated files can hold."""
+    try:
+        dbsetup.check(fields)
+    except dbsetup.Refused as exc:
+        raise FieldRefused(exc.field, str(exc)) from None
+
+
+# The answers of `db setup` (`setup/db.py`), one input per question; an input left out is the terminal's Enter (its default), except the PGTune output (none) and the yes/no questions (no). Memory sizes in GB; 0 is "unlimited" where the terminal says so.
+_GB = 4096
+DB_SETUP_INPUTS = {
+    "add": Field(Enum(DATABASES)),
+    "databases": Field(ListOf(Enum(DATABASES), 3, unique=True)),
+    "data_path": Field(Path()),
+    "export_path": Field(Path()),
+    "pgdata_path": Field(Path()),
+    "db_name": Field(Name()),
+    "pg_port": Field(Port()),
+    "tablespaces": Field(ListOf(Record({"name": Field(Name(), required=True), "path": Field(Path(), required=True)}), 16)),
+    "filesystem": Field(Enum(("standard", "zfs"))),
+    "pgtune": Field(Text(16384)),
+    "pg_mem_limit": Field(IntRange(0, _GB)),
+    "mongo_data_path": Field(Path()),
+    "mongo_port": Field(Port()),
+    "mongo_cache_size_gb": Field(IntRange(1, _GB)),
+    "mongo_mem_limit": Field(IntRange(0, _GB)),
+    "mongo_validate": Field(Enum(("full", "tail", "none"))),
+    "starrocks_data_path": Field(Path()),
+    "starrocks_port": Field(Port()),
+    "starrocks_fe_http_port": Field(Port()),
+    "sr_fe_jvm_heap": Field(IntRange(1, _GB)),
+    "starrocks_mem_limit": Field(IntRange(0, _GB)),
+    "sr_be_mem_limit": Field(IntRange(1, _GB)),
+    "sr_alter_tablet_workers": Field(IntRange(1, 1024)),
+    "sr_compression": Field(Enum(("ZSTD", "LZ4"))),
+    "starrocks_storage_paths": Field(ListOf(Path(), 16, unique=True)),
+    "auth": Field(Bool()),
+    "new_password": Field(Secret()),
+    "new_password_confirm": Field(Secret()),
+    "ro_user": Field(Bool()),
+    "ro_username": Field(Name()),
+    "ro_password_mode": Field(Enum(("generate", "typed"))),
+    "ro_password": Field(Secret()),
+    "ro_password_confirm": Field(Secret()),
+}
+
+
 def _registry(*verbs):
     by_name = {}
     for verb in verbs:
@@ -366,8 +414,13 @@ VERBS = _registry(
     Verb(
         name="db.setup", cls="step_up", cli=("db", "setup"),
         cli_inputs={"add"},
-        prompted_inputs={"questionnaire", "new_password"},
-        note=_SETUP_NOTE,
+        # Each question of the questionnaire is one input; the admin password typed twice is `new_password` and its confirmation.
+        prompted_inputs=set(DB_SETUP_INPUTS) - {"add"},
+        # A database not set up yet: the first-time questionnaire, or one database added with `add`. Reconfiguring one that is set up stays a terminal command for now.
+        socket_inputs=DB_SETUP_INPUTS,
+        socket_enabled=True,
+        check=_check_db_setup,
+        action="do_db_setup",
     ),
     Verb(
         name="db.setup_mcp", cls="step_up", cli=("db", "setup-mcp"),

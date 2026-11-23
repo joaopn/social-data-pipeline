@@ -157,13 +157,14 @@ FORBIDDEN_NAMES = {
 }
 
 ACTION_NAMES = [
-    "do_db_reset", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_add", "do_source_remove",
+    "do_db_reset", "do_db_setup", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_add", "do_source_remove",
     "get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status",
 ]
 
 # One helper each walk must have reached, so a walk that follows nothing cannot pass.
 KNOWN_DEEP_HELPER = {
     "do_db_reset": "_chown_db_data_for_host",
+    "do_db_setup": "_get_configured_db_services",
     "do_db_start": "_resolve_server_data_mounts",
     "do_db_stop": "docker_compose",
     "do_db_unsetup": "_unsetup_single_db",

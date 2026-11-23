@@ -742,7 +742,7 @@ class TestCall:
         marker = "planted-value-4b2e/../x"
 
         unknown = code_of(lambda: session.call("db.nope"))
-        disabled = code_of(lambda: session.call("db.setup", {}))
+        disabled = code_of(lambda: session.call("db.recover_password", {}))
         extra = code_of(lambda: session.call("db.status", {"colour": True}))
         bad = code_of(lambda: session.call("source.status", {"name": marker}))
 
@@ -751,7 +751,7 @@ class TestCall:
         for refused in (unknown, disabled, extra, bad):
             assert marker not in json.dumps({"message": refused.message, "details": refused.details})
         assert rig.calls() == []
-        assert [(line["verb"], line["code"], line["field"]) for line in rig.events("call_refused")] == [("db.nope", "unknown_verb", None), ("db.setup", "not_available", None), ("db.status", "invalid_input", "colour"), ("source.status", "invalid_input", "name")]
+        assert [(line["verb"], line["code"], line["field"]) for line in rig.events("call_refused")] == [("db.nope", "unknown_verb", None), ("db.recover_password", "not_available", None), ("db.status", "invalid_input", "colour"), ("source.status", "invalid_input", "name")]
         assert marker not in (rig.broker_dir / audit.FILE_NAME).read_text()
 
     def test_a_step_up_verb_needs_the_password_again_and_the_fifth_failure_ends_the_session(self, rig):

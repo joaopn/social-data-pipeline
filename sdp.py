@@ -536,6 +536,109 @@ def cmd_db_setup(args):
     return 0
 
 
+def _as_written_path(path):
+    """A path answer as the terminal's default would write it: a relative path that does not start with a dot gets `./` (Compose reads a bare `data/x` in a mount as the name of a volume, and the registry's `Path` turns `./data` into `data`)."""
+    if path.startswith(("/", ".")):
+        return path
+    return "./" + path
+
+
+def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
+                pgdata_path=None, db_name=None, pg_port=None, tablespaces=None, filesystem=None, pgtune=None, pg_mem_limit=None,
+                mongo_data_path=None, mongo_port=None, mongo_cache_size_gb=None, mongo_mem_limit=None, mongo_validate=None,
+                starrocks_data_path=None, starrocks_port=None, starrocks_fe_http_port=None, sr_fe_jvm_heap=None, starrocks_mem_limit=None,
+                sr_be_mem_limit=None, sr_alter_tablet_workers=None, sr_compression=None, starrocks_storage_paths=None,
+                auth=None, new_password=None, new_password_confirm=None, ro_user=None, ro_username=None,
+                ro_password_mode=None, ro_password=None, ro_password_confirm=None):
+    """`db setup` with its answers given all at once, for a database not set up yet: without `add` the first-time questionnaire (refused when a database is set up already), with `add` one database added as `db setup --add` adds it (refused when it is set up already). An answer left out is the terminal's Enter. Writes exactly the files and .env keys the terminal writes for the same answers (`setup.db_answers`). Refused, before anything is written: answers that do not belong together (`control.dbsetup.check`), a port another service of the deployment uses, a setup that is not first-time. The admin password is checked against its confirmation and dropped, as the terminal drops it. Asks nothing; returns the exit code."""
+    from social_data_pipeline.control import dbsetup
+    from social_data_pipeline.core.config import ConfigurationError
+    from social_data_pipeline.setup import db as db_setup
+    from social_data_pipeline.setup import db_answers
+
+    given = {key: value for key, value in {
+        "add": add, "databases": databases, "data_path": data_path, "export_path": export_path,
+        "pgdata_path": pgdata_path, "db_name": db_name, "pg_port": pg_port, "tablespaces": tablespaces, "filesystem": filesystem, "pgtune": pgtune, "pg_mem_limit": pg_mem_limit,
+        "mongo_data_path": mongo_data_path, "mongo_port": mongo_port, "mongo_cache_size_gb": mongo_cache_size_gb, "mongo_mem_limit": mongo_mem_limit, "mongo_validate": mongo_validate,
+        "starrocks_data_path": starrocks_data_path, "starrocks_port": starrocks_port, "starrocks_fe_http_port": starrocks_fe_http_port, "sr_fe_jvm_heap": sr_fe_jvm_heap,
+        "starrocks_mem_limit": starrocks_mem_limit, "sr_be_mem_limit": sr_be_mem_limit, "sr_alter_tablet_workers": sr_alter_tablet_workers, "sr_compression": sr_compression,
+        "starrocks_storage_paths": starrocks_storage_paths, "auth": auth, "new_password": new_password, "new_password_confirm": new_password_confirm, "ro_user": ro_user,
+        "ro_username": ro_username, "ro_password_mode": ro_password_mode, "ro_password": ro_password, "ro_password_confirm": ro_password_confirm,
+    }.items() if value is not None}
+    for secret in ("new_password", "new_password_confirm", "ro_password", "ro_password_confirm"):
+        if secret in given and not isinstance(given[secret], str):
+            raise TypeError(f"{secret} must be a plain string")
+    try:
+        dbsetup.check(given)
+    except dbsetup.Refused as refused:
+        raise ActionError(f"db setup: {refused.field} {refused}.") from None
+    for key in dbsetup.PATH_FIELDS:
+        if key in given:
+            given[key] = _as_written_path(given[key])
+    if "tablespaces" in given:
+        given["tablespaces"] = [{"name": item["name"], "path": _as_written_path(item["path"])} for item in given["tablespaces"]]
+    if "starrocks_storage_paths" in given:
+        given["starrocks_storage_paths"] = [_as_written_path(path) for path in given["starrocks_storage_paths"]]
+
+    configured = _get_configured_db_services()
+    chosen = dbsetup.chosen(given)
+    if add is None and configured:
+        raise ActionError("A database is set up already: add another one with add (db setup --add). Changing one that is set up is done in a terminal (python sdp.py db setup).")
+    if add is not None and add in configured:
+        raise ActionError(f"{add} is set up already: change it in a terminal (python sdp.py db setup --add={add}).")
+
+    env = load_env()
+    existing = db_setup._load_existing_db_config()
+    ram, cores = db_answers.machine()
+    try:
+        if add is None:
+            settings = db_answers.first_time_settings(given, ram, cores, existing)
+        else:
+            settings = db_answers.add_settings(add, given, ram, cores, existing, env)
+    except db_answers.SetupRefused as refused:
+        raise ActionError(refused.message) from None
+
+    # The ports the answers come to (defaults included) against each other and against the deployment's other services.
+    webui_port = None
+    try:
+        from social_data_pipeline import webui_host
+        saved = webui_host.read_config(str(ROOT))
+        webui_port = saved[0].port if saved else None
+    except Exception:
+        webui_port = None
+    leave_out = {key for name in chosen for key in dbsetup.DATABASE_PORT_KEYS[name]}
+    used = dbsetup.ports_in_use(env, webui_port, leave_out)
+    ports = {field: settings[field] for field in dbsetup.PORT_FIELDS if field in settings}
+    for field, port in ports.items():
+        if port in used:
+            raise ActionError(f"db setup: {field} {port} is used by {used[port]} already.")
+        if list(ports.values()).count(port) > 1:
+            raise ActionError(f"db setup: {field} {port} is given to two services of this setup.")
+
+    try:
+        if add is None:
+            files = db_answers.first_time_files(settings)
+            print("  Setting up: " + ", ".join(settings["databases"]), flush=True)
+            db_answers.write_first_time(settings, files)
+        else:
+            files, env_updates, volumes = db_answers.added_files(add, settings)
+            print(f"  Adding: {add}", flush=True)
+            db_answers.write_added(add, settings, files, env_updates, volumes)
+    except db_answers.SetupRefused as refused:
+        raise ActionError(refused.message) from None
+    except ConfigurationError as error:
+        # `_write_ro_password_for` could write no `.ro_credentials`: the other files are written by then.
+        raise ActionError(f"The read-only password file could not be written: {error}") from None
+
+    print("\n  Done! The database configuration has been written.", flush=True)
+    if settings.get("auth_enabled"):
+        print("  The admin password was not stored anywhere: give it when the database starts (python sdp.py db start).", flush=True)
+        if settings.get("ro_username"):
+            print(f"  Read-only user: {settings['ro_username']} (its password is in .ro_credentials in the database's data folder)", flush=True)
+    print("  Next: python sdp.py db start" + (f" {chosen[0]}" if len(chosen) == 1 else ""), flush=True)
+    return 0
+
+
 # ============================================================================
 # sdp db setup-mcp / unsetup-mcp
 # ============================================================================

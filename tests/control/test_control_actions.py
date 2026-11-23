@@ -42,6 +42,7 @@ ACTIONS = {
     "db.restart_needed": "get_db_restart_needed",
     "db.llm_settings": "get_db_llm_settings",
     "source.add": "do_source_add",
+    "db.setup": "do_db_setup",
 }
 
 # The private parameter an action has for each thing its command asks on the terminal.

@@ -494,6 +494,9 @@ class ScriptedRunner:
         self.events = []
         self.running = False
         self.files = {}
+        # The back end's transcript of the chat (`chat.transcript`): None for none, else its bytes, sent in pieces of at most `transcript_piece`.
+        self.transcript = None
+        self.transcript_piece = 1 << 30
         self.chats = [{"id": CHAT_ID, "title": "made-up question", "created": 1795000000.0, "running": False}]
         self.gate = None
         self.gate_ops = None
@@ -584,6 +587,12 @@ class ScriptedRunner:
                 return refuse("no_such_file")
             piece = data[request["offset"]:request["offset"] + request["limit"]]
             return {"data": base64.b64encode(piece).decode("ascii"), "size": len(data), "next": request["offset"] + len(piece), "end": request["offset"] + len(piece) >= len(data)}
+        if op == "chat.transcript":
+            if self.transcript is None:
+                return {"found": False}
+            data = self.transcript
+            piece = data[request["offset"]:request["offset"] + min(request["limit"], self.transcript_piece)]
+            return {"found": True, "data": base64.b64encode(piece).decode("ascii"), "size": len(data), "next": request["offset"] + len(piece), "end": request["offset"] + len(piece) >= len(data)}
         return refuse("bad_request")
 
 

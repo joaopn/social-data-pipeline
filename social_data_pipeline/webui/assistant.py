@@ -328,3 +328,18 @@ class Assistant:
             raise NotUnderstood() from None
         _require(len(data) <= limit and is_whole(found["next"]) and found["next"] == offset + len(data) and found["end"] == (found["next"] >= found["size"]))
         return data, found["size"], found["end"]
+
+    def transcript(self, chat, offset, limit=PIECE_BYTES):
+        """A piece of the back end's own transcript of the chat (`chat.transcript`): None when the chat has none (the back end keeps none, or no turn has made it yet), else (the bytes from `offset` on, at most `limit`; the file's size; whether that is its end), checked as `piece` checks a file's."""
+        found = self._ask("chat.transcript", {"chat": chat, "offset": offset, "limit": limit})
+        if isinstance(found, dict) and found.get("found") is False:
+            _exactly(found, ("found",))
+            return None
+        found = _exactly(found, ("found", "data", "size", "next", "end"))
+        _require(found["found"] is True and isinstance(found["data"], str) and len(found["data"]) <= (limit + 2) // 3 * 4 and is_whole(found["size"]) and isinstance(found["end"], bool))
+        try:
+            data = base64.b64decode(found["data"].encode("ascii"), validate=True)
+        except (binascii.Error, UnicodeEncodeError):
+            raise NotUnderstood() from None
+        _require(len(data) <= limit and is_whole(found["next"]) and found["next"] == offset + len(data) and found["end"] == (found["next"] >= found["size"]))
+        return data, found["size"], found["end"]

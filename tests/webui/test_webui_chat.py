@@ -167,7 +167,7 @@ def test_every_refusal_code_of_the_runner_has_a_sentence_and_shows_it(client, to
 ROUTES = [
     ("GET", "/chat"), ("GET", f"/chat/{CHAT_ID}"), ("GET", f"/chat/{CHAT_ID}/events?offset=0"), ("GET", f"/chat/{CHAT_ID}/delete"),
     ("GET", f"/chat/{CHAT_ID}/file/a.png"), ("GET", f"/chat/{CHAT_ID}/image/a.png"), ("GET", f"/chat/{CHAT_ID}/table/a.csv"), ("GET", f"/chat/{CHAT_ID}/queries"),
-    ("GET", f"/chat/{CHAT_ID}/spec/a.vl.json"),
+    ("GET", f"/chat/{CHAT_ID}/spec/a.vl.json"), ("GET", f"/chat/{CHAT_ID}/export"),
     ("POST", "/chat/new"), ("POST", f"/chat/{CHAT_ID}/send"), ("POST", f"/chat/{CHAT_ID}/stop"), ("POST", f"/chat/{CHAT_ID}/delete"),
 ]
 

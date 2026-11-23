@@ -153,6 +153,21 @@ A chat's files are in `.sdp/chat/work/<chat id>/` (a chat id is `c_` and 12 hexa
 
 The chats persist on this machine across `chat stop` and `chat start`. A deleted chat leaves the list at once and its files are removed in the background. `chat unsetup` removes all chats only when you say so.
 
+### Exporting a chat
+
+The **Export** link in the Chat window's header downloads the open chat as one JSON file, `chat-<chat id>.json`, for analysis outside the web UI:
+
+| Key | What it holds |
+|---|---|
+| `format` | `1`, the version of this layout |
+| `exported_at` | When the file was made (UTC, ISO 8601) |
+| `chat` | The chat's `id`, `title`, `model` (null for the back end's default), `backend` (`claude-code` or `openai-compatible`; null when the sandbox did not say) and `created` (seconds since 1970) |
+| `events` | Every event of the chat's log (`events.jsonl`) in order, as the page draws them: your questions, the assistant's text, each tool call with its whole input, each tool result cut at 2,000 characters, each file a turn made, and each turn's end with its time and cost |
+| `backend_transcript` | With `claude-code`: Claude Code's own record of the chat's session, uncut (every message, tool call and whole tool result), one item per line of its file, each the JSON object the line holds, or the line as text when it is not one. It is in Claude Code's own format, which may change between its versions. `null` with `openai-compatible`, before the chat's first turn, or when it was not read |
+| `stopped` | `null` when the file is whole; otherwise one sentence saying where and why it stopped: past 50,000 events, past 64 MiB in all, past 10 minutes, or the sandbox could not be read |
+
+The transcript is the file Claude Code keeps in the chat's `home/` (`projects/<the working folder's path>/<session id>.jsonl`); the sandbox hands it over read-only, only the chat's own file and never through a link. Everything in the file is data as the sandbox gave it, written as JSON: open it with a JSON tool, not a browser.
+
 ## The query queue
 
 When the deployment's [query scheduler](query-scheduler.md) runs, the assistant can also submit long or heavy queries to its queue. A person approves each one in the Queue window of the web UI before it runs, and the assistant cannot approve it:

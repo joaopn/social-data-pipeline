@@ -11,6 +11,7 @@ Both pages are the mock-up's three columns (`chat.html`): on the left the chats,
 - `GET /chat/<id>/table/<name>` (a name of the runner's rule ending in `.csv`): the first 256 KiB of the file (one `chat.file` piece, the broker asked first and never believed from before) as a table in the frame: decoded as UTF-8 with errors replaced, parsed by `csv` (strict), at most 500 rows under the header row and 50 columns, the cells within the page's units (`Limits.chat_units_max`), every cell through `statements.visible` and the template's escaping; a file that is not CSV (a NUL, a quote that does not close where the file was read whole, a field over `csv`'s limit) is one sentence.
 - `GET /chat/<id>/queries`: the right column's "Queries in the queue", a part the page asks once it has loaded and every 60 seconds after (`queries_model`), on a bound of its own (`Limits.chat_query_workers`; a full bound answers 204 and the part stays as it is). The broker is asked first (`queue.broker_session_error`, a short time limit: an ended session gets `HX-Redirect`, a broker that does not answer is the part's one line and nothing else is asked); then the chat's own events (at most 2,000, read from the start, the runner's pages) give the job ids written in the texts of its tool calls and their results, newest first, at most 20; then the scheduler's `queue.job` for each, with a short time limit and a total one. Only a job whose record says it was submitted by the assistant is listed; an unknown id or another submitter's job is left out without a word, a failure of one job is its row.
 - `GET /chat/<id>/totals`: the right column's turn totals of the chat (`totals_model`): the number of turns that ended, their time and their cost as the backend reported them, added up from the chat's "end" events read from the start (at most 2,000; a field that is missing or odd counts as not reported, never as an error). A part the page asks once it has loaded and again whenever `app.js` sees a new end of a turn come into the conversation, on a bound of its own (`Limits.chat_query_workers` places; a full one answers the placeholder, which asks again five seconds later); the broker is asked first, as for the queries.
+- `GET /chat/<id>/export`: the whole chat as one JSON document, an attachment `chat-<id>.json` under `Content-Security-Policy: sandbox` (`chat_export`): the chat's entry of `chat.list` and `hello`'s back end, every event from the start, the back end's own transcript (`chat.transcript`), bounded by `Limits.chat_export_events`, `chat_export_bytes` and `chat_export_seconds`, a `stopped` sentence when a bound or a failure ended it. The broker is asked every time (never believed from before) in a worker of the window's bound, then the document is written in workers while it is sent, on one of the downloads' places.
 - `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. `GET /chat/<id>/spec/<name>` (a name ending in `.vl.json`): the whole file (at most 2 MiB, on the images' bound and time limit) checked by `vlspec` and sent as `application/json` written by Python, or its refusal's reason with 422; the plot card draws it with Vega-Lite (`static/plots.js`), the image of its stem staying as the fallback. The web UI opens no file for either: the bytes come only through the socket.
 
 Every route answers GET or POST only (a HEAD is 405); every POST passes the guard's origin and form-token rule. Standard library, anyio, FastAPI, Starlette and this package only.
@@ -23,6 +24,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.parse
 
 import anyio
@@ -31,7 +33,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from starlette.responses import Response
 
 from social_data_pipeline.control import client
-from social_data_pipeline.webui import actions, assistant, prose, queue, reach, results, statements, vlspec, words
+from social_data_pipeline.webui import actions, assistant, chat_export, prose, queue, reach, results, statements, vlspec, words
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker
 from social_data_pipeline.webui.scheduler import SchedulerUnavailable
 
@@ -61,6 +63,7 @@ SANDBOX_POLICY = "sandbox"
 NOT_FOUND = "Not found.\n"
 BUSY = "The web UI is busy with other requests to the chat: try again in a moment."
 DOWNLOADS_BUSY = "The web UI already sends two of the chat's files: try again when one has ended."
+EXPORTS_BUSY = "The web UI already sends two of the chat's files or exports: try again when one has ended."
 TOO_LARGE = "The file is larger than 1 GiB, the most the web UI sends: copy it from the chat's work folder on this machine (.sdp/chat/work)."
 TEXT_REFUSED = "The question was not sent: it must be 1 to 32,000 characters. It is kept in the box."
 FORM_REFUSED = "The request was not taken: a field of the form was refused. Nothing was sent to the chat."
@@ -967,6 +970,42 @@ def install(api, ctx):
                 return runner.piece(chat_id, name, offset)
 
             stream = ChatFileStream(data, size, name, fetch, downloads.release, ctx.clock, ctx.clock() + limits.chat_download_seconds)
+            handed_over = True
+            return stream
+        finally:
+            if not handed_over:
+                downloads.release()
+
+    @api.get("/chat/{chat_id}/export")
+    async def export(request: Request, chat_id: str):
+        if not assistant.is_chat_id(chat_id):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        if not downloads.acquire(blocking=False):
+            return PlainTextResponse(EXPORTS_BUSY + "\n", status_code=503)
+        handed_over = False
+        try:
+            def work(_session):
+                kind, chat, _chats = find(chat_id)
+                if kind == "error":
+                    return kind, chat
+                kind, hello = _ask(runner.hello)
+                return "ok", chat_export.meta_of(chat, hello if kind == "ok" else None)
+
+            # Like a download, the broker is asked every time: no belief of an earlier answer.
+            made = await gate.run(lambda: queue.broker_checked(ctx, session, work, cached=False))
+            if made is BUSY_GATE:
+                return PlainTextResponse(BUSY + "\n", status_code=503)
+            if queue.is_refused(made):
+                ending = queue.ended_session(ctx, request, session_id, made.error)
+                return ending or PlainTextResponse(words.sentence(made.error) + "\n", status_code=503)
+            kind, value = made
+            if kind == "error":
+                return _not_found() if getattr(value, "code", None) == "not_found" else PlainTextResponse(words.chat_sentence(value) + "\n", status_code=_status_of(value))
+            pieces = chat_export.chunks(runner, chat_id, value, ask=_ask, clock=ctx.clock, deadline=ctx.clock() + limits.chat_export_seconds, seconds=limits.chat_export_seconds, events_max=limits.chat_export_events, bytes_max=limits.chat_export_bytes, now=time.time)
+            stream = chat_export.ExportStream(chat_id, pieces, downloads.release)
             handed_over = True
             return stream
         finally:

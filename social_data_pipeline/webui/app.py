@@ -128,6 +128,10 @@ class Limits:
     # The most units (runs of text, blocks, items) one page of events is made into; how long a download and an image may take in all.
     chat_units_max: int = 100_000
     chat_download_seconds: float = 30 * 60
+    # The export of a whole chat (`/chat/<id>/export`, on the downloads' places): the most events, bytes and time it takes.
+    chat_export_events: int = 50_000
+    chat_export_bytes: int = 64 << 20
+    chat_export_seconds: float = 10 * 60
     chat_image_seconds: float = 30
 
 

@@ -5,12 +5,14 @@ The process gets an environment built from scratch (`environment`): never the ru
 - Permissions: without a permission flag, and with `--permission-mode dontAsk` alone, a Bash call is denied (`permission_denied`); `--permission-mode bypassPermissions` runs it, and so does `dontAsk` with `--allowedTools` naming the tools. The runner uses the latter: the six tools and `mcp__<server>` of each database (and `mcp__jobs` with the query queue) are allowed, anything else is denied without a prompt.
 - Settings: with the default setting sources a `.claude/settings.json` planted in the working folder or the home ran its hooks and a planted skill was loaded; `--setting-sources ""` loaded neither. The three plugins built into the binary loaded in every case until `--settings` disabled them (`SETTINGS`, given inline, so no file of the chat can change it; it also switches hooks off). `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` turned the auto-memory folder off (`memory_paths` null). A planted `CLAUDE.md` in either folder reached no request in any variant measured. MCP and the token worked with all of these.
 - The home: with `HOME` the chat's `home/`, a `.bashrc` and a `.bash_profile` planted there ran in the next turn's Bash tool (a marker file written, a variable set); `.profile` did not. Agents, commands, output styles, skills and a `settings.json` planted in `CLAUDE_CONFIG_DIR`, in `$HOME/.claude` or in the working folder's `.claude/` were not loaded with `--setting-sources ""` (the `init` line's lists and the requests unchanged). So `HOME` is a fresh empty folder in the chat's scratch folder, made anew for every turn, while `CLAUDE_CONFIG_DIR` stays the chat's `home/`, where the session files live; measured again, nothing planted took effect and the session still resumed.
+- The transcript: Claude Code keeps its own record of a session (every message, tool call and result, uncut, in its own format) at `<CLAUDE_CONFIG_DIR>/projects/<the working folder, every character but A-Z, a-z and 0-9 made "-">/<session id>.jsonl` (measured with 2.1.328 against a stand-in API: a first turn made it, a resumed turn appended to the same file). `transcript` names it for the runner's `chat.transcript`.
 """
 
 import contextlib
 import json
 import math
 import os
+import re
 import select
 import signal
 import stat
@@ -47,6 +49,9 @@ QUEUE_ROLE = (
 MCP_NAME = "mcp.json"
 STDERR_NAME = "backend.log"
 STDERR_MAX_BYTES = 1024 * 1024
+# Where Claude Code keeps a session's transcript, under the chat's folder: `home/` (its CLAUDE_CONFIG_DIR), then `projects/`.
+TRANSCRIPT_FOLDERS = ("home", "projects")
+_NOT_ALPHANUMERIC = re.compile(r"[^A-Za-z0-9]")
 TOOL_CUT = 2000
 STOP_GRACE_SECONDS = 5.0
 # How long the reader of the output and the copier of the error output may take to end after the group was ended (a process that detached itself can hold the pipes open).
@@ -103,6 +108,11 @@ def environment(home, config, tmp, gateway, queue=False, databases=()):
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1", "DISABLE_AUTOUPDATER": "1",
         "DISABLE_ERROR_REPORTING": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
     }
+
+
+def project_folder(cwd):
+    """The name of the folder under `projects/` in which Claude Code keeps the sessions run in the working folder `cwd`: each character other than an ASCII letter or digit made `-` (measured)."""
+    return _NOT_ALPHANUMERIC.sub("-", cwd)
 
 
 def user_line(text):
@@ -397,6 +407,10 @@ class ClaudeCode:
         self.gateway, self.databases, self.queue, self.executable = gateway, tuple(databases), queue, executable
         self.models = tuple(models)
         self.line_max, self.grace, self.stderr_max, self.join = line_max, grace, stderr_max, join
+
+    def transcript(self, files, session):
+        """Where the transcript of the session `session` run in the working folder `files` is, for the runner: (the folders under the chat's folder, the folder `files` names under them, the file's name)."""
+        return TRANSCRIPT_FOLDERS, project_folder(files), f"{session}.jsonl"
 
     def turn(self, chat_fd, config, home, files, tmp, text, session, resume, model=None):
         """A `Process` for one turn (not started) and its `Translator`. `config` is the chat's `home/`, into which `mcp.json` is written again first; `home` the turn's fresh `HOME`; `model` the chat's model (None: Claude Code's default)."""

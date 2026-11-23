@@ -1,6 +1,6 @@
 """The agent of the OpenAI-compatible back end: one process per turn, `python -P -s -m social_data_pipeline.chat.agent --home <chat's home/> --files <chat's files/>`, started by `chat.openai`.
 
-It reads the user's text as one stream-json line on standard input and prints its progress as stream-json lines that `claude.Translator` understands (an `assistant` line with `text` and `tool_use` blocks, a `user` line with a `tool_result` block, a last `result` line without a cost). The loop: the role text of `claude.ROLE`, the chat's history and the question go to the gateway's model port (`http://<SDP_CHAT_GATEWAY>:8080/chat/completions`, no streaming, no credential: the gateway puts it in) with the tools `run_shell` and `<db>__<tool>` of each attached database's MCP server (`SDP_CHAT_DATABASES`, reached through the gateway's port for it), and with the query queue (`SDP_CHAT_QUEUE=1`) `jobs__<tool>` of the scheduler's assistant endpoint (`claude.queue_url`) and the role text's paragraph about it; each reply's tool calls are run in order and answered, a reply without tool calls is the answer; at most 40 model calls a turn. Every reply is untrusted: its size, its types, the tool names and the arguments are checked, and what cannot be used ends the turn or is answered to the model as a tool error; a refusal (any status but 200) ends the turn with a message naming the status only, never the body.
+It reads the user's text as one stream-json line on standard input and prints its progress as stream-json lines that `claude.Translator` understands (an `assistant` line with `text` and `tool_use` blocks, a `user` line with a `tool_result` block, a last `result` line without a cost). The loop: the role text of `claude.ROLE`, the chat's history and the question go to the gateway's model port (`http://<SDP_CHAT_GATEWAY>:8080/chat/completions`, no streaming, no credential: the gateway puts it in) with the tools `run_shell` and `<db>__<tool>` of each attached database's MCP server (`SDP_CHAT_DATABASES`, reached through the gateway's port for it), and with the query queue (`SDP_CHAT_QUEUE=1`) `jobs__<tool>` of the scheduler's assistant endpoint (`claude.queue_url`) and the role text's paragraph about it; with the query time limit (`SDP_CHAT_QUERY_SECONDS`) the role text names it and a tool's answer is waited for that plus a margin when that is longer than 120 seconds; each reply's tool calls are run in order and answered, a reply without tool calls is the answer; at most 40 model calls a turn. Every reply is untrusted: its size, its types, the tool names and the arguments are checked, and what cannot be used ends the turn or is answered to the model as a tool error; a refusal (any status but 200) ends the turn with a message naming the status only, never the body.
 
 The history is kept in `<home>/openai-session.json` (0600, replaced whole): the messages of the earlier turns, tool outputs cut, cut to a character budget by dropping the oldest turns whole (the newest is always kept, cut further when it alone is over). A file of another shape is taken as empty. Within a turn the request is budgeted too (`squeezed`), and an endpoint that refuses a request with earlier turns as too large (400, 413) is asked once more without them. On SIGTERM the running shell command's process group is killed and the agent ends at once (the turn is not added to the history).
 """
@@ -70,6 +70,10 @@ NOT_FINISHED = "the tool did not finish"
 NO_COMMAND = "the arguments need `command`, a string"
 TOOL_FAILED = "the tool could not be called"
 TOOL_TIMEOUT = f"the tool did not answer within {int(TOOL_SECONDS)} seconds"
+
+
+def tool_timeout(seconds):
+    return f"the tool did not answer within {seconds:g} seconds"
 
 
 def status_message(status):
@@ -339,6 +343,8 @@ class Server:
                 pending[2].set_exception(error)
 
     async def call(self, name, arguments, seconds=None):
+        """The (text, is_error) of the tool `name`: the answer is waited for `seconds` (TOOL_SECONDS when None)."""
+        message = TOOL_TIMEOUT if seconds is None else tool_timeout(seconds)
         seconds = TOOL_SECONDS if seconds is None else seconds
         if self._task is None or self._task.done():
             return TOOL_FAILED, True
@@ -348,7 +354,7 @@ class Server:
         if future not in done:
             # A call that does not answer leaves the session in an unknown state: the database is dropped for the rest of the turn.
             self._task.cancel()
-            return (TOOL_TIMEOUT if not done else TOOL_FAILED), True
+            return (message if not done else TOOL_FAILED), True
         if future.exception() is not None:
             _log(f"{self.database}: a tool call failed ({kind_of(future.exception())})")
             return TOOL_FAILED, True
@@ -668,9 +674,9 @@ def parse_reply(data, offered):
 
 
 class Agent:
-    """One turn's loop. `host`/`port` reach the model, `servers` are the open `Server`s, `env` is the shell commands' environment; `emit` prints a stream-json line."""
+    """One turn's loop. `host`/`port` reach the model, `servers` are the open `Server`s, `env` is the shell commands' environment; `emit` prints a stream-json line. With `query_seconds` (the query time limit) the role text names it and a tool's answer is waited for that plus `claude.QUERY_MARGIN_SECONDS` when that is longer than TOOL_SECONDS, else TOOL_SECONDS."""
 
-    def __init__(self, host, port, model, files, env, servers=(), *, queue=False, emit=emit, calls_max=CALLS_MAX, shell_seconds=SHELL_SECONDS):
+    def __init__(self, host, port, model, files, env, servers=(), *, queue=False, query_seconds=None, emit=emit, calls_max=CALLS_MAX, shell_seconds=SHELL_SECONDS):
         self.host, self.port, self.model, self.files, self.env = host, port, model, files, env
         self.emit, self.calls_max, self.shell_seconds = emit, calls_max, shell_seconds
         self.routes = {}
@@ -688,7 +694,8 @@ class Agent:
             _log(f"{left_out} tools of the databases are left out: their schemas together hold more than {TOOLS_CONTAINERS} objects and lists")
         self.specs = specs
         self.offered = {SHELL_TOOL, *self.routes}
-        self.system = {"role": "system", "content": claude.role(queue)}
+        self.system = {"role": "system", "content": claude.role(queue, query_seconds)}
+        self.tool_seconds = None if query_seconds is None else max(TOOL_SECONDS, query_seconds + claude.QUERY_MARGIN_SECONDS)
 
     def body(self, earlier, current):
         """The request's bytes and the earlier turns it holds: the current turn squeezed to `TURN_BUDGET`, the newest earlier turns that fit with it into the history's budget."""
@@ -713,7 +720,7 @@ class Agent:
                 return NO_COMMAND, True
             return await asyncio.to_thread(run_shell, command, self.files, self.env, self.shell_seconds)
         server, name = self.routes[call["name"]]
-        return await server.call(name, call["input"])
+        return await server.call(name, call["input"], self.tool_seconds)
 
     async def turn(self, earlier, question):
         """Run one turn: (the turns to keep, with this one; the `result` line's fields)."""
@@ -811,11 +818,11 @@ def question_of(data):
     return content if isinstance(content, str) and content else None
 
 
-async def _run(gateway, model, databases, home, files, question, queue=False):
+async def _run(gateway, model, databases, home, files, question, queue=False, query_seconds=None):
     started = time.monotonic()
     servers = await open_servers(databases, gateway, queue)
     try:
-        agent = Agent(gateway, claude.MODEL_PORT, model, files, dict(os.environ), servers, queue=queue)
+        agent = Agent(gateway, claude.MODEL_PORT, model, files, dict(os.environ), servers, queue=queue, query_seconds=query_seconds)
         turns, result = await agent.turn(load_history(home), question)
     finally:
         for server in servers:
@@ -833,6 +840,7 @@ def main(argv=None, environ=None):
     started = time.monotonic()
     try:
         gateway, model, databases, queue = settings(os.environ if environ is None else environ)
+        query_seconds = claude.query_seconds(os.environ if environ is None else environ)
     except ValueError as error:
         _log(f"refusing to run: {error}")
         emit({"type": "result", "subtype": "error", "is_error": True, "result": str(error), "duration_ms": 0, "num_turns": 0})
@@ -842,7 +850,7 @@ def main(argv=None, environ=None):
         _log("standard input holds no question")
         emit({"type": "result", "subtype": "error", "is_error": True, "result": "no question", "duration_ms": int((time.monotonic() - started) * 1000), "num_turns": 0})
         return 2
-    emit(asyncio.run(_run(gateway, model, databases, arguments.home, arguments.files, question, queue)))
+    emit(asyncio.run(_run(gateway, model, databases, arguments.home, arguments.files, question, queue, query_seconds)))
     return 0
 
 

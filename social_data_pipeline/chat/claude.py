@@ -46,6 +46,12 @@ QUEUE_ROLE = (
     f"When a query is done, the parts of its result are listed at http://<gateway>:{QUEUE_PORT}{QUEUE_RESULTS}/<job id> (JSON) and each part is at http://<gateway>:{QUEUE_PORT}{QUEUE_RESULTS}/<job id>/<part number>, where <gateway> is the address in the environment variable SDP_CHAT_GATEWAY: "
     "fetch them from the shell with Python's urllib (curl is not installed) and save them in the current folder. Only your own queries are visible there."
 )
+# The query time limit (`SDP_CHAT_QUERY_SECONDS`, whole seconds from 1 to QUERY_SECONDS_MAX): the database stops a read-only query on MongoDB or StarRocks after it (PostgreSQL's MCP server ignores it); the waits for an answer (the agent's tool calls, `sdp_data.read_query`) are that plus QUERY_MARGIN_SECONDS. The sentences the role text gets with it.
+QUERY_ENV = "SDP_CHAT_QUERY_SECONDS"
+QUERY_SECONDS_MAX = 3600
+QUERY_MARGIN_SECONDS = 10
+QUERY_LIMIT_ROLE = "A read-only query on MongoDB or StarRocks, through your tools or `sdp_data.read_query`, is stopped by the database after {seconds} seconds."
+QUERY_LIMIT_QUEUE_ROLE = "Submit a query on MongoDB or StarRocks that may take longer than {seconds} seconds to the scheduler instead of running it on the read-only connection."
 MCP_NAME = "mcp.json"
 STDERR_NAME = "backend.log"
 STDERR_MAX_BYTES = 1024 * 1024
@@ -62,9 +68,22 @@ _POLL_SECONDS = 0.2
 MODEL_NOT_REACHED = "the model could not be reached"
 
 
-def role(queue):
-    """The role text: ROLE, and with the query queue its paragraph."""
-    return f"{ROLE}\n\n{QUEUE_ROLE}" if queue else ROLE
+def role(queue, query_seconds=None):
+    """The role text: ROLE, with the query queue its paragraph, and with the query time limit `query_seconds` a sentence naming it after each (the one after the queue's paragraph says that a longer query goes to the scheduler)."""
+    text = ROLE if query_seconds is None else f"{ROLE} {QUERY_LIMIT_ROLE.format(seconds=query_seconds)}"
+    if queue:
+        text += f"\n\n{QUEUE_ROLE}" if query_seconds is None else f"\n\n{QUEUE_ROLE} {QUERY_LIMIT_QUEUE_ROLE.format(seconds=query_seconds)}"
+    return text
+
+
+def query_seconds(environ):
+    """The query time limit of `SDP_CHAT_QUERY_SECONDS` in `environ`: None when it is missing or empty, else a whole number of seconds from 1 to 3600. Raises ValueError naming the variable."""
+    text = environ.get(QUERY_ENV, "")
+    if not text:
+        return None
+    if not (text.isascii() and text.isdigit() and len(text) <= 4 and 1 <= int(text) <= QUERY_SECONDS_MAX):
+        raise ValueError(f"{QUERY_ENV} must be a whole number of seconds from 1 to {QUERY_SECONDS_MAX}")
+    return int(text)
 
 
 def queue_url(gateway):
@@ -82,24 +101,25 @@ def mcp_config(databases, gateway, queue=False):
     return {"mcpServers": servers}
 
 
-def command(executable, home, session, resume, databases, queue=False, model=None):
-    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has its paragraph; with `model` (one of MODELS, checked by the runner) `--model` and its name, else none (Claude Code's default)."""
+def command(executable, home, session, resume, databases, queue=False, model=None, query_seconds=None):
+    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has its paragraph; with `model` (one of MODELS, checked by the runner) `--model` and its name, else none (Claude Code's default); with `query_seconds` the role text names the query time limit."""
     allowed = ",".join([*TOOLS, *(f"mcp__{name}" for name in databases), *([f"mcp__{QUEUE_SERVER}"] if queue else [])])
     return [
         executable, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
         "--mcp-config", os.path.join(home, MCP_NAME), "--strict-mcp-config", "--tools", ",".join(TOOLS),
         "--permission-mode", "dontAsk", "--allowedTools", allowed,
         "--setting-sources", "", "--settings", SETTINGS,
-        "--append-system-prompt", role(queue),
+        "--append-system-prompt", role(queue, query_seconds),
         "--resume" if resume else "--session-id", session,
         *(["--model", model] if model else []),
     ]
 
 
-def environment(home, config, tmp, gateway, queue=False, databases=()):
-    """The whole environment of the process, built from scratch: `home` is the turn's fresh `HOME`, `config` the chat's `home/` (Claude Code's settings and session files); `SDP_CHAT_GATEWAY` and `SDP_CHAT_DATABASES` (the attached `databases`), which `sdp_data` in the shell reads and the queue's paragraph of the role text names. `queue` changes nothing here."""
+def environment(home, config, tmp, gateway, queue=False, databases=(), query_seconds=None):
+    """The whole environment of the process, built from scratch: `home` is the turn's fresh `HOME`, `config` the chat's `home/` (Claude Code's settings and session files); `SDP_CHAT_GATEWAY` and `SDP_CHAT_DATABASES` (the attached `databases`), which `sdp_data` in the shell reads and the queue's paragraph of the role text names, and with `query_seconds` `SDP_CHAT_QUERY_SECONDS`, which `sdp_data` bounds its waits by. `queue` changes nothing here."""
     return {
         "SDP_CHAT_GATEWAY": gateway, "SDP_CHAT_DATABASES": ",".join(databases),
+        **({QUERY_ENV: str(query_seconds)} if query_seconds is not None else {}),
         "HOME": home, "CLAUDE_CONFIG_DIR": config,
         "CLAUDE_CODE_TMPDIR": tmp, "TMPDIR": tmp, "MPLCONFIGDIR": os.path.join(tmp, "matplotlib"),
         "PATH": PATH,
@@ -398,13 +418,14 @@ class Process:
 
 
 class ClaudeCode:
-    """The back end: `gateway` is the gateway's address, `databases` the names of the attached databases, `queue` whether the query queue is attached, `models` the models a chat may be given (some of MODELS); a chat without one runs on Claude Code's default (`model_default` None)."""
+    """The back end: `gateway` is the gateway's address, `databases` the names of the attached databases, `queue` whether the query queue is attached, `models` the models a chat may be given (some of MODELS), `query_seconds` the query time limit (None: none was given); a chat without a model runs on Claude Code's default (`model_default` None)."""
 
     name = "claude-code"
     model_default = None
 
-    def __init__(self, gateway, databases, *, queue=False, models=MODELS, executable=EXECUTABLE, line_max=LINE_MAX_BYTES, grace=STOP_GRACE_SECONDS, stderr_max=STDERR_MAX_BYTES, join=JOIN_SECONDS):
+    def __init__(self, gateway, databases, *, queue=False, models=MODELS, query_seconds=None, executable=EXECUTABLE, line_max=LINE_MAX_BYTES, grace=STOP_GRACE_SECONDS, stderr_max=STDERR_MAX_BYTES, join=JOIN_SECONDS):
         self.gateway, self.databases, self.queue, self.executable = gateway, tuple(databases), queue, executable
+        self.query_seconds = query_seconds
         self.models = tuple(models)
         self.line_max, self.grace, self.stderr_max, self.join = line_max, grace, stderr_max, join
 
@@ -426,6 +447,6 @@ class ClaudeCode:
                 os.close(fd)
         finally:
             os.close(home_fd)
-        argv = command(self.executable, config, session, resume, self.databases, self.queue, model)
-        process = Process(argv, environment(home, config, tmp, self.gateway, self.queue, self.databases), files, user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
+        argv = command(self.executable, config, session, resume, self.databases, self.queue, model, self.query_seconds)
+        process = Process(argv, environment(home, config, tmp, self.gateway, self.queue, self.databases, self.query_seconds), files, user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
         return process, Translator()

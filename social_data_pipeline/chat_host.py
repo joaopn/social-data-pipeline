@@ -2,7 +2,7 @@
 
 What it keeps, in `<root>/.sdp/chat/` (0700): `config.json` (0600: the back end, for an OpenAI-compatible one its address and model, the soft cap of the work folder in GiB, the Claude Code version of the sandbox image), `credential/` (0700) with `model.token` (0600: the model's secret, asked without echo, never printed, logged, put on a command line or in an environment), `work/` (0700: one folder per chat, later) and `socket/` (0700). Every folder is opened relative to the one above it without following a link, must be a real folder of the operator and is given mode 0700 whatever the umask; files are written by the broker's file rules (`control.files`: a temporary file made exclusively with mode 0600, then renamed).
 
-`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which the running MCP container of each database whose MCP server is on a read-only user is attached under an alias, and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`); `rebuild` builds both images again from the saved settings, then stops and starts the chat. Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
+`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which, for each database whose MCP server runs on a read-only user, an MCP container is attached under an alias (for MongoDB and StarRocks the chat's own copy of the server, the compose service `chat-<db>-mcp`, which `start` starts and `stop` removes, with the query time limit `CHAT_QUERY_TIMEOUT_SECONDS` of the deployment's `.env` that the database enforces; for PostgreSQL, whose server ignores that limit, the shared server itself), and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`); `rebuild` builds both images again from the saved settings, then stops and starts the chat. Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
 """
 
 import contextlib
@@ -129,10 +129,10 @@ def build_arguments(root):
     ]
 
 
-def _docker(arguments, *, capture=True, timeout=600):
-    """Run a Docker command: a CompletedProcess (text). Raises Refused when Docker cannot be run at all."""
+def _docker(arguments, *, capture=True, timeout=600, env=None):
+    """Run a Docker command: a CompletedProcess (text); `env`, when given, is the whole environment of the command. Raises Refused when Docker cannot be run at all."""
     try:
-        return subprocess.run(arguments, capture_output=capture, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        return subprocess.run(arguments, capture_output=capture, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
     except (OSError, subprocess.TimeoutExpired):
         raise Refused("Docker cannot be run, or did not answer in time") from None
 
@@ -629,12 +629,21 @@ QUEUE_SECRET_MAX = 256
 _QUEUE_SECRET = re.compile(r"[0-9a-f]{64,256}")
 DEFAULT_JOBS_PORT = 8050
 ENV_MAX_BYTES = 1024 * 1024
+# The query time limit of the chat's copies of the MongoDB and StarRocks MCP servers: the key of the deployment's `.env` (the compose file gives it to the copies as MCP_QUERY_TIMEOUT_SECONDS), its default and bound, and the sandbox's environment entry for it.
+QUERY_KEY = "CHAT_QUERY_TIMEOUT_SECONDS"
+DEFAULT_QUERY_SECONDS = 90
+QUERY_SECONDS_MAX = 3600
+QUERY_ENV = "SDP_CHAT_QUERY_SECONDS"
+# How long `start` lets Compose wait for a copy to run.
+COPY_WAIT_SECONDS = 60
+# The label the mongo and starrocks MCP Dockerfiles give an image that honours the query time limit (an image built before it ignores the limit silently).
+QUERY_LABEL = "sdp.query-limit"
 DATABASE_FIX = "To give the chat a database: set it up with authentication and a read-only user (python sdp.py db setup), set up its MCP server (python sdp.py db setup-mcp) and start it (python sdp.py db start); then run python sdp.py chat start again."
 
 
 @dataclass(frozen=True)
 class Database:
-    """An MCP service of the compose file: the database's name, the service, the environment key of its read-only user (set by `db setup-mcp` when the database has one), the gateway's port for it, the server's own port and the paths it serves."""
+    """An MCP service of the compose file: the database's name, the service, the environment key of its read-only user (set by `db setup-mcp` when the database has one), the gateway's port for it, the server's own port and the paths it serves, and the compose service of the chat's own copy of the server with the query time limit ("" for none: the chat then uses the shared server)."""
 
     name: str
     service: str
@@ -642,16 +651,26 @@ class Database:
     port: int
     server_port: int
     paths: tuple
+    chat_service: str = ""
 
     @property
     def alias(self):
         return f"sdp-chat-{self.name}-mcp"
 
+    @property
+    def chat_profile(self):
+        return self.chat_service.replace("-", "_")
+
+    @property
+    def image(self):
+        """The image Compose builds for the shared service (`<project>-<service>`), which the chat's copy runs."""
+        return f"{COMPOSE_PROJECT}-{self.service}"
+
 
 DATABASES = (
     Database("postgres", "postgres-mcp", "POSTGRES_MCP_USER", 8001, 8000, ("/sse", "/messages/")),
-    Database("mongo", "mongo-mcp", "MCP_MONGODB_USER", 8002, 3000, ("/mcp",)),
-    Database("starrocks", "starrocks-mcp", "STARROCKS_MCP_USER", 8003, 9000, ("/mcp",)),
+    Database("mongo", "mongo-mcp", "MCP_MONGODB_USER", 8002, 3000, ("/mcp",), "chat-mongo-mcp"),
+    Database("starrocks", "starrocks-mcp", "STARROCKS_MCP_USER", 8003, 9000, ("/mcp",), "chat-starrocks-mcp"),
 )
 
 
@@ -660,9 +679,9 @@ def key_template(key):
     return '{{range .Config.Env}}{{if and (ne . "%s=") (eq (index (split . "=") 0) "%s")}}%s{{end}}{{end}}' % (key, key, KEY_SET)
 
 
-def compose_listing(service):
-    """The `docker ps` argument list of the running containers of the compose service `service` of the project `sdp` (one-off `compose run` containers left out)."""
-    return ["docker", "ps", "--no-trunc", "--filter", f"label={PROJECT_LABEL}={COMPOSE_PROJECT}", "--filter", f"label={SERVICE_LABEL}={service}", "--filter", f"label={ONEOFF_LABEL}=False", "--format", COMPOSE_FORMAT]
+def compose_listing(service, every=False):
+    """The `docker ps` argument list of the running containers of the compose service `service` of the project `sdp` (one-off `compose run` containers left out); with `every`, those in any state."""
+    return ["docker", "ps", *(["-a"] if every else []), "--no-trunc", "--filter", f"label={PROJECT_LABEL}={COMPOSE_PROJECT}", "--filter", f"label={SERVICE_LABEL}={service}", "--filter", f"label={ONEOFF_LABEL}=False", "--format", COMPOSE_FORMAT]
 
 
 def compose_containers(output, root):
@@ -680,6 +699,11 @@ def compose_containers(output, root):
         if re.fullmatch(r"[0-9a-f]{64}", container) and os.path.isabs(folder) and os.path.realpath(folder) == here:
             found.append((container, service))
     return found
+
+
+def copy_arguments(root, db):
+    """The `docker compose` argument list that starts the chat's copy of the MCP server of `db` (its compose service `db.chat_service`) in the deployment folder `root`: the database's profile with the copy's own (Compose checks the copy's `depends_on`), not its dependencies (the database runs: its shared server does), and waits until it runs (a copy whose entrypoint refuses fails the call)."""
+    return ["docker", "compose", "--project-directory", root, "--profile", db.name, "--profile", db.chat_profile, "up", "--detach", "--no-deps", "--wait", "--wait-timeout", str(COPY_WAIT_SECONDS), db.chat_service]
 
 
 def gateway_address(subnet, network_gateway=""):
@@ -725,8 +749,8 @@ def gateway_arguments(root, uid, gid, address):
     ]
 
 
-def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None, queue=False):
-    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`), the models a chat may be given (`SDP_CHAT_MODELS`: `CLAUDE_MODELS`, or the one model of an OpenAI-compatible back end) and, with `queue`, `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
+def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None, queue=False, query_seconds=None):
+    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`), the models a chat may be given (`SDP_CHAT_MODELS`: `CLAUDE_MODELS`, or the one model of an OpenAI-compatible back end), with `queue` `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler) and with `query_seconds` `SDP_CHAT_QUERY_SECONDS` (the query time limit of the chat's MongoDB and StarRocks servers), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
     return [
         *_confined(SANDBOX_CONTAINER, root, uid, gid),
         "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
@@ -738,6 +762,7 @@ def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=No
         *(["-e", f"SDP_CHAT_MODEL={model}"] if backend == OPENAI_COMPATIBLE else []),
         "-e", f"SDP_CHAT_MODELS={model if backend == OPENAI_COMPATIBLE else ','.join(CLAUDE_MODELS)}",
         *(["-e", f"{QUEUE_ENV}=1"] if queue else []),
+        *(["-e", f"{QUERY_ENV}={query_seconds}"] if query_seconds is not None else []),
         SANDBOX_IMAGE,
     ]
 
@@ -927,13 +952,13 @@ def _find_databases(root):
     return attached, left
 
 
-def jobs_port(root):
-    """The scheduler's port: `JOBS_PORT` of the deployment's `.env` as `sdp` reads it (lines `KEY=value`, spaces around stripped, `#` lines skipped, the last one wins), 8050 when there is no file, no such line or an empty value (as Compose's `${JOBS_PORT:-8050}`). The file holds passwords: only that one value is kept, and nothing of the file is printed. Raises Refused for a value that is not a port."""
+def env_value(root, name):
+    """The value of the key `name` of the deployment's `.env` as `sdp` reads it (lines `KEY=value`, spaces around stripped, `#` lines skipped, the last one wins), "" when there is no file or no such line. The file holds passwords: only that one value is kept, and nothing of the file is printed. Raises Refused when the file cannot be read or is larger than 1 MiB."""
     try:
         with open(os.path.join(root, ".env"), "rb") as env:
             data = env.read(ENV_MAX_BYTES + 1)
     except FileNotFoundError:
-        return DEFAULT_JOBS_PORT
+        return ""
     except OSError:
         raise Refused("the deployment's .env cannot be read") from None
     if len(data) > ENV_MAX_BYTES:
@@ -942,12 +967,28 @@ def jobs_port(root):
     for line in data.decode("utf-8", "replace").splitlines():
         line = line.strip()
         key, sep, rest = line.partition("=")
-        if line and not line.startswith("#") and sep and key.strip() == "JOBS_PORT":
+        if line and not line.startswith("#") and sep and key.strip() == name:
             value = rest.strip()
+    return value
+
+
+def jobs_port(root):
+    """The scheduler's port: `JOBS_PORT` of the deployment's `.env` (`env_value`), 8050 when there is no file, no such line or an empty value (as Compose's `${JOBS_PORT:-8050}`). Raises Refused for a value that is not a port."""
+    value = env_value(root, "JOBS_PORT")
     if not value:
         return DEFAULT_JOBS_PORT
     if not re.fullmatch(r"[0-9]{1,5}", value) or not 1 <= int(value) <= 65535:
         raise Refused("JOBS_PORT in the deployment's .env is not a port number")
+    return int(value)
+
+
+def query_seconds(root):
+    """The query time limit of the chat's copies of the MongoDB and StarRocks MCP servers: `CHAT_QUERY_TIMEOUT_SECONDS` of the deployment's `.env` (`env_value`), 90 when there is no file, no such line or an empty value (as the compose file's `${CHAT_QUERY_TIMEOUT_SECONDS:-90}`). Raises Refused, naming the key, for a value that is not a whole number of seconds from 1 to 3600."""
+    value = env_value(root, QUERY_KEY)
+    if not value:
+        return DEFAULT_QUERY_SECONDS
+    if not re.fullmatch(r"[0-9]{1,4}", value) or not 1 <= int(value) <= QUERY_SECONDS_MAX:
+        raise Refused(f"{QUERY_KEY} in the deployment's .env is not a whole number of seconds from 1 to {QUERY_SECONDS_MAX}")
     return int(value)
 
 
@@ -1009,6 +1050,44 @@ def _queue_secret(root):
         raise Refused(f"{JOBS_CONTROL} cannot be used") from None
 
 
+def label_arguments(db):
+    """The `docker image inspect` argument list that prints the query-limit label of the image the chat's copy of `db`'s server runs (empty when it has none)."""
+    return ["docker", "image", "inspect", "--format", '{{index .Config.Labels "%s"}}' % QUERY_LABEL, db.image]
+
+
+def _start_copy(root, db, seconds):
+    """Start the chat's copy of the MCP server of `db` with the query time limit `seconds` (given to Compose as `CHAT_QUERY_TIMEOUT_SECONDS`, so that the value checked here is the one the copy gets, whatever the shell exports) and return its container id. Raises Refused when the image is missing or was built before the limit (no `QUERY_LABEL`: it would ignore the limit silently), naming the build command, or when the copy did not start or its container cannot be found."""
+    labelled = _docker(label_arguments(db))
+    if labelled.returncode != 0 or labelled.stdout.strip() != "1":
+        what = "is missing" if labelled.returncode != 0 else "was built before the query time limit and would ignore it"
+        raise Refused(f"the image {db.image} of the MCP server of {db.name} {what}. Build it: docker compose --profile {db.name} --profile {db.name}_mcp build {db.service}, then run python sdp.py chat start again")
+    result = _docker(copy_arguments(root, db), env={**os.environ, QUERY_KEY: str(seconds)})
+    if result.returncode != 0:
+        raise Refused(f"the chat's copy of the MCP server of {db.name} ({db.chat_service}) did not start: {_last_line(result)}")
+    listing = _step(compose_listing(db.chat_service), f"the chat's copy of the MCP server of {db.name} cannot be found")
+    found = [container for container, service in compose_containers(listing.stdout, root) if service == db.chat_service]
+    if len(found) != 1:
+        raise Refused(f"the chat's copy of the MCP server of {db.name} ({db.chat_service}) {'does not run' if not found else 'runs more than once'}")
+    return found[0]
+
+
+def _remove_copy(root, db):
+    """Remove every container of the chat's copy of the MCP server of `db` of this deployment, in any state. Returns (how many were removed, the lines of what failed); one that is gone is no error."""
+    listing = _try(compose_listing(db.chat_service, every=True))
+    if listing.returncode != 0:
+        return 0, [f"the containers of the chat's copy of the MCP server of {db.name} cannot be listed: {_last_line(listing)}"]
+    removed, problems = 0, []
+    for container, service in compose_containers(listing.stdout, root):
+        if service != db.chat_service:
+            continue
+        result = _try(["docker", "rm", "--force", container])
+        if result.returncode == 0:
+            removed += 1
+        elif not _gone(result):
+            problems.append(f"the chat's copy of the MCP server of {db.name} could not be removed: {_last_line(result)}")
+    return removed, problems
+
+
 def _step(arguments, what):
     result = _docker(arguments)
     if result.returncode != 0:
@@ -1063,10 +1142,13 @@ def _wait_for_gateway(listeners):
 
 
 def _undo(root, made):
-    """Remove what a start made (`made`: container and network names, in the order made); the databases are detached with the network."""
+    """Remove what a start made (`made`: container and network names and the compose services of the copies started, in the order made); the databases are detached with the network."""
     problems = []
+    copies = {db.chat_service: db for db in DATABASES if db.chat_service}
     for name in reversed(made):
-        if name in CONTAINERS:
+        if name in copies:
+            problems += _remove_copy(root, copies[name])[1]
+        elif name in CONTAINERS:
             result = _try(["docker", "rm", "--force", name])
             if result.returncode != 0 and not _gone(result):
                 problems.append(f"the container {name} could not be removed: {_last_line(result)}")
@@ -1089,6 +1171,7 @@ def _gateway_config_removed(root):
 def _start(root, uid, gid):
     _check_root(root)
     settings = _settings_or_refuse(root)
+    seconds = query_seconds(root)
     for image in (GATEWAY_IMAGE, SANDBOX_IMAGE):
         if _docker(["docker", "image", "inspect", "--format", "{{.Id}}", image]).returncode != 0:
             raise Refused(f"the image {image} is missing.\n{SETUP_FIRST}")
@@ -1138,10 +1221,13 @@ def _start(root, uid, gid):
         _step(["docker", "start", GATEWAY_CONTAINER], "the gateway did not start")
         _wait_for_gateway(1 + len(attached) + (queue is not None))
         for db, container in attached:
+            if db.chat_service:
+                made.append(db.chat_service)
+                container = _start_copy(root, db, seconds)
             _step(["docker", "network", "connect", "--alias", db.alias, UP_NETWORK, container], f"the MCP server of {db.name} could not be attached")
         if queue is not None:
             _step(["docker", "network", "connect", "--alias", QUEUE_ALIAS, UP_NETWORK, queue[0]], "the query scheduler could not be attached")
-        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"], settings.get("model"), queue=queue is not None), "the sandbox's container could not be created")
+        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"], settings.get("model"), queue=queue is not None, query_seconds=seconds), "the sandbox's container could not be created")
         made.append(SANDBOX_CONTAINER)
         _step(["docker", "start", SANDBOX_CONTAINER], "the sandbox did not start")
         after = _state(SANDBOX_CONTAINER)
@@ -1162,6 +1248,7 @@ def _start(root, uid, gid):
         print(f"    {db.name}: left out: {why}")
     if left:
         print(f"  {DATABASE_FIX}")
+    print(f"  Query time limit: {seconds} s on MongoDB and StarRocks, enforced by the database ({QUERY_KEY} in .env, default {DEFAULT_QUERY_SECONDS}). PostgreSQL ignores it (its MCP server keeps its own limit: 30 s in restricted mode, the default).")
     if queue is not None:
         print("  The query queue is attached: the assistant can submit queries to the scheduler (each is approved by its target's auto-accept when that is on, otherwise it waits for a person's approval), see its own and fetch their results.")
     else:
@@ -1171,7 +1258,7 @@ def _start(root, uid, gid):
 
 
 def cmd_start(root):
-    """`sdp chat start`: make the two networks, write the gateway's config, start the gateway, attach the databases, start the sandbox. Exit code 0 when it was started, 1 with the reason otherwise (what it made is then removed)."""
+    """`sdp chat start`: make the two networks, write the gateway's config, start the gateway, start the chat's copies of the MongoDB and StarRocks MCP servers (with the query time limit of `CHAT_QUERY_TIMEOUT_SECONDS`) and attach the databases, start the sandbox. Exit code 0 when it was started, 1 with the reason otherwise (what it made is then removed)."""
     try:
         return _start(os.fspath(root), os.getuid(), os.getgid())
     except Refused as refusal:
@@ -1180,7 +1267,7 @@ def cmd_start(root):
 
 
 def cmd_stop(root):
-    """`sdp chat stop`: stop and remove both containers, detach the databases, remove both networks. Exit code 0 when the chat ran, 1 when nothing ran or something could not be removed."""
+    """`sdp chat stop`: stop and remove both containers and the chat's copies of the MCP servers, detach the databases, remove both networks. Exit code 0 when the chat ran, 1 when nothing ran or something could not be removed."""
     try:
         return _stop(os.fspath(root))
     except Refused as refusal:
@@ -1223,6 +1310,11 @@ def _stop(root):
         removed = _try(["docker", "rm", "--force", name])
         if removed.returncode != 0 and not _gone(removed):
             problems.append(f"the container {name} could not be removed: {_last_line(removed)}")
+    copies = 0
+    for db in DATABASES:
+        if db.chat_service:
+            count, failed = _remove_copy(root, db)
+            copies, problems = copies + count, problems + failed
     for name in (UP_NETWORK, NETWORK):
         if networks[name] is not None:
             problems += _take_down(name)
@@ -1232,7 +1324,7 @@ def _stop(root):
     if problems:
         return 1
     if not ran:
-        left = any(state is not None for state in states.values()) or any(owner is not None for owner in networks.values())
+        left = copies or any(state is not None for state in states.values()) or any(owner is not None for owner in networks.values())
         print("  The chat is not running." + (" What an earlier start left was removed." if left else ""))
         return 1
     print("  The chat has stopped. The databases are detached from it.")
@@ -1385,7 +1477,7 @@ def cmd_status(root):
             print(f"  Error: Docker cannot say which databases are attached: {_last_line(listing)}")
         else:
             services = {service for _, service in compose_containers(listing.stdout, root)}
-            now = [db.name for db in DATABASES if db.service in services]
+            now = [db.name for db in DATABASES if db.service in services or db.chat_service in services]
             print(f"  Databases the chat can read now: {', '.join(now) or 'none'}")
             for name in _started_databases(root):
                 if name not in now:

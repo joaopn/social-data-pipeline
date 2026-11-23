@@ -6,7 +6,7 @@ The sandbox image installs this file as the top-level module `sdp_data` in the i
 - `postgres`: `query` is SQL, run with postgres-mcp's `execute_sql`, whose answer is Python's text of a list of dicts; it is read without running any code: literals, and a fixed set of value types (a Decimal becomes an int when it is whole, else a float; dates, times, datetimes with their time zone and timedeltas stay Python objects; a UUID becomes text). Any other value type fails the call, naming it.
 - `mongo`: `query` is a dict. `{"collection": ..., "database": ..., "pipeline": [...]}` runs the `aggregate` tool; without `pipeline`, `{"collection": ..., "database": ..., "filter": {...}, "projection": {...}, "sort": {...}, "limit": n}` runs the `query` tool (a find; all keys but `collection` optional, and no other key is taken). The documents come as the server's JSON gives them (an ObjectId as hex text, a date as ISO text).
 
-Bounds of one call: at most `max_rows` rows (a find's limit and an aggregation's appended `$limit` ask MongoDB for one more, to tell), at most `max_bytes` read from the gateway in all, and `timeout` seconds for the whole call (MongoDB is also given it as `maxTimeMS`; a SQL query the call gives up on may still run on the server until the server's own limit). Every failure raises `QueryError`, whose message names the server; nothing fails into an empty result.
+Bounds of one call: at most `max_rows` rows (a find's limit and an aggregation's appended `$limit` ask MongoDB for one more, to tell), at most `max_bytes` read from the gateway in all, and `timeout` seconds for the whole call (MongoDB is also given it as `maxTimeMS`; a SQL query the call gives up on may still run on the server until the server's own limit). With the chat's query time limit (`SDP_CHAT_QUERY_SECONDS`, which the database enforces on MongoDB and StarRocks; PostgreSQL's MCP server ignores it) a call to `mongo` or `starrocks` has a `timeout` of at most that limit plus `QUERY_MARGIN` and by default exactly that, and MongoDB's `maxTimeMS` at most the limit; `postgres`, and every server without a limit, keeps the default `TIMEOUT` and the caller's value. Every failure raises `QueryError`, whose message names the server; nothing fails into an empty result.
 """
 
 import ast
@@ -32,32 +32,35 @@ MONGO_AGGREGATE_KEYS = ("collection", "database", "pipeline")
 MAX_ROWS = 1_000_000
 MAX_BYTES = 128 * 1024 * 1024
 TIMEOUT = 100.0
+# The query time limit's environment entry, its bound, and the wait beyond it (as `chat.claude`'s QUERY_ENV, QUERY_SECONDS_MAX and QUERY_MARGIN_SECONDS; a test keeps them equal).
+QUERY_ENV = "SDP_CHAT_QUERY_SECONDS"
+QUERY_SECONDS_MAX = 3600
+QUERY_MARGIN = 10
 CONNECT_SECONDS = 30.0
 MESSAGE_CUT = 2000
 
-__all__ = ["QueryError", "read_query", "DATABASES", "MAX_ROWS", "MAX_BYTES", "TIMEOUT"]
+__all__ = ["QueryError", "read_query", "query_limit", "DATABASES", "MAX_ROWS", "MAX_BYTES", "TIMEOUT"]
 
 
 class QueryError(RuntimeError):
     """A query whose rows could not be read; the message names the server and why."""
 
 
-def read_query(server, query, *, as_frame=False, max_rows=MAX_ROWS, max_bytes=MAX_BYTES, timeout=TIMEOUT):
+def read_query(server, query, *, as_frame=False, max_rows=MAX_ROWS, max_bytes=MAX_BYTES, timeout=None):
     """The rows of `query` on the attached database `server` ("starrocks", "postgres" or "mongo"; a database or schema inside it, like `reddit`, is named in the query), read through its read-only MCP server and the gateway: a list of dicts (column name to value), or a pandas DataFrame with `as_frame=True`.
 
-    For StarRocks and PostgreSQL `query` is SQL; for MongoDB a dict, `{"collection", "database", "pipeline"}` for an aggregation or `{"collection", "database", "filter", "projection", "sort", "limit"}` for a find. More than `max_rows` rows, more than `max_bytes` bytes read, or more than `timeout` seconds raise QueryError, as does a refused query, a server not attached to this chat, or a server that cannot be reached.
+    For StarRocks and PostgreSQL `query` is SQL; for MongoDB a dict, `{"collection", "database", "pipeline"}` for an aggregation or `{"collection", "database", "filter", "projection", "sort", "limit"}` for a find. More than `max_rows` rows, more than `max_bytes` bytes read, or more than `timeout` seconds raise QueryError, as does a refused query, a server not attached to this chat, or a server that cannot be reached. On MongoDB and StarRocks `timeout` defaults to the chat's query time limit plus 10 seconds, and a larger one is lowered to that; on PostgreSQL, or without a limit, it defaults to 100.
     """
     if not isinstance(server, str) or server not in DATABASES:
         raise QueryError(f"sdp_data: {server!r} is not a database server: give starrocks, postgres or mongo, and name databases and tables inside the query (for example reddit.comments)")
     for name, value in (("max_rows", max_rows), ("max_bytes", max_bytes)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise QueryError(f"sdp_data: {server}: {name} must be a whole number from 1")
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
-        raise QueryError(f"sdp_data: {server}: timeout must be a number of seconds above 0")
+    timeout, limit = _timeout(server, timeout)
     url, kind = _address(server)
-    tool, arguments = _request(server, query, max_rows, timeout)
-    result = _run(lambda: _call(server, url, kind, tool, arguments, max_bytes, timeout))
-    columns, rows = _rows(server, result)
+    tool, arguments = _request(server, query, max_rows, timeout if limit is None else min(timeout, limit))
+    result = _run(lambda: _call(server, url, kind, tool, arguments, max_bytes, timeout, limit))
+    columns, rows = _rows(server, result, limit)
     if len(rows) > max_rows:
         raise QueryError(f"sdp_data: {server}: the result has more than {max_rows:,} rows (max_rows): aggregate in the query, or pass a larger max_rows=")
     if as_frame:
@@ -72,6 +75,34 @@ def read_query(server, query, *, as_frame=False, max_rows=MAX_ROWS, max_bytes=MA
 
 
 # ── where and what ────────────────────────────────────────────────────────
+
+
+def query_limit():
+    """The chat's query time limit in seconds from `SDP_CHAT_QUERY_SECONDS`: None when it is missing or empty; QueryError for anything but a whole number from 1 to 3600."""
+    text = os.environ.get(QUERY_ENV, "")
+    if not text:
+        return None
+    if not (text.isascii() and text.isdigit() and len(text) <= 4 and 1 <= int(text) <= QUERY_SECONDS_MAX):
+        raise QueryError(f"sdp_data: {QUERY_ENV} is not a whole number of seconds from 1 to {QUERY_SECONDS_MAX}")
+    return int(text)
+
+
+def _timeout(database, timeout):
+    """(the call's timeout in seconds, the query time limit or None): `timeout` checked (None: the default); on `mongo` and `starrocks` with a limit the default and the ceiling are the limit plus QUERY_MARGIN; `postgres` (whose server ignores the limit), and any server without one, gets TIMEOUT by default and the caller's value, with None as the limit."""
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0):
+        raise QueryError(f"sdp_data: {database}: timeout must be a number of seconds above 0")
+    limit = query_limit()
+    if database == "postgres":
+        limit = None
+    if limit is None:
+        return (TIMEOUT if timeout is None else timeout), None
+    ceiling = float(limit + QUERY_MARGIN)
+    return (ceiling if timeout is None else min(timeout, ceiling)), limit
+
+
+def _limit_hint(limit):
+    """The advice appended to a time-out with the query time limit `limit`."""
+    return f"queries on MongoDB and StarRocks are stopped after {limit} seconds (the chat's query time limit): aggregate in the query, or submit a query that needs longer to the query queue (the scheduler's `jobs` tools) when it is attached"
 
 
 def _address(database):
@@ -213,7 +244,7 @@ def _cut(text):
     return text if len(text) <= MESSAGE_CUT else text[:MESSAGE_CUT] + " [cut]"
 
 
-async def _call(database, url, kind, tool, arguments, max_bytes, timeout):
+async def _call(database, url, kind, tool, arguments, max_bytes, timeout, limit=None):
     """The `tools/call` result of `tool` (wire format, a dict) from the server at `url`; QueryError for a server that cannot be reached or does not offer the tool, the time or the bytes running out."""
     try:
         import anyio
@@ -263,6 +294,8 @@ async def _call(database, url, kind, tool, arguments, max_bytes, timeout):
         raise QueryError(f"sdp_data: {database}: its MCP server offers no tool {tool} (it offers {', '.join(outcome['missing']) or 'none'})")
     error = outcome.get("error")
     if isinstance(error, TimeoutError):
+        if limit is not None:
+            raise QueryError(f"sdp_data: {database}: no answer within {timeout:g} seconds (timeout): {_limit_hint(limit)}")
         raise QueryError(f"sdp_data: {database}: no answer within {timeout:g} seconds (timeout): aggregate in the query, or pass a larger timeout=")
     if error is None or isinstance(error, asyncio.CancelledError):
         raise QueryError(f"sdp_data: {database}: the call ended without an answer")
@@ -278,29 +311,37 @@ def _text(result):
     return "\n".join(block["text"] for block in result.get("content") or () if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
 
 
-def _refused(database, message):
-    return QueryError(f"sdp_data: {database}: the query was refused: {_cut(message) or 'no reason given'}")
+# The words of a server's refusal for a query stopped by its time limit (MongoDB's "operation exceeded time limit", StarRocks's query_timeout error).
+_TIMED_OUT = ("time limit", "timeout", "timed out")
 
 
-def _rows(database, result):
-    """(column names or None, rows) of a `tools/call` result: rows are lists when the names are given, else dicts."""
+def _refused(database, message, limit=None):
+    """The QueryError of a refused query; with the query time limit `limit`, a refusal that reads as a time-out (`_TIMED_OUT`) on MongoDB or StarRocks gets `_limit_hint`."""
+    text = f"sdp_data: {database}: the query was refused: {_cut(message) or 'no reason given'}"
+    if limit is not None and database != "postgres" and any(word in str(message).lower() for word in _TIMED_OUT):
+        text += f" ({_limit_hint(limit)})"
+    return QueryError(text)
+
+
+def _rows(database, result, limit=None):
+    """(column names or None, rows) of a `tools/call` result: rows are lists when the names are given, else dicts; `limit` is the query time limit for the refusal's advice."""
     if not isinstance(result, dict):
         raise QueryError(f"sdp_data: {database}: the MCP server's answer is not a tool result")
     if result.get("isError") is True:
-        raise _refused(database, _text(result))
+        raise _refused(database, _text(result), limit)
     if database == "starrocks":
-        return _starrocks(database, result)
+        return _starrocks(database, result, limit)
     if database == "postgres":
         return _postgres(database, result)
     return _mongo(database, result)
 
 
-def _starrocks(database, result):
+def _starrocks(database, result, limit=None):
     found = result.get("structuredContent")
     if not isinstance(found, dict):
         raise QueryError(f"sdp_data: {database}: the MCP server's answer has no structured result to read the rows from")
     if found.get("success") is not True:
-        raise _refused(database, found.get("error_message") or _text(result))
+        raise _refused(database, found.get("error_message") or _text(result), limit)
     columns, rows = found.get("column_names"), found.get("rows")
     if columns is None:
         raise QueryError(f"sdp_data: {database}: the statement returned no rows to read (it is not a query)")

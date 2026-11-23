@@ -198,3 +198,80 @@ def test_a_mongo_query_of_another_shape_is_refused_saying_the_shape(monkeypatch,
     monkeypatch.setenv("SDP_CHAT_DATABASES", "mongo")
     with pytest.raises(sdp_data.QueryError, match=f"^sdp_data: mongo: .*{reason}"):
         sdp_data.read_query("mongo", query)
+
+
+# ── the query time limit ──────────────────────────────────────────────────
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """`read_query` with the MCP call replaced: `.calls` holds the (tool, arguments, timeout, limit) each call was given; the answer is an empty MongoDB result."""
+    calls = []
+
+    async def call(database, url, kind, tool, arguments, max_bytes, timeout, limit=None):
+        calls.append((tool, arguments, timeout, limit))
+        return text_result("[]")
+
+    monkeypatch.setattr(sdp_data, "_call", call)
+    monkeypatch.setenv("SDP_CHAT_GATEWAY", "127.0.0.1")
+    monkeypatch.setenv("SDP_CHAT_DATABASES", "postgres,mongo,starrocks")
+    monkeypatch.delenv("SDP_CHAT_QUERY_SECONDS", raising=False)
+    return calls
+
+
+def test_the_limits_constants_are_the_runners():
+    """Bug class: the helper's copy of the limit's variable, bound or margin drifting from the runner's (the helper then waits on another limit than the role text names)."""
+    assert (sdp_data.QUERY_ENV, sdp_data.QUERY_SECONDS_MAX, sdp_data.QUERY_MARGIN) == (claude.QUERY_ENV, claude.QUERY_SECONDS_MAX, claude.QUERY_MARGIN_SECONDS)
+
+
+@pytest.mark.parametrize("limit, asked, timeout, max_time_ms", [
+    (None, None, 100.0, 100_000),
+    (None, 300, 300, 300_000),
+    ("90", None, 100.0, 90_000),
+    ("90", 300, 100.0, 90_000),
+    ("90", 30, 30, 30_000),
+    ("90", 95, 95, 90_000),
+    ("3600", None, 3610.0, 3_600_000),
+])
+def test_the_timeout_follows_the_query_limit(monkeypatch, recorded, limit, asked, timeout, max_time_ms):
+    """Bug class: a script waiting past the limit the database enforces (or giving up before it), a larger `timeout=` not lowered, MongoDB asked for a longer `maxTimeMS` than the limit, or without a limit today's default of 100 s changed."""
+    if limit is not None:
+        monkeypatch.setenv("SDP_CHAT_QUERY_SECONDS", limit)
+    keywords = {} if asked is None else {"timeout": asked}
+    assert sdp_data.read_query("mongo", {"collection": "posts"}, **keywords) == []
+    [(tool, arguments, waited, given)] = recorded
+    assert tool == "query" and waited == timeout and arguments["maxTimeMS"] == max_time_ms
+    assert given == (None if limit is None else int(limit))
+
+
+@pytest.mark.parametrize("value", ["0", "3601", "abc", "9.5", "12345"])
+def test_a_malformed_limit_fails_the_call_naming_the_variable(monkeypatch, recorded, value):
+    """Bug class: a malformed limit taken as none (the script then waits on another limit than the database's)."""
+    monkeypatch.setenv("SDP_CHAT_QUERY_SECONDS", value)
+    with pytest.raises(sdp_data.QueryError, match="SDP_CHAT_QUERY_SECONDS is not a whole number of seconds from 1 to 3600"):
+        sdp_data.read_query("starrocks", "SELECT 1")
+    assert recorded == []
+
+
+@pytest.mark.parametrize("database, message, hinted", [
+    ("mongo", "Failed to query collection posts: operation exceeded time limit", True),
+    ("starrocks", "Error executing statement: Query reached its timeout of 90 seconds", True),
+    ("starrocks", "Access denied; you need the SELECT privilege", False),
+    ("postgres", "canceling statement due to statement timeout", False),
+])
+def test_a_refusal_for_the_time_limit_names_the_limit_and_the_queue(database, message, hinted):
+    """Bug class: the assistant told only that the query was refused when the database stopped it at the limit, with nothing pointing to the query queue; or PostgreSQL, which ignores the limit, said to be stopped by it."""
+    text = str(sdp_data._refused(database, message, 90))
+    assert text.startswith(f"sdp_data: {database}: the query was refused: ")
+    assert ("stopped after 90 seconds (the chat's query time limit)" in text and "query queue" in text) is hinted
+    assert "query queue" not in str(sdp_data._refused(database, message))
+
+
+@pytest.mark.parametrize("asked, timeout", [(None, 100.0), (300, 300), (30, 30)])
+def test_postgres_keeps_its_timeout_whatever_the_limit(monkeypatch, recorded, asked, timeout):
+    """Bug class: a PostgreSQL call (whose server ignores the limit and keeps its own) cut short, or its caller's `timeout=` lowered, by the limit of MongoDB and StarRocks."""
+    monkeypatch.setenv("SDP_CHAT_QUERY_SECONDS", "20")
+    keywords = {} if asked is None else {"timeout": asked}
+    assert sdp_data.read_query("postgres", "SELECT 1", **keywords) == []
+    [(tool, arguments, waited, given)] = recorded
+    assert tool == "execute_sql" and waited == timeout and given is None

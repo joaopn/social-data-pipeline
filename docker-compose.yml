@@ -420,6 +420,46 @@ services:
     # STARROCKS_MCP_PORT only changes the host-side mapping.
 
   # ==========================================================================
+  # Profiles: chat_mongo_mcp, chat_starrocks_mcp - the chat's own copies of the MongoDB and StarRocks MCP servers, started and removed by `sdp chat start` / `sdp chat stop` only (never by `sdp db start`).
+  # Same image, environment and read-only data mount as mongo-mcp / starrocks-mcp, no published port, and a query time limit the database enforces (CHAT_QUERY_TIMEOUT_SECONDS in .env, default 90 s).
+  # The image is the one compose builds for the shared service (named <project>-<service>); it is never pulled.
+  # ==========================================================================
+  chat-mongo-mcp:
+    profiles: [chat_mongo_mcp]
+    image: sdp-mongo-mcp
+    pull_policy: never
+    restart: "no"
+    environment:
+      MCP_MONGODB_URI: mongodb://mongo:27017
+      MCP_MONGODB_READONLY: "${MONGO_MCP_READ_ONLY:-true}"
+      MCP_PORT: "3000"
+      MCP_MONGODB_USER: ${MONGO_MCP_USER:-}
+      MCP_QUERY_TIMEOUT_SECONDS: ${CHAT_QUERY_TIMEOUT_SECONDS:-90}
+    volumes:
+      - ${MONGO_DATA_PATH:-./data/database/mongo}:/data/mongo:ro
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  chat-starrocks-mcp:
+    profiles: [chat_starrocks_mcp]
+    image: sdp-starrocks-mcp
+    pull_policy: never
+    restart: "no"
+    environment:
+      STARROCKS_HOST: starrocks
+      STARROCKS_PORT: "9030"
+      STARROCKS_MYSQL_AUTH_PLUGIN: mysql_clear_password
+      MCP_PORT: "9000"
+      STARROCKS_MCP_USER: ${STARROCKS_MCP_USER:-}
+      MCP_QUERY_TIMEOUT_SECONDS: ${CHAT_QUERY_TIMEOUT_SECONDS:-90}
+    volumes:
+      - ${STARROCKS_DATA_PATH:-./data/database/starrocks}:/data/starrocks:ro
+    depends_on:
+      starrocks:
+        condition: service_healthy
+
+  # ==========================================================================
   # Profile: jobs - Query scheduler (web UI + MCP + runner)
   # Single-container service. Admin credentials flow from the parent
   # `sdp db start` via POSTGRES_PASSWORD / STARROCKS_ROOT_PASSWORD —

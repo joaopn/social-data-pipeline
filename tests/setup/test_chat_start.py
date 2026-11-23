@@ -7,10 +7,11 @@ The contracts pinned here, each test naming the bug class it catches:
 - The gateway's config for each back end and each set of attached databases loads with the real `gateway.table` loader; the gateway's address is the second host address of the network's subnet.
 - `start` refuses without a setup, under user-id mapping, while a container runs, with a container of another deployment, and with no attachable database (one "why" line per database), changing nothing; a database without the key is never attached; a step that fails in the middle removes what the start made; the token is in no output, argument or environment.
 - `stop` and `status`: their outputs and exit codes; a database container replaced since the start shows as dropped; a stopped container attached to the network is detached before the network is removed (else it could no longer start).
+- The query time limit: `CHAT_QUERY_TIMEOUT_SECONDS` read from `.env` as `sdp` reads it (missing or empty: 90; malformed or outside 1 to 3600: start refuses naming the key, making nothing); for MongoDB and StarRocks the chat's own copy of the MCP server is started (its `docker compose` argument list pinned, the checked value in its environment) and attached in place of the shared server, PostgreSQL stays on its shared one; stop and a failed start remove the copies; the sandbox and the output are told the limit.
 - `rebuild`: both images built first, as setup builds them, then the chat stopped and started (the argument lists in order); a chat that does not run is started; refused before any Docker call without a completed setup; a failed build stops nothing.
 - The work folder's size: links are not followed, the walk is bounded; `unsetup` refuses while a container exists; the CLI parses the three commands.
 
-Docker is a stand-in that records every call and answers from a small model of containers and networks; nothing reaches a real Docker.
+Docker is a stand-in that records every call (and the environment of a call given one) and answers from a small model of containers and networks, a `docker compose up` of a copy adding its container; nothing reaches a real Docker.
 """
 
 from __future__ import annotations
@@ -32,6 +33,9 @@ MONGO_ID = "a" * 64
 POSTGRES_ID = "b" * 64
 STARROCKS_ID = "c" * 64
 NEW_MONGO_ID = "d" * 64
+# The containers the stand-in gives the chat's copies of the MongoDB and StarRocks MCP servers.
+COPY_IDS = {"chat-mongo-mcp": "1" * 64, "chat-starrocks-mcp": "2" * 64}
+MONGO_COPY = COPY_IDS["chat-mongo-mcp"]
 CHAT = Path(".sdp") / "chat"
 
 
@@ -41,7 +45,11 @@ class ChatDocker:
     def __init__(self, root):
         self.root = str(root)
         self.calls = []
+        # The environment given with each call that had one, by the index of the call.
+        self.envs = {}
         self.images = {host.GATEWAY_IMAGE, host.SANDBOX_IMAGE}
+        # The query-limit label of the MCP images the chat's copies run, by image (an image not here is missing).
+        self.labels = {"sdp-mongo-mcp": "1", "sdp-starrocks-mcp": "1"}
         self.security = ["name=seccomp,profile=builtin", "name=cgroupns"]
         self.containers = {}
         self.networks = {}
@@ -71,16 +79,24 @@ class ChatDocker:
         found = self.networks.get(network, {}).get("members", [])
         return [c for c in found if every or (self.compose[c]["running"] if c in self.compose else self.containers[c]["status"] == "running")]
 
-    def __call__(self, arguments, *, capture=True, timeout=600):
+    def __call__(self, arguments, *, capture=True, timeout=600, env=None):
         arguments = list(arguments)
+        if env is not None:
+            self.envs[len(self.calls)] = env
         self.calls.append(arguments)
         assert arguments[0] == "docker"
         failed = self.fail(arguments)
         if failed is not None:
             return self.answer(1, stderr=failed)
+        if arguments[1] == "compose":
+            assert arguments[2:4] == ["--project-directory", self.root] and "up" in arguments
+            self.add(COPY_IDS[arguments[-1]], arguments[-1])
+            return self.answer(0)
         words = arguments[1:3]
         if arguments[1] == "info":
             return self.answer(0, json.dumps(self.security))
+        if words == ["image", "inspect"] and "sdp.query-limit" in arguments[4]:
+            return self.answer(0, self.labels[arguments[-1]] + "\n") if arguments[-1] in self.labels else self.answer(1, stderr=f"Error: No such image: {arguments[-1]}")
         if words == ["image", "inspect"]:
             return self.answer(0, "sha256:made-up") if arguments[-1] in self.images else self.answer(1, stderr=f"Error: No such image: {arguments[-1]}")
         if words == ["container", "inspect"]:
@@ -112,6 +128,12 @@ class ChatDocker:
             return self.answer(0, arguments[-1])
         if arguments[1] == "rm":
             name = arguments[-1]
+            if name in self.compose:
+                del self.compose[name]
+                for network in self.networks.values():
+                    if name in network["members"]:
+                        network["members"].remove(name)
+                return self.answer(0, name)
             if name not in self.containers:
                 return self.answer(1, stderr=f"Error response from daemon: No such container: {name}")
             del self.containers[name]
@@ -141,7 +163,7 @@ class ChatDocker:
         if network is not None:
             found = self.members(network, every)
         else:
-            found = [c for c in self.compose if self.compose[c]["running"]]
+            found = [c for c in self.compose if every or self.compose[c]["running"]]
         labels = [item.removeprefix("label=") for item in filters if item.startswith("label=")]
         if labels:
             found = [c for c in found if c in self.compose and all(self.matches(c, label) for label in labels)]
@@ -357,8 +379,8 @@ def test_start_attaches_the_database_with_a_read_only_user(root, docker, capsys)
         host.gateway_arguments(str(root), os.getuid(), os.getgid(), address),
         ["docker", "network", "connect", "sdp-chat-up", "sdp-gateway"],
         ["docker", "start", "sdp-gateway"],
-        ["docker", "network", "connect", "--alias", "sdp-chat-mongo-mcp", "sdp-chat-up", MONGO_ID],
-        host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], host.DEFAULT_CAP_GIB),
+        ["docker", "network", "connect", "--alias", "sdp-chat-mongo-mcp", "sdp-chat-up", MONGO_COPY],
+        host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], host.DEFAULT_CAP_GIB, query_seconds=90),
         ["docker", "start", "sdp-sandbox"],
     ]
     out = capsys.readouterr().out
@@ -375,7 +397,8 @@ def test_a_database_without_the_read_only_user_key_is_never_attached(root, docke
     docker.add(STARROCKS_ID, "starrocks-mcp", key=False)
     assert start(root) == 0
     connected = [call[-1] for call in docker.calls if call[1:3] == ["network", "connect"]]
-    assert connected == ["sdp-gateway", MONGO_ID]
+    assert connected == ["sdp-gateway", MONGO_COPY]
+    assert [call[-1] for call in docker.calls if call[1] == "compose"] == ["chat-mongo-mcp"]
     assert [lst.port for lst in gateway_table.load(str(root / CHAT / "gateway" / "config.json")).listeners] == [8080, 8002]
 
 
@@ -461,7 +484,7 @@ def failing(word, target):
 
 @pytest.mark.parametrize(("step", "word", "target"), [
     ("gateway start", ["start"], "sdp-gateway"),
-    ("database attach", ["network", "connect"], MONGO_ID),
+    ("database attach", ["network", "connect"], MONGO_COPY),
     ("sandbox create", ["create"], "sdp-sandbox"),
     ("sandbox start", ["start"], "sdp-sandbox"),
 ])
@@ -510,9 +533,11 @@ def test_stop_removes_everything_and_detaches_the_databases(root, docker, capsys
     set_up(root)
     docker.add(MONGO_ID, "mongo-mcp")
     assert start(root) == 0
-    docker.compose[MONGO_ID]["running"] = False
+    docker.compose[MONGO_COPY]["running"] = False
+    docker.networks["sdp-chat-up"]["members"].append(MONGO_ID)
     assert host.cmd_stop(root) == 0
     assert docker.containers == {} and docker.networks == {}
+    assert ["docker", "rm", "--force", MONGO_COPY] in docker.calls and MONGO_COPY not in docker.compose
     assert ["docker", "network", "disconnect", "sdp-chat-up", MONGO_ID] in docker.calls
     assert not (root / CHAT / "gateway" / "config.json").exists()
     assert "The chat has stopped." in capsys.readouterr().out
@@ -556,7 +581,7 @@ def test_rebuild_builds_both_images_first_then_stops_and_starts(root, docker, ca
         ["docker", "rm", "--force", "sdp-sandbox"],
         ["docker", "stop", "-t", "10", "sdp-gateway"],
         ["docker", "rm", "--force", "sdp-gateway"],
-        ["docker", "network", "disconnect", "sdp-chat-up", MONGO_ID],
+        ["docker", "rm", "--force", MONGO_COPY],
         ["docker", "network", "rm", "sdp-chat-up"],
         ["docker", "network", "rm", "sdp-chat"],
         ["docker", "network", "create", "--driver", "bridge", "--label", f"{host.ROOT_LABEL}={root}", "sdp-chat-up"],
@@ -566,8 +591,8 @@ def test_rebuild_builds_both_images_first_then_stops_and_starts(root, docker, ca
         host.gateway_arguments(str(root), os.getuid(), os.getgid(), address),
         ["docker", "network", "connect", "sdp-chat-up", "sdp-gateway"],
         ["docker", "start", "sdp-gateway"],
-        ["docker", "network", "connect", "--alias", "sdp-chat-mongo-mcp", "sdp-chat-up", MONGO_ID],
-        host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], host.DEFAULT_CAP_GIB),
+        ["docker", "network", "connect", "--alias", "sdp-chat-mongo-mcp", "sdp-chat-up", MONGO_COPY],
+        host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], host.DEFAULT_CAP_GIB, query_seconds=90),
         ["docker", "start", "sdp-sandbox"],
     ]
     assert all(docker.containers[name]["status"] == "running" for name in ("sdp-gateway", "sdp-sandbox"))
@@ -622,9 +647,9 @@ def test_status_names_the_attached_database_and_one_replaced_since(root, docker,
     out = capsys.readouterr().out
     assert "Gateway: running" in out and "Sandbox: running" in out and "Back end: claude-code" in out
     assert "Databases the chat can read now: mongo" in out and "dropped" not in out
-    del docker.compose[MONGO_ID]
-    docker.networks["sdp-chat-up"]["members"].remove(MONGO_ID)
-    docker.add(NEW_MONGO_ID, "mongo-mcp")
+    del docker.compose[MONGO_COPY]
+    docker.networks["sdp-chat-up"]["members"].remove(MONGO_COPY)
+    docker.add(NEW_MONGO_ID, "chat-mongo-mcp")
     assert host.cmd_status(root) == 0
     out = capsys.readouterr().out
     assert "Databases the chat can read now: none" in out
@@ -926,7 +951,7 @@ def test_start_attaches_the_scheduler_behind_a_new_secret(root, docker, capsys):
     assert (queue.port, queue.kind, queue.upstream, queue.paths, queue.secret_file) == (8004, "mcp", gateway_table.Upstream("http", "sdp-chat-jobs", 9123), ("/assistant/mcp", "/assistant/results/"), "/run/sdp-gateway/assistant.secret")
     assert ["docker", "network", "connect", "--alias", "sdp-chat-jobs", "sdp-chat-up", JOBS_ID] in docker.calls
     address = host.gateway_address(docker.networks["sdp-chat"]["subnet"])
-    assert host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], 10, queue=True) in docker.calls
+    assert host.sandbox_arguments(str(root), os.getuid(), os.getgid(), address, "claude-code", ["mongo"], 10, queue=True, query_seconds=90) in docker.calls
     out = capsys.readouterr().out
     assert "The query queue is attached" in out and "cannot use the query queue" not in out
     assert host.cmd_status(root) == 0 and "Query queue for the assistant: attached" in capsys.readouterr().out
@@ -1036,3 +1061,96 @@ def test_a_failed_start_removes_the_gateways_copy_and_unsetup_leaves_the_schedul
     monkeypatch.setattr(host, "_docker", lambda arguments, **keywords: docker.answer(0) if arguments[1:3] == ["image", "rm"] else docker(arguments, **keywords))
     assert host.cmd_unsetup(root, lambda: True, lambda: True) == 0
     assert not (root / CHAT).exists() and path.exists()
+
+
+# ── the query time limit ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("text, seconds", [(None, 90), ("", 90), ("CHAT_QUERY_TIMEOUT_SECONDS=\n", 90), ("CHAT_QUERY_TIMEOUT_SECONDS=1\n", 1), ("# CHAT_QUERY_TIMEOUT_SECONDS=5\nCHAT_QUERY_TIMEOUT_SECONDS = 30\nCHAT_QUERY_TIMEOUT_SECONDS=3600\n", 3600), ("X=1\n  CHAT_QUERY_TIMEOUT_SECONDS=0120  \n", 120)])
+def test_the_query_limit_is_read_as_sdp_reads_the_env(root, text, seconds):
+    """Bug class: a missing or empty key not taken as the compose file's default of 90, or another line than the last one winning."""
+    if text is not None:
+        (root / ".env").write_text(text)
+    assert host.query_seconds(str(root)) == seconds
+
+
+@pytest.mark.parametrize("value", ["0", "3601", "12345", "abc", "9.5", "-1", "90s", "٣٠"])
+def test_a_malformed_query_limit_is_refused_naming_the_key(root, value):
+    """Bug class: a malformed or out-of-bounds limit silently replaced by the default (the chat then runs on another limit than the operator set), or a refusal that does not say which key."""
+    (root / ".env").write_text(f"CHAT_QUERY_TIMEOUT_SECONDS={value}\n")
+    with pytest.raises(host.Refused) as refusal:
+        host.query_seconds(str(root))
+    assert "CHAT_QUERY_TIMEOUT_SECONDS" in refusal.value.message and "1 to 3600" in refusal.value.message
+
+
+def test_start_refuses_a_malformed_query_limit_before_making_anything(root, docker, capsys):
+    """Bug class: a chat started on another limit than the one written, or what a refused start made left behind."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    (root / ".env").write_text("CHAT_QUERY_TIMEOUT_SECONDS=4000\n")
+    assert start(root) == 1
+    assert made_calls(docker) == [] and not any(call[1] == "compose" for call in docker.calls)
+    assert "CHAT_QUERY_TIMEOUT_SECONDS in the deployment's .env" in capsys.readouterr().out
+
+
+def test_the_copy_argument_list_is_pinned():
+    """Bug class: the copy started without its database's profile (Compose refuses its `depends_on`), with its dependencies (the database recreated under the running shared server), in another project folder, or without waiting (a copy whose entrypoint refused taken as running)."""
+    mongo, starrocks = (db for db in host.DATABASES if db.chat_service)
+    assert host.copy_arguments("/srv/d", mongo) == ["docker", "compose", "--project-directory", "/srv/d", "--profile", "mongo", "--profile", "chat_mongo_mcp", "up", "--detach", "--no-deps", "--wait", "--wait-timeout", "60", "chat-mongo-mcp"]
+    assert host.copy_arguments("/srv/d", starrocks) == ["docker", "compose", "--project-directory", "/srv/d", "--profile", "starrocks", "--profile", "chat_starrocks_mcp", "up", "--detach", "--no-deps", "--wait", "--wait-timeout", "60", "chat-starrocks-mcp"]
+    assert [db.name for db in host.DATABASES if not db.chat_service] == ["postgres"]
+
+
+def test_start_attaches_the_copies_with_the_limit_and_postgres_on_its_shared_server(root, docker, capsys):
+    """Bug class: the shared servers (which other MCP clients use) attached instead of the chat's copies, the copy given another limit than the one checked (a shell export winning over .env), PostgreSQL's shared server replaced, the sandbox not told the limit, or the output not naming it."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    docker.add(POSTGRES_ID, "postgres-mcp")
+    docker.add(STARROCKS_ID, "starrocks-mcp")
+    (root / ".env").write_text("CHAT_QUERY_TIMEOUT_SECONDS=45\n")
+    assert start(root) == 0
+    copies = [(index, call) for index, call in enumerate(docker.calls) if call[1] == "compose"]
+    assert [call for _, call in copies] == [host.copy_arguments(str(root), db) for db in host.DATABASES if db.chat_service]
+    assert all(docker.envs[index]["CHAT_QUERY_TIMEOUT_SECONDS"] == "45" for index, _ in copies)
+    connected = [(call[-3], call[-1]) for call in docker.calls if call[1:3] == ["network", "connect"] and "--alias" in call]
+    assert connected == [("sdp-chat-postgres-mcp", POSTGRES_ID), ("sdp-chat-mongo-mcp", MONGO_COPY), ("sdp-chat-starrocks-mcp", COPY_IDS["chat-starrocks-mcp"])]
+    sandbox = next(call for call in docker.calls if call[1] == "create" and "sdp-sandbox" in call)
+    assert "SDP_CHAT_QUERY_SECONDS=45" in sandbox
+    out = capsys.readouterr().out
+    assert "Query time limit: 45 s on MongoDB and StarRocks" in out and "PostgreSQL ignores it (its MCP server keeps its own limit: 30 s in restricted mode, the default)" in out
+    assert ["docker", "image", "inspect", "--format", '{{index .Config.Labels "sdp.query-limit"}}', "sdp-mongo-mcp"] in docker.calls
+    assert host.cmd_status(root) == 0 and "Databases the chat can read now: postgres, mongo, starrocks" in capsys.readouterr().out
+    assert host.cmd_stop(root) == 0
+    assert not set(COPY_IDS.values()) & set(docker.compose) and {MONGO_ID, POSTGRES_ID, STARROCKS_ID} <= set(docker.compose)
+
+
+def test_a_copy_that_does_not_start_is_removed_with_what_the_start_made(root, docker, capsys):
+    """Bug class: a copy left behind (exited, or running outside the chat) after a failed start, or the start going on without it."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    docker.add(MONGO_COPY, "chat-mongo-mcp", running=False)
+    docker.fail = lambda arguments: "container sdp-chat-mongo-mcp-1 exited (1)" if arguments[1] == "compose" else None
+    assert start(root) == 1
+    assert MONGO_COPY not in docker.compose and MONGO_ID in docker.compose
+    assert docker.containers == {} and docker.networks == {}
+    out = capsys.readouterr().out
+    assert "the chat's copy of the MCP server of mongo (chat-mongo-mcp) did not start: container sdp-chat-mongo-mcp-1 exited (1)" in out and "What this start made was removed." in out
+
+
+@pytest.mark.parametrize("label, said", [("", "was built before the query time limit and would ignore it"), (None, "is missing")])
+def test_an_mcp_image_without_the_query_limit_label_is_refused_naming_the_build(root, docker, capsys, label, said):
+    """Bug class: the chat's copy run on an MCP image built before the limit (after a pull, until someone rebuilds it), which ignores the limit while start says it is enforced; or a refusal that leaves what the start made behind or does not say how to rebuild."""
+    set_up(root)
+    docker.add(MONGO_ID, "mongo-mcp")
+    docker.add(STARROCKS_ID, "starrocks-mcp")
+    if label is None:
+        del docker.labels["sdp-starrocks-mcp"]
+    else:
+        docker.labels["sdp-starrocks-mcp"] = label
+    assert start(root) == 1
+    assert docker.containers == {} and docker.networks == {} and not set(COPY_IDS.values()) & set(docker.compose)
+    assert [call[-1] for call in docker.calls if call[1] == "compose"] == ["chat-mongo-mcp"]
+    assert not (root / CHAT / "gateway" / "config.json").exists()
+    out = capsys.readouterr().out
+    assert f"the image sdp-starrocks-mcp of the MCP server of starrocks {said}" in out
+    assert "docker compose --profile starrocks --profile starrocks_mcp build starrocks-mcp, then run python sdp.py chat start again" in out and "What this start made was removed." in out

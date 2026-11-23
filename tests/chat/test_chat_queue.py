@@ -171,3 +171,47 @@ def test_without_the_queue_the_agent_opens_no_jobs_server_and_keeps_its_role(mon
     assert [s.database for s in asyncio.run(agent.open_servers([], "10.0.0.2", queue=True))] == ["jobs"]
     assert opened == [("mongo", "http://10.0.0.2:8002/mcp", "http"), ("jobs", "http://10.0.0.2:8004/assistant/mcp", "http")]
     assert agent.Agent("10.0.0.2", 8080, MODEL, "/tmp", {}).system == {"role": "system", "content": ROLE}
+
+
+# ── the query time limit ──────────────────────────────────────────────────
+
+LIMIT_SENTENCE = "A read-only query on MongoDB or StarRocks, through your tools or `sdp_data.read_query`, is stopped by the database after 45 seconds."
+LIMIT_QUEUE_SENTENCE = "Submit a query on MongoDB or StarRocks that may take longer than 45 seconds to the scheduler instead of running it on the read-only connection."
+
+
+def test_the_role_text_names_the_limit_and_with_the_queue_sends_longer_queries_there():
+    """Bug class: the assistant not told the limit the database enforces (it then runs a long query until it is stopped, and again), the limit claimed for PostgreSQL (whose server ignores it), or told to use a queue that is not attached."""
+    assert claude.role(False, 45) == ROLE + " " + LIMIT_SENTENCE
+    assert claude.role(True, 45) == ROLE + " " + LIMIT_SENTENCE + "\n\n" + QUEUE_PARAGRAPH + " " + LIMIT_QUEUE_SENTENCE
+    assert "PostgreSQL" not in LIMIT_SENTENCE + LIMIT_QUEUE_SENTENCE
+    assert claude.role(False) == ROLE and claude.role(True, None) == ROLE + "\n\n" + QUEUE_PARAGRAPH
+
+
+def test_both_back_ends_carry_the_limit_to_the_role_text_and_the_shell():
+    """Bug class: the limit given to the runner but not to the assistant's role text, or not to the shell where `sdp_data` reads it (its waits then ignore the limit)."""
+    argv = claude.command("/usr/local/bin/claude", HOME, SESSION, False, ["mongo"], True, None, 45)
+    assert argv[argv.index("--append-system-prompt") + 1] == claude.role(True, 45)
+    assert claude.environment("/tmp/s/home", HOME, "/tmp/s", "10.1.0.2", databases=("mongo",), query_seconds=45)["SDP_CHAT_QUERY_SECONDS"] == "45"
+    assert "SDP_CHAT_QUERY_SECONDS" not in claude.environment("/tmp/s/home", HOME, "/tmp/s", "10.1.0.2", databases=("mongo",))
+    assert openai.environment("/tmp/s/home", "/tmp/s", "10.201.0.2", "m", ["mongo"], query_seconds=45)["SDP_CHAT_QUERY_SECONDS"] == "45"
+    worker = agent.Agent("10.0.0.2", 8080, MODEL, "/tmp", {}, queue=True, query_seconds=45)
+    assert worker.system == {"role": "system", "content": claude.role(True, 45)} and worker.tool_seconds == agent.TOOL_SECONDS == 120
+    assert agent.Agent("10.0.0.2", 8080, MODEL, "/tmp", {}, query_seconds=300).tool_seconds == 310
+    assert agent.Agent("10.0.0.2", 8080, MODEL, "/tmp", {}).tool_seconds is None
+
+
+@pytest.mark.parametrize("value, seconds", [(None, None), ("", None), ("1", 1), ("90", 90), ("3600", 3600)])
+def test_the_runner_reads_the_limit(value, seconds):
+    """Bug class: a missing limit read as some number, or a set one dropped."""
+    environ = {**BASE, **({} if value is None else {"SDP_CHAT_QUERY_SECONDS": value})}
+    assert main.settings(environ)["query_seconds"] == seconds
+    assert claude.query_seconds(environ) == seconds
+
+
+@pytest.mark.parametrize("value", ["0", "3601", "12345", "abc", "9.5", " 9", "٣"])
+def test_a_malformed_limit_refuses_the_runner_and_the_agent(value):
+    """Bug class: a malformed limit taken as none, so the assistant is told nothing while the database stops its queries."""
+    with pytest.raises(main.SettingError, match="SDP_CHAT_QUERY_SECONDS"):
+        main.settings({**BASE, "SDP_CHAT_QUERY_SECONDS": value})
+    with pytest.raises(ValueError, match="SDP_CHAT_QUERY_SECONDS"):
+        claude.query_seconds({"SDP_CHAT_QUERY_SECONDS": value})

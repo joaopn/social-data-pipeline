@@ -1,0 +1,2 @@
+{#- The hidden field of a new-chat form that carries this browser's default model for new chats: `app.js` fills it from `localStorage` (`sdp.defaultModel`) only with one of the models listed in `data-models` (the runner's allow-list from `hello`); left empty, the chat starts on the back end's default. Only when the back end offers a choice. -#}
+{%- if hello and hello.choosable %}<input type="hidden" class="default-model" name="model" value="" data-models="{{ hello.models | join(' ') }}">{% endif %}

@@ -113,7 +113,7 @@ def test_connections_over_the_limit_are_closed_and_requests_and_replies_are_boun
         for s in held:
             s.close()
         time.sleep(0.2)
-        assert r.call("hello")["result"] == {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": False}
+        assert r.call("hello")["result"] == {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": False, "models": ["opus", "sonnet", "haiku"], "model_default": None}
     finally:
         os.close(folder_fd)
     big = json.dumps({"op": "hello", "pad": "x" * (64 * 1024)}).encode()
@@ -205,7 +205,7 @@ def test_a_log_line_or_a_title_that_cannot_be_sent_is_answered_as_unreadable_not
     (r.work / chat / "meta.json").write_text('{"created": 1, "title": "x\\ud800", "session": "' + str(uuid.uuid4()) + '"}')
     r = chat_runner()
     assert [e["type"] for e in r.call("chat.events", chat=chat, offset=0, limit=10)["result"]["events"]] == ["error", "text"]
-    assert r.call("chat.list")["result"]["chats"] == [{"id": chat, "title": "", "created": 1, "running": False}]
+    assert r.call("chat.list")["result"]["chats"] == [{"id": chat, "title": "", "created": 1, "running": False, "model": None}]
 
 
 def test_garbage_and_a_back_end_ending_without_a_result_give_a_constant_error(chat_runner):

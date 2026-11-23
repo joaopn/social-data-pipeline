@@ -28,6 +28,11 @@ EVENTS_MAX = 200
 TEXT_MAX = 32000
 PIECE_BYTES = 512 * 1024
 DATABASES_MAX = 16
+# A model's name as the runner gives it (`hello`'s `models` and `model_default`, a chat's `model`): visible ASCII, at most 200 characters (the rule of `chat_host.parse_model`); at most MODELS_MAX of them.
+MODEL = re.compile(r"[\x21-\x7e]{1,200}")
+MODELS_MAX = 8
+# `send` without `model`: the chat keeps the model it has.
+KEEP = object()
 # The most lines a chat's log holds (16 MiB, one line per 32 bytes), so the largest offset there is.
 OFFSET_MAX = 16 * 1024 * 1024 // 32
 SIZE_MAX = 1 << 62
@@ -74,6 +79,10 @@ def is_text(value, most):
     except UnicodeEncodeError:
         return False
     return True
+
+
+def is_model(value):
+    return isinstance(value, str) and MODEL.fullmatch(value) is not None
 
 
 def is_whole(value, low=0, high=SIZE_MAX):
@@ -237,35 +246,47 @@ class Assistant:
         return self._connect(self.socket_path, timeout).request({"op": op, **(fields or {})})
 
     def hello(self, timeout=READ_SECONDS):
-        """`{"backend", "databases", "queue"}` of `hello`, asked with the time limit `timeout`. A runner from before the field `queue` answers without it: that shape is taken too and read as without the queue, so that a web UI and a sandbox image of different versions do not refuse each other; with the field, it must be a flag."""
+        """`{"backend", "databases", "queue", "models", "model_default"}` of `hello`, asked with the time limit `timeout`. A runner from before the field `queue`, or from before `models` and `model_default`, answers without them: those shapes are taken too and read as without the queue and without a choice of model (`models` empty, `model_default` None), so that a web UI and a sandbox image of different versions do not refuse each other; with the fields, `queue` must be a flag, `models` at most MODELS_MAX distinct names of the model rule, `model_default` None or one of them."""
         found = self._ask("hello", timeout=timeout)
-        found = _exactly(found, ("version", "backend", "databases", "queue") if isinstance(found, dict) and "queue" in found else ("version", "backend", "databases"))
+        keys = ("version", "backend", "databases")
+        if isinstance(found, dict) and "queue" in found:
+            keys += ("queue",)
+            if "models" in found or "model_default" in found:
+                keys += ("models", "model_default")
+        found = _exactly(found, keys)
         queue = found.get("queue", False)
         _require(isinstance(queue, bool))
+        models, default = found.get("models", []), found.get("model_default")
+        _require(isinstance(models, list) and len(models) <= MODELS_MAX and all(is_model(name) for name in models) and len(set(models)) == len(models))
+        _require(default is None or (is_model(default) and default in models))
         databases = found["databases"]
         _require(is_whole(found["version"], 1, 1000) and isinstance(found["backend"], str) and NAME.fullmatch(found["backend"]) is not None)
         _require(isinstance(databases, list) and len(databases) <= DATABASES_MAX and all(isinstance(name, str) and NAME.fullmatch(name) for name in databases))
-        return {"backend": found["backend"], "databases": list(databases), "queue": queue}
+        return {"backend": found["backend"], "databases": list(databases), "queue": queue, "models": list(models), "model_default": default}
 
     def chats(self):
-        """The chats of `chat.list`, newest first: `[{"id", "title", "created", "running"}]`."""
+        """The chats of `chat.list`, newest first: `[{"id", "title", "created", "running", "model"}]` (`model` None for the back end's default; a runner from before the field answers without it, read as None)."""
         chats = _exactly(self._ask("chat.list"), ("chats",))["chats"]
         _require(isinstance(chats, list) and len(chats) <= CHATS_MAX)
+        found = []
         for chat in chats:
-            _exactly(chat, ("id", "title", "created", "running"))
-            _require(is_chat_id(chat["id"]) and is_text(chat["title"], TITLE_MAX) and is_time(chat["created"]) and isinstance(chat["running"], bool))
-        _require(len({chat["id"] for chat in chats}) == len(chats))
-        return chats
+            _exactly(chat, ("id", "title", "created", "running", "model") if isinstance(chat, dict) and "model" in chat else ("id", "title", "created", "running"))
+            model = chat.get("model")
+            _require(is_chat_id(chat["id"]) and is_text(chat["title"], TITLE_MAX) and is_time(chat["created"]) and isinstance(chat["running"], bool) and (model is None or is_model(model)))
+            found.append({"id": chat["id"], "title": chat["title"], "created": chat["created"], "running": chat["running"], "model": model})
+        _require(len({chat["id"] for chat in found}) == len(found))
+        return found
 
-    def new(self):
-        """The id of a new chat."""
-        chat = _exactly(self._ask("chat.new"), ("chat",))["chat"]
+    def new(self, model=None):
+        """The id of a new chat; with `model` (a name of the model rule) the chat is given that model, without it the back end's default."""
+        chat = _exactly(self._ask("chat.new", {"model": model} if model is not None else None), ("chat",))["chat"]
         _require(is_chat_id(chat))
         return chat
 
-    def send(self, chat, text):
-        """Send a question; the index of its `user` event."""
-        offset = _exactly(self._ask("chat.send", {"chat": chat, "text": text}, CHANGE_SECONDS), ("offset",))["offset"]
+    def send(self, chat, text, model=KEEP):
+        """Send a question; the index of its `user` event. With `model` (a name of the model rule, or None for the back end's default) the chat runs on that model from this turn on; without it, on the model it has."""
+        fields = {"chat": chat, "text": text, **({} if model is KEEP else {"model": model})}
+        offset = _exactly(self._ask("chat.send", fields, CHANGE_SECONDS), ("offset",))["offset"]
         _require(is_whole(offset, 0, OFFSET_MAX))
         return offset
 

@@ -228,3 +228,27 @@ var sdpStore = {
     }
   });
 })();
+
+// The new-chat forms (input.default-model) send this browser's default model for new chats (localStorage `sdp.defaultModel`, written by the settings box), only when it is one of the models the sandbox offers (`data-models`); otherwise the field stays empty and the chat starts on the back end's default.
+(function () {
+  function storedModel() {
+    try {
+      return window.localStorage.getItem("sdp.defaultModel");
+    } catch (error) {
+      return null;
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var model = storedModel();
+    if (!model) {
+      return;
+    }
+    document.querySelectorAll("input.default-model").forEach(function (input) {
+      var offered = (input.getAttribute("data-models") || "").split(" ");
+      if (offered.indexOf(model) !== -1) {
+        input.value = model;
+      }
+    });
+  });
+})();

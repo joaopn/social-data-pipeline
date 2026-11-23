@@ -25,7 +25,7 @@ MCP_DOC = {"port": 8004, "kind": "mcp", "upstream": "http://sdp-chat-jobs:8050",
 
 
 def config(*listeners):
-    return {"listen": "127.0.0.1", "credential_file": "/run/c", "listeners": [{"port": 8080, "kind": "model-anthropic", "beta_allowed": []}, *listeners]}
+    return {"listen": "127.0.0.1", "credential_file": "/run/c", "listeners": [{"port": 8080, "kind": "model-anthropic", "beta_allowed": [], "models": ["m"]}, *listeners]}
 
 
 def test_secret_file_is_taken_on_an_mcp_listener():
@@ -34,7 +34,7 @@ def test_secret_file_is_taken_on_an_mcp_listener():
 
 
 @pytest.mark.parametrize("listener,key", [
-    ({"port": 8001, "kind": "model-anthropic", "beta_allowed": [], "secret_file": "/s"}, "listeners[1].secret_file: unknown key"),
+    ({"port": 8001, "kind": "model-anthropic", "beta_allowed": [], "models": ["m"], "secret_file": "/s"}, "listeners[1].secret_file: unknown key"),
     ({"port": 8001, "kind": "model-openai", "upstream": "https://h/v1", "model": "m", "secret_file": "/s"}, "listeners[1].secret_file: unknown key"),
     ({**MCP_DOC, "secret_file": "relative/path"}, "listeners[1].secret_file: must be an absolute path"),
     ({**MCP_DOC, "secret_file": ""}, "listeners[1].secret_file: must be an absolute path"),
@@ -83,7 +83,7 @@ def test_the_header_goes_only_to_the_listener_with_the_secret_and_a_clients_neve
     listeners = (
         Listener(0, MCP, Upstream("http", "127.0.0.1", ups[0].port), paths=("/assistant/mcp", "/assistant/results/"), secret_file="/run/s"),
         Listener(0, MCP, Upstream("http", "127.0.0.1", ups[1].port), paths=("/mcp",)),
-        Listener(0, MODEL_ANTHROPIC, ANTHROPIC_UPSTREAM),
+        Listener(0, MODEL_ANTHROPIC, ANTHROPIC_UPSTREAM, models=frozenset({"x"})),
     )
     log = []
     gateway = Gateway(Table("127.0.0.1", listeners, "c", Limits()), CRED, secrets=[SECRET, "", ""], log=log.append, test_upstream=Upstream("http", "127.0.0.1", ups[2].port))

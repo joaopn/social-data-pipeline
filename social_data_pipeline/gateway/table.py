@@ -68,6 +68,8 @@ class Listener:
     beta_allowed: frozenset = frozenset()
     tool_types_allowed: frozenset = frozenset()
     model: str = ""
+    # A `model-anthropic` listener only: the model ids a request body may name (every other is refused).
+    models: frozenset = frozenset()
     paths: tuple = ()
     # An `mcp` listener only: the path of a file whose secret the gateway sends upstream as `x-sdp-assistant` on every request of this listener (read once at start by `read_secret`).
     secret_file: str = ""
@@ -82,7 +84,7 @@ class Table:
 
 
 _KIND_KEYS = {
-    MODEL_ANTHROPIC: ({"port", "kind", "beta_allowed"}, {"tool_types_allowed"}),
+    MODEL_ANTHROPIC: ({"port", "kind", "beta_allowed", "models"}, {"tool_types_allowed"}),
     MODEL_OPENAI: ({"port", "kind", "upstream", "model"}, set()),
     MCP: ({"port", "kind", "upstream", "paths"}, {"secret_file"}),
 }
@@ -143,7 +145,10 @@ def _listener(doc, i):
     _keys(doc, where, *_KIND_KEYS[kind])
     port = _int(doc["port"], f"{where}.port", 1, 65535)
     if kind == MODEL_ANTHROPIC:
-        return Listener(port, kind, ANTHROPIC_UPSTREAM, beta_allowed=_tokens(doc["beta_allowed"], f"{where}.beta_allowed"), tool_types_allowed=_tokens(doc.get("tool_types_allowed", []), f"{where}.tool_types_allowed"))
+        models = _tokens(doc["models"], f"{where}.models")
+        if not models:
+            raise ConfigError(f"{where}.models: must name at least one model")
+        return Listener(port, kind, ANTHROPIC_UPSTREAM, beta_allowed=_tokens(doc["beta_allowed"], f"{where}.beta_allowed"), tool_types_allowed=_tokens(doc.get("tool_types_allowed", []), f"{where}.tool_types_allowed"), models=models)
     upstream = _upstream(doc["upstream"], f"{where}.upstream", "https" if kind == MODEL_OPENAI else "http")
     if kind == MODEL_OPENAI:
         model = doc["model"]

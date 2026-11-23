@@ -117,7 +117,7 @@ def test_stop_ends_the_agent_and_its_shell_child(openai_runner):
 @pytest.mark.parametrize("model, ok", [("vendor/model-1:free", True), ("", False), ("a b", False), ("x" * 200, True), ("x" * 201, False), ("é", False)])
 def test_the_entry_point_requires_the_model_by_the_rule_of_setup(model, ok):
     """Bug class: the sandbox started without the model (every request refused by the gateway), or taking a name setup would refuse."""
-    environ = {"SDP_CHAT_BACKEND": "openai-compatible", "SDP_CHAT_CAP_GIB": "10", "SDP_CHAT_GATEWAY": "10.0.0.2", "SDP_CHAT_MODEL": model}
+    environ = {"SDP_CHAT_BACKEND": "openai-compatible", "SDP_CHAT_CAP_GIB": "10", "SDP_CHAT_GATEWAY": "10.0.0.2", "SDP_CHAT_MODEL": model, "SDP_CHAT_MODELS": model}
     try:
         assert chat_host.parse_model(model) == model and ok
     except chat_host.Refused:
@@ -127,7 +127,7 @@ def test_the_entry_point_requires_the_model_by_the_rule_of_setup(model, ok):
     else:
         with pytest.raises(main.SettingError, match="SDP_CHAT_MODEL"):
             main.settings(environ)
-    assert main.settings({**environ, "SDP_CHAT_BACKEND": "claude-code", "SDP_CHAT_MODEL": ""})["backend"] == "claude-code"
+    assert main.settings({**environ, "SDP_CHAT_BACKEND": "claude-code", "SDP_CHAT_MODEL": "", "SDP_CHAT_MODELS": "opus,sonnet,haiku"})["backend"] == "claude-code"
     with pytest.raises(main.SettingError, match="SDP_CHAT_GATEWAY"):
         main.settings({**environ, "SDP_CHAT_MODEL": "m", "SDP_CHAT_GATEWAY": "gateway"})
 

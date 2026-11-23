@@ -2,11 +2,12 @@
 
 Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule, and nothing of an answer reaches a header or a script.
 
-Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat and the data in reach (the databases the chat can read and whether the assistant can submit to the query queue, from `hello`); in the middle the open chat; on the right "This chat" (it can be hidden, and the conversation then takes its width): the chat's backend (`_chat_model.html`), its turn totals (a lazy part), the sandbox as one line that opens on the facts of what it can and cannot reach (`hello`), the open chat's files and its queries. A failure of `hello` is shown in the side columns only.
+Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat (with the browser's default model, filled by `app.js` from the models `hello` offers) and the data in reach (per database the sources the assistant can query, a part asked once the page has loaded, `GET /chat/reach`; whether the assistant can submit to the query queue, from `hello`); in the middle the open chat, its header with the chat's model picker (`hello`'s `models`, part of the send form); on the right "This chat" (it can be hidden, and the conversation then takes its width): the chat's backend and model as text (`_chat_model_line.html`), its turn totals (a lazy part), the sandbox as one line that opens on the facts of what it can and cannot reach (`hello`), the open chat's files and its queries. A failure of `hello` is shown in the side columns only.
 
-- `GET /chat`: the three columns with no chat open (`chat.list`, `hello`). `POST /chat/new` makes one (`chat.new`) and leads to it.
+- `GET /chat`: the three columns with no chat open (`chat.list`, `hello`). `POST /chat/new` makes one (`chat.new`, with the form's `model` when it is not empty) and leads to it.
+- `GET /chat/reach`: the left column's data in reach (`reach.read_reach`), on a bound of its own (`Limits.chat_reach_workers`; a full bound answers 204 and the placeholder stays): the broker asked first (an ended session gets `HX-Redirect`), then `hello`, `db.status`, `source.list` and `source.status` per source, bounded as the Overview's live figures.
 - `GET /chat/<id>` (an id of the runner's form, else not found): the chats (the list `chat.list` gave when the chat was looked up: the runner is not asked twice), the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`) with their download links, the sandbox (`hello`), the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
-- `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
+- `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence; `model` from the header's picker, "" for the back end's default, sent to the runner as it is, which keeps it for the chat), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
 - `GET /chat/<id>/table/<name>` (a name of the runner's rule ending in `.csv`): the first 256 KiB of the file (one `chat.file` piece, the broker asked first and never believed from before) as a table in the frame: decoded as UTF-8 with errors replaced, parsed by `csv` (strict), at most 500 rows under the header row and 50 columns, the cells within the page's units (`Limits.chat_units_max`), every cell through `statements.visible` and the template's escaping; a file that is not CSV (a NUL, a quote that does not close where the file was read whole, a field over `csv`'s limit) is one sentence.
 - `GET /chat/<id>/queries`: the right column's "Queries in the queue", a part the page asks once it has loaded and every 60 seconds after (`queries_model`), on a bound of its own (`Limits.chat_query_workers`; a full bound answers 204 and the part stays as it is). The broker is asked first (`queue.broker_session_error`, a short time limit: an ended session gets `HX-Redirect`, a broker that does not answer is the part's one line and nothing else is asked); then the chat's own events (at most 2,000, read from the start, the runner's pages) give the job ids written in the texts of its tool calls and their results, newest first, at most 20; then the scheduler's `queue.job` for each, with a short time limit and a total one. Only a job whose record says it was submitted by the assistant is listed; an unknown id or another submitter's job is left out without a word, a failure of one job is its row.
 - `GET /chat/<id>/totals`: the right column's turn totals of the chat (`totals_model`): the number of turns that ended, their time and their cost as the backend reported them, added up from the chat's "end" events read from the start (at most 2,000; a field that is missing or odd counts as not reported, never as an error). A part the page asks once it has loaded and again whenever `app.js` sees a new end of a turn come into the conversation, on a bound of its own (`Limits.chat_query_workers` places; a full one answers the placeholder, which asks again five seconds later); the broker is asked first, as for the queries.
@@ -30,7 +31,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from starlette.responses import Response
 
 from social_data_pipeline.control import client
-from social_data_pipeline.webui import actions, assistant, prose, queue, results, statements, vlspec, words
+from social_data_pipeline.webui import actions, assistant, prose, queue, reach, results, statements, vlspec, words
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker
 from social_data_pipeline.webui.scheduler import SchedulerUnavailable
 
@@ -314,8 +315,20 @@ def chat_rows(chats, current=None):
 
 
 def hello_model(hello):
-    """What the side columns show of an answer of `hello`: the back end, the names of the databases the chat reads, whether the queue is attached and its line."""
-    return {"backend": hello["backend"], "backend_name": BACKEND_NAMES.get(hello["backend"], hello["backend"]), "databases": [DATABASE_NAMES.get(name, name) for name in hello["databases"]], "queue": hello["queue"], "queue_line": QUEUE_ON if hello["queue"] else QUEUE_OFF}
+    """What the side columns and the header show of an answer of `hello`: the back end, the names of the databases the chat reads, whether the queue is attached and its line, the models a chat may be given and whether one is chosen (`choosable`: the back end has a default of its own besides the list, as Claude Code has; an OpenAI-compatible back end has one model, shown and not chosen)."""
+    models = list(hello.get("models", []))
+    default = hello.get("model_default")
+    return {"backend": hello["backend"], "backend_name": BACKEND_NAMES.get(hello["backend"], hello["backend"]), "databases": [DATABASE_NAMES.get(name, name) for name in hello["databases"]], "queue": hello["queue"], "queue_line": QUEUE_ON if hello["queue"] else QUEUE_OFF, "models": models, "model_default": default, "choosable": bool(models) and default is None}
+
+
+def model_field(form):
+    """The model a form posted (`model`): absent (`assistant.KEEP`), "" for the back end's default (None), or a name of the runner's model rule; any other value is None from `ok`. Returns (ok, value)."""
+    if "model" not in form:
+        return True, assistant.KEEP
+    value = form["model"]
+    if value == "":
+        return True, None
+    return assistant.is_model(value), value
 
 
 def files_count(count, more):
@@ -591,6 +604,7 @@ def install(api, ctx):
     limits = ctx.limits
     downloads = threading.BoundedSemaphore(limits.chat_download_workers)
     queries = Gate(limits.chat_query_workers)
+    reach_gate = Gate(limits.chat_reach_workers)
 
     def frame(template, session, status=200, **context):
         return ctx.frame(template, "chat:list", session, status, **context)
@@ -628,7 +642,7 @@ def install(api, ctx):
 
     def page_model(chat_id=None, **values):
         """Every field `chat.html` reads, for no chat open (`chat_id` None) or for one."""
-        model = {"chat_id": chat_id, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED, "totals_trigger": TOTALS_ASK}
+        model = {"chat_id": chat_id, "chat_model": None, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED, "totals_trigger": TOTALS_ASK}
         model.update(values)
         return model
 
@@ -659,11 +673,34 @@ def install(api, ctx):
     async def chats_page(request: Request):
         return (await checked_run(request, list_work, page=shown("chat.html", "Chat")))[1]
 
+    @api.get("/chat/reach")
+    async def reach_part(request: Request):
+        """The left column's "Data in reach" (`reach.read_reach`), a part the page asks once it has loaded, on a bound of its own (`Limits.chat_reach_workers`; a full bound answers 204 and the placeholder stays)."""
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+
+        def ask(verb, fields):
+            return call_broker(lambda: ctx.broker(token=session.token, timeout=reach.CALL_SECONDS), lambda made: actions.call(made, verb, fields))
+
+        def work():
+            made = reach.read_reach(lambda: queue.broker_session_error(ctx, session, timeout=reach.CALL_SECONDS), lambda: _ask(lambda: runner.hello(timeout=reach.CALL_SECONDS)), ask)
+            return made if isinstance(made, reach.ReachSessionEnded) else ctx.render("_chat_reach.html", reach=made)
+
+        made = await reach_gate.run(work)
+        if made is BUSY_GATE:
+            return Response(status_code=204)
+        if isinstance(made, reach.ReachSessionEnded):
+            return queue.ended_session(ctx, request, session_id, made.error)
+        return made
+
     @api.post("/chat/new")
     async def new_chat(request: Request):
-        if request.scope.get("sdp.form"):
+        form = request.scope.get("sdp.form") or {}
+        ok, model = model_field(form)
+        if set(form) - {"model"} or not ok:
             return _form_refused(request)
-        session, made = await checked_run(request, lambda _session: _ask(runner.new), cached=False)
+        session, made = await checked_run(request, lambda _session: _ask(lambda: runner.new(None if model is assistant.KEEP else model)), cached=False)
         if session is None:
             return made
         kind, value = made
@@ -702,6 +739,7 @@ def install(api, ctx):
                     ask_hello(model)
                 return model
             model["chat_title"] = statements.visible(chat["title"])[0] if chat["title"] else None
+            model["chat_model"] = chat["model"]
             # The files first: the plot cards' buttons are made from their names.
             stems = None
             kind, value = _ask(lambda: runner.files(chat_id))
@@ -779,12 +817,13 @@ def install(api, ctx):
         form = request.scope.get("sdp.form", {})
         if not assistant.is_chat_id(chat_id):
             return _not_found()
-        if set(form) != {"text"}:
+        ok, model = model_field(form)
+        if set(form) - {"model"} != {"text"} or not ok:
             return _form_refused(request)
         text = form["text"].replace("\r\n", "\n").replace("\r", "\n")
         if not 1 <= len(text) <= assistant.TEXT_MAX:
             return await conversation(request, chat_id, text, TEXT_REFUSED, 400, cached=False)
-        session, made = await checked_run(request, lambda _session: _ask(lambda: runner.send(chat_id, text)), cached=False)
+        session, made = await checked_run(request, lambda _session: _ask(lambda: runner.send(chat_id, text, model)), cached=False)
         if session is None:
             return made
         kind, value = made

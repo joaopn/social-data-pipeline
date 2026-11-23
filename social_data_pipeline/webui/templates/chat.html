@@ -1,11 +1,11 @@
-{#- The Chat window, as the mock-up draws it: three columns at full height, for `/chat` (no chat open: `chat_id` is none) and `/chat/<id>`. Left: a new chat, the chats (a pulsing dot on one whose turn runs, as of the page's load), the data in reach (from `hello`) and the window's note. Middle: the open chat's title and file count, the conversation (it scrolls; `app.js` keeps it at its newest event while the view is at the bottom) and the answer box pinned under it, with `#chat-controls` (the stop button while a turn runs) beside the send form, never inside it: a form inside a form is dropped by the parser, and the stop button would then send the question. Right: "This chat" ("Sandbox" with no chat open), which its Hide button hides (the conversation then takes its width; the handle `.panel-handle` beside it shows it again; app.js keeps the choice per browser and theme.js draws it before the page shows): the chat's backend (`_chat_model.html`, the slot of the model picker), its turn totals (a part asked once the page has loaded and again after each new end of a turn, `_chat_totals.html`), the sandbox as one line (from `hello`; its failure is shown here only) that opens on what it can and cannot reach (a `details`, kept open or closed per browser), the open chat's files (a CSV with its table view), the chat's queries in the queue (a part asked once the page has loaded, `_chat_queries.html`) and the way to delete it. Below 1150 px wide the side columns stack under the conversation (chat.css). Every text of the runner is drawn through `vis` and escaped; nothing of it becomes markup or an attribute but a checked file's address. The page alone loads the chart scripts (Vega, Vega-Lite, vega-embed, then `plots.js`, which draws the plot cards' chart specs). -#}
+{#- The Chat window, as the mock-up draws it: three columns at full height, for `/chat` (no chat open: `chat_id` is none) and `/chat/<id>`. Left: a new chat (with this browser's default model, `_chat_default_model.html`), the chats (a pulsing dot on one whose turn runs, as of the page's load), the data in reach (a placeholder of `hello`'s databases that `/chat/reach` replaces once the page has loaded, `_chat_reach.html`; the queue's line from `hello`) and the window's note. Middle: the open chat's title, its model picker (`_chat_model.html`, part of the send form) and file count, the conversation (it scrolls; `app.js` keeps it at its newest event while the view is at the bottom) and the answer box pinned under it, with `#chat-controls` (the stop button while a turn runs) beside the send form, never inside it: a form inside a form is dropped by the parser, and the stop button would then send the question. Right: "This chat" ("Sandbox" with no chat open), which its Hide button hides (the conversation then takes its width; the handle `.panel-handle` beside it shows it again; app.js keeps the choice per browser and theme.js draws it before the page shows): the chat's backend and model as text (`_chat_model_line.html`; the one field that posts a model is the header's picker), its turn totals (a part asked once the page has loaded and again after each new end of a turn, `_chat_totals.html`), the sandbox as one line (from `hello`; its failure is shown here only) that opens on what it can and cannot reach (a `details`, kept open or closed per browser), the open chat's files (a CSV with its table view), the chat's queries in the queue (a part asked once the page has loaded, `_chat_queries.html`) and the way to delete it. Below 1150 px wide the side columns stack under the conversation (chat.css). Every text of the runner is drawn through `vis` and escaped; nothing of it becomes markup or an attribute but a checked file's address. The page alone loads the chart scripts (Vega, Vega-Lite, vega-embed, then `plots.js`, which draws the plot cards' chart specs). -#}
 {% extends "frame.html" %}
 {% from "_queue_macros.html" import vis %}
 {% import "_chat_macros.html" as m %}
 {% block shell %}
 <main class="cw">
 <aside class="left" aria-label="Chats">
-  <form class="new-chat" method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}"><button type="submit" class="btn primary">New chat</button></form>
+  <form class="new-chat" method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}">{% include "_chat_default_model.html" %}<button type="submit" class="btn primary">New chat</button></form>
   <h4>Chats</h4>
   {%- if chats %}
   <nav class="chat-list" aria-label="Chats">
@@ -21,11 +21,13 @@
   <h4>Data in reach</h4>
   <div class="reach col small ink2">
     {%- if hello %}
-    {%- for name in hello.databases %}
-    <span class="row"><span class="dot ok"></span>{{ name }} · read-only</span>
-    {%- else %}
-    <span class="row"><span class="dot"></span>No database</span>
-    {%- endfor %}
+    <div class="col" id="chat-reach" hx-get="/chat/reach" hx-trigger="load" hx-swap="outerHTML">
+      {%- for name in hello.databases %}
+      <span class="row muted"><span class="dot"></span>{{ name }}: checking…</span>
+      {%- else %}
+      <span class="row"><span class="dot"></span>No database</span>
+      {%- endfor %}
+    </div>
     <span class="row"><span class="dot{{ ' ok' if hello.queue else '' }}"></span>{{ hello.queue_line }}</span>
     {%- else %}
     <span class="row"><span class="dot bad"></span>Not known: the sandbox did not answer</span>
@@ -37,7 +39,7 @@
 
 <section class="mid" aria-label="Conversation">
   {%- if chat_id %}
-  <div class="chead"><b class="chat-name">{% if failure %}Chat{% elif chat_title %}{{ vis(chat_title) }}{% else %}(no question yet){% endif %}</b>{% if files_count %}<span class="right small muted">{{ files_count }}</span>{% endif %}</div>
+  <div class="chead"><b class="chat-name">{% if failure %}Chat{% elif chat_title %}{{ vis(chat_title) }}{% else %}(no question yet){% endif %}</b>{% if not failure %}{% include "_chat_model.html" %}{% endif %}{% if files_count %}<span class="right small muted">{{ files_count }}</span>{% endif %}</div>
   {%- if failure %}
   <div class="chat"><p class="notice notice-bad" role="alert">{{ failure }}</p></div>
   {%- else %}
@@ -55,7 +57,7 @@
   {%- endif %}
   {%- if not failure %}
   <div class="composer">
-    <form class="send" method="post" action="/chat/{{ chat_id }}/send">
+    <form class="send" id="chat-send" method="post" action="/chat/{{ chat_id }}/send">
       <input type="hidden" name="form_token" value="{{ form_token }}">
       <textarea name="text" rows="1" maxlength="{{ text_max }}" required aria-label="Your question" placeholder="Ask about the data, or ask for a plot… (Enter to send, Shift+Enter for a new line)">
 {{ draft }}</textarea>
@@ -73,7 +75,7 @@
     <div class="chat-empty">
       <h2>Start a new chat</h2>
       <p class="muted">Ask about the data in reach, or ask for a plot. Each chat keeps its own files.</p>
-      <form method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}"><button type="submit" class="btn primary">New chat</button></form>
+      <form method="post" action="/chat/new"><input type="hidden" name="form_token" value="{{ form_token }}">{% include "_chat_default_model.html" %}<button type="submit" class="btn primary">New chat</button></form>
     </div>
     {%- endif %}
   </div>
@@ -89,7 +91,7 @@
   <div class="panel-head row"><h4>{{ 'This chat' if chat_id and not failure else 'Sandbox' }}</h4><button type="button" class="btn ghost sm right" data-chat-panel="close" aria-expanded="true" aria-controls="chat-panel" title="Hide this column: the conversation takes its width">Hide <span aria-hidden="true">›</span></button></div>
   {%- if chat_id and not failure %}
   <div class="col">
-    {% include "_chat_model.html" %}
+    {% include "_chat_model_line.html" %}
     {%- if events_failure %}
     <p class="small muted">The turn totals are not known: the chat's events could not be read.</p>
     {%- else %}

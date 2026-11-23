@@ -294,9 +294,9 @@ def test_the_page_says_whether_the_assistant_can_submit_to_the_queue(client, scr
     """Bug class: the page saying the assistant can submit to the queue when it cannot (or the reverse), or a web UI refusing the hello of a sandbox image of the other version."""
     scripted.answers["hello"] = hello
     text = main_text(client.get("/chat").text)
-    assert NOT_UNDERSTOOD not in text and "MongoDB · read-only" in text
+    assert NOT_UNDERSTOOD not in text and "MongoDB: checking" in text
     assert (chat.QUEUE_ON in text) is (line == "on") and (chat.QUEUE_OFF in text) is (line == "off")
-    assert assistant.Assistant(scripted.path).hello() == {"backend": "claude-code", "databases": ["mongo"], "queue": line == "on"}
+    assert assistant.Assistant(scripted.path).hello() == {"backend": "claude-code", "databases": ["mongo"], "queue": line == "on", "models": [], "model_default": None}
 
 
 @pytest.mark.parametrize("reply", [
@@ -311,7 +311,7 @@ def test_events_of_another_shape_are_not_shown(client, scripted, reply):
     """Bug class: a page of events whose offset goes back or jumps (the poll would repeat or skip events, or never end), whose count is beyond the limit asked, or whose flags are not flags, shown in part."""
     scripted.answers["chat.events"] = reply
     page = client.get(f"/chat/{CHAT_ID}")
-    assert NOT_UNDERSTOOD in main_text(page.text) and MARK not in page.text and "hx-get" not in main_html(page.text)
+    assert NOT_UNDERSTOOD in main_text(page.text) and MARK not in page.text and "/events" not in main_html(page.text)
 
 
 EVENT_VARIANTS = [
@@ -386,8 +386,8 @@ def test_hostile_text_is_text_everywhere(client, scripted):
 
 
 def nexts(page):
-    # The events' requests only: the right column's turn totals are a part of their own.
-    return [(html.unescape(href), trigger) for href, trigger in re.findall(r'hx-get="([^"]+)" hx-trigger="([^"]+)"', main_html(page)) if not href.endswith("/totals")]
+    """The requests of the events part a page or part carries (the left column's data in reach, asked once at load, and the right column's turn totals, a part of their own, left out)."""
+    return [(html.unescape(href), trigger) for href, trigger in re.findall(r'hx-get="([^"]+)" hx-trigger="([^"]+)"', main_html(page)) if href != "/chat/reach" and not href.endswith("/totals")]
 
 
 def test_the_events_part_pages_by_offset_and_stops_when_the_turn_has_ended(client, scripted):
@@ -955,7 +955,7 @@ def test_the_conversation_page_shows_the_chats_and_the_data_in_reach_from_one_li
     assert re.search(rf'<a class="navi" href="/chat/{other}"><span class="lbl">the busy one</span><span class="dot run"', page)
     assert page.count('class="dot run"') == 1
     text = main_text(page)
-    assert "MongoDB · read-only" in text and "StarRocks · read-only" in text and chat.QUEUE_ON in text and "Claude Code" in text
+    assert "MongoDB: checking" in text and "StarRocks: checking" in text and 'hx-get="/chat/reach" hx-trigger="load"' in page and chat.QUEUE_ON in text and "Claude Code" in text
     assert scripted.ops().count("chat.list") == 1 and scripted.ops().count("hello") == 1
 
 

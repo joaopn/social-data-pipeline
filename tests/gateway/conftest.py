@@ -19,7 +19,7 @@ def gw():
         up = StandIn(respond)
         local = Upstream("http", "127.0.0.1", up.port)
         if kind == MODEL_ANTHROPIC:
-            fields = {"beta_allowed": frozenset({"b1", "b2"}), "tool_types_allowed": frozenset({"bash_20250124"}), **fields}
+            fields = {"beta_allowed": frozenset({"b1", "b2"}), "tool_types_allowed": frozenset({"bash_20250124"}), "models": frozenset({"x", "second"}), **fields}
             lst = Listener(0, kind, ANTHROPIC_UPSTREAM, **fields)
         elif kind == MODEL_OPENAI:
             lst = Listener(0, kind, Upstream("http", "127.0.0.1", up.port, "/api/v1"), **{"model": "m-1", **fields})

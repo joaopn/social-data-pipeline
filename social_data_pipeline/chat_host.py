@@ -17,6 +17,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from social_data_pipeline.chat.claude import MODELS as CLAUDE_MODELS
 from social_data_pipeline.control import files
 from social_data_pipeline.gateway import table as gateway_table
 
@@ -601,6 +602,8 @@ BETA_ALLOWED = (
     "thinking-display-updates-2026-08-18",
     "extended-cache-ttl-2025-04-11",
 )
+# The model ids Claude Code 2.1.328 (the version Dockerfile.sandbox pins) sends for each of the models a chat may be given (`CLAUDE_MODELS`, the runner's allow-list): measured with the pinned binary against a stand-in API, with the runner's own command line plus `--model` (`opus` sent `claude-opus-5-5`, `sonnet` `claude-sonnet-5-5`, `haiku` `claude-haiku-5-5`; without `--model` it sent `claude-sonnet-5-5`, and no other model was named in any request). The gateway forwards no other model; another version needs them measured again.
+CLAUDE_MODEL_IDS = {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-5-5"}
 WALK_LIMIT = 1_000_000
 # The IPv4 gateway mode that leaves this machine without an address on `sdp-chat` (measured on Docker 29.5.3: the bridge then has no IPv4 address and the network's IPAM config no gateway; containers on it still reach each other).
 ISOLATED_OPTION = "com.docker.network.bridge.gateway_mode_ipv4=isolated"
@@ -687,9 +690,9 @@ def gateway_address(subnet, network_gateway=""):
 
 
 def gateway_config(listen, settings, databases, queue_port=None):
-    """The gateway's config as a dict: it listens on `listen`; the model on port 8080 by the back end of `settings` (the saved settings), one MCP listener per database of `databases`, which reaches its server by the alias it is attached under, and with `queue_port` (the scheduler's own port) one on port 8004 for the scheduler's assistant endpoint, which sends the secret of its copy in the gateway's folder."""
+    """The gateway's config as a dict: it listens on `listen`; the model on port 8080 by the back end of `settings` (the saved settings; for Claude Code only the model ids of the allow-list, for an OpenAI-compatible one only its model), one MCP listener per database of `databases`, which reaches its server by the alias it is attached under, and with `queue_port` (the scheduler's own port) one on port 8004 for the scheduler's assistant endpoint, which sends the secret of its copy in the gateway's folder."""
     if settings["backend"] == CLAUDE_CODE:
-        model = {"port": MODEL_PORT, "kind": gateway_table.MODEL_ANTHROPIC, "beta_allowed": list(BETA_ALLOWED), "tool_types_allowed": []}
+        model = {"port": MODEL_PORT, "kind": gateway_table.MODEL_ANTHROPIC, "beta_allowed": list(BETA_ALLOWED), "tool_types_allowed": [], "models": [CLAUDE_MODEL_IDS[name] for name in CLAUDE_MODELS]}
     else:
         model = {"port": MODEL_PORT, "kind": gateway_table.MODEL_OPENAI, "upstream": settings["upstream"], "model": settings["model"]}
     listeners = [model] + [{"port": db.port, "kind": gateway_table.MCP, "upstream": f"http://{db.alias}:{db.server_port}", "paths": list(db.paths)} for db in databases]
@@ -718,7 +721,7 @@ def gateway_arguments(root, uid, gid, address):
 
 
 def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None, queue=False):
-    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`) and, with `queue`, `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
+    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`), the models a chat may be given (`SDP_CHAT_MODELS`: `CLAUDE_MODELS`, or the one model of an OpenAI-compatible back end) and, with `queue`, `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
     return [
         *_confined(SANDBOX_CONTAINER, root, uid, gid),
         "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
@@ -728,6 +731,7 @@ def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=No
         "-e", f"{GATEWAY_ENV}={address}", "-e", f"HOME={WORK_MOUNT}",
         "-e", f"SDP_CHAT_BACKEND={backend}", "-e", f"SDP_CHAT_DATABASES={','.join(databases)}", "-e", f"SDP_CHAT_CAP_GIB={cap}",
         *(["-e", f"SDP_CHAT_MODEL={model}"] if backend == OPENAI_COMPATIBLE else []),
+        "-e", f"SDP_CHAT_MODELS={model if backend == OPENAI_COMPATIBLE else ','.join(CLAUDE_MODELS)}",
         *(["-e", f"{QUEUE_ENV}=1"] if queue else []),
         SANDBOX_IMAGE,
     ]

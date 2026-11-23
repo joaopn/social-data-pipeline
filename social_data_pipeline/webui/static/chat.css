@@ -112,3 +112,7 @@ a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-dec
 #vg-tooltip-element td { padding: 1px 0; vertical-align: text-top; overflow: hidden; text-overflow: ellipsis; }
 #vg-tooltip-element td.key { color: var(--muted); max-width: 150px; text-align: right; padding-right: 6px; }
 #vg-tooltip-element td.value { display: block; max-width: 300px; max-height: 7em; text-align: left; }
+
+/* the header's model picker (`_chat_model.html`) */
+.cw .chead .model-pick { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.cw .chead .model-pick select { padding: 2px 24px 2px 7px; font-size: 12px; }

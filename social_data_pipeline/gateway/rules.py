@@ -193,7 +193,8 @@ def check_body(listener, body):
     anthropic = listener.kind == MODEL_ANTHROPIC
     if not doc.keys() <= (ANTHROPIC_KEYS if anthropic else OPENAI_KEYS):
         raise Refused("top_level_key", 403)
-    if not anthropic and doc.get("model") != listener.model:
+    model = doc.get("model")
+    if not isinstance(model, str) or model not in (listener.models if anthropic else (listener.model,)):
         raise Refused("model", 403)
     tools = doc.get("tools")
     allowed = _anthropic_tool if anthropic else _openai_tool

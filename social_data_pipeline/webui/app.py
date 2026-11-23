@@ -12,7 +12,7 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - `GET /overview/live`: the Overview's live figures (the queries that wait for approval, the finished files per source and stage), a part of the page that the Overview asks once it has loaded, so that a slow scheduler or a large source never slows it: see `overview.read_live`. Its own bound (`Limits.live_workers`); a full bound answers 204, which leaves the page as it is.
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
-- The Chat window (`/chat`, `/chat/new`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
+- The Chat window (`/chat`, `/chat/new`, `/chat/reach`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
 - `GET /status`: the top bar's live indicators (the broker, scheduler and sandbox pills, the number of queries waiting on the Queue window's tab), a part of the page that the frame asks once the page has loaded and every 30 seconds after, so that a slow or dead service never slows a page: see `status`.
 - `/static/...`: the stylesheets (`app.css`, the mock-up's kit; `chat.css`, `queue.css`, `manage.css`), the scripts (`theme.js`, run before the page is drawn, and `app.js`) and, in the image, htmx.
 
@@ -119,6 +119,8 @@ class Limits:
     chat_download_workers: int = 2
     # The right column's queries of a chat (`/chat/<id>/queries`) have a bound of their own: one request reads up to ten pages of events and asks the scheduler up to 20 times.
     chat_query_workers: int = 2
+    # The left column's data in reach (`/chat/reach`) has a bound of its own: one request asks the broker up to 53 times.
+    chat_reach_workers: int = 2
     chat_download_bytes: int = 1 << 30
     chat_image_bytes: int = 8 << 20
     chat_image_workers: int = 2

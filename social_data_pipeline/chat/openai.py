@@ -29,16 +29,17 @@ def environment(home, tmp, gateway, model, databases, queue=False):
 
 
 class OpenAICompatible:
-    """The back end: `gateway` is the gateway's address, `model` the configured model, `databases` the names of the attached databases, `queue` whether the query queue is attached."""
+    """The back end: `gateway` is the gateway's address, `model` the configured model (the one model a chat may be given, and the model of a chat without one), `databases` the names of the attached databases, `queue` whether the query queue is attached."""
 
     name = "openai-compatible"
 
     def __init__(self, gateway, model, databases, *, queue=False, python=sys.executable, line_max=claude.LINE_MAX_BYTES, grace=claude.STOP_GRACE_SECONDS, stderr_max=claude.STDERR_MAX_BYTES, join=claude.JOIN_SECONDS):
         self.gateway, self.model, self.databases, self.queue, self.python = gateway, model, tuple(databases), queue, python
+        self.models, self.model_default = (model,), model
         self.line_max, self.grace, self.stderr_max, self.join = line_max, grace, stderr_max, join
 
-    def turn(self, chat_fd, config, home, files, tmp, text, session, resume):
-        """A `claude.Process` for one turn (not started) and its `claude.Translator`; `session` and `resume` are not used (the history is the agent's file in `config`)."""
+    def turn(self, chat_fd, config, home, files, tmp, text, session, resume, model=None):
+        """A `claude.Process` for one turn (not started) and its `claude.Translator`; `session` and `resume` are not used (the history is the agent's file in `config`), nor `model` (the runner takes only the configured model, which the agent always gets)."""
         argv = command(self.python, config, files)
         env = environment(home, tmp, self.gateway, self.model, self.databases, self.queue)
         process = claude.Process(argv, env, files, claude.user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)

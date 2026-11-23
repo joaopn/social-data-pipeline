@@ -2,8 +2,8 @@
 
 - Where: `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), mode 0600; a leftover socket in its place is removed, anything else there refuses the start.
 - How much: at most 8 connections at a time (the rest closed at once); one request and one reply per connection, each a `control.framing` frame; a request of at most 64 KiB within 10 seconds; a reply of at most 1 MiB (else `too_large`). A reply is `{"ok": true, "result": ...}` or `{"ok": false, "error": {"code", "message"}}` with a constant message. An unexpected exception is logged by the name of its kind only and answered `internal`.
-- The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `session`, `turns`, `resume`). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
-- The requests (`op`; every listed field is required, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue"}` (`queue`: whether the query queue is attached); `chat.list` -> `{"chats": [{"id", "title", "created", "running"}]}`, newest first; `chat.new` -> `{"chat"}`; `chat.send {chat, text}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "more"}`; `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}`.
+- The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `session`, `turns`, `resume`, `model`: the chat's model, null for the back end's default). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
+- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "more"}`; `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}`.
 - The events (one JSON object per line, each at most 64 KiB, the log at most 16 MiB and 1 line per 32 bytes of that, then one `error` event says the chat is full and the turn's `end` follows): `user {text}`, `text {text}`, `tool {name, input}`, `tool_result {text, is_error}`, `file {name, size}`, `end {is_error, cost_usd, duration_ms, turns}`, `error {message}`; each has `n` (its index) and `t` (seconds since the epoch). Every turn ends with exactly one `end`.
 
 Standard library and `control.framing`/`errors` only. The runner is not a security boundary: it keeps itself useful and bounded against what the sandbox may do to its folders.
@@ -65,6 +65,8 @@ OPS = {
     "chat.files": frozenset({"chat"}),
     "chat.file": frozenset({"chat", "name", "offset", "limit"}),
 }
+# The fields a request may leave out.
+OPTIONAL = {"chat.new": frozenset({"model"}), "chat.send": frozenset({"model"})}
 
 MESSAGES = {
     "bad_request": "the request is not one the runner takes",
@@ -78,6 +80,7 @@ MESSAGES = {
     "too_many_chats": "there are 200 chats already: delete one first",
     "too_large": "the answer is too large to send",
     "not_usable": "the chat's folder cannot be used",
+    "model_not_allowed": "the model is not one this back end allows",
     "unavailable": "the runner is stopping",
     "internal": "the runner could not answer this request",
 }
@@ -386,6 +389,7 @@ class _Chat:
         self.session = meta.get("session") or str(uuid.uuid4())
         self.turns = meta.get("turns", 0)
         self.resume = meta.get("resume") is True and "session" in meta
+        self.model = meta.get("model")
         self.lock = threading.Lock()
         self.offsets = None
         self.size = 0
@@ -400,7 +404,7 @@ class _Chat:
         self.token = None
 
     def meta(self):
-        return {"created": self.created, "title": self.title, "session": self.session, "turns": self.turns, "resume": self.resume}
+        return {"created": self.created, "title": self.title, "session": self.session, "turns": self.turns, "resume": self.resume, "model": self.model}
 
 
 def _encodable(document):
@@ -412,8 +416,8 @@ def _encodable(document):
     return True
 
 
-def _checked_meta(data, title_max):
-    """The fields of a `meta.json` that have the right types; others are dropped (a title that cannot be sent too)."""
+def _checked_meta(data, title_max, models=()):
+    """The fields of a `meta.json` that have the right types; others are dropped (a title that cannot be sent too, a model that is not one of `models`)."""
     try:
         doc = framing.decode(data)
     except ControlError:
@@ -430,11 +434,13 @@ def _checked_meta(data, title_max):
         meta["turns"] = doc["turns"]
     if doc.get("resume") is True:
         meta["resume"] = True
+    if isinstance(doc.get("model"), str) and doc["model"] in models:
+        meta["model"] = doc["model"]
     return meta
 
 
 class Runner:
-    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap, `queue` whether the query queue is attached (for `hello`)."""
+    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`; its `models` are the models a chat may be given, its `model_default` the model of a chat without one, None for its own default), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap, `queue` whether the query queue is attached (for `hello`)."""
 
     def __init__(self, work, backend, backend_name, databases, cap_bytes, *, queue=False, tmp=TMP_DEFAULT, limits=None):
         self.limits = limits or Limits()
@@ -442,6 +448,8 @@ class Runner:
         self.tmp = tmp
         self.backend = backend
         self.backend_name = backend_name
+        self.models = tuple(backend.models)
+        self.model_default = backend.model_default
         self.databases = list(databases)
         self.queue = bool(queue)
         self.cap_bytes = cap_bytes
@@ -496,7 +504,7 @@ class Runner:
                 with contextlib.suppress(OSError):
                     fd = _open_regular(chat_fd, META_NAME, os.O_RDONLY)
                     try:
-                        meta = _checked_meta(_read_at_most(fd, META_MAX_BYTES), self.limits.title_max)
+                        meta = _checked_meta(_read_at_most(fd, META_MAX_BYTES), self.limits.title_max, self.models)
                     finally:
                         os.close(fd)
             finally:
@@ -670,14 +678,14 @@ class Runner:
             os.close(files_fd)
         return {name: (info.st_size, info.st_mtime_ns, info.st_ino) for name, info in found.items()}
 
-    def _turn(self, chat, text, token):
+    def _turn(self, chat, text, token, model=None):
         started = time.monotonic()
         process = translator = None
         try:
             with self._chat_fd(chat) as chat_fd:
                 before = self._snapshot(chat_fd)
                 tmp = self._fresh_scratch(chat.id)
-                process, translator = self.backend.turn(chat_fd, os.path.join(self.work, chat.id, "home"), os.path.join(tmp, "home"), os.path.join(self.work, chat.id, "files"), tmp, text, chat.session, chat.resume)
+                process, translator = self.backend.turn(chat_fd, os.path.join(self.work, chat.id, "home"), os.path.join(tmp, "home"), os.path.join(self.work, chat.id, "files"), tmp, text, chat.session, chat.resume, model)
                 with self._lock:
                     chat.process = process
                     if chat.stop_asked:
@@ -853,7 +861,7 @@ class Runner:
 
     def answer(self, request):
         op = request.get("op")
-        if not isinstance(op, str) or op not in OPS or set(request) - {"op"} != OPS[op]:
+        if not isinstance(op, str) or op not in OPS or not OPS[op] <= set(request) - {"op"} <= OPS[op] | OPTIONAL.get(op, frozenset()):
             return _error("bad_request")
         try:
             return _ok(getattr(self, "_op_" + op.replace(".", "_"))(request))
@@ -870,6 +878,17 @@ class Runner:
             raise _Refusal("not_found")
         return chat
 
+    def _model_of(self, request):
+        """The request's `model`: a name of the allow-list or None (the back end's default); refused `bad_request` when it is not text or null, `model_not_allowed` when it is not in the list."""
+        value = request["model"]
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise _Refusal("bad_request")
+        if value not in self.models:
+            raise _Refusal("model_not_allowed")
+        return value
+
     def _whole(self, request, key, low, high):
         value = request[key]
         if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
@@ -877,14 +896,15 @@ class Runner:
         return value
 
     def _op_hello(self, request):
-        return {"version": PROTOCOL, "backend": self.backend_name, "databases": list(self.databases), "queue": self.queue}
+        return {"version": PROTOCOL, "backend": self.backend_name, "databases": list(self.databases), "queue": self.queue, "models": list(self.models), "model_default": self.model_default}
 
     def _op_chat_list(self, request):
         with self._lock:
             chats = sorted(self._chats.values(), key=lambda c: (c.created, c.id), reverse=True)
-            return {"chats": [{"id": c.id, "title": c.title, "created": c.created, "running": c.running} for c in chats]}
+            return {"chats": [{"id": c.id, "title": c.title, "created": c.created, "running": c.running, "model": c.model} for c in chats]}
 
     def _op_chat_new(self, request):
+        model = self._model_of(request) if "model" in request else None
         with self._lock:
             if self._stopping:
                 raise _Refusal("unavailable")
@@ -893,7 +913,7 @@ class Runner:
             chat_id = "c_" + os.urandom(6).hex()
             while chat_id in self._chats:
                 chat_id = "c_" + os.urandom(6).hex()
-            chat = _Chat(chat_id, {"created": round(time.time(), 3), "session": str(uuid.uuid4())})
+            chat = _Chat(chat_id, {"created": round(time.time(), 3), "session": str(uuid.uuid4()), **({"model": model} if model is not None else {})})
             try:
                 chat_fd = _open_folder(self.work_fd, chat_id, create=True)
                 try:
@@ -916,6 +936,8 @@ class Runner:
             text.encode("utf-8")
         except UnicodeEncodeError:
             raise _Refusal("bad_request") from None
+        changed = "model" in request
+        model = self._model_of(request) if changed else None
         with self._lock:
             if self._stopping:
                 raise _Refusal("unavailable")
@@ -944,10 +966,12 @@ class Runner:
                 if not chat.title:
                     chat.title = " ".join(text.split())[: self.limits.title_max]
                 chat.turns += 1
+                if changed:
+                    chat.model = model
                 with contextlib.suppress(OSError):
                     self._save_meta(chat, chat_fd)
             token = chat.token = object()
-            chat.thread = threading.Thread(target=self._turn, args=(chat, text, token), name=f"turn-{chat.id}", daemon=True)
+            chat.thread = threading.Thread(target=self._turn, args=(chat, text, token, chat.model), name=f"turn-{chat.id}", daemon=True)
             chat.thread.start()
         except BaseException:
             with self._lock:

@@ -29,7 +29,7 @@ QUEUE_PARAGRAPH = (
     "When a query is done, the parts of its result are listed at http://<gateway>:8004/assistant/results/<job id> (JSON) and each part is at http://<gateway>:8004/assistant/results/<job id>/<part number>, where <gateway> is the address in the environment variable SDP_CHAT_GATEWAY: "
     "fetch them from the shell with Python's urllib (curl is not installed) and save them in the current folder. Only your own queries are visible there."
 )
-BASE = {"SDP_CHAT_BACKEND": "claude-code", "SDP_CHAT_CAP_GIB": "10", "SDP_CHAT_GATEWAY": "10.0.0.2"}
+BASE = {"SDP_CHAT_BACKEND": "claude-code", "SDP_CHAT_CAP_GIB": "10", "SDP_CHAT_GATEWAY": "10.0.0.2", "SDP_CHAT_MODELS": "opus,sonnet,haiku"}
 
 
 # ── the setting ───────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ def test_claude_codes_environment_names_the_gateway_only_with_the_queue():
 def test_a_turn_with_the_queue_writes_the_server_and_allows_it_and_hello_says_so(chat_runner):
     """Bug class: the runner started with the queue but its back end, or `hello`, not told."""
     r = chat_runner(queue=True)
-    assert r.call("hello")["result"] == {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": True}
+    assert r.call("hello")["result"] == {"version": 1, "backend": "claude-code", "databases": ["mongo"], "queue": True, "models": ["opus", "sonnet", "haiku"], "model_default": None}
     chat = r.new()
     r.call("chat.send", chat=chat, text="hi")
     r.wait(chat)

@@ -6,6 +6,7 @@
 - `SDP_CHAT_GATEWAY`: the gateway's IPv4 address.
 - `SDP_CHAT_QUEUE`: `1` when the query queue is attached (the gateway's port 8004 reaches the scheduler's assistant endpoint), `0` or absent when not.
 - `SDP_CHAT_MODEL`: the model (for `openai-compatible`, required): 1 to 200 visible ASCII characters, without spaces (the rule of `chat_host.parse_model`).
+- `SDP_CHAT_MODELS` (required): the models a chat may be given. For `claude-code` a comma list of `opus`, `sonnet`, `haiku`, each at most once; for `openai-compatible` exactly `SDP_CHAT_MODEL`.
 - `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), `SDP_CHAT_WORK` (default `/work`), `SDP_CHAT_TURN_SECONDS` (default 1800).
 """
 
@@ -49,10 +50,19 @@ def settings(environ):
     model = environ.get("SDP_CHAT_MODEL", "")
     if backend == "openai-compatible" and not MODEL.fullmatch(model):
         raise SettingError("SDP_CHAT_MODEL must be the model's name: 1 to 200 visible ASCII characters, without spaces")
+    allowed = environ.get("SDP_CHAT_MODELS", "")
+    if backend == "claude-code":
+        models = allowed.split(",") if allowed else []
+        if not models or any(name not in claude.MODELS for name in models) or len(set(models)) != len(models):
+            raise SettingError(f"SDP_CHAT_MODELS must be a comma list of {', '.join(claude.MODELS)}, each at most once")
+    else:
+        if allowed != model:
+            raise SettingError("SDP_CHAT_MODELS must be the model of SDP_CHAT_MODEL")
+        models = [model]
     queue = environ.get("SDP_CHAT_QUEUE", "0")
     if queue not in ("0", "1"):
         raise SettingError("SDP_CHAT_QUEUE must be 1 (the query queue is attached) or 0")
-    return {"backend": backend, "databases": names, "queue": queue == "1", "model": model, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
+    return {"backend": backend, "databases": names, "queue": queue == "1", "model": model, "models": models, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
 
 
 def main(environ=None):
@@ -63,7 +73,7 @@ def main(environ=None):
         print(f"runner: refusing to start: {error}", file=sys.stderr)
         return 2
     if found["backend"] == "claude-code":
-        backend = claude.ClaudeCode(found["gateway"], found["databases"], queue=found["queue"])
+        backend = claude.ClaudeCode(found["gateway"], found["databases"], queue=found["queue"], models=found["models"])
     else:
         backend = openai.OpenAICompatible(found["gateway"], found["model"], found["databases"], queue=found["queue"])
     limits = runner.Limits(turn_seconds=found["turn_seconds"])

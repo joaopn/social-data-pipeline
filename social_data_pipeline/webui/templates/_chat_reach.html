@@ -1,0 +1,15 @@
+{#- The left column's data in reach (`GET /chat/reach`, `reach.read_reach`): per database the sources the assistant can query, or one muted line saying why the database is out of reach; a failure of the whole block is its one line, a partial one a note under the databases. Takes the place of the placeholder in `chat.html`; asks nothing again. Every text is escaped. -#}
+<div class="col" id="chat-reach">
+  {%- if reach.line %}
+  <span class="row"><span class="dot bad"></span>{{ reach.line }}</span>
+  {%- else %}
+  {%- for row in reach.rows %}
+  <span class="row{{ '' if row.ok else ' muted' }}"><span class="dot{{ ' ok' if row.ok else '' }}"></span>{{ row.title }}: {{ row.text }}</span>
+  {%- else %}
+  <span class="row"><span class="dot"></span>No database</span>
+  {%- endfor %}
+  {%- for note in reach.notes %}
+  <span class="row small muted">{{ note }}</span>
+  {%- endfor %}
+  {%- endif %}
+</div>

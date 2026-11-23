@@ -251,7 +251,7 @@ def test_the_gateway_argument_list_is_pinned():
     ]
 
 
-@pytest.mark.parametrize("backend, model, extra", [("claude-code", None, []), ("openai-compatible", "vendor/model-1:free", ["-e", "SDP_CHAT_MODEL=vendor/model-1:free"])])
+@pytest.mark.parametrize("backend, model, extra", [("claude-code", None, ["-e", "SDP_CHAT_MODELS=opus,sonnet,haiku"]), ("openai-compatible", "vendor/model-1:free", ["-e", "SDP_CHAT_MODEL=vendor/model-1:free", "-e", "SDP_CHAT_MODELS=vendor/model-1:free"])])
 def test_the_sandbox_argument_list_is_pinned(backend, model, extra):
     """Bug class: the sandbox given the credential, the broker's or Docker's socket, the data folder, a second network, a published port, or a secret in its environment; the OpenAI-compatible agent not told its model."""
     assert host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", backend, ["mongo", "starrocks"], 7, model) == [
@@ -309,6 +309,7 @@ def test_the_gateway_config_loads_with_the_gateways_own_loader(tmp_path, backend
     if backend == "claude-code":
         assert model.kind == "model-anthropic" and model.beta_allowed == frozenset(host.BETA_ALLOWED) and model.tool_types_allowed == frozenset()
         assert len(host.BETA_ALLOWED) == 10 and "oauth-2025-04-20" in host.BETA_ALLOWED
+        assert model.models == frozenset({"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"})
     else:
         assert model.kind == "model-openai" and model.model == "vendor/model-1" and (model.upstream.host, model.upstream.base) == ("openrouter.ai", "/api/v1")
     expected = {"postgres": (8001, "sdp-chat-postgres-mcp", 8000, ("/sse", "/messages/")), "mongo": (8002, "sdp-chat-mongo-mcp", 3000, ("/mcp",)), "starrocks": (8003, "sdp-chat-starrocks-mcp", 9000, ("/mcp",))}

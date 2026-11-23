@@ -107,7 +107,7 @@ def test_requests_outside_the_table_never_reach_the_upstream(gw, kind, line):
 ])
 def test_requests_in_the_table_go_to_the_tables_target(gw, kind, target, upstream_line):
     g = gw(kind)
-    assert parse(exchange(g.port, request(target, body=OPENAI_BODY)))[0] == 200
+    assert parse(exchange(g.port, request(target, body=BODY if kind == MODEL_ANTHROPIC else OPENAI_BODY)))[0] == 200
     assert [r.line for r in g.up.records] == [upstream_line]
 
 
@@ -211,13 +211,13 @@ def test_header_filters(gw, kind, headers, expected):
     (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"a":1,"a":2}]}]}'),
     (MODEL_ANTHROPIC, b'{"model":"x","metadata":{"a\\u0001":1}}'),
     (MODEL_ANTHROPIC, b'{"model":"x","metadata":{"\\ud800":1}}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"http://evil/x"}}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"f"}}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","url":"http://evil/x"}}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"image","source":"http://evil/x"}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"image","source":{"type":"url","url":"http://evil/x"}}]}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":[{"type":"image","source":{"type":"url"}}]}}]}]}'),
-    (MODEL_ANTHROPIC, b'{"system":[{"type":"document","source":{"type":"url","url":"http://evil/x"}}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"http://evil/x"}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"f"}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","url":"http://evil/x"}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"image","source":"http://evil/x"}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"image","source":{"type":"url","url":"http://evil/x"}}]}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":[{"type":"image","source":{"type":"url"}}]}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","system":[{"type":"document","source":{"type":"url","url":"http://evil/x"}}]}'),
     (MODEL_OPENAI, b'{"model":"m-1","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"http://evil/x"}}]}]}'),
     (MODEL_OPENAI, b'{"model":"m-1","messages":[{"role":"user","content":[{"type":"image_url","image_url":"data:x"}]}]}'),
     (MODEL_OPENAI, b'{"model":"m-1","messages":[{"role":"user","content":[{"type":"file","file":{"file_data":"x"}}]}]}'),
@@ -230,8 +230,8 @@ def test_header_filters(gw, kind, headers, expected):
     (MODEL_OPENAI, b'{"model":"m-1","transforms":[]}'),
     (MODEL_OPENAI, b'{"model":"m-1","messages":[{"role":"user","content":{"type":"image_url","image_url":{"url":"http://evil/x"}}}]}'),
     (MODEL_OPENAI, b'{"model":"m-1","messages":[{"role":"user","content":7}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"tool_result","content":{"type":"image","source":{"type":"url","url":"http://evil/x"}}}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"user","content":[{"type":"x","deeper":[{"source":{"type":"url"}}]}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"tool_result","content":{"type":"image","source":{"type":"url","url":"http://evil/x"}}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"user","content":[{"type":"x","deeper":[{"source":{"type":"url"}}]}]}]}'),
     (MODEL_ANTHROPIC, b'{"model":"x","metadata":[' + b"0," * 1_000_001 + b'0]}'),
 ])
 def test_bodies_the_table_refuses(gw, kind, body):
@@ -244,9 +244,9 @@ def test_bodies_the_table_refuses(gw, kind, body):
     (MODEL_ANTHROPIC, b'{ "model" : "x",\n "tools": [{"name":"a"}, {"type":"custom","name":"b"}, {"type":"bash_20250124","name":"bash"}],\n "metadata": {"s":"\\u00e9[[[\\"{" , "n": 1.50E+3, "k\\\\": "\\\\"} }'),
     (MODEL_ANTHROPIC, b'{"metadata":' + b"[" * 63 + b"]" * 63 + b',"model":"x","system":"' + b"[" * 200 + b'"}'),
     (MODEL_ANTHROPIC, b'{"context_management":{},"max_tokens":1,"messages":[],"metadata":{},"model":"x","output_config":{},"stream":true,"system":[],"thinking":{},"tools":[]}'),
-    (MODEL_ANTHROPIC, b'{"system":[{"type":"text","text":"s"}],"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}},{"type":"document","source":{"type":"text","data":"t"}},{"type":"tool_result","content":[{"type":"text","text":"r"}]},{"type":"document","source":{"type":"content","content":[{"type":"text","text":"c"}]}}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"q","input":{"source":"reddit"}}]}]}'),
-    (MODEL_ANTHROPIC, b'{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"q","input":{"source":{"type":"url","url":"https://x"}}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","system":[{"type":"text","text":"s"}],"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}},{"type":"document","source":{"type":"text","data":"t"}},{"type":"tool_result","content":[{"type":"text","text":"r"}]},{"type":"document","source":{"type":"content","content":[{"type":"text","text":"c"}]}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"q","input":{"source":"reddit"}}]}]}'),
+    (MODEL_ANTHROPIC, b'{"model":"x","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"q","input":{"source":{"type":"url","url":"https://x"}}}]}]}'),
     (MODEL_OPENAI, b'{"model":"m-1","messages":[{"role":"user","content":[{"type":"text","text":"t"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]}'),
     (MODEL_OPENAI, b'{"model":"m-1","tools":[{"type":"function","function":{"name":"f"}}],"stream":true}'),
 ])

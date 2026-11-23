@@ -101,6 +101,10 @@ Ask about the data in your databases. In the Chat window, Enter sends the questi
 - **No internet.** It cannot reach the internet.
 - **Memory.** The assistant remembers the chat: each later question continues the same conversation. A new chat starts from nothing.
 
+### The model of a chat
+
+With `claude-code`, each chat runs on one of `opus`, `sonnet` and `haiku`, or on Claude Code's own default ("backend default"). Choose it in the Chat window's header; the next question you send runs on it, and the chat keeps it for its later questions until you choose another. A new chat starts on the default model of your browser (set in the web UI's settings) when it is one of these, else on Claude Code's default. The chat's gateway forwards only these three models, by the ids the pinned Claude Code sends for them. With `openai-compatible`, every chat runs on the model saved at setup, which the header shows; there is nothing to choose. The list is fixed: `chat setup` asks nothing about it.
+
 The sandbox image has Python 3.13 with pandas, numpy, matplotlib, pyarrow, Altair 6.3.0 and vl-convert 1.9.0 (which writes Altair's PNG inside the sandbox, without a browser or the network). How each back end runs a turn is in [What the sandbox runs](../architecture/control-plane.md#what-the-sandbox-runs).
 
 ### The limits

@@ -148,6 +148,7 @@ CHAT_CODE_SENTENCES = {
     "too_many_chats": "There are 200 chats already: delete one first.",
     "too_large": "The sandbox's answer was too large to send.",
     "not_usable": "The chat's folder in the sandbox cannot be used.",
+    "model_not_allowed": "The chat's sandbox does not offer this model: choose one of the models the page offers.",
     "unavailable": "The chat's sandbox is stopping and takes no new request.",
     "internal": "The chat's sandbox could not answer this request.",
     "not_understood": "The chat's sandbox answered something this page does not understand, so nothing of it is shown.",

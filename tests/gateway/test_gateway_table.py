@@ -26,7 +26,7 @@ GOOD = {
     "credential_file": "/run/secrets/credential",
     "limits": {"head_timeout": 5, "requests_per_minute": 30},
     "listeners": [
-        {"port": 8001, "kind": "model-anthropic", "beta_allowed": ["b1"], "tool_types_allowed": ["bash_20250124"]},
+        {"port": 8001, "kind": "model-anthropic", "beta_allowed": ["b1"], "tool_types_allowed": ["bash_20250124"], "models": ["claude-opus-5-5"]},
         {"port": 8002, "kind": "model-openai", "upstream": "https://openrouter.ai/api/v1", "model": "vendor/m-1"},
         {"port": 8003, "kind": "mcp", "upstream": "http://mcp-upstream:8000", "paths": ["/sse", "/messages/"]},
     ],
@@ -138,7 +138,7 @@ def test_main_serves_until_sigterm_and_refuses_a_bad_config(tmp_path):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    doc = {"listen": "127.0.0.1", "credential_file": str(tmp_path / "cred"), "listeners": [{"port": port, "kind": "model-anthropic", "beta_allowed": []}]}
+    doc = {"listen": "127.0.0.1", "credential_file": str(tmp_path / "cred"), "listeners": [{"port": port, "kind": "model-anthropic", "beta_allowed": [], "models": ["m"]}]}
     (tmp_path / "ok.json").write_text(json.dumps(doc))
     proc = run_main(tmp_path / "ok.json")
     try:

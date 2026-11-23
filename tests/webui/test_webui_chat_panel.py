@@ -192,3 +192,19 @@ def test_the_right_column_is_this_chat_with_its_controls(client, scripted):
     page = client.get("/chat").text
     assert '<aside class="rightp" id="chat-panel" aria-label="Sandbox">' in page and "OpenAI-compatible \u00b7 sandbox up \u00b7 read-only access to 1 database<" in page
     assert "/totals" not in page and "<dt>Backend</dt>" not in page
+
+
+def test_the_right_column_names_the_chats_model_as_text_beside_the_one_picker(client, scripted):
+    """Bug class: a second field named `model` in the send form (the guard refuses a repeated name, so every question would be refused), a repeated id, or the right column naming another model than the header's picker."""
+    scripted.answers["hello"] = {**HELLO, "models": ["opus", "sonnet", "haiku"], "model_default": None}
+    scripted.chats[0]["model"] = "sonnet"
+    page = client.get(f"/chat/{CHAT_ID}").text
+    aside = re.search(r'<aside class="rightp" id="chat-panel"[^>]*>(.*?)</aside>', page, re.DOTALL).group(1)
+    assert "<dt>Model</dt><dd>sonnet</dd>" in aside and "<select" not in aside and 'name="model"' not in aside
+    assert page.count('id="chat-model"') == 1 and page.count('form="chat-send"') == 1
+    assert re.search(r'<option value="sonnet" selected>sonnet</option>', page)
+    scripted.chats[0]["model"] = None
+    assert "<dt>Model</dt><dd>the backend's default</dd>" in client.get(f"/chat/{CHAT_ID}").text
+    scripted.answers["hello"] = {**HELLO, "backend": "openai-compatible", "models": ["vendor/m-1"], "model_default": "vendor/m-1"}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    assert "<dt>Backend</dt><dd>OpenAI-compatible</dd>" in page and "<dt>Model</dt><dd>vendor/m-1</dd>" in page and 'id="chat-model"' not in page

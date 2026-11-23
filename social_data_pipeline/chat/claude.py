@@ -23,6 +23,8 @@ EXECUTABLE = "/usr/local/bin/claude"
 PLACEHOLDER_TOKEN = "sdp-chat-placeholder-the-gateway-holds-the-real-token"
 TOOLS = ("Bash", "Read", "Write", "Edit", "Glob", "Grep")
 MODEL_PORT = 8080
+# The models a chat may be given: Claude Code's own aliases, given as `--model`; a chat without one runs on Claude Code's default.
+MODELS = ("opus", "sonnet", "haiku")
 # Each database: its gateway port, the MCP transport and the path of its MCP server.
 DATABASES = {"postgres": (8001, "sse", "/sse"), "mongo": (8002, "http", "/mcp"), "starrocks": (8003, "http", "/mcp")}
 PATH = "/usr/local/bin:/usr/bin:/bin"
@@ -75,8 +77,8 @@ def mcp_config(databases, gateway, queue=False):
     return {"mcpServers": servers}
 
 
-def command(executable, home, session, resume, databases, queue=False):
-    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has its paragraph."""
+def command(executable, home, session, resume, databases, queue=False, model=None):
+    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has its paragraph; with `model` (one of MODELS, checked by the runner) `--model` and its name, else none (Claude Code's default)."""
     allowed = ",".join([*TOOLS, *(f"mcp__{name}" for name in databases), *([f"mcp__{QUEUE_SERVER}"] if queue else [])])
     return [
         executable, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
@@ -85,6 +87,7 @@ def command(executable, home, session, resume, databases, queue=False):
         "--setting-sources", "", "--settings", SETTINGS,
         "--append-system-prompt", role(queue),
         "--resume" if resume else "--session-id", session,
+        *(["--model", model] if model else []),
     ]
 
 
@@ -385,16 +388,18 @@ class Process:
 
 
 class ClaudeCode:
-    """The back end: `gateway` is the gateway's address, `databases` the names of the attached databases, `queue` whether the query queue is attached."""
+    """The back end: `gateway` is the gateway's address, `databases` the names of the attached databases, `queue` whether the query queue is attached, `models` the models a chat may be given (some of MODELS); a chat without one runs on Claude Code's default (`model_default` None)."""
 
     name = "claude-code"
+    model_default = None
 
-    def __init__(self, gateway, databases, *, queue=False, executable=EXECUTABLE, line_max=LINE_MAX_BYTES, grace=STOP_GRACE_SECONDS, stderr_max=STDERR_MAX_BYTES, join=JOIN_SECONDS):
+    def __init__(self, gateway, databases, *, queue=False, models=MODELS, executable=EXECUTABLE, line_max=LINE_MAX_BYTES, grace=STOP_GRACE_SECONDS, stderr_max=STDERR_MAX_BYTES, join=JOIN_SECONDS):
         self.gateway, self.databases, self.queue, self.executable = gateway, tuple(databases), queue, executable
+        self.models = tuple(models)
         self.line_max, self.grace, self.stderr_max, self.join = line_max, grace, stderr_max, join
 
-    def turn(self, chat_fd, config, home, files, tmp, text, session, resume):
-        """A `Process` for one turn (not started) and its `Translator`. `config` is the chat's `home/`, into which `mcp.json` is written again first; `home` the turn's fresh `HOME`."""
+    def turn(self, chat_fd, config, home, files, tmp, text, session, resume, model=None):
+        """A `Process` for one turn (not started) and its `Translator`. `config` is the chat's `home/`, into which `mcp.json` is written again first; `home` the turn's fresh `HOME`; `model` the chat's model (None: Claude Code's default)."""
         payload = json.dumps(mcp_config(self.databases, self.gateway, self.queue), indent=2).encode("utf-8")
         home_fd = os.open("home", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=chat_fd)
         try:
@@ -407,6 +412,6 @@ class ClaudeCode:
                 os.close(fd)
         finally:
             os.close(home_fd)
-        argv = command(self.executable, config, session, resume, self.databases, self.queue)
+        argv = command(self.executable, config, session, resume, self.databases, self.queue, model)
         process = Process(argv, environment(home, config, tmp, self.gateway, self.queue), files, user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
         return process, Translator()

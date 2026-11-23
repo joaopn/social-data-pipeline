@@ -1,7 +1,17 @@
-{#- The chat's backend and model in the right column ("This chat"). A slot of its own: the model picker of the chat replaces this part. Today it shows the backend `hello` named and, when the context has `chat_model`, the chat's model. -#}
-<dl class="kv chat-model">
-  <dt>Backend</dt><dd>{% if hello %}{{ hello.backend_name }}{% else %}not known: the sandbox did not answer{% endif %}</dd>
-  {%- if chat_model is defined and chat_model %}
-  <dt>Model</dt><dd>{{ chat_model }}</dd>
+{#- The chat's model picker (PLAN_CHAT_UPGRADE unit 4), drawn in the conversation's header: the models of `hello` (the runner's allow-list) and "backend default", the open chat's model (`chat_model`, from `chat.list`) chosen. The select belongs to the send form (`form="chat-send"`), so the next question is sent with it and its turn runs on it. A back end with one model and no default of its own (OpenAI-compatible) shows that model, not choosable; a runner that names no model shows nothing. Every name is escaped. -#}
+{%- if hello and hello.models %}
+<span class="model-pick">
+  {%- if hello.choosable %}
+  <label class="small muted" for="chat-model">Model</label>
+  <select id="chat-model" name="model" form="chat-send" aria-label="The model of this chat's next turns">
+    <option value=""{% if chat_model not in hello.models %} selected{% endif %}>backend default</option>
+    {%- for name in hello.models %}
+    <option value="{{ name }}"{% if name == chat_model %} selected{% endif %}>{{ name }}</option>
+    {%- endfor %}
+  </select>
+  {%- else %}
+  <span class="small muted">Model</span><span class="tag">{{ hello.models[0] }}</span>
   {%- endif %}
-</dl>
+  <span class="tag" title="The chat's back end">{{ hello.backend }}</span>
+</span>
+{%- endif %}

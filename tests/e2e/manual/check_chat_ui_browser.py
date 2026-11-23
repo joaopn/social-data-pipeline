@@ -108,7 +108,6 @@ def main():
         expect(theme() == "dark", "Follow the browser: dark while the browser is dark")
         page.emulate_media(color_scheme="light")
         expect(wait_until("() => document.documentElement.dataset.theme === 'light'", None, 5), "Follow the browser: light once the browser turns light, without a reload")
-        page.select_option("#setting-model", "")
         page.keyboard.press("Escape")
 
         # ── every page in both themes ──
@@ -120,10 +119,15 @@ def main():
         pending = urllib.parse.urlsplit(page.url).path
         expect(pending.startswith("/pending/"), f"a database's action leads to its confirm page ({pending})")
         page.goto(base + "chat")
-        page.click("aside.left form[action='/chat/new'] button")
+        page.wait_for_load_state("networkidle")
+        with page.expect_request(lambda request: request.method == "POST" and request.url.endswith("/chat/new")) as made:
+            page.click("aside.left form[action='/chat/new'] button")
         page.wait_for_load_state("networkidle")
         chat = urllib.parse.urlsplit(page.url).path
         expect(chat.startswith("/chat/c_"), f"New chat leads to {chat}")
+        if page.locator("input.default-model").count():
+            expect(urllib.parse.parse_qs(made.value.post_data or "").get("model") == ["sonnet"], "New chat sends this browser's default model (sonnet) once")
+        page.evaluate("localStorage.setItem('sdp.defaultModel', '')")
         for scheme in ("dark", "light"):
             page.evaluate(f"localStorage.setItem('sdp.theme', '{scheme}')")
             for path, name in (("/", "overview"), (source, "source"), ("/queue", "queue"), ("/chat", "chat"), (chat, "chat-conversation"), (pending, "confirm")):
@@ -149,14 +153,42 @@ def main():
         page.wait_for_timeout(600)
         expect(page.evaluate("window.__sdpMark") == "not reloaded", "nothing was sent while composing")
         totals_before = page.inner_text("#chat-totals")
-        with page.expect_navigation():
+        picker = page.locator("#chat-model")
+        if picker.count():
+            picker.select_option("haiku")
+        with page.expect_navigation(), page.expect_request(lambda request: request.method == "POST" and request.url.endswith("/send")) as sent:
             box_text.press("Enter")
+        fields = urllib.parse.parse_qs(sent.value.post_data or "", keep_blank_values=True)
+        expect(fields.get("text") == ["first line\nsecond line"] or fields.get("text") == ["first line\r\nsecond line"], "the question was sent whole")
+        if picker.count():
+            expect(fields.get("model") == ["haiku"], f"the header's picker posts the model once ({fields.get('model')})")
         page.wait_for_load_state("networkidle")
         expect(page.evaluate("window.__sdpMark") is None and page.locator(".cw .chat .msg.user").count() == before + 1, "Enter sent the question (the page was posted and shows it)")
         ends = page.locator(".cw .chat .chat-end").count()
         expect(wait_until("(ends) => document.querySelectorAll('.cw .chat .chat-end').length > ends", ends, 180), "the turn ended without a reload")
         changed = wait_until("(old) => { const part = document.getElementById('chat-totals'); return part !== null && part.innerText !== old && !part.innerText.includes('Adding up'); }", totals_before)
         expect(changed, f"the turn totals were asked again once the turn ended ({totals_before!r} -> {page.inner_text('#chat-totals')!r})")
+        violations()
+
+        # ── data in reach and the chart ──
+        expect(wait_until("() => { const part = document.getElementById('chat-reach'); return part !== null && !part.hasAttribute('hx-get') && !part.innerText.includes('checking'); }", None, 30), f"data in reach is filled in ({page.inner_text('#chat-reach') if page.locator('#chat-reach').count() else 'no block'!r})")
+        if page.locator(".vl-chart").count():
+            drawn = wait_until("() => document.querySelector('.vl-chart svg') !== null", None, 30)
+            expect(drawn, "the chart is drawn")
+            colour = "() => { const mark = document.querySelector('.vl-chart svg text'); return mark ? mark.getAttribute('fill') || getComputedStyle(mark).fill : null; }"
+            before_colour = page.evaluate(colour)
+            if shots:
+                page.locator(".vl-chart").first.scroll_into_view_if_needed()
+                page.screenshot(path=os.path.join(shots, f"chart-{theme()}.png"))
+            other = "light" if theme() == "dark" else "dark"
+            page.click("#settings-button")
+            page.select_option("#setting-theme", other)
+            page.keyboard.press("Escape")
+            changed = wait_until("(old) => { const mark = document.querySelector('.vl-chart svg text'); return mark !== null && (mark.getAttribute('fill') || getComputedStyle(mark).fill) !== old; }", before_colour, 10)
+            expect(changed, f"the chart is drawn again in the {other} theme ({before_colour} -> {page.evaluate(colour)})")
+            if shots:
+                page.locator(".vl-chart").first.scroll_into_view_if_needed()
+                page.screenshot(path=os.path.join(shots, f"chart-{other}.png"))
         violations()
 
         # ── the right column ──

@@ -320,6 +320,24 @@ def pidfd_open(pid):
     return int(fd)
 
 
+# The number of the system call pidfd_send_signal: the same on every architecture of Linux (in the shared table since 5.1).
+_SYS_PIDFD_SEND_SIGNAL = 424
+
+
+def pidfd_send_signal(handle, signum):
+    """Send a signal through a handle on a process (`signal.pidfd_send_signal`), through the system call itself where Python was built without the function (conda's Python, for one). Raises OSError (ProcessLookupError for a process that has ended)."""
+    sender = getattr(signal, "pidfd_send_signal", None)
+    if sender is not None:
+        sender(handle, signum)
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    result = libc.syscall(ctypes.c_long(_SYS_PIDFD_SEND_SIGNAL), ctypes.c_int(handle), ctypes.c_int(signum), ctypes.c_void_p(None), ctypes.c_uint(0))
+    if result < 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number))
+
+
 def _peer_uid(connection):
     """The uid of the process at the other end of a unix socket, as the kernel recorded it when the connection was made."""
     data = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
@@ -1539,8 +1557,8 @@ def running_broker(root):
 
 
 def stop_broker(root, *, force=False, on_wait=None, send=None, first_wait_seconds=None):
-    """Stop the broker of a deployment: True when it ran and has ended, False when none runs. The signal (TERM, or USR1 with `force`) goes through a handle on the process (`pidfd_open`), and only after the lock was found still held, by that very process (the kernel's table of locks), and the lock file still names it; otherwise StopRefused and no signal. `on_wait()` is called once when the broker has not ended after `first_wait_seconds` (STOP_SAY_WAIT_SECONDS when None: it waits for an action to finish); then it is waited for without a limit. A broker that ends between the checks and the signal counts as stopped. `send` replaces `signal.pidfd_send_signal`."""
-    send = send or signal.pidfd_send_signal
+    """Stop the broker of a deployment: True when it ran and has ended, False when none runs. The signal (TERM, or USR1 with `force`) goes through a handle on the process (`pidfd_open`), and only after the lock was found still held, by that very process (the kernel's table of locks), and the lock file still names it; otherwise StopRefused and no signal. `on_wait()` is called once when the broker has not ended after `first_wait_seconds` (STOP_SAY_WAIT_SECONDS when None: it waits for an action to finish); then it is waited for without a limit. A broker that ends between the checks and the signal counts as stopped. `send` replaces `pidfd_send_signal`."""
+    send = send or pidfd_send_signal
     found = _lock_identity_and_held(root)
     if found is None or not found[1]:
         return False
@@ -1609,7 +1627,7 @@ def _end_unanswering(process, grace_seconds):
     try:
         with contextlib.suppress(ProcessLookupError):
             if handle is not None:
-                signal.pidfd_send_signal(handle, signal.SIGTERM)
+                pidfd_send_signal(handle, signal.SIGTERM)
             else:
                 process.terminate()
         try:

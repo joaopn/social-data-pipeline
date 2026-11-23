@@ -357,6 +357,36 @@ class TestStopSignalsOnlyTheHolder:
         assert said == ["waiting"]
         assert holder.wait(5) == 0
 
+    def test_a_python_without_pidfd_send_signal_still_stops_the_holder(self, root, tmp_path, monkeypatch, capsys):
+        """Bug class: `broker stop` failing with AttributeError under a Python built without `signal.pidfd_send_signal` (conda's): the system call is used instead and signals the real process."""
+        folder, started = root
+        (folder / ".sdp" / "broker").mkdir(parents=True, mode=0o700)
+        os.chmod(folder / ".sdp", 0o700)
+        ready = tmp_path / "ready"
+        holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(folder / ".sdp" / "broker" / "lock"), str(ready)])
+        started.append(holder.pid)
+        wait_for("the holder", ready.exists)
+        monkeypatch.delattr(signal, "pidfd_send_signal", raising=False)
+
+        code = run_command("stop")
+
+        assert code == 0
+        assert capsys.readouterr().out == "  The broker has stopped.\n"
+        assert holder.wait(5) == 0
+
+
+def test_the_fallback_raises_process_lookup_error_for_an_ended_process(monkeypatch):
+    """Bug class: the system call's ESRCH (the broker ended between the checks and the signal) surfacing as a plain OSError, which `stop` would report as a failure instead of "stopped"."""
+    monkeypatch.delattr(signal, "pidfd_send_signal", raising=False)
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    handle = broker.pidfd_open(child.pid)
+    try:
+        child.wait(10)
+        with pytest.raises(ProcessLookupError):
+            broker.pidfd_send_signal(handle, signal.SIGTERM)
+    finally:
+        os.close(handle)
+
 
 # ── audit ───────────────────────────────────────────────────────────────────
 

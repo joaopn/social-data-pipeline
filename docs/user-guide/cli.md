@@ -134,6 +134,8 @@ See [Web UI](webui.md).
 | `python sdp.py chat stop` | Stop and remove both containers and the chat's two networks, and detach the databases (exit code 1 when it does not run) |
 | `python sdp.py chat rebuild` | Rebuild the images `sdp-gateway` and `sdp-sandbox` from the saved settings, with no questions, then stop the chat (when it runs) and start it. A failed build leaves the running chat as it was (exit code 1). Use it to pick up new code; run `chat setup` only to change the settings |
 | `python sdp.py chat status` | Say whether each container runs, the back end, which databases the chat can read now (and which dropped out since the start) and the work folder's size against its soft cap (exit code 0 when it runs) |
+| `python sdp.py chat settings` | Show the chat's settings for the whole deployment: the read-only query limit of its MongoDB and StarRocks MCP servers (`CHAT_QUERY_TIMEOUT_SECONDS`, 90 seconds by default); PostgreSQL ignores it |
+| `python sdp.py chat query-limit [<seconds>]` | Show the read-only query limit, or set it (whole seconds, 1 to 3600): written to `.env`, and when the chat runs its MongoDB and StarRocks MCP servers are started again with it (the gateway and the sandbox go on; running chats keep their own waits until `chat stop` and `chat start`) |
 | `python sdp.py chat unsetup` | After a confirmation, remove the two images and the chat's settings and credential; after a second one, also all chats and their files (`.sdp/chat/work`). Refused while the chat's containers exist |
 
 You ask the chat in the web UI's Chat window (start the web UI after `chat start`). See [Chat](chat.md).

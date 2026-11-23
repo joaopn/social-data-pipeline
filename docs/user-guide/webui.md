@@ -1,11 +1,13 @@
 ---
-title: "Web UI"
+title: "Web UI reference"
 parent: "User guide"
-nav_order: 11
+nav_order: 12
 ---
-# Web UI
+# Web UI reference
 
 The web UI is a page in your browser for the pipeline of one deployment: you start and follow pipeline runs, start and stop databases, approve the queries in the query scheduler's queue and ask the chat's assistant about your data. Every action shows its `sdp` command and runs only once you confirm it.
+
+New to it? Start with [Getting started in the browser](getting-started.md), which walks through it step by step with screenshots.
 
 ## What it is
 

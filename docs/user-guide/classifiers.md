@@ -1,7 +1,7 @@
 ---
 title: "Language detection and classifiers"
 parent: "User guide"
-nav_order: 6
+nav_order: 7
 ---
 # Language detection and classifiers
 

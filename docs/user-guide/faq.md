@@ -1,7 +1,7 @@
 ---
 title: "FAQ and troubleshooting"
 parent: "User guide"
-nav_order: 15
+nav_order: 16
 ---
 # FAQ and troubleshooting
 

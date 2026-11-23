@@ -1,7 +1,7 @@
 ---
 title: "Quick start"
 parent: "User guide"
-nav_order: 2
+nav_order: 3
 ---
 # Quick start
 

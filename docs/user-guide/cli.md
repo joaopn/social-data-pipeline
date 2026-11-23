@@ -1,7 +1,7 @@
 ---
 title: "CLI reference"
 parent: "User guide"
-nav_order: 14
+nav_order: 15
 ---
 # CLI reference
 

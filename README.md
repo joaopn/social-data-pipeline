@@ -20,17 +20,21 @@ A researcher-focused CLI pipeline for processing, classifying, ingesting, and qu
 </p>
 </div>
 
-[Install](https://joaopn.github.io/social-data-pipeline/user-guide/install.html) · [Quick start](https://joaopn.github.io/social-data-pipeline/user-guide/quick-start.html) · [User guide](https://joaopn.github.io/social-data-pipeline/user-guide/) · [Architecture](https://joaopn.github.io/social-data-pipeline/architecture/) · [CLI reference](https://joaopn.github.io/social-data-pipeline/user-guide/cli.html) · [FAQ](https://joaopn.github.io/social-data-pipeline/user-guide/faq.html)
+![The web UI's Chat window: a question about the Reddit rows loaded in StarRocks per month of 2023, the assistant's query and its bar chart by data type, with the chat list, the data in reach, and the chat's files and queue](docs/assets/webui/hero.png)
+
+This is the web UI, which you run on your own Linux machine (the Codespaces demo above does not set it up): its Chat window answers a question about the data loaded in StarRocks.
+
+[Install](https://joaopn.github.io/social-data-pipeline/user-guide/install.html) · [Getting started](https://joaopn.github.io/social-data-pipeline/user-guide/getting-started.html) · [Quick start](https://joaopn.github.io/social-data-pipeline/user-guide/quick-start.html) · [User guide](https://joaopn.github.io/social-data-pipeline/user-guide/) · [Architecture](https://joaopn.github.io/social-data-pipeline/architecture/) · [CLI reference](https://joaopn.github.io/social-data-pipeline/user-guide/cli.html) · [FAQ](https://joaopn.github.io/social-data-pipeline/user-guide/faq.html)
 
 ## What it does
 
+- **Web UI and chat.** A page in the browser to run and follow the pipeline, start and stop the databases, approve queries, and ask an AI assistant in a sandbox about your data.
 - **Sources.** The [Reddit dumps](https://github.com/ArthurHeitmann/arctic_shift) from Arctic Shift (with Reddit-specific deletion detection, id deduplication, base-36 ids and schema conversion across years), [Hugging Face](https://huggingface.co/datasets) datasets, or any JSON, CSV or Parquet records of your own.
 - **Parsing.** Detects and decompresses `.zst`, `.gz`, `.xz` and `.tar.gz` dumps and parses them into typed Parquet or CSV files with the fields you choose.
 - **Classifiers.** Language detection on CPU (Lingua) and transformer classifiers on GPU, with multi-GPU parallelization and language filtering; add your own through YAML or Python.
 - **Databases.** StarRocks for fast analytical queries, PostgreSQL with tuned settings and duplicate handling, and MongoDB for the raw records, each with optional admin and read-only users.
 - **AI access.** Read-only MCP servers for each database, for agentic clients such as Claude Code, Codex or Cursor.
 - **Query scheduler.** Agents queue heavy queries over MCP, you approve each one on a page, and the results land as Parquet, CSV or NDJSON files.
-- **Web UI and chat.** A page in the browser to run and follow the pipeline, start and stop the databases, approve queries, and ask an AI assistant in a sandbox about your data.
 - **Resumable.** Every profile tracks its progress: rerun any profile safely without reprocessing completed files.
 
 ## Install
@@ -48,6 +52,8 @@ python sdp.py --help                        # lists the command groups
 The [Install](https://joaopn.github.io/social-data-pipeline/user-guide/install.html) page has the full requirements, the recommended hardware, the Codespaces demo and how to update.
 
 ## How it works
+
+To do this in the browser instead, follow [Getting started in the browser](https://joaopn.github.io/social-data-pipeline/user-guide/getting-started.html): the web UI sets up the databases, adds the source, runs the pipeline and approves the queries, with screenshots of each step.
 
 **1. Configure the databases.** Pick PostgreSQL, MongoDB or StarRocks, their data paths and ports, optional authentication and tuning; this is a one-time setup.
 

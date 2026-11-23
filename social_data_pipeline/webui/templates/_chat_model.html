@@ -1,4 +1,4 @@
-{#- The chat's model picker (PLAN_CHAT_UPGRADE unit 4), drawn in the conversation's header: the models of `hello` (the runner's allow-list) and "backend default", the open chat's model (`chat_model`, from `chat.list`) chosen. The select belongs to the send form (`form="chat-send"`), so the next question is sent with it and its turn runs on it. A back end with one model and no default of its own (OpenAI-compatible) shows that model, not choosable; a runner that names no model shows nothing. Every name is escaped. -#}
+{#- The chat's model picker, drawn in the conversation's header: the models of `hello` (the runner's allow-list) and "backend default", the open chat's model (`chat_model`, from `chat.list`) chosen. The select belongs to the send form (`form="chat-send"`), so the next question is sent with it and its turn runs on it. A back end with one model and no default of its own (OpenAI-compatible) shows that model, not choosable; a runner that names no model shows nothing. Every name is escaped. -#}
 {%- if hello and hello.models %}
 <span class="model-pick">
   {%- if hello.choosable %}
@@ -12,6 +12,6 @@
   {%- else %}
   <span class="small muted">Model</span><span class="tag">{{ hello.models[0] }}</span>
   {%- endif %}
-  <span class="tag" title="The chat's back end">{{ hello.backend }}</span>
+  <span class="tag" title="The chat's back end">{{ hello.backend_name or hello.backend }}</span>
 </span>
 {%- endif %}

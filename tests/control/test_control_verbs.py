@@ -34,11 +34,11 @@ WIDE_INPUTS = {
     ("source.add", "dumps_path"), ("source.add", "extracted_path"), ("source.add", "parsed_path"), ("source.add", "output_path"),
     # The classifiers' exact strings and regular expressions to remove are free text in the terminal too (one line each).
     ("source.add", "remove_strings"), ("source.add", "remove_patterns"),
-    # `db setup`: the data paths, the ports, the tablespaces' and extra disks' folders and the pasted PGTune output (PLAN_WEBUI_MOCK_SETUP, F5a).
+    # `db setup`: the data paths, the ports, the tablespaces' and extra disks' folders and the pasted PGTune output.
     ("db.setup", "data_path"), ("db.setup", "export_path"), ("db.setup", "pgdata_path"), ("db.setup", "mongo_data_path"), ("db.setup", "starrocks_data_path"),
     ("db.setup", "pg_port"), ("db.setup", "mongo_port"), ("db.setup", "starrocks_port"), ("db.setup", "starrocks_fe_http_port"),
     ("db.setup", "tablespaces"), ("db.setup", "starrocks_storage_paths"), ("db.setup", "pgtune"),
-    # `source configure` asks the folders and the classifiers' free text again; `source add-classifiers` the free text (PLAN_WEBUI_MOCK_SETUP, F4c).
+    # `source configure` asks the folders and the classifiers' free text again; `source add-classifiers` the free text.
     ("source.configure", "dumps_path"), ("source.configure", "extracted_path"), ("source.configure", "parsed_path"), ("source.configure", "output_path"),
     ("source.configure", "remove_strings"), ("source.configure", "remove_patterns"), ("source.add_classifiers", "remove_strings"), ("source.add_classifiers", "remove_patterns"),
 }

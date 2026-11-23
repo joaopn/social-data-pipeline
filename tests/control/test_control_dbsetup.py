@@ -104,7 +104,7 @@ def test_values_out_of_the_terminals_range_are_refused_by_their_type(field, valu
     assert refused.value.field == field
 
 
-# ── over databases set up already (F5c): the keep answers and the rules on the setup as it is ──
+# ── over databases set up already: the keep answers and the rules on the setup as it is ──
 
 REFUSED_ANYWAY = [
     # A keep answer together with the answer it keeps instead of.

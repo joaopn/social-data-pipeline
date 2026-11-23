@@ -1742,9 +1742,10 @@ class TestCreatedWithItsLock:
             seen.append(("free", runstore._lock_is_free(run_fd)))
             real(run_fd, record)
 
-        monkeypatch.setattr(runstore, "_write_record", write)
-        run_id, lock_fd = runstore.create_run_locked(root, {"profile": "parse", "source": "reddit", "flags": {"build": True}, "started_by": "operator"})
-        monkeypatch.undo()
+        # Only this patch is undone: the fake Docker must stay in place for the reads below.
+        with monkeypatch.context() as patch:
+            patch.setattr(runstore, "_write_record", write)
+            run_id, lock_fd = runstore.create_run_locked(root, {"profile": "parse", "source": "reddit", "flags": {"build": True}, "started_by": "operator"})
 
         assert seen == [("lock file", True), ("free", False)]
         assert runstore.run_id_kind(run_id) == "web"

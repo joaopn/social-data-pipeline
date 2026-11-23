@@ -19,6 +19,8 @@ from social_data_pipeline.control.types import (
     Field,
     FileFilter,
     IntRange,
+    ListOf,
+    MapOf,
     Name,
     Path,
     Port,
@@ -26,6 +28,7 @@ from social_data_pipeline.control.types import (
     RunId,
     Secret,
     SecretValue,
+    Text,
 )
 
 VERB_CLASSES = ("read", "write", "step_up")
@@ -129,6 +132,67 @@ _JOBS_INPUTS = {
     "starrocks_target": Field(Record({"name": Field(Name(), required=True), "timeout_hours": Field(IntRange(1, 72), required=True)})),
     "mongo_target": Field(Record({"name": Field(Name(), required=True), "timeout_hours": Field(_HOURS, required=True)})),
     "auth_enabled": Field(Bool()),
+}
+
+
+def _check_source_add(fields):
+    """The one cross-field rule of `source add` that needs no file: the platform comes from the name (only the source named `reddit` is the Reddit platform). Every other rule (what is asked for the profiles chosen, the folders of other sources) is the action's, which reads the deployment."""
+    if (fields["platform"] == "reddit") != (fields["name"] == "reddit"):
+        raise FieldRefused("platform", "must be reddit exactly for the source named reddit")
+
+
+# The questions of `source add` for Reddit dumps and your own files (and the Reddit questions of `source configure reddit`), each one typed input of `source.add`; an optional one left out is the question answered with Enter (the terminal's default, computed by the action on the host). Sizes: at most 32 data types, 256 fields per data type, 64 index columns and 64 text columns per data type.
+_DATA_TYPE = Name()
+_NAMES = ListOf(Name(), 64, unique=True)
+_REDDIT_KIND = Enum(("submissions", "comments"))
+_WORKERS = IntRange(1, 1024)
+SOURCE_ADD_QUESTIONS = {
+    "platform": Field(Enum(("custom", "reddit")), required=True),
+    "data_types": Field(ListOf(_DATA_TYPE, 32, unique=True), required=True),
+    "dumps_path": Field(Path(), required=True),
+    "extracted_path": Field(Path(), required=True),
+    "parsed_path": Field(Path(), required=True),
+    "output_path": Field(Path(), required=True),
+    "file_format": Field(Enum(("parquet", "csv")), required=True),
+    "parquet_row_group_size": Field(IntRange(1, 1_000_000_000)),
+    "profiles": Field(ListOf(Enum(VALID_PROFILES), len(VALID_PROFILES), unique=True), required=True),
+    "parse_workers": Field(_WORKERS),
+    "pg_prefer_lingua": Field(Bool()),
+    "pg_parallel_index_workers": Field(IntRange(0, 1024)),
+    "table_tablespaces": Field(MapOf(_DATA_TYPE, Name(), 32)),
+    "db_schema": Field(Name()),
+    "input_format": Field(Enum(("ndjson", "csv"))),
+    "csv_delimiter": Field(Enum(("comma", "tab", "pipe", "semicolon"))),
+    "dump_globs": Field(MapOf(_DATA_TYPE, FileFilter(), 32)),
+    "compressions": Field(MapOf(_DATA_TYPE, Enum(("zst", "gz", "xz", "tar.gz")), 32)),
+    "fields": Field(MapOf(_DATA_TYPE, ListOf(Name(), 256, unique=True), 32)),
+    "mongo_collection_strategy": Field(Enum(("per_data_type", "per_file"))),
+    "mongo_collections": Field(MapOf(_DATA_TYPE, Name(), 32)),
+    "mongo_db_name": Field(Name()),
+    "pg_indexes": Field(MapOf(_DATA_TYPE, _NAMES, 32)),
+    "mongo_indexes": Field(MapOf(_DATA_TYPE, _NAMES, 32)),
+    "sr_indexes": Field(MapOf(_DATA_TYPE, _NAMES, 32)),
+    "primary_key": Field(Name()),
+    "sr_prefer_lingua": Field(Bool()),
+    "sr_buckets": Field(IntRange(1, 65536)),
+    "reddit_db_schema": Field(Name()),
+    "reddit_removed_fields": Field(MapOf(_REDDIT_KIND, _NAMES, 2)),
+    "reddit_indexes": Field(MapOf(_REDDIT_KIND, _NAMES, 2)),
+    "text_columns": Field(MapOf(_DATA_TYPE, _NAMES, 32)),
+    "remove_strings": Field(ListOf(Text(256, multiline=False), 64)),
+    "remove_patterns": Field(ListOf(Text(512, multiline=False), 64)),
+    "gpu_fields": Field(_NAMES),
+    "lingua_workers": Field(_WORKERS),
+    "lingua_file_workers": Field(_WORKERS),
+    "lingua_batch_size": Field(IntRange(1, 100_000_000)),
+    "lingua_low_accuracy": Field(Bool()),
+    "gpu_ids": Field(ListOf(IntRange(0, 255), 64, unique=True)),
+    "ml_file_workers": Field(_WORKERS),
+    "ml_tokenize_workers": Field(IntRange(0, 1024)),
+    "ml_classifier_batch_size": Field(IntRange(1, 65536)),
+    "ml_classifiers": Field(_NAMES),
+    "ml_classifier_data_types": Field(MapOf(Name(), ListOf(_DATA_TYPE, 32, unique=True), 64)),
+    "hf_token": Field(Secret()),
 }
 
 
@@ -322,9 +386,14 @@ VERBS = _registry(
     ),
     Verb(
         name="source.add", cls="step_up", cli=("source", "add"),
+        # A Hugging Face source (`hf_dataset`) is not taken over the socket yet.
         cli_inputs={"name", "hf_dataset"},
-        prompted_inputs={"questionnaire"},
-        note=_SETUP_NOTE,
+        prompted_inputs=set(SOURCE_ADD_QUESTIONS),
+        socket_inputs={"name": Field(Name(), required=True), **SOURCE_ADD_QUESTIONS},
+        socket_enabled=True,
+        check=_check_source_add,
+        note="Reddit dumps and your own files; a Hugging Face source stays terminal-only for now.",
+        action="do_source_add",
     ),
     Verb(
         name="source.configure", cls="step_up", cli=("source", "configure"),

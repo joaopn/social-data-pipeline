@@ -389,6 +389,92 @@ _MCP_SERVER_FIELDS = {"port": Input("port", "Port", required=True), "write_acces
 _HOURS_INPUT = Input("int", "Default timeout (hours, 0 = no limit)", required=True, lo=0, hi=8760)
 
 
+# The inputs of `source.add`, the registry's (`control.verbs.SOURCE_ADD_QUESTIONS`) as the table's kinds.
+_ADD_NAME = Input("name", "Name")
+_ADD_NAMES = Input("list", "Names", item=_ADD_NAME, max_items=64, unique=True)
+_REDDIT_KINDS = Input("enum", "Kind", choices=("submissions", "comments"))
+_ADD_WORKERS = Input("int", "Workers", lo=1, hi=1024)
+
+
+def _per_type(label, item, max_items=32):
+    return Input("map", label, key=Input("name", "Data type"), item=item, max_items=max_items)
+
+
+SOURCE_ADD_INPUTS = {
+    "name": Input("name", "Source name", required=True),
+    "platform": Input("enum", "Origin", required=True, choices=("custom", "reddit")),
+    "data_types": Input("list", "Data types", required=True, item=Input("name", "Data type"), max_items=32, unique=True),
+    "dumps_path": Input("path", "Dumps folder", required=True),
+    "extracted_path": Input("path", "Extracted folder", required=True),
+    "parsed_path": Input("path", "Parsed folder", required=True),
+    "output_path": Input("path", "Output folder", required=True),
+    "file_format": Input("enum", "Intermediate file format", required=True, choices=("parquet", "csv")),
+    "parquet_row_group_size": Input("int", "Parquet row-group size", lo=1, hi=1_000_000_000),
+    "profiles": Input("list", "Profiles", required=True, item=Input("enum", "Profile", choices=VALID_PROFILES), max_items=len(VALID_PROFILES), unique=True),
+    "parse_workers": Input("int", "Parse workers", lo=1, hi=1024),
+    "pg_prefer_lingua": Input("bool", "PostgreSQL: use the Lingua files"),
+    "pg_parallel_index_workers": Input("int", "PostgreSQL: parallel index workers", lo=0, hi=1024),
+    "table_tablespaces": _per_type("PostgreSQL tablespaces", Input("name", "Tablespace")),
+    "db_schema": Input("name", "PostgreSQL schema"),
+    "input_format": Input("enum", "Raw input format", choices=("ndjson", "csv")),
+    "csv_delimiter": Input("enum", "CSV delimiter", choices=("comma", "tab", "pipe", "semicolon")),
+    "dump_globs": _per_type("Dump file patterns", Input("filter", "Pattern")),
+    "compressions": _per_type("Compressions", Input("enum", "Compression", choices=("zst", "gz", "xz", "tar.gz"))),
+    "fields": _per_type("Fields", Input("list", "Fields", item=_ADD_NAME, max_items=256, unique=True)),
+    "mongo_collection_strategy": Input("enum", "MongoDB collection strategy", choices=("per_data_type", "per_file")),
+    "mongo_collections": _per_type("MongoDB collections", _ADD_NAME),
+    "mongo_db_name": Input("name", "MongoDB database name"),
+    "pg_indexes": _per_type("PostgreSQL indexes", _ADD_NAMES),
+    "mongo_indexes": _per_type("MongoDB indexes", _ADD_NAMES),
+    "sr_indexes": _per_type("StarRocks bitmap indexes", _ADD_NAMES),
+    "primary_key": Input("name", "Primary key"),
+    "sr_prefer_lingua": Input("bool", "StarRocks: use the Lingua files"),
+    "sr_buckets": Input("int", "StarRocks buckets per table", lo=1, hi=65536),
+    "reddit_db_schema": Input("name", "Reddit schema"),
+    "reddit_removed_fields": Input("map", "Reddit fields removed", key=_REDDIT_KINDS, item=_ADD_NAMES, max_items=2),
+    "reddit_indexes": Input("map", "Reddit index columns", key=_REDDIT_KINDS, item=_ADD_NAMES, max_items=2),
+    "text_columns": _per_type("Text columns", _ADD_NAMES),
+    "remove_strings": Input("list", "Exact strings removed", item=Input("text", "String", max_bytes=256), max_items=64),
+    "remove_patterns": Input("list", "Patterns removed", item=Input("text", "Pattern", max_bytes=512), max_items=64),
+    "gpu_fields": Input("list", "Extra fields in the GPU output", item=_ADD_NAME, max_items=64, unique=True),
+    "lingua_workers": Input("int", "Lingua workers", lo=1, hi=1024),
+    "lingua_file_workers": Input("int", "Lingua file workers", lo=1, hi=1024),
+    "lingua_batch_size": Input("int", "Lingua batch size", lo=1, hi=100_000_000),
+    "lingua_low_accuracy": Input("bool", "Lingua low accuracy mode"),
+    "gpu_ids": Input("list", "GPUs", item=Input("int", "GPU", lo=0, hi=255), max_items=64, unique=True),
+    "ml_file_workers": Input("int", "GPU file workers", lo=1, hi=1024),
+    "ml_tokenize_workers": Input("int", "Tokenize workers", lo=0, hi=1024),
+    "ml_classifier_batch_size": Input("int", "Classifier batch size", lo=1, hi=65536),
+    "ml_classifiers": Input("list", "Classifiers", item=_ADD_NAME, max_items=64, unique=True),
+    "ml_classifier_data_types": Input("map", "Data types per classifier", key=_ADD_NAME, item=Input("list", "Data types", item=Input("name", "Data type"), max_items=32, unique=True), max_items=64),
+    "hf_token": Input("secret", "Hugging Face token"),
+}
+
+# The files `source add` writes in config/sources/<name>/ for each profile (`setup.source.main`), after platform.yaml.
+SOURCE_FILES = (("parse", "parse.yaml"), ("postgres_ingest", "postgres.yaml"), ("postgres_ml", "postgres_ml.yaml"), ("mongo_ingest", "mongo.yaml"), ("sr_ingest", "starrocks.yaml"), ("sr_ml", "sr_ml.yaml"), ("lingua", "lingua.yaml"), ("ml", "ml.yaml"))
+
+
+def source_files(profiles):
+    """The files `source add` writes for these profiles, in its order."""
+    return ["platform.yaml"] + [filename for profile, filename in SOURCE_FILES if profile in profiles]
+
+
+def source_add_sentence(fields):
+    """What `source add` does with these fields (`sdp.do_source_add`, `setup.source_add.add_source`), clause by clause."""
+    name, profiles = fields["name"], fields["profiles"]
+    parts = [f"It creates config/sources/{name}/ and writes {', '.join(source_files(profiles))} in it."]
+    if "hf_token" in fields:
+        parts.append("It writes the Hugging Face token into .env as HF_TOKEN, in place of the line of HF_TOKEN there (a commented one too), or as a new line.")
+    if fields["platform"] == "reddit" and any(key in fields for key in ("reddit_db_schema", "reddit_removed_fields", "reddit_indexes")):
+        parts.append("Then it applies the Reddit schema, field and index answers to platform.yaml, as python sdp.py source configure reddit does.")
+    folders = "; ".join(f"{stage} {fields[stage + '_path']}" for stage in ("dumps", "extracted", "parsed", "output"))
+    parts.append(f"The source's folders: {folders}. It creates none of them: the first run of a profile creates each one that is missing.")
+    parts.append("The broker refuses the action, before anything is written, when a source of this name exists already (change one with Reconfigure), when a folder is a folder of another source, lies inside one or holds one, and when an answer is one the terminal would not ask for these profiles.")
+    parts.append("Answers left empty take the terminal's default, computed on the host as source add computes it (the CPU cores, the GPUs, the base classifier configuration).")
+    parts.append("When PostgreSQL or StarRocks is running, the output says whether it must be restarted (db stop, then db start) to see the new source's folders.")
+    return " ".join(parts)
+
+
 def _table(*actions):
     by_name = {}
     for action in actions:
@@ -505,6 +591,12 @@ TABLE = _table(
         "queue.auto_accept", "write", "Change a target's auto-accept",
         {"target": Input("target", "Target", required=True), "enabled": Input("opt_bool", "Auto-accept", required=True), "limit": Input("opt_int", "Limit", required=True, lo=0, hi=10 ** LIMIT_DIGITS - 1), "by": Input("by", "Asked by", required=True)},
         form="(the scheduler's page: the auto-accept panel; switching it on or raising the limit needs the management password again)", door="auto_accept.set",
+    ),
+    # ── setup (step-up) ──
+    Action(
+        "source.add", "step_up", "Add a source", SOURCE_ADD_INPUTS,
+        form="python sdp.py source add <name> (Reddit dumps or your own files; the questions are the wizard's steps)", command=lambda fields: _command("source", "add", _q(fields["name"])),
+        also=lambda fields: source_add_sentence(fields),
     ),
 )
 

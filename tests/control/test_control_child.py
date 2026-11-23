@@ -114,7 +114,8 @@ class TestArguments:
 
     def test_every_action_can_be_called_with_what_the_child_builds(self, actions, capsys):
         """Bug class: a verb whose action the child cannot call at all: the walk over the registry builds the smallest valid request of every verb that has an action and requires one recorded call each, so a new action with a parameter the child does not know how to fill fails here."""
-        smallest = {"run.start": {"profile": "parse", "source": "ok"}, "run.logs": {"run_id": RUN_ID}, "run.cancel": {"run_id": RUN_ID}, "db.reset": {"db": "postgres"}, "db.unsetup": {"db": "postgres"}, "source.remove": {"name": "ok"}, "db.setup_jobs": {"port": 8050, "result_root": "./r", "max_concurrent": 1, "history_retention": 1}}
+        smallest = {"run.start": {"profile": "parse", "source": "ok"}, "run.logs": {"run_id": RUN_ID}, "run.cancel": {"run_id": RUN_ID}, "db.reset": {"db": "postgres"}, "db.unsetup": {"db": "postgres"}, "source.remove": {"name": "ok"}, "db.setup_jobs": {"port": 8050, "result_root": "./r", "max_concurrent": 1, "history_retention": 1},
+                    "source.add": {"name": "new", "platform": "custom", "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse"]}}
         actions.result = {}
         with_action = sorted(name for name, verb in verbs.VERBS.items() if verb.action is not None)
 
@@ -219,7 +220,7 @@ REFUSED = [
     ("fields-null", {"verb": "db.stop", "fields": None, "run_id": PLANTED}, "Error: the request must be an object with 'verb', 'fields' and nothing else but 'run_id'.\n"),
     ("unknown-verb", {"verb": "db.explode", "fields": {"admin_password": PLANTED}}, "Error: Unknown verb 'db.explode'.\n"),
     ("unknown-verb-with-the-value", {"verb": PLANTED + "\nx", "fields": {}}, "Error: Unknown verb (its name is not a well-formed verb name).\n"),
-    ("not-over-the-socket", {"verb": "source.add", "fields": {"name": PLANTED}}, "Error: source.add is not available over the socket. Setup becomes available when its questions have typed inputs.\n"),
+    ("not-over-the-socket", {"verb": "db.recover_password", "fields": {"regenerate_ro": PLANTED}}, "Error: db.recover_password is not available over the socket. Terminal-only until recovery stops opening PostgreSQL to the network.\n"),
     ("unknown-field", {"verb": "db.start", "fields": {"admin_password": PLANTED, "data_path": "/srv"}}, "Error: db.start: field 'data_path' is not accepted.\n"),
     ("private-parameter-as-a-field", {"verb": "db.reset", "fields": {"db": "postgres", "_confirm": PLANTED}}, "Error: db.reset: a field with a malformed name is not accepted.\n"),
     ("run-id-as-a-field", {"verb": "run.start", "fields": {"profile": "parse", "source": "ok", "_run_id": RUN_ID, "admin_password": PLANTED}}, "Error: run.start: a field with a malformed name is not accepted.\n"),

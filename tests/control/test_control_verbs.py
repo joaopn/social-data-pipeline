@@ -27,8 +27,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "ConfiguredSource", "RunId", "Secret", "Path", "Port", "Text", "ListOf", "MapOf", "Record"}
 # The wide types (a host path, any port, free text), and every (verb, field) that uses one, also nested in a container. Each entry is a decision of the maintainer (any path and any port with the management password); a setup unit adds its own here when it lists the input.
 WIDE_TYPE_NAMES = {"Path", "Port", "Text"}
-WIDE_INPUTS = set()
-WIDE_INPUTS |= {("db.setup_mcp", "postgres"), ("db.setup_mcp", "mongo"), ("db.setup_mcp", "starrocks"), ("db.setup_jobs", "port"), ("db.setup_jobs", "result_root")}
+WIDE_INPUTS = {
+    # `db setup-mcp` and `db setup-jobs`: the servers' ports and the scheduler's port and results folder.
+    ("db.setup_mcp", "postgres"), ("db.setup_mcp", "mongo"), ("db.setup_mcp", "starrocks"), ("db.setup_jobs", "port"), ("db.setup_jobs", "result_root"),
+    # A source's four folders may be any path (F4 decision 1); the action refuses one of another source.
+    ("source.add", "dumps_path"), ("source.add", "extracted_path"), ("source.add", "parsed_path"), ("source.add", "output_path"),
+    # The classifiers' exact strings and regular expressions to remove are free text in the terminal too (one line each).
+    ("source.add", "remove_strings"), ("source.add", "remove_patterns"),
+}
 
 # The security classification of every verb: (class, accepted over the socket). Changing one is a decision, so it is made in two places.
 CLASSIFICATION = {
@@ -54,7 +60,7 @@ CLASSIFICATION = {
     "db.setup": ("step_up", False),
     "db.setup_mcp": ("step_up", True),
     "db.setup_jobs": ("step_up", True),
-    "source.add": ("step_up", False),
+    "source.add": ("step_up", True),
     "source.configure": ("step_up", False),
     "source.add_classifiers": ("step_up", False),
     "db.create_indexes": ("step_up", False),
@@ -232,7 +238,8 @@ class TestSocketInputsAreNarrowerThanTheCli:
             actions = {action.dest: action for action in leaves[verb.cli]._actions}
             for field, spec in verb.socket_inputs.items():
                 parser_choices = actions[field].choices if field in actions else None
-                if isinstance(spec.type, types.Enum):
+                # An answer to a prompt (not a parser destination) has no parser choices to mirror.
+                if isinstance(spec.type, types.Enum) and field in verb.cli_inputs:
                     assert parser_choices is not None, f"{name}.{field} is an Enum with nothing in the parser to mirror"
                     assert spec.type.choices == tuple(parser_choices), f"{name}.{field}"
                     compared.add((name, field))
@@ -312,10 +319,24 @@ class TestDenyByDefault:
                 verbs.validate_request(name, fields)
             assert exc.value.code == "not_available"
 
-    def test_source_add_is_not_available(self):
-        """Bug class: the setup questionnaire, which writes config from free answers, becoming reachable from the browser."""
-        with pytest.raises(errors.VerbNotAvailable, match="source.add is not available"):
-            verbs.validate_request("source.add", {"name": "reddit"})
+    def test_source_add_takes_no_hugging_face_dataset_yet(self):
+        """Bug class: a Hugging Face source reachable from the browser before its folder names from the Hub are checked (F4b-2): `hf_dataset` is a CLI input the socket does not list."""
+        request = {"name": "x", "platform": "custom", "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse"]}
+        assert verbs.validate_request("source.add", request)["name"] == "x"
+        with pytest.raises(errors.InputError) as exc:
+            verbs.validate_request("source.add", {**request, "hf_dataset": "user/data"})
+        assert exc.value.field == "hf_dataset"
+
+    @pytest.mark.parametrize("name, platform, refused", [("reddit", "reddit", False), ("x", "custom", False), ("reddit", "custom", True), ("x", "reddit", True)])
+    def test_source_add_platform_follows_the_name(self, name, platform, refused):
+        """Bug class: a request whose platform and name disagree, which the terminal cannot make: only the source named reddit is the Reddit platform (`source.run_questionnaire`), so a custom source named reddit would be parsed with the Reddit parser."""
+        request = {"name": name, "platform": platform, "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse"]}
+        if not refused:
+            assert verbs.validate_request("source.add", request)["platform"] == platform
+            return
+        with pytest.raises(errors.InputError) as exc:
+            verbs.validate_request("source.add", request)
+        assert exc.value.field == "platform"
 
 
 class TestBoundary:

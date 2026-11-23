@@ -1,16 +1,67 @@
-{#- Macros of the Queue window. `vis` writes a text of the scheduler from its runs (`queue.shown`): plain runs as text, the characters made visible as escapes in a marked span; everything escaped by the template. `act` is one small form of a job's row or page: it posts the job's id to /pending under the action's name, as the job page's forms do (the pending page then shows the job, for an approval its whole statement, before anything is sent); `token` is the session's form token, passed in because these macros are imported without the page's context. -#}
+{#- Macros of the Queue window. `vis` writes a text of the scheduler from its runs (`queue.shown`): plain runs as text, the characters made visible as escapes in a marked span; everything escaped by the template. `act` is one small form of a job's button: it posts the job's id under the action's name to /queue/act, which does it at once (htmx swaps the answer into `target`; without htmx the post leads to the outcome page); `place` says where the button is (row, window or page: `queue.PLACES`), `digest` is the scheduler's digest of the job as the window or the page showed it (an approval only). `row_acts` is a row's action area (`jact-<job id>`), `job_acts` the window's and the job page's (`pact-<job id>`): the buttons the job's phase allows (`kind`: pending or running), or what the last click came to (`result`, a `queue.act_result`), the buttons kept under a refusal. `token` is the session's form token, passed in because these macros are imported without the page's context; every job id here passed `actions.is_job_id`. -#}
 {% macro vis(parts) -%}
 {%- for escape, text in parts -%}
 {%- if escape %}<span class="escape" title="made visible">{{ text }}</span>{% else %}{{ text }}{% endif -%}
 {%- endfor -%}
 {%- endmacro %}
 
-{% macro act(token, name, label, job_id, look="") -%}
-<form method="post" action="/pending" class="act">
+{% macro act(token, name, label, job_id, look="", place="row", target="", digest=none, swap="outerHTML") -%}
+<form method="post" action="/queue/act" class="act" hx-post="/queue/act" hx-target="#{{ target }}" hx-swap="{{ swap }}">
   <input type="hidden" name="form_token" value="{{ token }}">
   <input type="hidden" name="action" value="{{ name }}">
   <input type="hidden" name="job_id" value="{{ job_id }}">
+  <input type="hidden" name="place" value="{{ place }}">
+  {%- if digest %}
+  <input type="hidden" name="digest" value="{{ digest }}">
+  {%- endif %}
   {%- if caller is defined %}{{ caller() }}{% endif %}
   <button type="submit" class="btn sm{{ ' ' ~ look if look else '' }}">{{ label }}</button>
 </form>
+{%- endmacro %}
+
+{% macro said(result) -%}
+{%- if result %}
+{%- if result.pill %}
+<span class="pill"><span class="dot {{ result.pill[0] }}"></span>{{ result.pill[1] }}</span>
+{%- endif %}
+{%- if result.line %}
+<span class="small{{ ' muted' if result.href else ' error-line' }}"{% if not result.href %} role="alert"{% endif %}>{{ result.line }}{% if result.href %} <a href="{{ result.href }}">Its outcome</a>{% endif %}</span>
+{%- endif %}
+{%- if result.detail %}
+<pre class="output">
+{{ result.detail }}</pre>
+{%- endif %}
+{%- endif %}
+{%- endmacro %}
+
+{% macro row_acts(token, job_id, kind, result=none, oob=false) -%}
+<div id="jact-{{ job_id }}" class="row jbtns"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {{- said(result) }}
+  {%- if not (result and result.final) %}
+  {%- if kind == "pending" %}
+  {{ act(token, "queue.approve", "Approve", job_id, "primary", "row", "jact-" ~ job_id) }}
+  {{ act(token, "queue.reject", "Reject", job_id, "", "row", "jact-" ~ job_id) }}
+  {%- elif kind == "running" %}
+  {{ act(token, "queue.kill", "Kill", job_id, "danger", "row", "jact-" ~ job_id) }}
+  {%- endif %}
+  {%- endif %}
+</div>
+{%- endmacro %}
+
+{% macro job_acts(token, job_id, kind, place, digest=none, reason_max=500, result=none) -%}
+<div id="pact-{{ job_id }}" class="jforms">
+  {{- said(result) }}
+  {%- if not (result and result.final) %}
+  {%- if kind == "pending" %}
+  {{ act(token, "queue.approve", "Approve", job_id, "primary", place, "pact-" ~ job_id, digest) }}
+  {% call act(token, "queue.reject", "Reject", job_id, "", place, "pact-" ~ job_id) %}
+  <label>Reason <small>(optional, at most {{ reason_max }} characters)</small>
+    <input type="text" name="reason" maxlength="{{ reason_max }}" autocomplete="off">
+  </label>
+  {% endcall %}
+  {%- elif kind == "running" %}
+  {{ act(token, "queue.kill", "Kill", job_id, "danger", place, "pact-" ~ job_id) }}
+  {%- endif %}
+  {%- endif %}
+</div>
 {%- endmacro %}

@@ -592,8 +592,9 @@ def test_only_job_ids_become_links(client, door):
     rows = main_part(page).split('id="auto-accept"')[0]
     links = [value for name, value in attributes(rows) if name == "href" and value.startswith("/queue/")]
     assert links == [f"/queue/{JOB_ID}"]
-    # A row's forms (approve, reject, EXPLAIN) only for the id of a job's form, and only that id is posted.
-    assert re.findall(r'name="(?:action|job_id)" value="([^"]*)"', rows) == ["queue.approve", JOB_ID, "queue.reject", JOB_ID, "queue.explain", JOB_ID]
+    # A row's forms (approve, reject) and its window's address only for the id of a job's form, and only that id is posted.
+    assert re.findall(r'name="(?:action|job_id)" value="([^"]*)"', rows) == ["queue.approve", JOB_ID, "queue.reject", JOB_ID]
+    assert {value for name, value in attributes(rows) if name in ("data-panel", "hx-target")} == {f"/queue/{JOB_ID}/panel", f"#jact-{JOB_ID}"}
     assert not [mark for mark in RAW_MARKS if mark in page]
 
 
@@ -670,17 +671,6 @@ def test_the_running_tab_holds_the_approved_and_the_running_lists_each_with_its_
     assert 'aria-current="page">Running (52)</a>' in second and "pg_00000032" in second and "/queue/pg_000000ee" in second
     assert [request for request in door.requests if request["op"] == "jobs"][-2:] == [{"op": "jobs", "phase": "approved", "limit": 50, "offset": 50}, {"op": "jobs", "phase": "running", "limit": 50, "offset": 0}]
     assert "auto_accept" not in door.ops()
-
-
-def test_a_rows_approve_posts_what_the_job_page_posts_and_leads_to_the_whole_statement(client, door):
-    """Bug class: a row's Approve that skips the confirm page (the statement never seen whole before the admin login runs it), or that posts fields the pending route refuses."""
-    door.add("pending", a_job(sql="SELECT 1\nFROM t\nWHERE made_up_mark_5e1"))
-    page = client.get("/queue").text
-    form = re.search(r'<form method="post" action="/pending" class="act">(.*?)</form>', page, re.DOTALL).group(1)
-    fields = dict(re.findall(r'<input type="hidden" name="([a-z_]+)" value="([^"]*)">', form))
-    assert set(fields) == {"form_token", "action", "job_id"} and fields["action"] == "queue.approve" and fields["job_id"] == JOB_ID
-    pending = client.get(pending_path(client.post("/pending", data=fields, headers={"origin": ORIGIN}))).text
-    assert '<pre class="statement-whole">\nSELECT 1\nFROM t\nWHERE made_up_mark_5e1</pre>' in pending and changes(door) == []
 
 
 def test_the_pending_tab_shows_the_auto_accept_panel_and_its_failure_stays_in_it(client, door):
@@ -1628,3 +1618,169 @@ def test_status_tells_a_service_not_set_up_from_one_that_does_not_answer(make_ap
     broker.answers["audit.list"] = broker_client.BrokerUnreachable("no_reply")
     found = pills(dead.get("/status", headers=HX).text)
     assert found["broker"][0] == "bad" and found["scheduler"][0] == found["sandbox"][0] == "" and len(door.requests) == asked
+
+
+# ── m. acting at once (`POST /queue/act`) and the job's window (`GET /queue/<id>/panel`) ──
+
+
+def act(client, token, headers=HX, **fields):
+    """Post a button of the Queue to `/queue/act` (htmx unless `headers` says otherwise); returns the response."""
+    return client.post("/queue/act", data={"form_token": token, **fields}, headers={"origin": ORIGIN, **headers})
+
+
+def test_a_rows_approve_acts_at_once_with_the_digest_read_at_the_click(client, token, door):
+    """Bug class: a row's Approve that approves without the scheduler's digest (refused), with a digest made up by the page, or that sends the approval before it read the job; or an answer that is not the row's action cell."""
+    record = door.add("pending", a_job())
+    response = act(client, token, action="queue.approve", job_id=JOB_ID, place="row")
+    assert response.status_code == 200 and not response.text.lstrip().startswith("<!doctype")
+    assert door.ops() == ["job", "approve"]
+    assert changes(door) == [{"op": "approve", "job_id": JOB_ID, "digest": digest_of(record), "by": "web-37"}]
+    assert f'id="jact-{JOB_ID}"' in response.text and "approved by you" in response.text and "hx-swap-oob" not in response.text
+
+
+def test_a_rows_approve_of_a_job_no_longer_pending_sends_nothing(client, token, door):
+    """Bug class: a row's Approve that sends an approval for a job another operator already approved or rejected."""
+    door.add("approved", a_job(status="approved"))
+    response = act(client, token, action="queue.approve", job_id=JOB_ID, place="row")
+    assert response.status_code == 200 and f"{queue.NOT_PENDING_NOW} approved and waiting to run." in html.unescape(response.text)
+    assert changes(door) == []
+
+
+def test_an_approve_with_a_digest_sends_that_digest_and_a_changed_job_keeps_the_buttons(client, token, door):
+    """Bug class: the window's Approve approving what the job became after the window showed it (the digest read again at the click), or a `changed` refusal that hides the buttons or is not said."""
+    record = door.add("pending", a_job())
+    shown_digest = digest_of(record)
+    door.jobs[JOB_ID][1] = {**record, "sql": "SELECT 2"}
+    response = act(client, token, action="queue.approve", job_id=JOB_ID, digest=shown_digest, place="page")
+    assert response.status_code == 200 and door.ops() == ["approve"]
+    assert changes(door) == [{"op": "approve", "job_id": JOB_ID, "digest": shown_digest, "by": "web-37"}]
+    text = html.unescape(response.text)
+    assert words.DOOR_CODE_SENTENCES["changed"] in text and f'id="pact-{JOB_ID}"' in response.text
+    assert 'value="queue.approve"' in response.text and 'value="queue.reject"' in response.text and "approved by you" not in text
+    assert door.jobs[JOB_ID][0] == "pending"
+
+
+@pytest.mark.parametrize("fields, sent", [({}, ""), ({"reason": "not today"}, "not today")])
+def test_reject_acts_at_once_with_or_without_a_reason(client, token, door, fields, sent):
+    """Bug class: a reject that loses the reason typed in the window, or refuses an empty one."""
+    door.add("pending", a_job())
+    response = act(client, token, action="queue.reject", job_id=JOB_ID, place="row", **fields)
+    assert changes(door) == [{"op": "reject", "job_id": JOB_ID, "reason": sent, "by": "web-37"}]
+    assert "rejected by you" in response.text
+
+
+@pytest.mark.parametrize("phase, says", [("running", "killed by you"), ("approved", "was not running: nothing was stopped")])
+def test_kill_acts_at_once_and_says_whether_the_job_was_running(client, token, door, phase, says):
+    """Bug class: a kill shown as done for a job that was not running, or the reverse."""
+    door.add(phase, a_job(status=phase))
+    response = act(client, token, action="queue.kill", job_id=JOB_ID, place="row")
+    assert changes(door) == [{"op": "kill", "job_id": JOB_ID, "by": "web-37"}]
+    assert says in response.text
+
+
+def test_explain_answers_its_plan_as_text(client, token, door):
+    """Bug class: the plan of an EXPLAIN written into the window as markup, or not shown where the button is."""
+    door.add("pending", a_job())
+    door.plan = HOSTILE + "\nSeq Scan on t"
+    response = act(client, token, action="queue.explain", job_id=JOB_ID, place="window")
+    assert changes(door) == [{"op": "explain", "job_id": JOB_ID, "by": "web-37"}]
+    assert "Seq Scan on t" in response.text and "&lt;script&gt;" in response.text and not [mark for mark in RAW_MARKS if mark in response.text]
+    assert "hx-swap-oob" not in response.text
+
+
+@pytest.mark.parametrize("fields", [
+    {"action": "queue.approve", "job_id": JOB_ID, "reason": "x"},
+    {"action": "queue.reject", "job_id": JOB_ID, "digest": "0" * 64},
+    {"action": "queue.kill", "job_id": JOB_ID, "reason": "x"},
+    {"action": "queue.explain", "job_id": JOB_ID, "digest": "0" * 64},
+    {"action": "queue.approve", "job_id": JOB_ID, "extra": "1"},
+    {"action": "queue.approve", "job_id": JOB_ID, "digest": "not-a-digest"},
+    {"action": "queue.approve", "job_id": JOB_ID, "place": "elsewhere"},
+    {"action": "queue.reject", "job_id": JOB_ID, "reason": "a\nb"},
+    {"action": "queue.approve", "job_id": "../x"},
+    {"action": "queue.auto_accept", "job_id": JOB_ID},
+    {"action": "run.start", "job_id": JOB_ID},
+    {"job_id": JOB_ID},
+])
+def test_a_field_outside_the_actions_list_is_refused_and_nothing_is_sent(client, token, door, fields):
+    """Bug class: a direct action that takes a field it does not know, a digest on an action that has none, or a malformed value, and sends something to the scheduler anyway."""
+    door.add("pending", a_job())
+    for headers in (HX, {}):
+        response = act(client, token, headers=headers, **fields)
+        assert response.status_code in (200, 400) and ("refused" in html.unescape(response.text)), fields
+    assert door.requests == []
+
+
+@pytest.mark.parametrize("fields", [{"action": "queue.approve"}, {"action": "queue.approve", "digest": "0" * 64}, {"action": "queue.reject"}, {"action": "queue.kill"}, {"action": "queue.explain"}])
+def test_a_session_the_broker_ended_acts_on_nothing(client, token, door, broker, app, fields):
+    """Bug class: a click of an old browser session (the broker ended it) reaching the scheduler, which runs the approved query with the admin login, or the login page swapped into a row."""
+    door.add("pending", a_job())
+    the_session(app, client).work.broker_checked_at = None
+    broker.answers["audit.list"] = broker_client.BrokerError("session_ended", "x")
+    response = act(client, token, job_id=JOB_ID, place="row", **fields)
+    assert response.status_code == 204 and response.headers["hx-redirect"] == "/login?why=ended"
+    assert door.requests == [] and the_session(app, client) is None
+
+
+def test_the_window_updates_the_row_out_of_band_and_the_job_page_does_not(client, token, door):
+    """Bug class: an action taken in the window that leaves the row under it showing the buttons, or an out-of-band swap sent to the job's page, which has no row (htmx logs an error for a missing target)."""
+    door.add("pending", a_job())
+    door.add("pending", a_job("pg_00000002"))
+    window = act(client, token, action="queue.reject", job_id=JOB_ID, place="window").text
+    assert f'id="pact-{JOB_ID}"' in window and re.search(rf'<div id="jact-{JOB_ID}"[^>]*hx-swap-oob="true"', window) and window.count("rejected by you") == 2
+    page = act(client, token, action="queue.reject", job_id="pg_00000002", place="page").text
+    assert 'id="pact-pg_00000002"' in page and "hx-swap-oob" not in page and "jact-" not in page
+
+
+def test_an_answer_not_in_within_the_wait_links_its_outcome(client, token, door):
+    """Bug class: a click whose answer is late shown as refused (the operator clicks again) or as nothing."""
+    door.add("pending", a_job())
+    door.gate = threading.Event()
+    door.gate_ops = {"reject"}
+    try:
+        response = act(client, token, action="queue.reject", job_id=JOB_ID, place="row")
+        found = re.search(r'href="(/actions/[A-Za-z0-9_-]{22})"', response.text)
+        assert found and "not answered yet" in response.text
+    finally:
+        door.gate.set()
+    wait_until(lambda: door.jobs[JOB_ID][0] == "history")
+    assert "Rejected" in main_text(client.get(found.group(1)).text)
+
+
+def test_a_plain_post_leads_to_the_outcome_page(client, token, door):
+    """Bug class: a button that does nothing in a browser without htmx (or before it loaded)."""
+    door.add("pending", a_job())
+    response = act(client, token, headers={}, action="queue.approve", job_id=JOB_ID, place="row")
+    assert response.status_code == 303 and re.fullmatch(r"/actions/[A-Za-z0-9_-]{22}", response.headers["location"])
+    assert "Approved." in main_text(follow(client, response).text)
+
+
+def test_the_panel_asks_the_broker_first_and_carries_the_digest(client, token, door, broker, app):
+    """Bug class: the window showing a job's record to a session the broker ended, or an Approve in it without the digest of what it shows (it would approve whatever the job became)."""
+    record = door.add("pending", a_job(sql="SELECT 1 -- made_up_mark_6a2"))
+    the_session(app, client).work.broker_checked_at = None
+    response = client.get(f"/queue/{JOB_ID}/panel", headers=HX)
+    assert response.status_code == 200 and not response.text.lstrip().startswith("<!doctype") and "made_up_mark_6a2" in response.text
+    events = broker.timeline
+    assert events.index(("broker", "call", "audit.list")) < events.index(("door", "job"))
+    form = re.search(r'<form[^>]*>(?:(?!</form>).)*value="queue.approve".*?</form>', response.text, re.DOTALL).group(0)
+    assert 'hx-post="/queue/act"' in form and f'name="digest" value="{digest_of(record)}"' in form and 'name="place" value="window"' in form
+    assert f'id="pact-{JOB_ID}"' in response.text and inline_code(response.text) == []
+    assert client.get("/queue/pg_0123abc/panel", headers=HX).status_code == 404
+    door.requests.clear()
+    the_session(app, client).work.broker_checked_at = None
+    broker.answers["audit.list"] = broker_client.BrokerError("session_ended", "x")
+    ended = client.get(f"/queue/{JOB_ID}/panel", headers=HX)
+    assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended" and door.requests == []
+
+
+def test_a_rows_buttons_act_at_once_and_open_the_window(client, door):
+    """Bug class: a row whose buttons still go through the confirm page, whose EXPLAIN or statement toggle stayed on the row, or whose window link is built for an id that is not a job id."""
+    door.add("pending", a_job())
+    door.jobs[HOSTILE] = ["pending", a_job(HOSTILE)]
+    rows = main_part(client.get("/queue").text).split('id="auto-accept"')[0]
+    assert 'action="/pending"' not in rows and "sqlt" not in rows and 'class="jd"' not in rows and "queue.explain" not in rows
+    assert rows.count('hx-post="/queue/act"') == 2 and rows.count(f'hx-target="#jact-{JOB_ID}"') == 2
+    panels = [value for name, value in attributes(rows) if name == "data-panel"]
+    assert panels == [f"/queue/{JOB_ID}/panel", f"/queue/{JOB_ID}/panel"]
+    assert "SQL &middot; EXPLAIN</button>" in rows

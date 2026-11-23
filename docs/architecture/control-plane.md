@@ -124,9 +124,9 @@ The pieces of all open views are read through four places of their own and Docke
 
 ### How an approval is confirmed, and what the page does not check
 
-The Approve button sends only the job's id. The web UI then reads the whole job from the scheduler and keeps it, with the scheduler's digest of what the job runs (its target, backend, statement, output file, overwrite, collection and database), as a pending action of your session.
+Approve acts at once, without a confirm page, and what it approves depends on where it was clicked. A row's Approve sends only the job's id: the web UI asks the broker whether your session lives, reads the job from the scheduler, refuses when it is no longer pending, and approves it with the scheduler's digest of what the job runs (its target, backend, statement, output file, overwrite, collection and database) read at that moment, so it approves the job as the scheduler holds it at the click, which the row does not show. The Approve of the floating window and of the job's page sends the digest of the record they showed, read when they were drawn, so the scheduler approves only the job as it was on screen.
 
-Its page shows the target and backend, for MongoDB the collection and database, the output file and "It overwrites an existing result of that name." when it does (for any true value of the record's `overwrite`, as the scheduler reads it; a value that is not `true` is shown beside it), the description, and the statement exactly as the scheduler holds it, whole, in a box without a height of its own, under a line with its number of lines and characters (the job's page has the same line above its box, which scrolls).
+The floating window and the job's page show the target and backend, for MongoDB the collection and database, the output file and "overwrites an existing result" when it does (for any true value of the record's `overwrite`, as the scheduler reads it; a value that is not `true` is shown beside it), the description, and the statement exactly as the scheduler holds it, whole, in a box that scrolls, under a line with its number of lines and characters.
 
 Every character that would not show as itself is written as an escape (`\u202e` for a change of the text's direction, `\u200b` for an invisible space, `\u0000` for a control character, a line or paragraph separator, a private character), marked, and the page says how many it found; the line break and the tab are kept. A lone surrogate (half of a character, which a hand-edited record can hold) arrives as `?`: the scheduler replaces it before it sends. A statement that is not text (a record edited by hand) is shown as its JSON, the page says so, and no hints are computed for it.
 
@@ -138,9 +138,9 @@ Below it are the **hints, not a check**: the words of a short list per backend t
 | StarRocks | `INTO OUTFILE`, `FILES(`, `INSERT`, `LOAD`, `SET`, a `;` that is not the last character |
 | MongoDB | `$out`, `$merge`, `$function`, `$accumulator`, `$where`, also with the `$` written `\u0024` |
 
-Words count from a word's start (`OFFSET` does not hint `SET`); a PostgreSQL dollar quote does not hide a word (`$q$COPY ...$q$` hints `COPY`); comments before PostgreSQL's leading `ANALYZE` are skipped, nested block comments as PostgreSQL nests them. An empty list proves nothing. The page says that the query will run with the database's admin login, and that this page does not check the statement.
+Words count from a word's start (`OFFSET` does not hint `SET`); a PostgreSQL dollar quote does not hide a word (`$q$COPY ...$q$` hints `COPY`); comments before PostgreSQL's leading `ANALYZE` are skipped, nested block comments as PostgreSQL nests them. An empty list proves nothing. Beside Approve, the window and the page say that the query will run with the database's admin login; beside EXPLAIN, that the page does not check the statement.
 
-Confirming sends the approval with the digest kept from that page. The scheduler compares it with the job as it is at that moment: a job that was changed since is refused ("changed"), one that is no longer pending is refused with what it is now, and nothing is approved. A job approved through the web UI names `web-<n>` in the scheduler's record.
+The approval carries that digest. The scheduler compares it with the job as it is at that moment: a job that was changed since is refused ("changed"), one that is no longer pending is refused with what it is now, and nothing is approved. A job approved through the web UI names `web-<n>` in the scheduler's record.
 
 ### Changes of the Queue
 
@@ -150,7 +150,7 @@ Every page and part of the Queue window asks the broker first whether your sessi
 
 The Queue window's calls to the scheduler run apart from the Management pages, four at a time ("busy" beyond), with a time limit of 30 seconds for a read, 90 seconds for EXPLAIN and 75 seconds for any other change.
 
-**Queries of the chat's assistant.** A query whose record carries `submitted_by: "assistant"` is labelled as the assistant's. For the rejection, the kill and the EXPLAIN, the web UI reads the job when the action is chosen, after the broker's check, and keeps only whether it is the assistant's; a session the broker has ended goes to the login page and nothing is read. Any other value of that field, which only a hand-edited record can have, is shown as nothing. The job cannot be read when the web UI is busy, the scheduler refuses or does not answer, or the reply is of another shape. What is kept and sent on confirm (the job's id, its digest, `web-<n>`) is the same as for any query.
+**Queries of the chat's assistant.** A query whose record carries `submitted_by: "assistant"` is labelled as the assistant's. The floating window and the job's page read the job after the broker's check and, for the assistant's query, say beside Approve that the assistant wrote it and beside EXPLAIN that an EXPLAIN of it runs before anyone approved it. Any other value of that field, which only a hand-edited record can have, is shown as nothing. What is sent (the job's id, for an approval its digest, `web-<n>`) is the same as for any query.
 
 ### Previews and downloads of the Queue
 

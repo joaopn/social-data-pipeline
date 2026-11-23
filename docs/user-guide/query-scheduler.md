@@ -127,7 +127,7 @@ Other features of the page:
 - **SQL formatting**: submitted SQL is pretty-printed in the pending view.
 - **Auto-accept**: an opt-in panel for skipping the manual approve step on trusted targets (below).
 
-You can also approve, reject, kill, EXPLAIN and preview from the [web UI](webui.md)'s **Queue** window, behind its login and confirmation (see [The Queue window](webui.md#the-queue-window)). The scheduler's own page on its port keeps working beside it.
+You can also approve, reject, kill, EXPLAIN and preview from the [web UI](webui.md)'s **Queue** window, behind its login, each button acting at once (see [The Queue window](webui.md#the-queue-window)). The scheduler's own page on its port keeps working beside it.
 
 ## Auto-accept
 

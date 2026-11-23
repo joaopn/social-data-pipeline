@@ -136,6 +136,111 @@ var sdpStore = {
   });
 })();
 
+// The Queue's floating window (queue.html's dialog#job-panel): a click on a button with data-panel ("SQL · EXPLAIN"), or anywhere on a row tr.job[data-panel] but a link, a button, a field or a form and with no text selected (a click that ends a selection to copy is not a request), loads the job's body (GET of the data-panel address, htmx) into the window and opens it as a modal dialog. Escape (the dialog's own cancel), its Close button (data-close) and a click on the backdrop (a click whose target is the dialog itself: its content sits in .jpanel-in) close it; closing empties it, so that the ids of its action areas (pact-, pexp-, preview) never linger beside the list, and gives the focus back to the row's button. While it is open the list that asks for itself (the running list, .qlist with hx-trigger) does not: a fresh list could drop the row whose action area the window's answer also updates (out of band, and htmx logs an error for a missing target). Each answer of that list asks again 5 seconds after it arrived (load delay:5s), so a request held off ends the chain: the list held is asked once more when the window closes, and its answer starts the chain again.
+(function () {
+  var NOT_A_ROW_CLICK = "a, button, input, label, select, textarea, summary, form";
+  var giveBack = null;
+  var held = null;
+
+  function parts() {
+    var box = document.getElementById("job-panel");
+    var body = document.getElementById("job-panel-body");
+    return box && body && typeof box.showModal === "function" ? { box: box, body: body } : null;
+  }
+
+  function say(body, text) {
+    var line = document.createElement("p");
+    line.className = "muted";
+    line.textContent = text;
+    body.replaceChildren(line);
+  }
+
+  function open(address, back) {
+    var found = parts();
+    if (!found || !window.htmx || !address) {
+      return;
+    }
+    giveBack = back;
+    say(found.body, "Loading…");
+    if (!found.box.open) {
+      found.box.showModal();
+    }
+    window.htmx.ajax("GET", address, { target: "#job-panel-body", swap: "innerHTML" });
+  }
+
+  document.addEventListener("click", function (event) {
+    var clicked = event.target;
+    if (!(clicked instanceof Element)) {
+      return;
+    }
+    var button = clicked.closest("button[data-panel]");
+    if (button) {
+      event.preventDefault();
+      open(button.getAttribute("data-panel"), button);
+      return;
+    }
+    var row = clicked.closest("tr.job[data-panel]");
+    if (!row || clicked.closest(NOT_A_ROW_CLICK)) {
+      return;
+    }
+    var selection = window.getSelection();
+    if (selection && selection.toString() !== "") {
+      return;
+    }
+    open(row.getAttribute("data-panel"), row.querySelector("button[data-panel]"));
+  });
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var found = parts();
+    if (!found) {
+      return;
+    }
+    found.box.addEventListener("click", function (event) {
+      if (event.target === found.box || (event.target instanceof Element && event.target.closest("[data-close]"))) {
+        found.box.close();
+      }
+    });
+    found.box.addEventListener("close", function () {
+      found.body.replaceChildren();
+      var back = giveBack;
+      giveBack = null;
+      if (back && back.isConnected) {
+        back.focus();
+      }
+      var list = held;
+      held = null;
+      if (list && list.isConnected && window.htmx) {
+        window.htmx.ajax("GET", list.getAttribute("hx-get"), { source: list, target: list, swap: "outerHTML" });
+      }
+    });
+  });
+
+  // A body that arrives after the window was closed is not drawn; one that cannot be had is said.
+  document.addEventListener("htmx:beforeSwap", function (event) {
+    var found = parts();
+    if (found && event.detail.target === found.body && !found.box.open) {
+      event.detail.shouldSwap = false;
+    }
+  });
+  ["htmx:responseError", "htmx:sendError"].forEach(function (name) {
+    document.addEventListener(name, function (event) {
+      var found = parts();
+      if (found && found.box.open && event.detail.target === found.body) {
+        say(found.body, "The job could not be loaded. Close this window and try again.");
+      }
+    });
+  });
+
+  document.addEventListener("htmx:beforeRequest", function (event) {
+    var found = parts();
+    var asking = event.detail.elt;
+    if (found && found.box.open && asking instanceof Element && asking.matches(".qlist[hx-trigger][hx-get]")) {
+      event.preventDefault();
+      held = asking;
+    }
+  });
+})();
+
 // The Chat window's answer box (.cw form.send textarea): Enter sends the question through the form's own submission (requestSubmit: the browser's checks of the field and every check of the server stay), Shift+Enter makes a new line, an Enter that ends an input method's composition (isComposing, or keyCode 229 in browsers that report it so) does nothing, and a box holding only blanks sends nothing. A form already sent is not sent again by a second Enter.
 (function () {
   document.addEventListener("keydown", function (event) {

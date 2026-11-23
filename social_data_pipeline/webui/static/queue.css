@@ -1,4 +1,4 @@
-/* The Queue window's own rules, on the kit's tokens of app.css: the mock-up's head of a tab, its table of jobs with a row of details under each job, the auto-accept panel, and a job's page. No rule here gives the approval's statement (`.statement-whole`) or anything around it a height or a scroll box (a test reads every sheet for this). */
+/* The Queue window's own rules, on the kit's tokens of app.css: the mock-up's head of a tab, its table of jobs, the auto-accept panel, a job's page and its floating window over a list. No rule here gives the approval's statement (`.statement-whole`) or anything around it a height or a scroll box (a test reads every sheet for this). */
 .qhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .qlist > h2 { margin: 8px 0 8px; }
 .qlist + .qlist { margin-top: 22px; }
@@ -11,19 +11,10 @@ table.jobs td.mono a { color: var(--ink); }
 table.jobs .error-line { font-family: var(--sans); margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 6rem; overflow: auto; }
 .jact { flex-wrap: wrap; gap: 6px; }
 .jact .btn.ghost { padding-left: 3px; padding-right: 3px; }
-.jact .sep { margin: 0 -4px; }
 form.act { display: contents; }
-details.sqlt { display: inline-block; }
-details.sqlt > summary { list-style: none; }
-details.sqlt > summary::-webkit-details-marker { display: none; }
-details.sqlt[open] > summary { color: var(--ink); background: var(--surface-3); }
-/* The row under a job: shown while its "SQL" is open (no script: the job's row holds an open details element). */
-tr.jd { display: none; }
-tr.job:has(details.sqlt[open]) + tr.jd { display: table-row; }
-table.t tr.jd td, table.t tr.jd:hover td { background: var(--surface-2); }
-table.t tr.job:has(details.sqlt[open]) td { border-bottom-color: transparent; }
-.jdetail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 4px; }
-.jdetail .statement { margin-top: 6px; max-height: 230px; }
+/* A row with a job id opens its floating window when clicked (static/app.js); its action area holds the buttons, or what a click came to (a pill or a refusal line) where they were. */
+table.jobs tr.job[data-panel] { cursor: pointer; }
+.jbtns { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
 /* the auto-accept panel (the mock-up's .aa lines; a meter drawn as its slider) */
 .aa-card { max-width: 860px; margin-top: 20px; }
@@ -49,3 +40,14 @@ table.t tr.job:has(details.sqlt[open]) td { border-bottom-color: transparent; }
 .jforms { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
 .jforms input[type="text"] { width: 18rem; }
 @media (max-width: 1000px) { .jgrid { grid-template-columns: minmax(0, 1fr); } }
+.explain pre.output { margin-top: 6px; }
+
+/* the floating window of a job over a list (queue.html's dialog, the mock-up's .scrim and .modal): wide enough for the facts and the statement side by side; the window scrolls, the statement box has a height of its own within it. Its content sits in .jpanel-in, so a click on the dialog element itself is a click on the backdrop. */
+dialog.jpanel { width: min(1040px, calc(100vw - 32px)); max-width: none; max-height: 90vh; overflow: auto; padding: 0; background: var(--surface); color: var(--ink); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow); }
+dialog.jpanel::backdrop { background: rgba(0,0,0,.55); }
+.jpanel-in { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.jpanel-head h2 { margin: 0; font-size: 15px; }
+#job-panel-body { display: flex; flex-direction: column; gap: 12px; }
+#job-panel-body > * { margin: 0; }
+.jpanel .statement { max-height: 45vh; color: var(--ink); }
+@media (max-width: 820px) { .jpanel .jgrid { grid-template-columns: minmax(0, 1fr); } }

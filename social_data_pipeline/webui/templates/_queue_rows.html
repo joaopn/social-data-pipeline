@@ -1,4 +1,4 @@
-{#- One list of the Queue (`rows`, a list model of `queue`): the mock-up's table of jobs, a row per job and under it a row of its own with the statement as the socket cut it, shown when the job's "SQL" is opened (a `details` element and a `:has` rule, no script); then the links to the next and the previous page. A job's id becomes a link, and its row gets its forms, only when it has the form of a job id (`row.job_id`). The running list asks for itself again every 5 seconds (htmx) and the answer replaces it: the part is rendered with the session's form token (`form_token`) for its forms. -#}
+{#- One list of the Queue (`rows`, a list model of `queue`): the mock-up's table of jobs, a row per job, then the links to the next and the previous page. A job's id becomes a link, and its row gets its buttons and the way to its floating window, only when it has the form of a job id (`row.job_id`): Approve and Reject (pending) or Kill (running) act at once (`POST /queue/act`, the answer swapped into the row's action area `jact-<job id>`); "SQL · EXPLAIN" and a click on the row (`data-panel`, which `static/app.js` follows) open the window with the job's whole statement, EXPLAIN and the same buttons (`GET /queue/<job id>/panel`). The running list asks for itself again every 5 seconds (htmx) and the answer replaces it: the part is rendered with the session's form token (`form_token`) for its forms. -#}
 {%- import "_queue_macros.html" as q %}
 <div id="queue-{{ rows.phase }}" class="qlist"{% if rows.poll_href %} hx-get="{{ rows.poll_href }}" hx-trigger="{{ rows.poll_trigger }}" hx-swap="outerHTML"{% endif %}>
   {%- if rows.titled %}
@@ -24,7 +24,7 @@
     <tbody>
       {%- for row in rows.jobs %}
       {%- set sql_word = "Pipeline" if row.mongo else "SQL" %}
-      <tr class="job">
+      <tr class="job"{% if row.job_id %} data-panel="/queue/{{ row.job_id }}/panel"{% endif %}>
         <td class="when">
           {%- if rows.phase == "history" %}
           <span class="pill"><span class="dot {{ row.dot }}"></span>{{ q.vis(row.status) }}</span>
@@ -61,36 +61,17 @@
           <div class="row jact">
             {%- if row.job_id %}
             {%- if rows.phase == "pending" %}
-            {{ q.act(form_token, "queue.approve", "Approve", row.job_id, "primary") }}
-            {{ q.act(form_token, "queue.reject", "Reject", row.job_id) }}
+            {{ q.row_acts(form_token, row.job_id, "pending") }}
             {%- elif rows.phase == "running" %}
-            {{ q.act(form_token, "queue.kill", "Kill", row.job_id, "danger") }}
+            {{ q.row_acts(form_token, row.job_id, "running") }}
             {%- elif rows.phase == "history" and row.done %}
             <a class="btn sm" href="{{ row.href }}?preview=1#result">Preview</a>
             {%- if rows.downloads %}
             <a class="btn sm" href="{{ row.href }}#result">Download</a>
             {%- endif %}
             {%- endif %}
+            <button type="button" class="btn sm ghost" data-panel="/queue/{{ row.job_id }}/panel">{{ sql_word }}{% if rows.phase == "pending" %} &middot; EXPLAIN{% endif %}</button>
             {%- endif %}
-            <details class="sqlt"><summary class="btn sm ghost">{{ sql_word }}</summary></details>
-            {%- if row.job_id and rows.phase == "pending" %}
-            <span class="muted sep" aria-hidden="true">&middot;</span>
-            {{ q.act(form_token, "queue.explain", "EXPLAIN", row.job_id, "ghost") }}
-            {%- endif %}
-          </div>
-        </td>
-      </tr>
-      <tr class="jd">
-        <td colspan="7">
-          <div class="jdetail">
-            <div>
-              <h4>{{ sql_word }}</h4>
-              <pre class="statement">
-{{ q.vis(row.sql) }}</pre>
-              {%- if row.sql_cut %}
-              <p class="muted small">Cut here: {{ row.sql_length }} characters in all. The job's page shows all of it.</p>
-              {%- endif %}
-            </div>
           </div>
         </td>
       </tr>

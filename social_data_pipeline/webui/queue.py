@@ -2,15 +2,16 @@
 
 Pages, all GET (a HEAD is 405), each asking the socket in one worker of a bound of its own (`Limits.door_workers`, four places; "busy" when full), never on the event loop, and rendered in a worker too (a statement can be 1 MiB):
 
-- `GET /queue?tab=pending|approved|running|history&page=N`: three tabs, as the mock-up draws them, in the frame's tab bar (`QUEUE_PAGES`): Pending and Running with their numbers (`counts`; Running counts the approved and the running jobs), and History. At the bar's right end the results folder's size and free space and the scheduler's slots and how many are busy (`stats`, asked in the same worker after the counts; its failure leaves "figures unavailable" there and nothing else, and a figure that is not a whole number from 0 on is left out: `stats_model`). Each list holds 50 jobs (`jobs` with `limit` and `offset`; a "more" link while the socket says `more`): when, the job, who submitted it, target, backend, output file, description and the actions its phase allows, with the statement as cut by the socket in a row of its own under the job (opened by "SQL", no script), and in the history the outcome, rows, size, error or rejection reason. The Running tab shows two lists, each with its own pages: "Approved, waiting to start" above "Running"; `tab=approved` is the Running tab with the approved list at page N, `tab=running` the same with the running list at page N. A job's id becomes a link to its page, and its row gets its forms (approve, reject, EXPLAIN, kill: the same `POST /pending` as on its page), only when it has the form of a job id. The Pending tab also shows the auto-accept panel (`auto_accept`, asked in the same worker after the same check of the broker; its failure is said in the panel alone). The running list asks for itself again every 5 seconds (`GET /queue/running-rows?page=N`, a part of the page, with the session's form token for its forms).
-- `GET /queue/<job id>` (the id checked first, else not found): what the socket's `job` gives that the scheduler's page shows, the statement as stored with every invisible or control character shown as an escape (`statements.visible`), the hints (`statements.hints`), who approved, rejected or asked to kill; the buttons the job's phase allows (pending: approve, reject with a reason, EXPLAIN; running: kill); for a finished job a button for its preview (loaded at once when the address says `?preview=1`, as a History row's "Preview" link does) and one download link per part of its result (`results`). A job whose record is too large to send has no buttons: the page says to use the scheduler's own page.
+- `GET /queue?tab=pending|approved|running|history&page=N`: three tabs, as the mock-up draws them, in the frame's tab bar (`QUEUE_PAGES`): Pending and Running with their numbers (`counts`; Running counts the approved and the running jobs), and History. At the bar's right end the results folder's size and free space and the scheduler's slots and how many are busy (`stats`, asked in the same worker after the counts; its failure leaves "figures unavailable" there and nothing else, and a figure that is not a whole number from 0 on is left out: `stats_model`). Each list holds 50 jobs (`jobs` with `limit` and `offset`; a "more" link while the socket says `more`): when, the job, who submitted it, target, backend, output file, description and the actions its phase allows, and in the history the outcome, rows, size, error or rejection reason. The Running tab shows two lists, each with its own pages: "Approved, waiting to start" above "Running"; `tab=approved` is the Running tab with the approved list at page N, `tab=running` the same with the running list at page N. A job's id becomes a link to its page, and its row gets its buttons (approve and reject, or kill: `POST /queue/act`, acting at once) and the way to its floating window ("SQL \u00b7 EXPLAIN" and a click on the row, `data-panel`, which `static/app.js` follows), only when it has the form of a job id. The Pending tab also shows the auto-accept panel (`auto_accept`, asked in the same worker after the same check of the broker; its failure is said in the panel alone). The running list asks for itself again every 5 seconds (`GET /queue/running-rows?page=N`, a part of the page, with the session's form token for its forms).
+- `GET /queue/<job id>` (the id checked first, else not found): what the socket's `job` gives that the scheduler's page shows, the statement as stored with every invisible or control character shown as an escape (`statements.visible`), the hints (`statements.hints`), who approved, rejected or asked to kill; the buttons the job's phase allows, each acting at once (pending: approve with the digest of the record shown, reject with a reason, EXPLAIN with its plan under it; running: kill); for a finished job a button for its preview (loaded at once when the address says `?preview=1`, as a History row's "Preview" link does) and one download link per part of its result (`results`). A job whose record is too large to send has no buttons: the page says to use the scheduler's own page.
+- `GET /queue/<job id>/panel`: the same body as a part, for the floating window over a list (after the broker's check; its buttons post with `place` "window").
 - `GET /queue/<job id>/preview`: a part of the page from the socket's `preview`: a table of text cells, the parts' names and sizes, "truncated" when the socket says so; its refusals as sentences.
 - `GET /queue/<job id>/download/<part>`: the part streamed from the web UI's read-only mount of the results folder (`results`), after the socket said the job is in the history as done; at most two at a time ("busy" beyond); anything else not found.
 - `GET /queue/auto-accept`: the targets with their auto-accept settings (`auto_accept`) and a form for each; the Pending tab's panel links here ("Change...").
 
 Wherever a job is shown (the rows of every tab, its page, the confirm pages of its actions), a job whose record's `submitted_by` is exactly `"assistant"` is labelled as submitted by the chat's assistant (`assistant_label`); any other value of the field is shown as nothing. The approval of such a job also says that the assistant wrote it and to read it as one from a stranger, its EXPLAIN that an EXPLAIN of it runs before any approval (and that it may be the assistant's, when that could not be read).
 
-The actions (`queue.approve`, `queue.reject`, `queue.kill`, `queue.explain`, `queue.auto_accept`) are entries of the web UI's table and take the Management window's way (`management`): `POST /pending` keeps a pending action (an approval fetches the job from the socket first and keeps its whole record and its digest; a reject, kill or EXPLAIN reads it too, after the broker's check (a session the broker ended goes to the login, nothing read), and keeps only whether the assistant submitted it, or that this could not be read, which its page then says; a reason is checked; a change of auto-accept is compared with the target's settings, and switching it on or raising its limit makes the confirmation need the management password), `GET /pending/<id>` shows it, `POST /pending/<id>/confirm` takes it out and starts a thread, which first asks the broker whether the session still lives (`audit.list` with `limit` 1) and, for a step-up, checks the management password (`session.check_password`), and only then asks the socket, with `by` set to `web-<the broker's number of the session>`; `GET /actions/<id>` shows the outcome. A session the broker ended goes to the login and nothing reaches the socket; a broker that cannot be reached refuses the action. Standard library, FastAPI and this package only.
+The buttons of a job (`queue.approve`, `queue.reject`, `queue.kill`, `queue.explain`) act at once: `POST /queue/act` checks the form as below, then runs the action through the same thread as a confirmation (`start`) and answers the outcome in the button's action area (see `act`). The actions (those four and `queue.auto_accept`) are entries of the web UI's table and also take the Management window's way (`management`), which a change of auto-accept always takes (switching it on asks for the management password): `POST /pending` keeps a pending action (an approval fetches the job from the socket first and keeps its whole record and its digest; a reject, kill or EXPLAIN reads it too, after the broker's check (a session the broker ended goes to the login, nothing read), and keeps only whether the assistant submitted it, or that this could not be read, which its page then says; a reason is checked; a change of auto-accept is compared with the target's settings, and switching it on or raising its limit makes the confirmation need the management password), `GET /pending/<id>` shows it, `POST /pending/<id>/confirm` takes it out and starts a thread, which first asks the broker whether the session still lives (`audit.list` with `limit` 1) and, for a step-up, checks the management password (`session.check_password`), and only then asks the socket, with `by` set to `web-<the broker's number of the session>`; `GET /actions/<id>` shows the outcome. A session the broker ended goes to the login and nothing reaches the socket; a broker that cannot be reached refuses the action. Standard library, FastAPI and this package only.
 """
 
 import json
@@ -28,6 +29,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from social_data_pipeline.webui import actions, results, statements, words
 from social_data_pipeline.webui.calls import BUSY_GATE, SESSION_ENDING_CODES, call_broker, why
 from social_data_pipeline.webui.scheduler import SchedulerUnavailable
+from social_data_pipeline.webui.work import Outcome, Pending, new_id
 
 log = logging.getLogger("social_data_pipeline.webui")
 
@@ -94,6 +96,17 @@ ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the dat
 ASSISTANT_UNKNOWN = "Whether the chat's assistant submitted this query could not be read."
 EXPLAIN_ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
 EXPLAIN_MAYBE_SENTENCE = "This query may have been written by the chat's assistant, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
+# The buttons that act at once (`POST /queue/act`): each action's fields besides `action`, `job_id` and `place`, and the action area its answer is drawn in (`_queue_macros.html`: the buttons of a pending or a running job, or EXPLAIN's plan).
+ACT_FIELDS = {"queue.approve": frozenset({"digest"}), "queue.reject": frozenset({"reason"}), "queue.kill": frozenset(), "queue.explain": frozenset()}
+ACT_KINDS = {"queue.approve": "pending", "queue.reject": "pending", "queue.kill": "running", "queue.explain": "explain"}
+# Where a button is: a row of a list, the floating window over a list (whose row is then on the page too), the job's own page (no row).
+PLACES = ("row", "window", "page")
+ACT_REFUSED = "The action was not taken: a field of the form was refused. Nothing was sent to the scheduler."
+UNDER_WAY = "Sent: the scheduler has not answered yet."
+# The pill of an action the scheduler took, where its buttons were (the mock-up's words).
+ACT_PILLS = {"queue.approve": ("ok", "approved by you"), "queue.reject": ("bad", "rejected by you")}
+KILLED_PILL = ("bad", "killed by you")
+NOT_RUNNING_PILL = ("", "was not running: nothing was stopped")
 PHASE_WORDS = {"pending": "pending", "approved": "approved and waiting to run", "running": "running", "history": "in the history", "gone": "gone"}
 
 
@@ -230,11 +243,9 @@ def assistant_label(record):
 
 
 def row_model(job):
-    """One job of a list (the socket's short view) as a row; raises ValueError for one that is not an object. `job_id` is the raw id only when it has the form of a job id (else None, and the row has no link and no form)."""
+    """One job of a list (the socket's short view) as a row; raises ValueError for one that is not an object. `job_id` is the raw id only when it has the form of a job id (else None, and the row has no link, no button and no window). The row does not show the statement: its window does, whole."""
     if not isinstance(job, dict):
         raise ValueError("not a job")
-    sql = job.get("sql")
-    sql_length = job.get("sql_length")
     status = job.get("status")
     return {
         "id": shown(job.get("job_id")),
@@ -257,9 +268,6 @@ def row_model(job):
         "output": shown(job.get("output_filename")),
         "overwrite": overwrite_of(job.get("overwrite"))[0],
         "overwrite_raw": overwrite_of(job.get("overwrite"))[1],
-        "sql": shown(sql),
-        "sql_cut": isinstance(sql, str) and _whole(sql_length) and sql_length > len(sql),
-        "sql_length": rows_text(sql_length),
         "description": shown(job.get("description")) if job.get("description") else None,
         "error": shown(job.get("error")) if job.get("error") else None,
         "reject_reason": shown(job.get("reject_reason")) if job.get("reject_reason") else None,
@@ -342,6 +350,29 @@ def _job_reply(value, job_id):
     if phase not in TABS or not isinstance(record, dict) or record.get("job_id") != job_id or not isinstance(digest, str) or not re.fullmatch(actions.DIGEST_PATTERN, digest):
         raise ValueError("not a job")
     return phase, record, digest
+
+
+def act_result(outcome):
+    """What an action area says of a direct action's outcome: under way (a line and its outcome page), the scheduler's answer (a pill; EXPLAIN's plan), or its refusal (the sentence, a job's phase for `not_pending`, the database's error text for `explain_failed`), under which the buttons stay (`final` false)."""
+    result = {"pill": None, "line": None, "href": None, "detail": None, "plan": None, "plan_cut": False, "final": True}
+    if not outcome.done:
+        return {**result, "line": UNDER_WAY, "href": f"/actions/{outcome.id}"}
+    if outcome.kind == "result":
+        if outcome.action == "queue.explain":
+            return {**result, "plan": outcome.door.get("plan", ""), "plan_cut": outcome.door.get("plan_cut") is True}
+        if outcome.action == "queue.kill":
+            return {**result, "pill": KILLED_PILL if outcome.door.get("was_running") is True else NOT_RUNNING_PILL}
+        return {**result, "pill": ACT_PILLS[outcome.action]}
+    line = outcome.sentence or words.DOOR_FALLBACK
+    phase = outcome.door.get("phase")
+    if phase in PHASE_WORDS:
+        line = f"{line} It is now: {PHASE_WORDS[phase]}."
+    return {**result, "line": line, "detail": outcome.door.get("detail"), "final": False}
+
+
+def refusal_result(line):
+    """What an action area says of a click refused before anything was sent: the line, the buttons kept."""
+    return {"pill": None, "line": line, "href": None, "detail": None, "plan": None, "plan_cut": False, "final": False}
 
 
 def _failure(error):
@@ -619,7 +650,7 @@ def install(api, ctx):
     def job_work(job_id):
         def work(session):
             kind, value = ask("queue.job", {"job_id": job_id})
-            base = {"job_id": job_id, "failure": None, "too_large": False, "job": None, "parts": None, "parts_line": None, "explain_sentence": EXPLAIN_SENTENCE, "kill_sentence": KILL_SENTENCE, "hints_label": HINTS_LABEL, "hints_note": HINTS_NOTE, "no_hints": NO_HINTS, "escaped_sentence": ESCAPED_SENTENCE, "reason_max": actions.REASON_MAX}
+            base = {"job_id": job_id, "failure": None, "too_large": False, "job": None, "digest": None, "parts": None, "parts_line": None, "act_sentences": [], "explain_sentences": [EXPLAIN_SENTENCE], "kill_sentence": KILL_SENTENCE, "hints_label": HINTS_LABEL, "hints_note": HINTS_NOTE, "no_hints": NO_HINTS, "escaped_sentence": ESCAPED_SENTENCE, "reason_max": actions.REASON_MAX}
             if kind == "error":
                 code = getattr(value, "code", None)
                 base["failure"] = _failure(value)
@@ -628,11 +659,17 @@ def install(api, ctx):
                     base["_status"] = 404
                 return base
             try:
-                phase, record, _digest = _job_reply(value, job_id)
+                phase, record, digest = _job_reply(value, job_id)
             except ValueError:
                 base["failure"] = {"sentence": SHAPE, "code": "shape"}
                 return base
             base["job"] = job_model(phase, record)
+            # The window's and the page's Approve send it: the scheduler approves only the job as shown here.
+            base["digest"] = digest
+            # Each button acts at once, without a confirm page: what the confirm pages said is said beside them.
+            assistant = base["job"]["assistant"] is not None
+            base["act_sentences"] = [*([ASSISTANT_SENTENCE] if assistant else []), ADMIN_SENTENCE, REJECT_SENTENCE]
+            base["explain_sentences"] = [*([EXPLAIN_ASSISTANT_SENTENCE] if assistant else []), EXPLAIN_SENTENCE]
             if base["job"]["done"]:
                 if scheduler.results is None:
                     base["parts_line"] = NO_RESULTS
@@ -655,7 +692,26 @@ def install(api, ctx):
         work = job_work(job_id)
         # `?preview=1` (a History row's "Preview"): the page loads the preview at once.
         preview_now = request.query_params.get("preview") == "1"
-        return await show(request, "queue:job", f"Job {job_id}", "queue_job.html", lambda session: {**work(session), "preview_now": preview_now})
+        return await show(request, "queue:job", f"Job {job_id}", "queue_job.html", lambda session: {**work(session), "preview_now": preview_now, "place": "page"})
+
+    @api.get("/queue/{job_id}/panel")
+    async def job_panel(request: Request, job_id: str):
+        """The job page's body as a part, for the floating window over a list: the same read (`job_work`) after the broker's check, its buttons posting with `place` "window"; a failure is said in the part (200, so that htmx shows it)."""
+        if not actions.is_job_id(job_id):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        made = await ctx.door.run(lambda: checked(session, job_work(job_id)))
+        if made is BUSY_GATE:
+            made = {"failure": {"sentence": BUSY, "code": "busy"}}
+        elif isinstance(made, _BrokerRefused):
+            ending = refusal_of(request, session_id, made.error)
+            if ending is not None:
+                return ending
+            made = {"failure": broker_failure(made.error)}
+        made.pop("_status", None)
+        return await anyio.to_thread.run_sync(lambda: ctx.render("_queue_job_body.html", **{"job_id": job_id, **made, "preview_now": False, "place": "window", "form_token": session.form_token}))
 
     @api.get("/queue/{job_id}/preview")
     async def preview_part(request: Request, job_id: str):
@@ -921,6 +977,85 @@ def install(api, ctx):
         if kept_current is None or (row["enabled"], row["limit"]) != tuple(kept_current):
             return _OwnRefusal("settings_changed")
         return None
+
+    @api.post("/queue/act")
+    async def act(request: Request):
+        """A button of the Queue that acts at once, without a confirm page: `action` (`queue.approve`, `queue.reject`, `queue.kill`, `queue.explain`), `job_id`, `place` (row, window or page: where the button is), for an approval an optional `digest`, for a rejection an optional `reason`; any other field, or one the action does not take, is refused and nothing is sent. An approval without a digest (a row's) reads the job after the broker's check and approves it only when it is pending, with the digest read then; one with a digest (the window's and the page's, read when they were drawn) sends that digest, so the scheduler refuses with `changed` when the job differs from what was shown. The action then takes the confirmations' way: a place of the socket's bound (busy: a refusal, nothing sent), `start`'s thread (the broker's check of the session first, then the socket), an outcome kept in the session (`/actions/<id>`), waited for up to `Limits.action_wait_seconds`.
+
+        To htmx it answers a part (`_queue_act.html`), always 200 so that htmx draws it: the action area of `place` with the outcome's pill, or the refusal's sentence with the buttons kept, or that the request was sent and its outcome page; EXPLAIN's plan. Where the click came from is the `place` field, a fixed set: "row" answers the row's area (`jact-<job id>`), "page" the job page's (`pact-<job id>`), "window" the window's and the row's out of band (the window is drawn over the list, so the row is there; the job page has none, and htmx logs an error for an out-of-band target that is missing). A session the broker ended gets 204 with `HX-Redirect` to the login, nothing sent. Without htmx: a redirect to the outcome page, or the refusal page."""
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+        htmx = request.headers.get("hx-request") == "true"
+        form = dict(request.scope.get("sdp.form", {}))
+        name, job_id, place = form.get("action"), form.get("job_id"), form.get("place", "page")
+        digest, reason = form.get("digest"), form.get("reason", "")
+        allowed = ACT_FIELDS.get(name) if isinstance(name, str) else None
+        good = allowed is not None and place in PLACES and actions.is_job_id(job_id) and set(form) - {"action", "job_id", "place"} <= allowed and (digest is None or re.fullmatch(actions.DIGEST_PATTERN, digest) is not None)
+
+        async def answer(result):
+            area = {"job_id": job_id if good else None, "kind": ACT_KINDS.get(name), "place": place, "digest": digest, "reason_max": actions.REASON_MAX, "result": result}
+            return await anyio.to_thread.run_sync(lambda: ctx.render("_queue_act.html", area=area, form_token=session.form_token))
+
+        async def refuse(line, status=400):
+            if htmx:
+                return await answer(refusal_result(line))
+            return refused(session, line, status, ("/queue/" + job_id, "Back to the job") if good else ("/queue", "Back to the Queue"))
+
+        if not good:
+            return await refuse(ACT_REFUSED)
+        if name == "queue.reject" and not actions.is_reason(reason):
+            return await refuse(REASON_REFUSED)
+        by = by_of(session)
+        if by is None:
+            return await refuse(NO_NUMBER)
+        sent_digest = digest
+        if name == "queue.approve" and digest is None:
+            read = await ctx.door.run(lambda: checked(session, lambda _session: ask("queue.job", {"job_id": job_id})))
+            if read is BUSY_GATE:
+                return await refuse(BUSY, 503)
+            if isinstance(read, _BrokerRefused):
+                return refusal_of(request, session_id, read.error) or await refuse(words.sentence(read.error), 503)
+            kind, value = read
+            if kind == "error":
+                return await refuse(words.door_sentence(value), 503 if getattr(value, "code", None) == "unreachable" else 400)
+            try:
+                phase, _record, sent_digest = _job_reply(value, job_id)
+            except ValueError:
+                return await refuse(SHAPE)
+            if phase != "pending":
+                return await refuse(f"{NOT_PENDING_NOW} {PHASE_WORDS[phase]}.", 409)
+        fields = {"job_id": job_id, "by": by}
+        if name == "queue.approve":
+            fields["digest"] = sent_digest
+        elif name == "queue.reject":
+            fields["reason"] = reason
+        if not ctx.door.take():
+            return await refuse(BUSY, 503)
+        # Made here and never kept among the session's pending actions (it would push out one the operator is still looking at): `start` takes it as a confirmation takes a pending one.
+        taken = Pending(new_id(), name, fields, ctx.clock())
+        outcome = Outcome(new_id(), name, actions.TABLE[name].command(fields) if actions.TABLE[name].command else None, ctx.clock())
+        session.work.add_outcome(outcome)
+        try:
+            start(session, taken, None, outcome)
+        except Exception as error:
+            ctx.door.give_back()
+            session.work.remove_outcome(outcome.id)
+            log.error("a Queue action could not be started (%s)", type(error).__name__)
+            return await refuse(BUSY, 503)
+        if not htmx:
+            # Its outcome page asks for itself until the answer is in, and sends an ended session to the login.
+            return RedirectResponse(f"/actions/{outcome.id}", status_code=303)
+        deadline = time.monotonic() + limits.action_wait_seconds
+        while not outcome.done and time.monotonic() < deadline:
+            await anyio.sleep(0.02)
+        if outcome.done and outcome.kind == "refusal" and not outcome.from_door:
+            # The broker's check of the session refused: an ended session goes to the login, any other refusal is said and nothing was sent.
+            if outcome.code in SESSION_ENDING_CODES:
+                ctx.sessions.forget(session_id)
+                return ctx.to_login(request, "ended", clear_cookie=True)
+            session.work.remove_outcome(outcome.id)
+        return await answer(act_result(outcome))
 
     return Hooks(make_pending=make_pending, pending_model=pending_model, render_pending=render_pending, guard=guard, start=start, active=active, places=ctx.door)
 

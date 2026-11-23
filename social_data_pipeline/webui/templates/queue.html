@@ -1,4 +1,4 @@
-{#- A tab of the Queue window, as the mock-up draws it: its head (title and note) under the frame's tab bar, which shows the tabs' numbers (`subbar_counts`), then its lists (`_queue_rows.html`: Pending; Running holds "Approved, waiting to start" and "Running"; History), and on the Pending tab the auto-accept panel, whose failure is said in the panel alone. -#}
+{#- A tab of the Queue window, as the mock-up draws it: its head (title and note) under the frame's tab bar, which shows the tabs' numbers (`subbar_counts`), then its lists (`_queue_rows.html`: Pending; Running holds "Approved, waiting to start" and "Running"; History), and on the Pending tab the auto-accept panel, whose failure is said in the panel alone; then the floating window a job's row opens. -#}
 {% extends "frame.html" %}
 {% import "_queue_macros.html" as q %}
 {#- The right end of the tab bar, as the mock-up draws it: the results folder's size and free space, then a pill with the slots and how many are busy (`queue.stats_model`). -#}
@@ -38,4 +38,11 @@
   {%- endif %}
   {%- endif %}
 </main>
+{#- The floating window of a job over the list (`static/app.js`): a click on a row or its "SQL · EXPLAIN" button loads the job's body (`GET /queue/<job id>/panel`) into it and opens it as a modal dialog; Escape, Close or a click outside closes it and empties it. -#}
+<dialog id="job-panel" class="modal jpanel" aria-labelledby="job-panel-title">
+  <div class="jpanel-in">
+    <div class="row jpanel-head"><h2 id="job-panel-title">Job</h2><button type="button" class="btn sm ghost right" data-close>Close</button></div>
+    <div id="job-panel-body"></div>
+  </div>
+</dialog>
 {% endblock %}

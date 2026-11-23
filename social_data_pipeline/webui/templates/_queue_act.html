@@ -1,0 +1,18 @@
+{#- The answer of `POST /queue/act` to htmx (`area`, a model of `queue`): for an EXPLAIN its plan, its refusal or that it was sent (swapped into the window's or the page's `pexp-<job id>`); for approve, reject and kill the action area of where the button was: the row's (`jact-<job id>`), or the window's or the page's (`pact-<job id>`), and from the window the row's too, out of band (the window is drawn over the list, so the row is there; the job page has no row, so it never gets one). Without a usable job id only the refusal's line. -#}
+{%- import "_queue_macros.html" as q %}
+{%- if not area.job_id %}
+<p class="notice notice-bad" role="alert">{{ area.result.line }}</p>
+{%- elif area.kind == "explain" %}
+{%- if area.result.plan is not none %}
+{%- with outcome = {"verb": "queue.explain", "door": {"plan": area.result.plan, "plan_cut": area.result.plan_cut}} %}{% include "_queue_outcome.html" %}{% endwith %}
+{%- else %}
+{{ q.said(area.result) }}
+{%- endif %}
+{%- else %}
+{%- if area.place != "row" %}
+{{ q.job_acts(form_token, area.job_id, area.kind, area.place, area.digest, area.reason_max, area.result) }}
+{%- endif %}
+{%- if area.place != "page" %}
+{{ q.row_acts(form_token, area.job_id, area.kind, area.result, area.place == "window") }}
+{%- endif %}
+{%- endif %}

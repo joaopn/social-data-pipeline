@@ -5,6 +5,7 @@
 #   STARROCKS_HOST           - StarRocks host (default: starrocks)
 #   STARROCKS_PORT           - StarRocks MySQL port (default: 9030)
 #   MCP_PORT                 - HTTP port (default: 9000)
+#   MCP_QUERY_TIMEOUT_SECONDS - optional: StarRocks stops each query after this many seconds (query_timeout, 1-3600)
 #
 # Read-only enforcement: database-level only, via the RO user's sdp_readonly role
 # (SELECT-only grants). The official mcp-server-starrocks has no application-level
@@ -13,6 +14,19 @@
 set -e
 
 PORT="${MCP_PORT:-9000}"
+
+# Optional query time limit (the chat's copy of this server sets it): whole seconds from 1 to 3600; unset or empty means none of this server's own.
+QUERY_TIMEOUT="${MCP_QUERY_TIMEOUT_SECONDS:-}"
+if [ -n "$QUERY_TIMEOUT" ]; then
+    case "$QUERY_TIMEOUT" in
+        *[!0-9]*) QUERY_TIMEOUT_BAD=1 ;;
+        *) if [ "${#QUERY_TIMEOUT}" -gt 4 ] || [ "$QUERY_TIMEOUT" -lt 1 ] || [ "$QUERY_TIMEOUT" -gt 3600 ]; then QUERY_TIMEOUT_BAD=1; fi ;;
+    esac
+    if [ -n "${QUERY_TIMEOUT_BAD:-}" ]; then
+        echo "[ERROR] MCP_QUERY_TIMEOUT_SECONDS must be a whole number of seconds from 1 to 3600 (for the chat's copy it comes from CHAT_QUERY_TIMEOUT_SECONDS in .env)"
+        exit 1
+    fi
+fi
 
 # Build credentials: use credentials file if MCP user is set, otherwise root with no password
 if [ -n "${STARROCKS_MCP_USER:-}" ]; then

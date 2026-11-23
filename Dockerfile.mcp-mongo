@@ -6,6 +6,7 @@
 #   - maxtimems: maxTimeMS support on read tools
 #   - readonly: hide write tools (insert/update/createIndex) when --read-only,
 #               and name the gating env var in the refusal message
+#   - query-limit: when MCP_QUERY_TIMEOUT_SECONDS is set, cap maxTimeMS of every read tool that runs a query (query, aggregate, count, listCollections) at that limit
 FROM oven/bun:1 AS builder
 
 WORKDIR /app
@@ -13,6 +14,7 @@ WORKDIR /app
 COPY config/mcp/mongo-mcp-multidb.patch /tmp/mongo-mcp-multidb.patch
 COPY config/mcp/mongo-mcp-maxtimems.patch /tmp/mongo-mcp-maxtimems.patch
 COPY config/mcp/mongo-mcp-readonly.patch /tmp/mongo-mcp-readonly.patch
+COPY config/mcp/mongo-mcp-query-limit.patch /tmp/mongo-mcp-query-limit.patch
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/* \
     && git clone https://github.com/kiliczsh/mcp-mongo-server.git . \
@@ -20,10 +22,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && git apply /tmp/mongo-mcp-multidb.patch \
     && git apply /tmp/mongo-mcp-maxtimems.patch \
     && git apply /tmp/mongo-mcp-readonly.patch \
+    && git apply /tmp/mongo-mcp-query-limit.patch \
     && bun install --frozen-lockfile --ignore-scripts \
     && bun run build
 
 FROM node:22-slim AS runtime
+
+# Marks an image that honours MCP_QUERY_TIMEOUT_SECONDS: `sdp chat start` refuses to run the chat's copy on an image without it.
+LABEL sdp.query-limit="1"
 
 WORKDIR /app
 

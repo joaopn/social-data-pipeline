@@ -1,0 +1,37 @@
+diff --git a/src/schemas/call.ts b/src/schemas/call.ts
+index 3686f87..b742d6b 100644
+--- a/src/schemas/call.ts
++++ b/src/schemas/call.ts
+@@ -57,6 +57,20 @@ const COLLECTION_OPERATIONS = [
+ // Define write operations that are blocked in read-only mode
+ const WRITE_OPERATIONS = ["update", "insert", "createIndex"];
+ 
++// The read tools that run a query on the server: each is given maxTimeMS.
++const QUERY_OPERATIONS = ["query", "aggregate", "count", "listCollections"];
++
++// MCP_QUERY_TIMEOUT_SECONDS (whole seconds, checked by the entrypoint): when set, a query tool's maxTimeMS is the smaller of the one asked and this limit, the limit when none is asked. Unset or empty: maxTimeMS is passed on as asked.
++const QUERY_LIMIT_MS = /^[0-9]+$/.test(process.env.MCP_QUERY_TIMEOUT_SECONDS || "")
++  ? Number(process.env.MCP_QUERY_TIMEOUT_SECONDS) * 1000
++  : 0;
++
++function limitedMaxTimeMS(asked: unknown): number {
++  return typeof asked === "number" && Number.isFinite(asked) && asked > 0
++    ? Math.min(asked, QUERY_LIMIT_MS)
++    : QUERY_LIMIT_MS;
++}
++
+ // ObjectId conversion settings
+ type ObjectIdConversionMode = "auto" | "none" | "force";
+ 
+@@ -102,6 +116,11 @@ export async function handleCallToolRequest({
+   // Check if operation is allowed in read-only mode
+   checkReadOnlyMode(operation, isReadOnlyMode);
+ 
++  // Bound the query's time on the server when a limit is set
++  if (QUERY_LIMIT_MS > 0 && QUERY_OPERATIONS.includes(operation)) {
++    args.maxTimeMS = limitedMaxTimeMS(args.maxTimeMS);
++  }
++
+   // Get collection only if the operation requires it
+   let collection: Collection<Document> | null = null;
+ 

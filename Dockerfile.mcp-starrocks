@@ -1,13 +1,22 @@
 # Social Data Pipeline - StarRocks MCP Server
 # Used for: starrocks_mcp profile
-# Official mcp-server-starrocks package from PyPI
+# Official mcp-server-starrocks package from PyPI, with one patch:
+#   - query-limit: when MCP_QUERY_TIMEOUT_SECONDS is set, `SET query_timeout` on every connection taken from the pool, and refuse a statement that names query_timeout
 # pydantic is held below 2.14: the mcp/fastmcp versions this package pulls import a private pydantic helper that 2.14 removed (the server then fails at start with an ImportError)
 FROM python:3.13-slim
 
+# Marks an image that honours MCP_QUERY_TIMEOUT_SECONDS: `sdp chat start` refuses to run the chat's copy on an image without it.
+LABEL sdp.query-limit="1"
+
 WORKDIR /app
 
+COPY config/mcp/starrocks-mcp-query-limit.patch /tmp/starrocks-mcp-query-limit.patch
+
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir mcp-server-starrocks==0.3.0 "pydantic<2.14"
+    pip install --no-cache-dir mcp-server-starrocks==0.3.0 "pydantic<2.14" && \
+    apt-get update && apt-get install -y --no-install-recommends patch && \
+    patch --forward --fuzz=0 -p1 -d "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" < /tmp/starrocks-mcp-query-limit.patch && \
+    apt-get purge -y patch && rm -rf /var/lib/apt/lists/* /tmp/starrocks-mcp-query-limit.patch
 
 COPY config/mcp/entrypoint-starrocks.sh /entrypoint.sh
 

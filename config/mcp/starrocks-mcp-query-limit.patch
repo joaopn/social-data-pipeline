@@ -1,0 +1,47 @@
+--- a/mcp_server_starrocks/db_client.py
++++ b/mcp_server_starrocks/db_client.py
+@@ -179,6 +179,9 @@
+             'connect_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
+         })
+         self.default_database = self.connection_params.get('database')
++        # MCP_QUERY_TIMEOUT_SECONDS (whole seconds, checked by the entrypoint): when set, every connection taken from the pool gets `SET query_timeout = <n>` (the pool resets the session when a connection is given back), and a statement that names query_timeout is refused, so StarRocks stops each query after that many seconds. Unset or empty: no change.
++        limit = os.getenv('MCP_QUERY_TIMEOUT_SECONDS', '')
++        self.query_timeout = int(limit) if limit else None
+ 
+         # MySQL connection pool
+         self._connection_pool = None
+@@ -205,6 +208,21 @@
+             return False
+     
+     def _get_pooled_connection(self):
++        """Get a MySQL connection from the pool, with the query time limit set on it when there is one."""
++        conn = self._take_pooled_connection()
++        if self.query_timeout is not None:
++            try:
++                cursor = conn.cursor()
++                try:
++                    cursor.execute(f"SET query_timeout = {self.query_timeout}")
++                finally:
++                    cursor.close()
++            except BaseException:
++                conn.close()
++                raise
++        return conn
++
++    def _take_pooled_connection(self):
+         """Get a MySQL connection from the pool with timeout and retry logic."""
+         pool = self._get_connection_pool()
+         try:
+@@ -305,6 +323,12 @@
+     def _execute(self, conn, statement: str, params=None, return_format:str="raw") -> ResultSet:
+         cursor = None
+         start_time = time.time()
++        if self.query_timeout is not None and 'query_timeout' in statement.lower():
++            return ResultSet(
++                success=False,
++                error_message=f"query_timeout is fixed at {self.query_timeout} seconds on this MCP server (MCP_QUERY_TIMEOUT_SECONDS): a statement that names it is refused",
++                execution_time=0
++            )
+         try:
+             cursor = conn.cursor()
+             cursor.execute(statement, params)

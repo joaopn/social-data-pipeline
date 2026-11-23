@@ -6,11 +6,25 @@
 #   MCP_MONGODB_PASSWORD  - MCP password (set externally or read from credentials file)
 #   MCP_MONGODB_READONLY  - "true" to enable read-only mode (default: true)
 #   MCP_PORT              - HTTP port (default: 3000)
+#   MCP_QUERY_TIMEOUT_SECONDS - optional: every read tool that runs a query gets maxTimeMS of at most this many seconds (1-3600)
 
 set -e
 
 PORT="${MCP_PORT:-3000}"
 READONLY="${MCP_MONGODB_READONLY:-true}"
+
+# Optional query time limit (the chat's copy of this server sets it): whole seconds from 1 to 3600; unset or empty means none of this server's own.
+QUERY_TIMEOUT="${MCP_QUERY_TIMEOUT_SECONDS:-}"
+if [ -n "$QUERY_TIMEOUT" ]; then
+    case "$QUERY_TIMEOUT" in
+        *[!0-9]*) QUERY_TIMEOUT_BAD=1 ;;
+        *) if [ "${#QUERY_TIMEOUT}" -gt 4 ] || [ "$QUERY_TIMEOUT" -lt 1 ] || [ "$QUERY_TIMEOUT" -gt 3600 ]; then QUERY_TIMEOUT_BAD=1; fi ;;
+    esac
+    if [ -n "${QUERY_TIMEOUT_BAD:-}" ]; then
+        echo "[ERROR] MCP_QUERY_TIMEOUT_SECONDS must be a whole number of seconds from 1 to 3600 (for the chat's copy it comes from CHAT_QUERY_TIMEOUT_SECONDS in .env)"
+        exit 1
+    fi
+fi
 
 # Build URI: use credentials if MCP user is set, otherwise fall back to MCP_MONGODB_URI
 if [ -n "${MCP_MONGODB_USER:-}" ]; then

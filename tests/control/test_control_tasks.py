@@ -266,6 +266,8 @@ class TestASupervisorThatIsGone:
         with open(f"/proc/{child}/stat") as handle:
             supervisor = int(handle.read().rsplit(")", 1)[1].split()[1])
         deployment.docker.reachable = False
+        # The supervisor writes `running` after it has started the child: killed before that, the record would still say `starting` (seen under the full suite's load).
+        wait_for("the record to say running", lambda: runstore.read_record(deployment.root, run_id)["state"] == "running")
 
         os.kill(supervisor, signal.SIGKILL)
         wait_for("the supervisor to be collected", lambda: runs.reap_supervisors() == 0)

@@ -1,12 +1,13 @@
 # Social Data Pipeline - StarRocks MCP Server
 # Used for: starrocks_mcp profile
 # Official mcp-server-starrocks package from PyPI
+# pydantic is held below 2.14: the mcp/fastmcp versions this package pulls import a private pydantic helper that 2.14 removed (the server then fails at start with an ImportError)
 FROM python:3.13-slim
 
 WORKDIR /app
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir mcp-server-starrocks==0.3.0
+    pip install --no-cache-dir mcp-server-starrocks==0.3.0 "pydantic<2.14"
 
 COPY config/mcp/entrypoint-starrocks.sh /entrypoint.sh
 

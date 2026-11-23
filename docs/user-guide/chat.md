@@ -96,9 +96,10 @@ Then it makes the chat's two networks, the gateway and the sandbox (the steps ar
 Ask about the data in your databases. In the Chat window, Enter sends the question and Shift+Enter starts a new line. Each question is one **turn** of the assistant, run in the chat's own folder; the window's right column ("This chat") adds up the turns of the chat, their time and their cost as the backend reported them (see [The Chat window](webui.md#the-chat-window)):
 
 - **The databases.** It reads each attached database through that database's MCP server, read-only.
+- **A look first.** The first time it uses a table or collection in a chat, it checks its columns and their types, its indexes and a few rows (at most 5), so its queries use the real field names and the indexes.
 - **The shell and files.** It can run shell commands and read and write files in the chat's folder (with `claude-code`: the tools `Bash`, `Read`, `Write`, `Edit`, `Glob` and `Grep`; with `openai-compatible`: `run_shell`).
-- **Plots.** It makes plots with Altair and saves each one twice in its folder, as `<name>.vl.json` (the chart's Vega-Lite spec, with its data inside) and as `<name>.png`, and names both in its answer. The Chat window draws the spec as an interactive chart (hover tooltips, zoom and pan, a legend that picks a series, in the page's colours), with the PNG as the fallback and the download; see [Files and plots](webui.md#files-and-plots).
-- **No internet.** It cannot reach the internet.
+- **Plots.** It makes every chart with Altair, unless you ask for another library (a request for an image or a PNG is still an Altair chart), and saves each one twice in its folder, as `<name>.vl.json` (the chart's Vega-Lite spec, with its data inside) and as `<name>.png`, and names both in its answer. The Chat window draws the spec as an interactive chart (hover tooltips, zoom and pan, a legend that picks a series, in the page's colours), with the PNG as the fallback and the download; see [Files and plots](webui.md#files-and-plots).
+- **No internet.** It cannot reach the internet, and it is told never to suggest sending your data or files to websites or services outside your deployment.
 - **Memory.** The assistant remembers the chat: each later question continues the same conversation. A new chat starts from nothing.
 
 ### The model of a chat

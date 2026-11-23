@@ -232,15 +232,15 @@ class Answers:
             f["data_types"] = data_types
         for stage in STAGES:
             path = self.get("files", f"{stage}_path").strip()
-            if not path and self.configure:
-                # Empty on a reconfigure: the current folder (the terminal's Enter).
+            if not path:
+                # Empty: the terminal's Enter, left out, so the action computes its default on the host (on a reconfigure the current folder; on an add `<DATA_PATH>/<stage>/<name>`, from .env's DATA_PATH, which this container cannot read).
                 continue
-            path = path or f"data/{stage}/{name}"
             spec = actions.SOURCE_ADD_INPUTS[f"{stage}_path"]
             value = actions._leaf_from_form(spec, path)
             if not actions._value_is_valid(spec, value):
                 raise StepError("files", "text")
-            f[f"{stage}_path"] = value
+            # As the action writes it: a relative folder with its `./` (the form's normalization takes it off).
+            f[f"{stage}_path"] = actions.as_written_path(value)
         f["file_format"] = self.get("files", "file_format", "parquet")
         if f["file_format"] not in ("parquet", "csv"):
             raise StepError("files", "int")
@@ -546,6 +546,15 @@ def final_fields(state):
     return fields
 
 
+def folders_shown(fields, mode):
+    """(stage, folder) for the Review: each folder as it will be written; on an add a folder left empty as the terminal's default, which the action computes on the host. A reconfigure shows only the folders it changes."""
+    if mode == "classifiers":
+        return []
+    if mode == "configure":
+        return [(stage, fields[f"{stage}_path"]) for stage in STAGES if f"{stage}_path" in fields]
+    return [(stage, fields.get(f"{stage}_path", f"DATA_PATH/{stage}/{fields['name']} (the terminal's default)")) for stage in STAGES]
+
+
 def defaults_left(fields):
     """The questions answered with Enter (left empty) whose default the action computes on the host, for these fields."""
     profiles, left = fields["profiles"], []
@@ -634,7 +643,7 @@ def install(api, ctx):
                 else:
                     files = actions.source_files(fields["profiles"])
                 model["review"] = {
-                    "inputs": actions.shown_inputs(action, fields), "files": files, "folders": [(stage, fields[f"{stage}_path"]) for stage in STAGES if f"{stage}_path" in fields],
+                    "inputs": actions.shown_inputs(action, fields), "files": files, "folders": folders_shown(fields, mode),
                     "defaults": defaults_left(fields) if mode == "add" else [], "cli": cli_lines(fields, answers.download, mode),
                 }
         elif error is not None and error.step != step and STEP_KEYS.index(error.step) < STEP_KEYS.index(step):

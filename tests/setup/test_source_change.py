@@ -66,7 +66,7 @@ def test_a_custom_source_reconfigured_with_other_profiles_and_folders_writes_the
     steps = [
         ("Reconfigure", "y"),
         ("Data types", ""),
-        ("Dumps directory", "/srv/dumps/forum"), ("Extracted directory", ""), ("Parsed directory", ""), ("Output directory", "data/out/forum"),
+        ("Dumps directory", "/srv/dumps/forum"), ("Extracted directory", ""), ("Parsed directory", ""), ("Output directory", "./data/out/forum"),
         ("Choice", ""), ("row-group", ""),
         # parse, lingua, mongo_ingest, sr_ingest: MongoDB added.
         ("Select", "1,2,6,7"),
@@ -153,7 +153,7 @@ def test_a_hugging_face_source_reconfigured_keeps_its_dataset_and_grouping_as_th
     terminal_root, action_root = _twins(tmp_path, monkeypatch, HW_NONE, added, databases=("starrocks",))
     steps = [
         ("Reconfigure", "y"),
-        ("Dumps directory", ""), ("Extracted directory", ""), ("Parsed directory", "data/parsed/bsky2"), ("Output directory", ""),
+        ("Dumps directory", ""), ("Extracted directory", ""), ("Parsed directory", "./data/parsed/bsky2"), ("Output directory", ""),
         ("Choice", ""), ("row-group", ""),
         ("Select", "1,4"),
         ("Parse workers", "2"),

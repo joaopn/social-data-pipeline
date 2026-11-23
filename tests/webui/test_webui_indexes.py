@@ -114,8 +114,38 @@ def test_the_first_step_offers_the_sources_databases(client):
     """Bug class: a first step that offers no way on, or does not say which databases the source loads into (the command offers only those)."""
     page = main_html(client.get("/indexes?source=demo").text)
 
-    assert '<option value="demo" selected>demo (MongoDB, StarRocks)</option>' in page
+    assert '<span class="mono">demo</span>' in page and '<option value="mongo" selected>MongoDB</option>' in page and '<option value="starrocks">StarRocks</option>' in page
     assert 'action="/indexes"' in page and 'name="step" value="columns"' in page
+
+
+def test_the_first_step_offers_only_the_databases_the_source_loads_into(client, broker):
+    """Bug class: a Database field that offers (and preselects) a database the chosen source loads nothing into, which the next step then refuses: `db create-indexes` offers only the source's databases (its `available` list), in its order, the first one chosen. With several sources the source is chosen first, then its databases are offered."""
+    broker.answers["source.list"] = source_list({"name": "demo", "profiles": ["parse", "sr_ingest", "mongo_ingest"]}, {"name": "docs", "profiles": ["parse", "mongo_ingest"]})
+    page = main_html(client.get("/indexes?source=docs").text)
+    database = re.search(r'<select name="database"[^>]*>(.*?)</select>', page, re.DOTALL).group(1)
+    assert re.findall(r'<option value="([^"]+)"( selected)?', database) == [("mongo", " selected")]
+    assert '<input type="hidden" name="source" value="docs">' in page and 'name="step" value="columns"' in page
+
+    page = main_html(client.get("/indexes?source=demo").text)
+    database = re.search(r'<select name="database"[^>]*>(.*?)</select>', page, re.DOTALL).group(1)
+    assert re.findall(r'<option value="([^"]+)"( selected)?', database) == [("mongo", " selected"), ("starrocks", "")]
+    page = main_html(client.get("/indexes?source=demo&database=starrocks").text)
+    assert re.findall(r'<option value="([^"]+)"( selected)?', page.split('name="database"', 1)[1].split("</select>", 1)[0]) == [("mongo", ""), ("starrocks", " selected")]
+
+    page = main_html(client.get("/indexes").text)
+    assert 'name="database"' not in page and 'name="step" value="columns"' not in page
+    assert '<option value="demo">demo (MongoDB, StarRocks)</option>' in page and '<option value="docs">docs (MongoDB)</option>' in page
+
+
+def test_the_columns_left_out_are_named(client, broker):
+    """Bug class: a columns step that says how many tables and columns it does not show but not which, so the operator cannot know what to index in a terminal; the names come from the database and are escaped, and at most twenty are shown."""
+    broker.answers["db.index_targets"] = {"data": {**TARGETS["data"], "skipped_tables": 1, "skipped_columns": 1, "skipped_names": ["bad<b>table", "comments.bad name"]}}
+    page = main_html(client.get("/indexes?source=demo&database=starrocks&step=columns").text)
+    assert "Not shown: 1 table(s) and 1 column(s) whose names cannot be picked here: <span class=\"mono\">bad&lt;b&gt;table</span>, <span class=\"mono\">comments.bad name</span>." in page
+
+    broker.answers["db.index_targets"] = {"data": {**TARGETS["data"], "skipped_tables": 30, "skipped_columns": 0, "skipped_names": [f"t{i}" for i in range(30)]}}
+    page = main_html(client.get("/indexes?source=demo&database=starrocks&step=columns").text)
+    assert page.count('<span class="mono">t') == 20 and "and 10 more" in page
 
 
 def test_a_pick_becomes_a_pending_build_that_runs_as_a_run_after_the_confirm(client, broker):

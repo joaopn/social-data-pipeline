@@ -149,8 +149,8 @@ def step_action(step):
 
 
 def as_written(path):
-    """A path as the action writes it (`sdp._as_written_path`): a relative one that does not start with a dot gets `./`, which the form's normalization takes off."""
-    return path if path.startswith(("/", ".")) else "./" + path
+    """A path as the action writes it (`actions.as_written_path`, the host's `setup.utils.written_path`): a relative one gets its `./`, which the form's normalization takes off."""
+    return actions.as_written_path(path)
 
 
 def _paths_as_written(fields):

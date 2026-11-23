@@ -1,6 +1,11 @@
 {#- Databases → Create indexes… (`indexes.py`): the stepper, step 1 (the source and the database, a GET form), step 2 (each table with its existing indexes and one box per real column, BITMAP boxes for StarRocks), then the confirm page (`/pending/<id>`). -#}
 {% extends "frame.html" %}
 {% import "_forms.html" as forms with context %}
+{% macro not_shown() -%}
+{%- if targets.truncated or targets.skipped_tables or targets.skipped_columns %}
+  <p class="muted small mt">Not shown: {{ targets.skipped_tables }} table(s) and {{ targets.skipped_columns }} column(s) whose names cannot be picked here{% if targets.skipped_names %}: {% for name in targets.skipped_names %}<span class="mono">{{ name }}</span>{{ ", " if not loop.last }}{% endfor %}{% if targets.skipped_more %} and {{ targets.skipped_more }} more{% endif %}{% endif %}{% if targets.truncated %}; only the first tables are listed{% endif %}. Use <code>python sdp.py db create-indexes</code> in a terminal for those.</p>
+{%- endif %}
+{%- endmacro %}
 {% block shell %}
 <main class="main">
 <div class="row wrap"><h1>Create indexes</h1><span class="muted small">the same questions <code>sdp db create-indexes</code> asks in the terminal; both run the same statements</span></div>
@@ -14,27 +19,41 @@
 <p class="muted mt">No source is configured. Add one first.</p>
 {%- else %}
 <form method="get" action="/indexes" class="mt">
+  {%- if picked %}
   <input type="hidden" name="step" value="columns">
+  <input type="hidden" name="source" value="{{ picked.name }}">
+  <div class="form">
+    <div class="f">Source <span class="mono">{{ picked.name }}</span>{% if sources | length > 1 %} <a class="small" href="/indexes">another source</a>{% endif %}</div>
+    {%- if offered %}
+    <label class="f">Database
+      <select name="database" required>
+        {%- for name in offered %}
+        <option value="{{ name }}"{% if name == preselected %} selected{% endif %}>{{ labels[name] }}</option>
+        {%- endfor %}
+      </select>
+    </label>
+    {%- endif %}
+  </div>
+  {%- if offered %}
+  <p class="muted small mt">The databases this source loads into, as the command offers them. The database must be running. Where it has authentication on, keep the database admin password for this session first (Databases page){% if db_password_kept %}: one is kept now{% endif %}.</p>
+  {%- else %}
+  <p class="muted mt">This source loads into no database: there is nothing to index.</p>
+  {%- endif %}
+  {%- else %}
   <div class="form">
     <label class="f">Source
       <select name="source" required>
         {%- for row in sources %}
-        <option value="{{ row.name }}"{% if row.name == source %} selected{% endif %}>{{ row.name }}{% if row.databases %} ({{ row.database_labels }}){% else %} (no database){% endif %}</option>
-        {%- endfor %}
-      </select>
-    </label>
-    <label class="f">Database
-      <select name="database" required>
-        {%- for name in databases %}
-        <option value="{{ name }}"{% if name == database %} selected{% endif %}>{{ labels[name] }}</option>
+        <option value="{{ row.name }}">{{ row.name }}{% if row.databases %} ({{ row.database_labels }}){% else %} (no database){% endif %}</option>
         {%- endfor %}
       </select>
     </label>
   </div>
-  <p class="muted small mt">The command offers the databases a source loads into (in brackets); another one is refused at the next step. The database must be running. Where it has authentication on, keep the database admin password for this session first (Databases page){% if db_password_kept %}: one is kept now{% endif %}.</p>
+  <p class="muted small mt">The databases each source loads into are in brackets; the next step offers those of the source chosen.</p>
+  {%- endif %}
   <h4 class="mt-l">What this will do</h4>
-  <div class="col mt narrow"><div class="cli">sdp db create-indexes --source <b>{{ source or "<name>" }}</b></div></div>
-  <div class="row mt narrow"><span class="tag step">step-up · db.create_indexes</span><span class="right row"><a class="btn" href="/databases">Cancel</a><button type="submit" class="btn primary">Next: columns</button></span></div>
+  <div class="col mt narrow"><div class="cli">sdp db create-indexes --source <b>{{ picked.name if picked else "<name>" }}</b></div></div>
+  <div class="row mt narrow"><span class="tag step">step-up · db.create_indexes</span><span class="right row"><a class="btn" href="/databases">Cancel</a>{% if not picked %}<button type="submit" class="btn primary">Next: database</button>{% elif offered %}<button type="submit" class="btn primary">Next: columns</button>{% endif %}</span></div>
 </form>
 {%- endif %}
 {%- else %}
@@ -47,6 +66,7 @@
 <div class="row mt narrow"><span class="right row"><a class="btn" href="/indexes?source={{ source }}&amp;database={{ database }}">Back</a></span></div>
 {%- elif not tables %}
 <p class="muted mt">No tables found{% if database == "mongo" %}: no collection of the source's data types holds documents yet{% endif %}.</p>
+{{ not_shown() }}
 <div class="row mt narrow"><span class="right row"><a class="btn" href="/indexes?source={{ source }}&amp;database={{ database }}">Back</a></span></div>
 {%- else %}
 {%- if database == "starrocks" %}
@@ -88,9 +108,7 @@
   </section>
   {%- endfor %}
   </div>
-  {%- if targets.truncated or targets.skipped_tables or targets.skipped_columns %}
-  <p class="muted small mt">Not shown: {{ targets.skipped_tables }} table(s) and {{ targets.skipped_columns }} column(s) whose names cannot be picked here{% if targets.truncated %}; only the first tables are listed{% endif %}. Use <code>python sdp.py db create-indexes</code> in a terminal for those.</p>
-  {%- endif %}
+  {{ not_shown() }}
   <label class="row small ink2 mt"><input type="checkbox" name="save" value="yes"> Save the new indexes to the source's platform.yaml (the terminal asks this last; its default is no)</label>
   <p class="muted small">Tick at most {{ pick_max }} boxes in one build. The next page shows the statements it will run and asks for the management password.</p>
   <h4 class="mt-l">What this will do</h4>

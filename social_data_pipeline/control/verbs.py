@@ -148,7 +148,7 @@ def _check_source_add(fields):
             raise FieldRefused("data_types", "must be the names of the Hugging Face groups, in their order")
 
 
-# The questions of `source add` for Reddit dumps, a Hugging Face dataset and your own files (and the Reddit questions of `source configure reddit`), each one typed input of `source.add`; an optional one left out is the question answered with Enter (the terminal's default, computed by the action on the host). Sizes: at most 32 data types, 256 fields per data type, 64 index columns and 64 text columns per data type.
+# The questions of `source add` for Reddit dumps, a Hugging Face dataset and your own files (and the Reddit questions of `source configure reddit`), each one typed input of `source.add`; an optional one left out is the question answered with Enter (the terminal's default, computed by the action on the host: a folder left out is `<DATA_PATH>/<stage>/<name>` with .env's DATA_PATH, as the terminal offers it). Sizes: at most 32 data types, 256 fields per data type, 64 index columns and 64 text columns per data type.
 _DATA_TYPE = Name()
 # The SQL types a Hugging Face field can be given: those `setup.hf.map_hf_type_to_sql` maps the Hub's types to, which are also the ones the database loaders know (any other is loaded as text).
 HF_SQL_TYPES = ("text", "integer", "bigint", "float", "boolean")
@@ -158,10 +158,10 @@ _WORKERS = IntRange(1, 1024)
 SOURCE_ADD_QUESTIONS = {
     "platform": Field(Enum(("custom", "reddit")), required=True),
     "data_types": Field(ListOf(_DATA_TYPE, 32, unique=True), required=True),
-    "dumps_path": Field(Path(), required=True),
-    "extracted_path": Field(Path(), required=True),
-    "parsed_path": Field(Path(), required=True),
-    "output_path": Field(Path(), required=True),
+    "dumps_path": Field(Path()),
+    "extracted_path": Field(Path()),
+    "parsed_path": Field(Path()),
+    "output_path": Field(Path()),
     "file_format": Field(Enum(("parquet", "csv")), required=True),
     "parquet_row_group_size": Field(IntRange(1, 1_000_000_000)),
     "profiles": Field(ListOf(Enum(VALID_PROFILES), len(VALID_PROFILES), unique=True), required=True),

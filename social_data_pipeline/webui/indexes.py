@@ -1,6 +1,6 @@
 """Databases → Create indexes…: the web UI's form of `sdp db create-indexes --source <name>`, in two steps and a confirm page.
 
-1. `GET /indexes` (`?source=<name>&database=<database>` preset): the source (from `source.list`) and one of the databases it loads into (by its profiles, as the command offers them).
+1. `GET /indexes` (`?source=<name>&database=<database>` preset): the source (from `source.list`), then one of the databases it loads into (by its profiles, as the command offers them, the first chosen); with several sources and none given, the source is asked first and the page comes back with its databases.
 2. `GET /indexes?source=<name>&database=<database>&step=columns`: `db.index_targets` reads the source's tables (for MongoDB its data types) from the running database, and the page shows each with its existing indexes and one box per real column; for StarRocks a second box per column picks BITMAP over the bloom filter, with the terminal's explanation, a column whose type takes neither shown without a box and one that takes no bloom filter marked BITMAP only. The broker uses the database admin password kept for the session, as for `db.start`; without one, a database with authentication on answers that it needs it.
 3. `POST /indexes` with the ticked boxes: the tables are read again, a box naming no column of them is refused, the request is checked against the table (`actions.check_fields`) and kept as a pending action of the session with the statements it will run worked out here (`preview`), then the usual confirm page (`GET /pending/<id>`) with the command, the statements, the run sentence and the management password. Nothing is sent to change anything before that confirm; the confirmed action starts as a recorded run (a task) and its outcome links to the run's page.
 
@@ -15,6 +15,8 @@ from social_data_pipeline.webui.calls import BUSY_GATE, call_broker, session_end
 DATABASE_LABELS = {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}
 # The profiles that make `db create-indexes` offer a database (`sdp.py` `_index_databases_of`).
 DATABASE_PROFILES = {"postgres": ("postgres_ingest", "postgres_ml"), "mongo": ("mongo_ingest",), "starrocks": ("sr_ingest", "sr_ml")}
+# How many names of the tables and columns left out the columns step shows (the broker sends at most as many, `sdp.INDEX_SKIPPED_NAMES_MAX`).
+SKIPPED_NAMES_SHOWN = 20
 # The boxes one pick may tick: the guard takes at most 64 fields, and the form has the source, the database, the save box and the form token besides.
 PICK_MAX = 60
 # The terminal's explanation of the StarRocks index types (`sdp.py` `_interactive_sr_indexes`).
@@ -35,7 +37,7 @@ def databases_of(profiles):
 
 
 def targets_block(result):
-    """The tables of a `db.index_targets` answer, checked: `database`, `scope`, `parallel_workers`, `truncated`, `skipped_tables`, `skipped_columns`, `tables` (each `name`, `indexes` or None, `bloom_filter` or None, `collections`, `db_name`, `columns`: `name`, `type`, `bloom`, `bitmap`). Raises ShapeError."""
+    """The tables of a `db.index_targets` answer, checked: `database`, `scope`, `parallel_workers`, `truncated`, `skipped_tables`, `skipped_columns`, `skipped_names` (at most SKIPPED_NAMES_SHOWN) and `skipped_more` (how many are not named), `tables` (each `name`, `indexes` or None, `bloom_filter` or None, `collections`, `db_name`, `columns`: `name`, `type`, `bloom`, `bitmap`). Raises ShapeError."""
     data = pages._dict(pages._data(result))
     database = data.get("database")
     pages._need(database in actions.DATABASES)
@@ -64,12 +66,17 @@ def targets_block(result):
             "bloom_filter": None if bloom_filter is None else [pages._string(item) for item in pages._list(bloom_filter)],
         })
     workers = data.get("parallel_workers")
+    skipped_tables, skipped_columns = data.get("skipped_tables", 0), data.get("skipped_columns", 0)
+    pages._need(all(isinstance(count, int) and not isinstance(count, bool) and count >= 0 for count in (skipped_tables, skipped_columns)))
+    # The names of the tables and columns left out (a column as `<table>.<column>`), read from the database: at most SKIPPED_NAMES_SHOWN, each made one line of text.
+    skipped_names = [overview.text(pages._string(item)) for item in pages._list(data.get("skipped_names", []))[:SKIPPED_NAMES_SHOWN]]
     scope = data.get("scope")
     pages._need(scope is None or actions.is_plain_name(scope))
     return {
         "database": database, "scope": scope, "tables": tables,
         "parallel_workers": workers if isinstance(workers, int) and not isinstance(workers, bool) else None,
-        "truncated": data.get("truncated") is True, "skipped_tables": data.get("skipped_tables", 0), "skipped_columns": data.get("skipped_columns", 0),
+        "truncated": data.get("truncated") is True, "skipped_tables": skipped_tables, "skipped_columns": skipped_columns,
+        "skipped_names": skipped_names, "skipped_more": max(0, skipped_tables + skipped_columns - len(skipped_names)),
     }
 
 
@@ -253,9 +260,13 @@ def install(api, ctx):
             if row["href"]:
                 used = databases_of(row["profiles"])
                 sources.append({"name": row["name"], "databases": used, "database_labels": ", ".join(DATABASE_LABELS[db] for db in used)})
+        # The first step offers the databases of one source only, as the command does (its `available` list, in its order), the first chosen: the source given, else the only one; with several and none given, the source is asked first.
+        picked = next((row for row in sources if row["name"] == source), sources[0] if len(sources) == 1 else None)
+        offered = picked["databases"] if picked else []
         model = {
             "step": "columns" if columns_step else "source", "sources": sources, "sources_block": blocks["list"], "source": source, "database": database,
-            "labels": DATABASE_LABELS, "databases": actions.DATABASES, "db_password_kept": session.work.db_password_kept, "pick_max": PICK_MAX, "sr_explanation": SR_EXPLANATION,
+            "picked": picked, "offered": offered, "preselected": database if database in offered else (offered[0] if offered else None),
+            "labels": DATABASE_LABELS, "db_password_kept": session.work.db_password_kept, "pick_max": PICK_MAX, "sr_explanation": SR_EXPLANATION,
             "command": actions.TABLE["db.create_indexes"].command({"source": source}) if source else None,
         }
         if columns_step:

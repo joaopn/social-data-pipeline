@@ -46,7 +46,6 @@ HF_FIELDS = {"configs[0]": "", "dt[0]": "", "field[0][id]": "yes", "field[0][lan
 HF_DATABASES = {"mongo_collection_strategy": "per_data_type", "mongo_db_name": "", "collection[posts]": "", "collection[people]": "users", "mongo_indexes[posts]": "", "mongo_indexes[people]": "id"}
 EXPECTED_ADD = {
     "platform": "custom", "name": "bsky", "hf_dataset": DATASET, "data_types": ["posts", "people"],
-    "dumps_path": "data/dumps/bsky", "extracted_path": "data/extracted/bsky", "parsed_path": "data/parsed/bsky", "output_path": "data/output/bsky",
     "file_format": "parquet", "profiles": ["parse", "mongo_ingest"], "parse_workers": 4, "hf_groups": HF_GROUPS,
     "mongo_collection_strategy": "per_data_type", "mongo_collections": {"people": "users"}, "mongo_indexes": {"people": ["id"]},
 }

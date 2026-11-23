@@ -65,7 +65,7 @@ CUSTOM_DATABASES = {"sr_prefer_lingua": "yes", "sr_buckets": "", "sr_indexes[pos
 
 EXPECTED_FIELDS = {
     "platform": "custom", "name": "forum", "data_types": ["posts", "replies"],
-    "dumps_path": "/srv/dumps/forum", "extracted_path": "data/extracted/forum", "parsed_path": "data/parsed/forum", "output_path": "data/output/forum",
+    "dumps_path": "/srv/dumps/forum",
     "file_format": "parquet", "parquet_row_group_size": 1000000, "profiles": ["parse", "lingua", "sr_ingest"], "input_format": "csv", "csv_delimiter": "tab",
     "dump_globs": {"posts": "posts_*.csv.zst", "replies": "replies_*.bin"}, "compressions": {"replies": "xz"}, "fields": {"posts": ["id", "body"], "replies": ["id", "text"]},
     "text_columns": {"posts": ["body"]}, "remove_patterns": [r"https?://\S+"], "lingua_workers": 4, "lingua_low_accuracy": False,
@@ -90,7 +90,7 @@ def test_the_wizard_sends_nothing_until_the_confirm_and_then_exactly_its_answers
     assert review.status_code == 200
     page = main_html(review.text)
     assert "parse.yaml" in page and "starrocks.yaml" in page and "lingua.yaml" in page
-    assert "data/parsed/forum" in page
+    assert "<li>dumps: <code>/srv/dumps/forum</code></li>" in page and "<li>parsed: <code>DATA_PATH/parsed/forum (the terminal&#39;s default)</code></li>" in page
     assert state_changing_requests(broker) == []
     assert "source.add" not in broker.verbs_called()
 
@@ -202,7 +202,7 @@ def test_the_confirm_page_says_what_source_add_does(client):
     assert sentence == (
         "It creates config/sources/forum/ and writes platform.yaml, parse.yaml, starrocks.yaml, lingua.yaml, ml.yaml in it. "
         "It writes the Hugging Face token into .env as HF_TOKEN, in place of the line of HF_TOKEN there (a commented one too), or as a new line. "
-        "The source's folders: dumps /srv/dumps/forum; extracted data/extracted/forum; parsed data/parsed/forum; output data/output/forum. It creates none of them: the first run of a profile creates each one that is missing. "
+        "The source's folders: dumps /srv/dumps/forum; extracted DATA_PATH/extracted/forum; parsed DATA_PATH/parsed/forum; output DATA_PATH/output/forum. A folder left empty is the terminal's default, DATA_PATH/<stage>/<name> with DATA_PATH as .env sets it (./data when it sets none), and a relative folder is written with its leading ./. It creates none of them: the first run of a profile creates each one that is missing. "
         "The broker refuses the action, before anything is written, when a source of this name exists already (change one with Reconfigure), when a folder is a folder of another source, lies inside one or holds one, and when an answer is one the terminal would not ask for these profiles. "
         "Answers left empty take the terminal's default, computed on the host as source add computes it (the CPU cores, the GPUs, the base classifier configuration). "
         "When PostgreSQL or StarRocks is running, the output says whether it must be restarted (db stop, then db start) to see the new source's folders."
@@ -255,3 +255,81 @@ def test_the_wizards_compression_detection_is_the_terminals(pattern):
     from social_data_pipeline.webui import setup_source
 
     assert setup_source.compression_of(pattern) == utils.detect_compression_from_glob(pattern)
+
+
+# ── the folders left empty: the terminal's Enter, on the host ───────────────
+
+
+def drawn(page, action):
+    """What a browser posts from the form of `page` that posts to `action`, unchanged: every hidden, text and number input with its value, every ticked box, each select's selected option (else its first)."""
+    import html
+
+    form = re.search(rf'<form method="post" action="{re.escape(action)}"[^>]*>(.*?)</form>', page, re.DOTALL).group(1)
+    posted = {}
+    for tag in re.findall(r"<input[^>]*>", form):
+        name = re.search(r'name="([^"]+)"', tag)
+        kind = re.search(r'type="([^"]+)"', tag)
+        if name is None or kind is None or kind.group(1) == "password" or (kind.group(1) in ("checkbox", "radio") and " checked" not in tag):
+            continue
+        value = re.search(r'value="([^"]*)"', tag)
+        posted[html.unescape(name.group(1))] = html.unescape(value.group(1)) if value else ""
+    for name, options in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', form, re.DOTALL):
+        values = re.findall(r'<option value="([^"]*)"( selected)?', options)
+        chosen = next((value for value, selected in values if selected), values[0][0])
+        posted[html.unescape(name)] = html.unescape(chosen)
+    return posted
+
+
+def test_a_wizard_with_its_folders_left_empty_writes_what_the_terminals_enter_writes(client, broker, tmp_path, monkeypatch):
+    """Bug class: the wizard's own default for an empty folder (it sent `data/dumps/<name>`, without DATA_PATH and without `./`), which the action wrote as it came and Compose then read as the name of a volume, so the source's first run failed (`service "parse" refers to undefined volume data/dumps/<name>`). The steps are posted as drawn with the folders left empty, the confirmed fields go through the registry and the action as the broker runs them, against a deployment of their own; the terminal's `source add` answered with Enter at the four folder questions writes the same bytes in another."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "setup"))
+    import test_source_add as terminal_side
+
+    import sdp
+
+    token = form_token(client)
+    base = start(client, token)
+    files_page = main_html(client.get(f"{base}/files").text)
+    assert "Empty: the same default the terminal offers, DATA_PATH/dumps/&lt;name&gt; (DATA_PATH as .env sets it, ./data when it sets none)." in files_page
+    files = drawn(files_page, f"{base}/files")
+    assert all(files[f"{stage}_path"] == "" for stage in ("dumps", "extracted", "parsed", "output"))
+    files = {key: value for key, value in files.items() if not key.startswith("profiles[")}
+    files.update({"name": "forum", "data_types": "posts", "profiles[parse]": "yes"})
+    assert step(client, base, "files", token, **files).headers["location"] == f"{base}/fields"
+    fields = drawn(main_html(client.get(f"{base}/fields").text), f"{base}/fields")
+    fields.update({"glob[posts]": "posts_*.json.gz", "fields[posts]": "id, text"})
+    assert step(client, base, "fields", token, **fields).headers["location"] == f"{base}/review"
+    pending = step(client, base, "review", token, nav="confirm").headers["location"]
+    assert post(client, pending + "/confirm", token, management_password=PASSWORD).status_code == 303
+    wait_until(lambda: state_changing_requests(broker))
+    sent = state_changing_requests(broker)[0]["fields"]
+    assert not any(f"{stage}_path" in sent for stage in ("dumps", "extracted", "parsed", "output"))
+
+    terminal_root = terminal_side._project(tmp_path / "terminal")
+    action_root = terminal_side._project(tmp_path / "action")
+    steps = [
+        ("Data types", "posts"),
+        ("Dumps directory", ""), ("Extracted directory", ""), ("Parsed directory", ""), ("Output directory", ""),
+        ("Choice", ""), ("row-group", ""), ("Select", "1"), ("Parse workers", ""),
+        ("Choice", ""), ("glob pattern for posts", "posts_*.json.gz"), ("Fields for 'posts'", "id, text"),
+        ("Write these files", ""),
+    ]
+    terminal_side._terminal(monkeypatch, terminal_root, terminal_side.HW_NONE, "forum", steps)
+    terminal_side._point_at(monkeypatch, action_root, terminal_side.HW_NONE)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("the action asked a question"))
+    assert sdp.do_source_add(**verbs.validate_request("source.add", sent)) == 0
+
+    terminal, action = terminal_side._files(terminal_root, "forum"), terminal_side._files(action_root, "forum")
+    assert action == terminal
+    assert b"dumps: ./data/dumps/forum\n" in action["platform.yaml"]
+
+
+@pytest.mark.parametrize("path", ["data/dumps/x", "./data/x", "../up/x", ".", "..", "/abs/x", ".hidden/x", "~/x", "x", ""])
+def test_the_pages_copy_of_the_written_path_rule_is_the_hosts(path):
+    """Bug class: the web UI's copy of the host's path rule (`setup.utils.written_path`, which the web UI container does not have) drifting from it, so a review or confirm page shows a folder other than the one the action writes."""
+    from social_data_pipeline.setup import utils
+
+    assert actions.as_written_path(path) == utils.written_path(path)

@@ -360,10 +360,8 @@ def _setup_mcp_warns(fields):
 
 
 def shown_result_root(path):
-    """The results folder as `do_db_setup_jobs` writes it: a relative one with its leading `./`."""
-    if path.startswith("/") or path in (".", "..") or path.startswith(("./", "../")):
-        return path
-    return "./" + path
+    """The results folder as `do_db_setup_jobs` writes it: a relative one with its leading `./` (`as_written_path`)."""
+    return as_written_path(path)
 
 
 _TARGETS = (("postgres_target", "postgres", "PostgreSQL"), ("starrocks_target", "starrocks", "StarRocks"), ("mongo_target", "mongo", "MongoDB"))
@@ -390,7 +388,8 @@ def _setup_jobs_sentence(fields):
     return sentence + " Refused when a port is one another service of this deployment uses, and when the results folder is data/jobs or holds it (the scheduler would keep its control socket closed). " + _NOTHING_RESTARTS
 
 
-_MCP_SERVER_FIELDS = {"port": Input("port", "Port", required=True), "write_access": Input("bool", "Write access")}
+# Write access left out is the box left unticked: the server is read-only (`do_db_setup_mcp`: PostgreSQL's access mode restricted, MongoDB's read-only on).
+_MCP_SERVER_FIELDS = {"port": Input("port", "Port", required=True), "write_access": Input("bool", "Write access", absent="no (read-only)")}
 _HOURS_INPUT = Input("int", "Default timeout (hours, 0 = no limit)", required=True, lo=0, hi=8760)
 
 
@@ -401,6 +400,18 @@ _REDDIT_KINDS = Input("enum", "Kind", choices=("submissions", "comments"))
 _ADD_WORKERS = Input("int", "Workers", lo=1, hi=1024)
 
 
+# A folder of `source.add` left out: the action computes the terminal's default on the host (`setup.source_add.build`), from .env's DATA_PATH, which the web UI cannot read.
+DEFAULT_FOLDER_WORDS = "the same default the terminal offers, DATA_PATH/{stage}/<name> (DATA_PATH as .env sets it, ./data when it sets none)"
+SOURCE_STAGES = ("dumps", "extracted", "parsed", "output")
+
+
+def as_written_path(path):
+    """A path as the host's actions write it (`setup.utils.written_path`, which this container does not have; a test compares the two): a relative one gets a leading `./` unless it is `.` or `..` or starts with `./` or `../`, so a page shows what will be written."""
+    if not isinstance(path, str) or not path or path.startswith("/") or path in (".", "..") or path.startswith(("./", "../")):
+        return path
+    return "./" + path
+
+
 def _per_type(label, item, max_items=32):
     return Input("map", label, key=Input("name", "Data type"), item=item, max_items=max_items)
 
@@ -409,10 +420,10 @@ SOURCE_ADD_INPUTS = {
     "name": Input("name", "Source name", required=True),
     "platform": Input("enum", "Origin", required=True, choices=("custom", "reddit")),
     "data_types": Input("list", "Data types", required=True, item=Input("name", "Data type"), max_items=32, unique=True),
-    "dumps_path": Input("path", "Dumps folder", required=True),
-    "extracted_path": Input("path", "Extracted folder", required=True),
-    "parsed_path": Input("path", "Parsed folder", required=True),
-    "output_path": Input("path", "Output folder", required=True),
+    "dumps_path": Input("path", "Dumps folder", absent=DEFAULT_FOLDER_WORDS.format(stage="dumps")),
+    "extracted_path": Input("path", "Extracted folder", absent=DEFAULT_FOLDER_WORDS.format(stage="extracted")),
+    "parsed_path": Input("path", "Parsed folder", absent=DEFAULT_FOLDER_WORDS.format(stage="parsed")),
+    "output_path": Input("path", "Output folder", absent=DEFAULT_FOLDER_WORDS.format(stage="output")),
     "file_format": Input("enum", "Intermediate file format", required=True, choices=("parquet", "csv")),
     "parquet_row_group_size": Input("int", "Parquet row-group size", lo=1, hi=1_000_000_000),
     "profiles": Input("list", "Profiles", required=True, item=Input("enum", "Profile", choices=VALID_PROFILES), max_items=len(VALID_PROFILES), unique=True),
@@ -482,8 +493,8 @@ def source_add_sentence(fields):
         parts.append("It writes the Hugging Face token into .env as HF_TOKEN, in place of the line of HF_TOKEN there (a commented one too), or as a new line.")
     if fields["platform"] == "reddit" and any(key in fields for key in ("reddit_db_schema", "reddit_removed_fields", "reddit_indexes")):
         parts.append("Then it applies the Reddit schema, field and index answers to platform.yaml, as python sdp.py source configure reddit does.")
-    folders = "; ".join(f"{stage} {fields[stage + '_path']}" for stage in ("dumps", "extracted", "parsed", "output"))
-    parts.append(f"The source's folders: {folders}. It creates none of them: the first run of a profile creates each one that is missing.")
+    folders = "; ".join(f"{stage} {as_written_path(fields[stage + '_path'])}" if stage + "_path" in fields else f"{stage} DATA_PATH/{stage}/{name}" for stage in SOURCE_STAGES)
+    parts.append(f"The source's folders: {folders}. A folder left empty is the terminal's default, DATA_PATH/<stage>/<name> with DATA_PATH as .env sets it (./data when it sets none), and a relative folder is written with its leading ./. It creates none of them: the first run of a profile creates each one that is missing.")
     parts.append("The broker refuses the action, before anything is written, when a source of this name exists already (change one with Reconfigure), when a folder is a folder of another source, lies inside one or holds one, and when an answer is one the terminal would not ask for these profiles.")
     parts.append("Answers left empty take the terminal's default, computed on the host as source add computes it (the CPU cores, the GPUs, the base classifier configuration).")
     parts.append("When PostgreSQL or StarRocks is running, the output says whether it must be restarted (db stop, then db start) to see the new source's folders.")
@@ -491,7 +502,7 @@ def source_add_sentence(fields):
 
 
 # The inputs of `source.configure` and `source.add_classifiers`, the registry's (`control.verbs.SOURCE_CONFIGURE_QUESTIONS`, `SOURCE_CLASSIFIER_QUESTIONS`): those of `source.add` but the origin and a Hugging Face dataset with its grouping, every one optional (its default the source's current value) but the profiles.
-SOURCE_CONFIGURE_INPUTS = {"name": _SOURCE, **{key: replace(spec, required=key == "profiles") for key, spec in SOURCE_ADD_INPUTS.items() if key not in ("name", "platform", "hf_dataset", "hf_groups")}}
+SOURCE_CONFIGURE_INPUTS = {"name": _SOURCE, **{key: replace(spec, required=key == "profiles", absent=None if key.endswith("_path") else spec.absent) for key, spec in SOURCE_ADD_INPUTS.items() if key not in ("name", "platform", "hf_dataset", "hf_groups")}}
 CLASSIFIER_KEYS = ("text_columns", "remove_strings", "remove_patterns", "gpu_fields", "lingua_workers", "lingua_file_workers", "lingua_batch_size", "lingua_low_accuracy", "gpu_ids", "ml_file_workers", "ml_tokenize_workers", "ml_classifier_batch_size", "ml_classifiers", "ml_classifier_data_types", "hf_token")
 SOURCE_CLASSIFIER_INPUTS = {"name": _SOURCE, **{key: SOURCE_ADD_INPUTS[key] for key in CLASSIFIER_KEYS}}
 _TOKEN_CLAUSE = "It writes the Hugging Face token into .env as HF_TOKEN, in place of the line of HF_TOKEN there (a commented one too), or as a new line."
@@ -508,7 +519,7 @@ def source_configure_sentence(fields):
         parts.append("For a source of your own files, platform.yaml's field types are written again as the generic ones (text, and integer for a few common names), as the terminal does: types refined there by hand are lost, the .bak copy keeps them. A Hugging Face source keeps its dataset, its grouping of configs into data types, its fields and their types.")
     if "hf_token" in fields:
         parts.append(_TOKEN_CLAUSE)
-    folders = [f"{stage} {fields[stage + '_path']}" for stage in ("dumps", "extracted", "parsed", "output") if stage + "_path" in fields]
+    folders = [f"{stage} {as_written_path(fields[stage + '_path'])}" for stage in SOURCE_STAGES if stage + "_path" in fields]
     if folders:
         parts.append(f"The source's folders: {'; '.join(folders)}. It creates, moves or empties none of them: files in a folder no longer named stay there, and the first run of a profile creates each one that is missing.")
     parts.append("An answer left empty is the terminal's Enter: the source's current value where the terminal offers it; the GPUs default to every GPU found, and the compression of a dump pattern whose extension names none to zst, as in the terminal.")
@@ -1027,7 +1038,7 @@ def shown_inputs(action, fields):
 
 
 def shown_value(spec, value):
-    """The text of one value on the pending page: a secret as dots, a box as yes or no, a list as its items joined by `, ` (`none` when empty), a map or a record as `key: value` joined by `; `, at any depth."""
+    """The text of one value on the pending page: a secret as dots, a box as yes or no, a list as its items joined by `, ` (`none` when empty), a map or a record as `key: value` joined by `; `, at any depth (a record's field left out shown with what its absence means, when that is worth saying)."""
     if spec.secret:
         return SECRET_DOTS
     if spec.kind == "bool":
@@ -1037,7 +1048,8 @@ def shown_value(spec, value):
     if spec.kind == "map":
         return "; ".join(f"{key}: {shown_value(spec.item, item)}" for key, item in value.items()) if value else "none"
     if spec.kind == "record":
-        return "; ".join(f"{spec.fields[key].label}: {shown_value(spec.fields[key], item)}" for key, item in value.items())
+        # In the record's order; a field left out whose absence means something (an unticked write-access box: read-only) with that meaning.
+        return "; ".join(f"{field.label}: {shown_value(field, value[key])}" if key in value else f"{field.label}: {field.absent}" for key, field in spec.fields.items() if key in value or field.absent is not None)
     return str(value)
 
 

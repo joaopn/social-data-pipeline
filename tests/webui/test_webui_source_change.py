@@ -32,7 +32,7 @@ TOKEN = "hf_madeUpGatedModelToken7"
 ALL_DATABASES = db_status(configured=["postgres", "mongo", "starrocks"])
 # What `source.settings` answers for a custom source with every profile (`setup.source_change.settings_read`'s shape).
 FORUM_ANSWERS = {
-    "data_types": ["posts", "replies"], "dumps_path": "/srv/dumps/forum", "extracted_path": "data/extracted/forum", "parsed_path": "data/parsed/forum", "output_path": "data/output/forum",
+    "data_types": ["posts", "replies"], "dumps_path": "/srv/dumps/forum", "extracted_path": "./data/extracted/forum", "parsed_path": "./data/parsed/forum", "output_path": "./data/output/forum",
     "file_format": "parquet", "parquet_row_group_size": 500000, "parse_workers": 6, "pg_prefer_lingua": False, "pg_parallel_index_workers": 3, "db_schema": "forum_s",
     "input_format": "csv", "csv_delimiter": "tab", "dump_globs": {"posts": "posts_*.csv.zst", "replies": "replies_*.bin"}, "compressions": {"replies": "gz"},
     "fields": {"posts": ["id", "body"], "replies": ["id", "text"]}, "mongo_collection_strategy": "per_data_type", "mongo_collections": {"posts": "p_coll", "replies": "replies"},

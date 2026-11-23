@@ -192,6 +192,20 @@ def test_the_confirm_pages_say_what_the_commands_write(client, broker):
     assert JOBS_SENTENCE in page and "<code>python sdp.py db setup-jobs</code>" in page
 
 
+def test_the_mcp_confirm_page_says_whether_each_server_is_read_only(client, broker):
+    """Bug class: a confirm page that lists an MCP server with its port only, so the operator cannot see whether it is to be read-only or to take statements that change data (the write-access box unticked posts nothing, and the page showed nothing for it)."""
+    broker.answers["db.llm_settings"] = llm_settings()
+    token = form_token(client)
+    data = {"form_token": token, "on_mongo": "yes", "mongo[port]": "3000", "on_postgres": "yes", "postgres[port]": "8100"}
+    page = html.unescape(client.get(pending_path(post(client, "/setup/mcp", data))).text)
+    assert "<dt>MongoDB MCP server</dt><dd>Port: 3000; Write access: no (read-only)</dd>" in page
+    assert "<dt>PostgreSQL MCP server</dt><dd>Port: 8100; Write access: no (read-only)</dd>" in page
+    assert "Write access for" not in page
+    page = html.unescape(client.get(pending_path(post(client, "/setup/mcp", {**data, "mongo[write_access]": "yes"}))).text)
+    assert "<dt>MongoDB MCP server</dt><dd>Port: 3000; Write access: yes</dd>" in page
+    assert "<strong>Warning</strong>: Write access for the MongoDB MCP server" in page
+
+
 # ── the restart ─────────────────────────────────────────────────────────────
 
 

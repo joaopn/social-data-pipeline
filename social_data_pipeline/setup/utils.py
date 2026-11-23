@@ -414,6 +414,13 @@ def resolve_source(source_name=None):
         sys.exit(1)
 
 
+def written_path(path):
+    """A host path as an action writes it into a source's config, .env or the compose override: a relative path gets a leading `./` unless it is `.` or `..` or starts with `./` or `../`, as the terminal's defaults are written (`./data/...`). Compose reads a mount source that does not start with `.`, `/` or `~` as the name of a volume, and the registry's `Path` turns a typed `./data` into `data`; with the `./` the path names the same folder. Anything else (an absolute path, an empty or non-string value) is returned as it is."""
+    if not isinstance(path, str) or not path or path.startswith("/") or path in (".", "..") or path.startswith(("./", "../")):
+        return path
+    return "./" + path
+
+
 # ============================================================================
 # .env file helpers
 # ============================================================================

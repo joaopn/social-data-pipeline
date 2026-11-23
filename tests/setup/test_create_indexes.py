@@ -337,6 +337,21 @@ class TestListing:
         assert data["skipped_tables"] == 1 and data["skipped_columns"] == 5
         assert data["parallel_workers"] == 4 and data["scope"] == "reddit"
 
+    def test_the_names_left_out_are_named_bounded_and_display_safe(self, deployment, monkeypatch):
+        """Bug class: a listing that says only how many tables and columns it left out, so the operator cannot tell which ones to index in a terminal; or one that names them without a bound (a schema of thousands) or with the database's control characters in them."""
+        max_columns = sdp.INDEX_TARGETS_COLUMNS_MAX
+        tables = {"t000": [(f"c{i}", "int") for i in range(max_columns + 2)] + [("bad name", "int"), ("_hidden\x1b[31m", "int")], "bad`table": [("id", "int")]}
+        _fake(monkeypatch, tables=tables)
+
+        data = sdp.get_db_index_targets(source="reddit", db="postgres")
+
+        assert (data["skipped_tables"], data["skipped_columns"]) == (1, 4)
+        assert data["skipped_names"] == ["bad`table", f"t000.c{max_columns}", f"t000.c{max_columns + 1}", "t000.bad name", "t000._hidden\\x1b[31m"]
+
+        _fake(monkeypatch, tables={**{f"bad table {i:02d}": [("id", "int")] for i in range(sdp.INDEX_SKIPPED_NAMES_MAX + 5)}, "t": [("id", "int")]})
+        data = sdp.get_db_index_targets(source="reddit", db="postgres")
+        assert data["skipped_tables"] == sdp.INDEX_SKIPPED_NAMES_MAX + 5 and len(data["skipped_names"]) == sdp.INDEX_SKIPPED_NAMES_MAX == 20
+
     def test_a_database_the_source_does_not_use_is_refused(self, tmp_path, monkeypatch):
         """Bug class: a listing or a build for a database the source loads nothing into, or one not set up: `db create-indexes` offers only the source's configured databases."""
         root = tmp_path.resolve() / "project"

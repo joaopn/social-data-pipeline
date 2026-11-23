@@ -171,7 +171,7 @@ def test_a_hugging_face_add_writes_the_terminals_files_for_the_same_grouping(tmp
         ("Select", ""), ("Data type name", ""), ("Select", "1,3"), ("Choice", "2"),
         # Schema B: the config, named people, every field, avatar as a custom type.
         ("Select", ""), ("Data type name", "people"), ("Select", ""), ("Choice", "3"), ("SQL type for 'avatar'", "bigint"),
-        ("Dumps directory", "data/dumps/bsky"), ("Extracted directory", "data/extracted/bsky"), ("Parsed directory", "data/parsed/bsky"), ("Output directory", "data/output/bsky"),
+        ("Dumps directory", "./data/dumps/bsky"), ("Extracted directory", "./data/extracted/bsky"), ("Parsed directory", "./data/parsed/bsky"), ("Output directory", "./data/output/bsky"),
         ("Choice", "parquet"), ("row-group", ""),
         ("Select", "1,4,6"),
         ("Parse workers", "4"),

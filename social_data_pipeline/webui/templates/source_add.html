@@ -88,7 +88,7 @@
     {{ text("data_types", "Data types", "", "Comma-separated, at most 8 (for example posts, replies).") }}
     {%- endif %}
     {%- for stage in ("dumps", "extracted", "parsed", "output") %}
-    {{ text(stage ~ "_path", stage | capitalize ~ " folder", "", ("Empty: the current folder." if mode == "configure" else "Empty: data/" ~ stage ~ "/<name>.") ~ " Any path, absolute or relative to the deployment; a folder of another source is refused.", mono=True) }}
+    {{ text(stage ~ "_path", stage | capitalize ~ " folder", "", ("Empty: the current folder." if mode == "configure" else "Empty: the same default the terminal offers, DATA_PATH/" ~ stage ~ "/<name> (DATA_PATH as .env sets it, ./data when it sets none).") ~ " Any path, absolute or relative to the deployment; a folder of another source is refused.", mono=True) }}
     {%- endfor %}
     {{ choice("file_format", "Intermediate file format", (("parquet", "parquet"), ("csv", "csv")), "parquet") }}
     {{ number("parquet_row_group_size", "Parquet row-group size", "Larger: better compression, more memory. Parquet only.", "1000000") }}

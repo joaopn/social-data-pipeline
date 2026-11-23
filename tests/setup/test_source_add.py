@@ -106,7 +106,7 @@ def test_a_custom_source_with_every_question_answered_writes_the_terminals_files
     available = classifiers.compute_classifier_defaults(HW_GPUS, [])["ml_classifiers"]
     steps = [
         ("Data types", "posts, replies"),
-        ("Dumps directory", "data/dumps/forum"), ("Extracted directory", "data/extracted/forum"), ("Parsed directory", "data/parsed/forum"), ("Output directory", "data/output/forum"),
+        ("Dumps directory", "./data/dumps/forum"), ("Extracted directory", "./data/extracted/forum"), ("Parsed directory", "./data/parsed/forum"), ("Output directory", "./data/output/forum"),
         ("Choice", "parquet"), ("row-group", "500000"),
         ("Select", "1,2,3,4,5,6,7,8"),
         ("Parse workers", "6"),
@@ -156,7 +156,7 @@ def test_every_answer_left_out_is_the_terminals_enter(tmp_path, monkeypatch):
     """Bug class: a default computed differently from the terminal's (the parse and index workers from the cores, the buckets, the Lingua and GPU settings from the base configuration, the schema and the Mongo names from the source name, the regex pattern to remove), so a field left empty in the browser writes another value than Enter would."""
     steps = [
         ("Data types", "posts"),
-        ("Dumps directory", "data/dumps/plain"), ("Extracted directory", "data/extracted/plain"), ("Parsed directory", "data/parsed/plain"), ("Output directory", "data/output/plain"),
+        ("Dumps directory", "./data/dumps/plain"), ("Extracted directory", "./data/extracted/plain"), ("Parsed directory", "./data/parsed/plain"), ("Output directory", "./data/output/plain"),
         ("Choice", ""), ("row-group", ""),
         ("Select", ""),
         ("Parse workers", ""), ("Use Lingua", ""), ("Parallel index workers", ""),
@@ -189,7 +189,7 @@ def test_a_reddit_source_with_its_field_and_index_questions_writes_the_terminals
     kept_indices = ",".join(str(i + 1) for i, field in enumerate(fields) if field not in removed)
     steps = [
         ("Data types", ""),
-        ("Dumps directory", "data/dumps/reddit"), ("Extracted directory", "data/extracted/reddit"), ("Parsed directory", "data/parsed/reddit"), ("Output directory", "data/output/reddit"),
+        ("Dumps directory", "./data/dumps/reddit"), ("Extracted directory", "./data/extracted/reddit"), ("Parsed directory", "./data/parsed/reddit"), ("Output directory", "./data/output/reddit"),
         ("Choice", "csv"),
         ("Select", "1,2,4"),
         ("Parse workers", "4"),
@@ -296,3 +296,104 @@ def test_without_a_database_setup_nothing_is_written(tmp_path, monkeypatch):
 
     _refused(_minimal(), "Run 'python sdp.py db setup' first")
     assert not (root / "config" / "sources").exists()
+
+
+# ── the folders as written: a relative one with its `./`, never a bare name ──
+
+
+STAGES = ("dumps", "extracted", "parsed", "output")
+# How a folder is typed (None: left empty, the terminal's Enter) and how it must be written; `{stage}` is each stage.
+FOLDER_FORMS = {
+    "typed with ./": ("./elsewhere/{stage}", "./elsewhere/{stage}"),
+    "typed bare": ("elsewhere/{stage}", "./elsewhere/{stage}"),
+    "typed above the deployment": ("../outside/{stage}", "../outside/{stage}"),
+    "absolute": ("/srv/sdp/{stage}", "/srv/sdp/{stage}"),
+    "left empty": (None, "./data/{stage}/plain"),
+}
+PLAIN_PROFILES = ["parse", "postgres_ingest", "sr_ingest"]
+
+
+def _written_shape(path):
+    """What Compose takes as a folder (a bind mount) and the terminal's default has: absolute, or starting with ./ or ../ (a bare `data/x` is the name of a volume to Compose)."""
+    return path.startswith(("/", "./", "../"))
+
+
+def _typed(form, suffix=""):
+    typed, _ = FOLDER_FORMS[form]
+    return {} if typed is None else {f"{stage}_path": typed.format(stage=stage) + suffix for stage in STAGES}
+
+
+def _written_paths(root, name="plain"):
+    import yaml
+
+    return yaml.safe_load((root / "config" / "sources" / name / "platform.yaml").read_text())["paths"]
+
+
+@pytest.mark.parametrize("form", list(FOLDER_FORMS))
+def test_every_folder_a_source_action_writes_is_absolute_or_dot_relative(tmp_path, monkeypatch, form):
+    """Bug class: a folder written as a bare relative name (`data/dumps/x`), which Compose reads as the name of a volume, so the first run of the source fails (`service "parse" refers to undefined volume`): the registry's `Path` takes the `./` off a typed answer, and the wizard's own default had none. Each answer goes through the registry as the broker sends it, for `source.add` and then `source.configure`; the folders the database servers' override mounts are checked too."""
+    from social_data_pipeline.control import verbs
+    from social_data_pipeline.setup import mount_sync
+
+    root = _project(tmp_path / "deployment")
+    _point_at(monkeypatch, root, HW_NONE)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("the action asked a question"))
+    _, written = FOLDER_FORMS[form]
+    added = verbs.validate_request("source.add", dict(name="plain", platform="custom", data_types=["posts"], file_format="parquet", profiles=PLAIN_PROFILES, dump_globs={"posts": "posts_*.json.gz"}, fields={"posts": ["id", "text"]}, **_typed(form)))
+    assert sdp.do_source_add(**added) == 0
+    paths = _written_paths(root)
+    assert paths == {stage: written.format(stage=stage) for stage in STAGES}
+
+    changed = verbs.validate_request("source.configure", dict(name="plain", profiles=PLAIN_PROFILES, **_typed(form, "2")))
+    assert sdp.do_source_configure(**changed) == 0
+    after = _written_paths(root)
+    assert after == ({stage: written.format(stage=stage) + "2" for stage in STAGES} if FOLDER_FORMS[form][0] else paths)
+    assert all(_written_shape(path) for path in after.values()), after
+
+    for service in ("postgres", "starrocks"):
+        for mount in mount_sync.expected_source_mounts(sdp._collect_source_info(), service, parent_paths=sdp._get_parent_paths()):
+            assert _written_shape(mount.split(":", 1)[0]), (service, mount)
+
+
+def _compose_source(volume, environment):
+    """The source of a short-syntax volume of docker-compose.yml with `${NAME:-default}` filled in from `environment`, and whether Compose takes it as a folder: Compose binds a source that starts with `.`, `/` or `~` and takes any other as the name of a volume (measured with Docker Compose: `DUMPS_PATH=data/dumps/x docker compose --profile parse config parse` answers `refers to undefined volume data/dumps/x`)."""
+    import re
+
+    filled = re.sub(r"\$\{(\w+)(?::-([^}]*))?\}", lambda match: environment.get(match.group(1)) or (match.group(2) or ""), volume)
+    source = filled.split(":", 1)[0]
+    return source, source.startswith((".", "/", "~"))
+
+
+def test_the_default_folders_reach_the_runs_compose_as_bind_mounts(tmp_path, monkeypatch):
+    """Bug class: a source added with its folders left empty whose run gives Compose a mount source it reads as a volume's name (`python sdp.py run parse --source <name>` failing at once): `do_run_start` puts the written folders into the environment that docker-compose.yml's `${DUMPS_PATH}` and the others are filled from, and every mount of the parse service must then be a folder."""
+    import os
+
+    import yaml
+
+    from social_data_pipeline.control import verbs
+
+    root = _project(tmp_path / "deployment")
+    _point_at(monkeypatch, root, HW_NONE)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("the action asked a question"))
+    added = verbs.validate_request("source.add", dict(name="plain", platform="custom", data_types=["posts"], file_format="parquet", profiles=["parse"], dump_globs={"posts": "posts_*.json.gz"}, fields={"posts": ["id", "text"]}))
+    assert sdp.do_source_add(**added) == 0
+    for key in ("DUMPS_PATH", "EXTRACTED_PATH", "PARSED_PATH", "OUTPUT_PATH", "SOURCE", "PLATFORM"):
+        monkeypatch.delenv(key, raising=False)
+    seen = []
+
+    class Done:
+        returncode = 0
+
+    def compose(*args, **kwargs):
+        seen.append((args, dict(os.environ)))
+        return Done()
+
+    monkeypatch.setattr(sdp, "docker_compose", compose)
+    assert sdp.do_run_start(profile="parse", source="plain") == 0
+    (args, environment), = seen
+    assert args[-1] == "parse"
+    volumes = yaml.safe_load((REPO / "docker-compose.yml").read_text())["services"]["parse"]["volumes"]
+    sources = [_compose_source(volume, environment) for volume in volumes]
+    assert all(bind for _, bind in sources), sources
+    assert ("./data/dumps/plain", True) in sources
+    assert all((root / "data" / stage / "plain").is_dir() for stage in STAGES)

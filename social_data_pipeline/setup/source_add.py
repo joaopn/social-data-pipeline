@@ -1,6 +1,6 @@
 """`source add` without a terminal: the answers of the questionnaire given as values, the same files written.
 
-The web UI's wizard reaches this through the broker (`sdp.do_source_add`). Every question that `sdp source add` asks for a Reddit source or a source of your own files (and, for a Reddit source, the field and index questions of `sdp source configure reddit`) is a key of `answers`; a key left out is the question answered with Enter, so its value is the default the terminal would offer, computed here on the host the same way (the hardware, `.env`'s DATA_PATH, the base classifier configuration). The settings are built in the questionnaire's order and shape (`source.run_questionnaire`, `classifiers.run_questionnaire`, `reddit.run_questionnaire`), and the files are made by the questionnaire's own generators and written by `utils.write_files`, so the same answers give the same bytes (a test runs both).
+The web UI's wizard reaches this through the broker (`sdp.do_source_add`). Every question that `sdp source add` asks for a Reddit source or a source of your own files (and, for a Reddit source, the field and index questions of `sdp source configure reddit`) is a key of `answers`; a key left out is the question answered with Enter, so its value is the default the terminal would offer, computed here on the host the same way (the hardware, `.env`'s DATA_PATH, the base classifier configuration). The settings are built in the questionnaire's order and shape (`source.run_questionnaire`, `classifiers.run_questionnaire`, `reddit.run_questionnaire`), and the files are made by the questionnaire's own generators and written by `utils.write_files`, so the same answers give the same bytes (a test runs both). One difference on purpose: a relative folder is written with a leading `./` (`utils.written_path`), as the terminal's defaults are written; the terminal writes a typed folder as typed, and Compose reads a bare `data/x` as the name of a volume.
 
 Narrower than the terminal on purpose: an answer to a question the terminal would not ask for these answers is refused (a parse worker count without the parse profile, a compression for a dump pattern whose compression is known), and so is anything the terminal's prompts could never produce (a list item with a comma, a name that already is a source, a folder of another source). `Refused` carries one line that holds no answer's value.
 
@@ -150,9 +150,10 @@ def build(answers, hw, db_setup, reconfigure=False):
     if is_hf and not reconfigure:
         _hf_grouping(answers, settings)
 
+    # A folder left out is the terminal's Enter: the current one, else `<DATA_PATH>/<stage>/<name>`. Every one is written with the `./` of a relative path (`utils.written_path`): the registry's `Path` takes a typed `./` off, and Compose reads a bare relative mount source as the name of a volume.
     data_path = utils.load_env().get("DATA_PATH", "./data")
     for stage in STAGES:
-        settings[f"{stage}_path"] = answers.get(f"{stage}_path", existing.get(f"{stage}_path", f"{data_path}/{stage}/{name}"))
+        settings[f"{stage}_path"] = utils.written_path(answers.get(f"{stage}_path", existing.get(f"{stage}_path", f"{data_path}/{stage}/{name}")))
 
     settings["file_format"] = answers.get("file_format", existing.get("file_format", "parquet"))
     if settings["file_format"] == "parquet":
@@ -507,8 +508,6 @@ def add_source(answers, hw=None):
     name = answers["name"]
     if os.path.lexists(utils.CONFIG_DIR / "sources" / name):
         raise Refused("a source of this name exists already: change it with Reconfigure (python sdp.py source configure)")
-    folders = {stage: answers[f"{stage}_path"] for stage in STAGES}
-    check_folders(name, folders)
     hw = utils.detect_hardware() if hw is None else hw
     try:
         settings, classifier_settings, reddit_answers = build(answers, hw, db_setup)
@@ -520,6 +519,9 @@ def add_source(answers, hw=None):
     except SystemExit:
         # The Reddit template's readers print their error and exit, as the terminal does; here nothing is written and the action ends with a refusal instead.
         raise Refused("the Reddit template (config/templates/reddit.yaml) could not be read") from None
+    # The folders as they will be written, the defaults of those left out included.
+    folders = {stage: settings[f"{stage}_path"] for stage in STAGES}
+    check_folders(name, folders)
     reddit_yaml = None
     if reddit_answers is not None:
         reddit_yaml = reddit.generate_reddit_platform_user_yaml(*reddit_answers)

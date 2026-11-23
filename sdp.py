@@ -540,13 +540,6 @@ def cmd_db_setup(args):
     return 0
 
 
-def _as_written_path(path):
-    """A path answer as the terminal's default would write it: a relative path that does not start with a dot gets `./` (Compose reads a bare `data/x` in a mount as the name of a volume, and the registry's `Path` turns `./data` into `data`)."""
-    if path.startswith(("/", ".")):
-        return path
-    return "./" + path
-
-
 def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
                 pgdata_path=None, db_name=None, pg_port=None, tablespaces=None, filesystem=None, pgtune=None, pg_mem_limit=None,
                 mongo_data_path=None, mongo_port=None, mongo_cache_size_gb=None, mongo_mem_limit=None, mongo_validate=None,
@@ -559,6 +552,7 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
     from social_data_pipeline.core.config import ConfigurationError
     from social_data_pipeline.setup import db as db_setup
     from social_data_pipeline.setup import db_answers
+    from social_data_pipeline.setup.utils import written_path
 
     given = {key: value for key, value in {
         "add": add, "databases": databases, "data_path": data_path, "export_path": export_path,
@@ -580,11 +574,11 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
         raise ActionError(f"db setup: {refused.field} {refused}.") from None
     for key in dbsetup.PATH_FIELDS:
         if key in given:
-            given[key] = _as_written_path(given[key])
+            given[key] = written_path(given[key])
     if "tablespaces" in given:
-        given["tablespaces"] = [{"name": item["name"], "path": _as_written_path(item["path"])} for item in given["tablespaces"]]
+        given["tablespaces"] = [{"name": item["name"], "path": written_path(item["path"])} for item in given["tablespaces"]]
     if "starrocks_storage_paths" in given:
-        given["starrocks_storage_paths"] = [_as_written_path(path) for path in given["starrocks_storage_paths"]]
+        given["starrocks_storage_paths"] = [written_path(path) for path in given["starrocks_storage_paths"]]
 
     chosen = dbsetup.chosen(given)
     changing = add is None and bool(configured)
@@ -892,11 +886,11 @@ _RESULT_ROOT_HOLDS_JOBS = "the results folder must not be data/jobs, a folder th
 
 def _result_root_text(path):
     """The results folder as the files take it: refused when it starts with '-', has white space at an end or holds a character that breaks .env or a compose mount; a relative one written with its leading `./` (a compose mount source without it is the name of a volume, not a folder). Raises ActionError."""
+    from social_data_pipeline.setup.utils import written_path
+
     if path.startswith("-") or path != path.strip() or any(character in path for character in _RESULT_ROOT_BAD):
         raise ActionError(_RESULT_ROOT_REFUSED)
-    if path.startswith("/") or path in (".", "..") or path.startswith(("./", "../")):
-        return path
-    return "./" + path
+    return written_path(path)
 
 
 def do_db_setup_jobs(*, port, result_root, max_concurrent, history_retention, postgres_target=None, starrocks_target=None, mongo_target=None, auth_enabled=False):
@@ -5002,6 +4996,8 @@ def cmd_db_create_indexes(args):
 # How many tables (or MongoDB data types) and columns per table are read and returned at most.
 INDEX_TARGETS_TABLES_MAX = 50
 INDEX_TARGETS_COLUMNS_MAX = 200
+# How many of the tables and columns left out of the targets are named (`skipped_names`).
+INDEX_SKIPPED_NAMES_MAX = 20
 # The longest text kept of a column type or of an existing index's name.
 _INDEX_TEXT_MAX_CHARS = 128
 # A table, column or schema name the web UI can pick: the registry's plain-name pattern, written out here because this module does not import the control package.
@@ -5084,23 +5080,30 @@ def _index_rows_by_table(rows, width):
     return grouped
 
 
-def _index_table_entry(name, columns, skipped):
-    """One table of the targets: its pickable columns (plain names, at most INDEX_TARGETS_COLUMNS_MAX), counting the others in `skipped`."""
+def _index_skipped(skipped, names, name):
+    """Count one table or column left out of the targets in `skipped`, and name it in `names` (display-safe, at most INDEX_SKIPPED_NAMES_MAX of them)."""
+    skipped[0] += 1
+    if names is not None and len(names) < INDEX_SKIPPED_NAMES_MAX:
+        names.append(_index_text(name))
+
+
+def _index_table_entry(name, columns, skipped, names=None):
+    """One table of the targets: its pickable columns (plain names, at most INDEX_TARGETS_COLUMNS_MAX), counting the others in `skipped` and naming them (`<table>.<column>`) in `names`."""
     picked = []
     for column_name, column_type in columns:
         if not _is_index_name(column_name) or len(picked) >= INDEX_TARGETS_COLUMNS_MAX or any(c["name"] == column_name for c in picked):
-            skipped[0] += 1
+            _index_skipped(skipped, names, f"{name}.{column_name}")
             continue
         picked.append({"name": column_name, "type": column_type})
     return {"name": name, "columns": picked, "indexes": None, "bloom_filter": None, "collections": None, "db_name": None}
 
 
-def _pickable_tables(names, skipped):
-    """The plain names among `names`, at most INDEX_TARGETS_TABLES_MAX; (names, truncated). The others are counted in `skipped`."""
+def _pickable_tables(names, skipped, skipped_names=None):
+    """The plain names among `names`, at most INDEX_TARGETS_TABLES_MAX; (names, truncated). The others are counted in `skipped` and named in `skipped_names`."""
     tables, truncated = [], False
     for name in names:
         if not _is_index_name(name):
-            skipped[0] += 1
+            _index_skipped(skipped, skipped_names, name)
         elif len(tables) >= INDEX_TARGETS_TABLES_MAX:
             truncated = True
         else:
@@ -5110,7 +5113,7 @@ def _pickable_tables(names, skipped):
 
 def _read_index_targets(source, platform_config, db, password):
     """What `db create-indexes` offers for `db`: the tables (for MongoDB the data types) with their columns and existing indexes. Column types are kept as read (lowercased, for StarRocks's choice of index type); a MongoDB data type keeps its database and collections in `db_name` and `collection_names`. Raises _IndexReadError when the database cannot be asked for its tables, ActionError for a config this cannot use."""
-    skipped_tables, skipped_columns = [0], [0]
+    skipped_tables, skipped_columns, skipped_names = [0], [0], []
     result = {"scope": None, "tables": [], "truncated": False, "parallel_workers": None}
 
     if db == "postgres":
@@ -5129,7 +5132,7 @@ def _read_index_targets(source, platform_config, db, password):
                 password)
         except Exception as e:
             raise _IndexReadError(f"Could not connect to PostgreSQL: {e}") from None
-        tables, result["truncated"] = _pickable_tables([r[0] for r in rows], skipped_tables)
+        tables, result["truncated"] = _pickable_tables([r[0] for r in rows], skipped_tables, skipped_names)
         try:
             columns = _index_rows_by_table(_psql_query(port, db_name,
                 f"SELECT table_name, column_name, data_type FROM information_schema.columns "
@@ -5143,7 +5146,7 @@ def _read_index_targets(source, platform_config, db, password):
         except Exception:
             indexes = None
         for table in tables:
-            entry = _index_table_entry(table, [(r[1], r[2].strip().lower()) for r in columns.get(table, [])], skipped_columns)
+            entry = _index_table_entry(table, [(r[1], r[2].strip().lower()) for r in columns.get(table, [])], skipped_columns, skipped_names)
             entry["indexes"] = None if indexes is None else [_index_text(r[1]) for r in indexes.get(table, [])]
             result["tables"].append(entry)
 
@@ -5161,7 +5164,7 @@ def _read_index_targets(source, platform_config, db, password):
                 password)
         except Exception as e:
             raise _IndexReadError(f"Could not connect to StarRocks: {e}") from None
-        tables, result["truncated"] = _pickable_tables([r[0] for r in rows], skipped_tables)
+        tables, result["truncated"] = _pickable_tables([r[0] for r in rows], skipped_tables, skipped_names)
         try:
             columns = _index_rows_by_table(_sr_query(port, database,
                 f"SELECT table_name, column_name, data_type FROM information_schema.columns "
@@ -5180,7 +5183,7 @@ def _read_index_targets(source, platform_config, db, password):
             except Exception:
                 blooms = None
         for table in tables:
-            entry = _index_table_entry(table, [(r[1], r[2].strip().lower()) for r in columns.get(table, [])], skipped_columns)
+            entry = _index_table_entry(table, [(r[1], r[2].strip().lower()) for r in columns.get(table, [])], skipped_columns, skipped_names)
             entry["indexes"] = None if indexes is None else [_index_text(r[2]) for r in indexes.get(table, [])]
             entry["bloom_filter"] = None if blooms is None or table not in blooms else sorted(blooms[table])
             result["tables"].append(entry)
@@ -5191,7 +5194,7 @@ def _read_index_targets(source, platform_config, db, password):
         data_types = platform_config.get("data_types", [])
         if not isinstance(data_types, list):
             data_types = []
-        names, result["truncated"] = _pickable_tables([dt for dt in data_types if isinstance(dt, str)], skipped_tables)
+        names, result["truncated"] = _pickable_tables([dt for dt in data_types if isinstance(dt, str)], skipped_tables, skipped_names)
         mandatory = platform_config.get("mandatory_fields", [])
         configured = platform_config.get("fields", {})
         for dt in names:
@@ -5200,7 +5203,7 @@ def _read_index_targets(source, platform_config, db, password):
             except Exception:
                 db_name = None
             if not _is_index_name(db_name):
-                skipped_tables[0] += 1
+                _index_skipped(skipped_tables, skipped_names, dt)
                 continue
             try:
                 collections = _mongo_index_collections(db_name, dt, password)
@@ -5229,7 +5232,7 @@ def _read_index_targets(source, platform_config, db, password):
                     fields += [k for k in sample.get("keys", []) if isinstance(k, str)]
                 except Exception:
                     existing = None
-            entry = _index_table_entry(dt, [(f, "") for f in fields], skipped_columns)
+            entry = _index_table_entry(dt, [(f, "") for f in fields], skipped_columns, skipped_names)
             entry["indexes"] = existing
             entry["collections"] = len(collections)
             entry["db_name"] = db_name
@@ -5238,11 +5241,12 @@ def _read_index_targets(source, platform_config, db, password):
 
     result["skipped_tables"] = skipped_tables[0]
     result["skipped_columns"] = skipped_columns[0]
+    result["skipped_names"] = skipped_names
     return result
 
 
 def get_db_index_targets(*, source, db, admin_password=None, _ask_password=None):
-    """What `db create-indexes --source <source>` offers for one database, for a page that picks the columns. Prints nothing and returns `source`, `database`, `scope` (the PostgreSQL schema or the StarRocks database; None for MongoDB), `parallel_workers` (PostgreSQL's parallel index workers, else None), `truncated` (more than INDEX_TARGETS_TABLES_MAX tables), `skipped_tables` and `skipped_columns` (those whose name is not a plain name, or past the bounds), and `tables`: for each table (for MongoDB each data type) its `name`, `columns` (each with `name`, `type` as the database names it, `bloom` and `bitmap`: for StarRocks whether the type takes a bloom filter or a BITMAP index, else None), `indexes` (the existing indexes' names; None when they could not be read), `bloom_filter` (StarRocks: the bloom filter columns set now), `collections` and `db_name` (MongoDB: the number of collections of the data type and its database). A MongoDB data type's columns are its configured fields and the top-level keys of one document of its first collection. Every text read from the database is display-safe; no password or config value other than these is returned. Raises ActionError for a malformed source name, an unknown database, a source config that cannot be read, a database not configured or not used by the source, a missing admin password where authentication is on, and when the database cannot be asked (not running)."""
+    """What `db create-indexes --source <source>` offers for one database, for a page that picks the columns. Prints nothing and returns `source`, `database`, `scope` (the PostgreSQL schema or the StarRocks database; None for MongoDB), `parallel_workers` (PostgreSQL's parallel index workers, else None), `truncated` (more than INDEX_TARGETS_TABLES_MAX tables), `skipped_tables` and `skipped_columns` (those whose name is not a plain name, or past the bounds), `skipped_names` (the first INDEX_SKIPPED_NAMES_MAX of them by name, a column as `<table>.<column>`), and `tables`: for each table (for MongoDB each data type) its `name`, `columns` (each with `name`, `type` as the database names it, `bloom` and `bitmap`: for StarRocks whether the type takes a bloom filter or a BITMAP index, else None), `indexes` (the existing indexes' names; None when they could not be read), `bloom_filter` (StarRocks: the bloom filter columns set now), `collections` and `db_name` (MongoDB: the number of collections of the data type and its database). A MongoDB data type's columns are its configured fields and the top-level keys of one document of its first collection. Every text read from the database is display-safe; no password or config value other than these is returned. Raises ActionError for a malformed source name, an unknown database, a source config that cannot be read, a database not configured or not used by the source, a missing admin password where authentication is on, and when the database cannot be asked (not running)."""
     from social_data_pipeline.core.config import sr_index_types_for_column
 
     platform_config, password = _index_context(source, db, admin_password, _ask_password)
@@ -5259,7 +5263,7 @@ def get_db_index_targets(*, source, db, admin_password=None, _ask_password=None)
         tables.append({"name": table["name"], "columns": columns, "indexes": table["indexes"], "bloom_filter": table["bloom_filter"], "collections": table["collections"], "db_name": table["db_name"]})
     return {
         "source": source, "database": db, "scope": targets["scope"], "parallel_workers": targets["parallel_workers"] if isinstance(targets["parallel_workers"], int) and not isinstance(targets["parallel_workers"], bool) else None,
-        "truncated": targets["truncated"], "skipped_tables": targets["skipped_tables"], "skipped_columns": targets["skipped_columns"], "tables": tables,
+        "truncated": targets["truncated"], "skipped_tables": targets["skipped_tables"], "skipped_columns": targets["skipped_columns"], "skipped_names": targets["skipped_names"], "tables": tables,
     }
 
 
@@ -5421,7 +5425,7 @@ def cmd_source_add(args):
 
 
 def do_source_add(
-    *, name, platform, data_types, dumps_path, extracted_path, parsed_path, output_path, file_format, profiles,
+    *, name, platform, data_types, file_format, profiles, dumps_path=None, extracted_path=None, parsed_path=None, output_path=None,
     parquet_row_group_size=None, parse_workers=None, pg_prefer_lingua=None, pg_parallel_index_workers=None, table_tablespaces=None,
     db_schema=None, input_format=None, csv_delimiter=None, dump_globs=None, compressions=None, fields=None,
     mongo_collection_strategy=None, mongo_collections=None, mongo_db_name=None, pg_indexes=None, mongo_indexes=None, sr_indexes=None,
@@ -5430,7 +5434,7 @@ def do_source_add(
     lingua_workers=None, lingua_file_workers=None, lingua_batch_size=None, lingua_low_accuracy=None,
     gpu_ids=None, ml_file_workers=None, ml_tokenize_workers=None, ml_classifier_batch_size=None, ml_classifiers=None, ml_classifier_data_types=None, hf_token=None, hf_dataset=None, hf_groups=None,
 ):
-    """Add a new source for Reddit dumps, a Hugging Face dataset (`hf_dataset` with its grouping `hf_groups`, the schema as `get_source_hf_inspect` read it) or your own files without a terminal: each parameter is the answer to one question of `source add` (and, for a Reddit source, of `source configure reddit`), None being the question answered with Enter. Writes the files the terminal writes for the same answers (`setup.source_add`). Raises ActionError before anything is written for an answer the terminal would not take or not ask, a name that is already a source, and a folder that belongs to another source. Returns the exit code."""
+    """Add a new source for Reddit dumps, a Hugging Face dataset (`hf_dataset` with its grouping `hf_groups`, the schema as `get_source_hf_inspect` read it) or your own files without a terminal: each parameter is the answer to one question of `source add` (and, for a Reddit source, of `source configure reddit`), None being the question answered with Enter (a folder left out is the terminal's default, `<DATA_PATH>/<stage>/<name>` with .env's DATA_PATH). Writes the files the terminal writes for the same answers (`setup.source_add`), a relative folder with its leading `./` (`setup.utils.written_path`). Raises ActionError before anything is written for an answer the terminal would not take or not ask, a name that is already a source, and a folder that belongs to another source. Returns the exit code."""
     from social_data_pipeline.setup.source_add import Refused, add_source
 
     answers = {key: value for key, value in dict(

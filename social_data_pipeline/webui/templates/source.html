@@ -194,6 +194,7 @@
     {%- endfor %}
   </dl>
   <div class="cli mt"><span>python sdp.py source status <b>{{ source_name }}</b></span></div>
+  <div class="row mt"><a class="btn sm" href="/indexes?source={{ source_name }}">Create indexes…</a><span class="cli grow">sdp db create-indexes --source <b>{{ source_name }}</b></span></div>
   </div>
   {%- else %}
   <p class="muted">The configuration is not known: the source's state could not be read.</p>

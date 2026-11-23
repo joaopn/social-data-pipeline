@@ -95,6 +95,8 @@ def pending_model(pending, now, seconds):
         "warns": action.warns(fields) if action.warns else None,
         "then": [{"command": actions.TABLE[name].command(step), "also": actions.TABLE[name].also(step) if actions.TABLE[name].also else None} for name, step in pending.then] if pending.then else None,
         "writes": action.writes(fields) if action.writes else None,
+        # The statements a page worked out when it kept the action (a tuple of lines; the index build's), shown as they are.
+        "preview": pending.shown if isinstance(pending.shown, tuple) else None,
         "minutes_left": max(1, math.ceil((seconds - (now - pending.created)) / 60)),
         "queue": False,
     }

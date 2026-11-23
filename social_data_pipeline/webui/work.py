@@ -175,7 +175,7 @@ class Outcome:
     def _result(self, result, text_max_bytes):
         if not isinstance(result, dict):
             raise ValueError("not a result")
-        if self.action == "run.start":
+        if self.action in actions.RUN_STARTERS:
             run_id = result.get("run_id")
             if not actions.is_run_id(run_id):
                 raise ValueError("no run id")

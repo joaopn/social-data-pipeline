@@ -1,0 +1,103 @@
+{#- Databases → Create indexes… (`indexes.py`): the stepper, step 1 (the source and the database, a GET form), step 2 (each table with its existing indexes and one box per real column, BITMAP boxes for StarRocks), then the confirm page (`/pending/<id>`). -#}
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block shell %}
+<main class="main">
+<div class="row wrap"><h1>Create indexes</h1><span class="muted small">the same questions <code>sdp db create-indexes</code> asks in the terminal; both run the same statements</span></div>
+<div class="stepper mt"><span class="{{ 'done' if step == 'columns' else 'on' }}">1 Source and database</span><span class="{{ 'on' if step == 'columns' else '' }}">2 Columns</span><span>3 Confirm</span></div>
+
+{%- if not sources_block.ok %}
+<div class="mt-l">{% with block = sources_block %}{% include "_failure.html" %}{% endwith %}</div>
+{%- elif step == "source" %}
+<h4 class="mt-l">Which source, and which of its databases?</h4>
+{%- if not sources %}
+<p class="muted mt">No source is configured. Add one first.</p>
+{%- else %}
+<form method="get" action="/indexes" class="mt">
+  <input type="hidden" name="step" value="columns">
+  <div class="form">
+    <label class="f">Source
+      <select name="source" required>
+        {%- for row in sources %}
+        <option value="{{ row.name }}"{% if row.name == source %} selected{% endif %}>{{ row.name }}{% if row.databases %} ({{ row.database_labels }}){% else %} (no database){% endif %}</option>
+        {%- endfor %}
+      </select>
+    </label>
+    <label class="f">Database
+      <select name="database" required>
+        {%- for name in databases %}
+        <option value="{{ name }}"{% if name == database %} selected{% endif %}>{{ labels[name] }}</option>
+        {%- endfor %}
+      </select>
+    </label>
+  </div>
+  <p class="muted small mt">The command offers the databases a source loads into (in brackets); another one is refused at the next step. The database must be running. Where it has authentication on, keep the database admin password for this session first (Databases page){% if db_password_kept %}: one is kept now{% endif %}.</p>
+  <h4 class="mt-l">What this will do</h4>
+  <div class="col mt narrow"><div class="cli">sdp db create-indexes --source <b>{{ source or "<name>" }}</b></div></div>
+  <div class="row mt narrow"><span class="tag step">step-up · db.create_indexes</span><span class="right row"><a class="btn" href="/databases">Cancel</a><button type="submit" class="btn primary">Next: columns</button></span></div>
+</form>
+{%- endif %}
+{%- else %}
+<h4 class="mt-l">{{ labels[database] }}{% if targets.ok and targets.scope %} · {{ "schema" if database == "postgres" else "database" }} <span class="mono">{{ targets.scope }}</span>{% endif %} · source <span class="mono">{{ source }}</span></h4>
+{%- if not targets.ok %}
+<div class="mt">{% with block = targets %}{% include "_failure.html" %}{% endwith %}</div>
+{%- if not db_password_kept %}
+<p class="muted small">If the database has authentication on, keep the database admin password for this session on the Databases page, then come back.</p>
+{%- endif %}
+<div class="row mt narrow"><span class="right row"><a class="btn" href="/indexes?source={{ source }}&amp;database={{ database }}">Back</a></span></div>
+{%- elif not tables %}
+<p class="muted mt">No tables found{% if database == "mongo" %}: no collection of the source's data types holds documents yet{% endif %}.</p>
+<div class="row mt narrow"><span class="right row"><a class="btn" href="/indexes?source={{ source }}&amp;database={{ database }}">Back</a></span></div>
+{%- else %}
+{%- if database == "starrocks" %}
+<p class="notice mt narrow">{{ sr_explanation }}</p>
+{%- elif database == "mongo" %}
+<p class="muted small mt narrow">Documents have no fixed columns: the fields offered are the source's configured fields of each data type and the top-level fields of one stored document. An index is created on every collection of the data type.</p>
+{%- endif %}
+<form method="post" action="/indexes" class="mt">
+  {{ forms.token() }}
+  <input type="hidden" name="source" value="{{ source }}">
+  <input type="hidden" name="database" value="{{ database }}">
+  <div class="col idx-tables">
+  {%- for table in tables %}
+  <section class="card" aria-labelledby="idx-{{ loop.index }}">
+    <div class="row wrap"><h3 id="idx-{{ loop.index }}" class="mono">{{ table.name }}</h3>{% if table.collections is not none %}<span class="muted small">{{ table.collections }} collection{{ "s" if table.collections != 1 }} in <span class="mono">{{ table.db_name }}</span></span>{% endif %}</div>
+    <dl class="kv mt">
+      <dt>Existing indexes</dt><dd>{% if table.indexes is none %}<span class="muted">could not be read</span>{% else %}{% for name in table.indexes %}<span class="tag mono">{{ name }}</span> {% else %}<span class="muted">none</span>{% endfor %}{% endif %}</dd>
+      {%- if database == "starrocks" %}
+      <dt>Bloom filter</dt><dd>{% if table.bloom_filter is none %}<span class="muted">could not be read</span>{% else %}{% for name in table.bloom_filter %}<span class="tag mono">{{ name }}</span> {% else %}<span class="muted">none</span>{% endfor %}{% endif %}</dd>
+      {%- endif %}
+    </dl>
+    <div class="idx-cols mt">
+    {%- for column in table.columns %}
+      <div class="idx-col">
+      {%- if column.state == "none" %}
+        <span class="muted"><span class="mono">{{ column.name }}</span> <span class="small">{{ column.type }} · cannot be indexed</span></span>
+      {%- else %}
+        <label class="row small ink2"><input type="checkbox" name="{{ column.box }}" value="{{ column.value }}"{% if column.checked %} checked{% endif %}> <span class="mono">{{ column.name }}</span>{% if column.type %} <span class="muted">{{ column.type }}</span>{% endif %}</label>
+        {%- if column.state == "choosable" %}
+        <label class="row small muted idx-bitmap"><input type="checkbox" name="{{ column.bitmap_box }}" value="{{ column.value }}"{% if column.bitmap_checked %} checked{% endif %}> BITMAP</label>
+        {%- elif column.state == "bitmap_only" %}
+        <span class="small muted idx-bitmap">BITMAP only</span>
+        {%- endif %}
+      {%- endif %}
+      </div>
+    {%- endfor %}
+    {%- if not table.columns %}<span class="muted small">No column whose name can be picked.</span>{% endif %}
+    </div>
+  </section>
+  {%- endfor %}
+  </div>
+  {%- if targets.truncated or targets.skipped_tables or targets.skipped_columns %}
+  <p class="muted small mt">Not shown: {{ targets.skipped_tables }} table(s) and {{ targets.skipped_columns }} column(s) whose names cannot be picked here{% if targets.truncated %}; only the first tables are listed{% endif %}. Use <code>python sdp.py db create-indexes</code> in a terminal for those.</p>
+  {%- endif %}
+  <label class="row small ink2 mt"><input type="checkbox" name="save" value="yes"> Save the new indexes to the source's platform.yaml (the terminal asks this last; its default is no)</label>
+  <p class="muted small">Tick at most {{ pick_max }} boxes in one build. The next page shows the statements it will run and asks for the management password.</p>
+  <h4 class="mt-l">What this will do</h4>
+  <div class="col mt narrow"><div class="cli">sdp db create-indexes --source <b>{{ source }}</b></div></div>
+  <div class="row mt narrow"><span class="tag step">step-up · db.create_indexes</span><span class="right row"><a class="btn" href="/databases">Cancel</a><a class="btn" href="/indexes?source={{ source }}&amp;database={{ database }}">Back</a><button type="submit" class="btn primary">Next: confirm</button></span></div>
+</form>
+{%- endif %}
+{%- endif %}
+</main>
+{% endblock %}

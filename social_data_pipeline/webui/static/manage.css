@@ -120,3 +120,11 @@ textarea.mono { line-height: 1.5; }
 .wizard-nav .right { flex-direction: row-reverse; gap: 8px; }
 .enter-default { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 ul.writes { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
+
+/* Create indexes (F5b, indexes.html): the mock-up's stepper (above), the tables of the column step, their columns in a grid, each with its BITMAP box under it. */
+.idx-tables { max-width: 820px; gap: 12px; }
+.idx-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px 16px; }
+.idx-col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.idx-col .mono { overflow-wrap: anywhere; }
+.idx-bitmap { padding-left: 22px; }
+.output.whole { max-height: none; overflow: visible; }

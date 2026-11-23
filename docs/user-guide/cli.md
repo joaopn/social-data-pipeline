@@ -37,6 +37,7 @@ With a `pipx` install (see [Install](install.md)) the same commands are `sdp <gr
 | `python sdp.py db verify [--db <name>] [--json]` | Check config, env, credentials, mounts, MCP and scheduler coherence; exits 1 on drift. Use as a CI or pre-pipeline preflight. `--db` checks a single database (the cross-cutting MCP and scheduler checks still apply); `--json` emits machine-readable JSON |
 | `python sdp.py db recover-password [--regenerate-ro]` | Reset the database admin password (requires auth enabled). With `--regenerate-ro`, also rewrite `.ro_credentials` with a fresh password (combinable with the admin recovery; use it when `.ro_credentials` is missing, lost, or known-leaked) |
 | `python sdp.py db create-indexes [--source <name>]` | Interactively create database indexes (`-s` for short; auto-selects when only one source is configured) |
+| `python sdp.py db index-targets --source <name> --db <db>` | List the tables, columns and existing indexes `create-indexes` offers for one database of a source |
 | `python sdp.py db unsetup` | Remove the database configuration; data deletion is behind a double confirmation |
 | `python sdp.py db unsetup --db <postgres\|mongo\|starrocks>` | Fully remove one database (config, containers, and data) without touching the others |
 | `python sdp.py db reset --db <postgres\|mongo\|starrocks>` | Wipe one database's data while preserving all config, env, MCP, and per-source overrides. Use it to re-ingest from scratch |

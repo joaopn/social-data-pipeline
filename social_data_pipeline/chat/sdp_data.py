@@ -1,4 +1,4 @@
-"""Query results for the chat assistant's scripts: `sdp_data.read_query(database, query)` returns the rows of a read-only query through the same MCP server and gateway port the assistant's own tools use.
+"""Query results for the chat assistant's scripts: `sdp_data.read_query(server, query)` returns the rows of a read-only query on one database server (`starrocks`, `postgres` or `mongo`) through the same MCP server and gateway port the assistant's own tools use. The first argument is always the server, never a database or schema inside it (like `reddit`): those are named inside the query (`reddit.comments`).
 
 The sandbox image installs this file as the top-level module `sdp_data` in the interpreter's own site-packages, so `python3 -I` (which ignores `PYTHONPATH`) imports it too. It imports nothing of this package: `DATABASES` mirrors `claude.DATABASES` (a test keeps them equal). The gateway's address comes from `SDP_CHAT_GATEWAY` and the attached databases from `SDP_CHAT_DATABASES`, which both back ends give the assistant's shell. No credential is involved: the gateway adds the database's own, and the server's read-only user decides what may run.
 
@@ -6,7 +6,7 @@ The sandbox image installs this file as the top-level module `sdp_data` in the i
 - `postgres`: `query` is SQL, run with postgres-mcp's `execute_sql`, whose answer is Python's text of a list of dicts; it is read without running any code: literals, and a fixed set of value types (a Decimal becomes an int when it is whole, else a float; dates, times, datetimes with their time zone and timedeltas stay Python objects; a UUID becomes text). Any other value type fails the call, naming it.
 - `mongo`: `query` is a dict. `{"collection": ..., "database": ..., "pipeline": [...]}` runs the `aggregate` tool; without `pipeline`, `{"collection": ..., "database": ..., "filter": {...}, "projection": {...}, "sort": {...}, "limit": n}` runs the `query` tool (a find; all keys but `collection` optional, and no other key is taken). The documents come as the server's JSON gives them (an ObjectId as hex text, a date as ISO text).
 
-Bounds of one call: at most `max_rows` rows (a find's limit and an aggregation's appended `$limit` ask MongoDB for one more, to tell), at most `max_bytes` read from the gateway in all, and `timeout` seconds for the whole call (MongoDB is also given it as `maxTimeMS`; a SQL query the call gives up on may still run on the server until the server's own limit). Every failure raises `QueryError`, whose message names the database; nothing fails into an empty result.
+Bounds of one call: at most `max_rows` rows (a find's limit and an aggregation's appended `$limit` ask MongoDB for one more, to tell), at most `max_bytes` read from the gateway in all, and `timeout` seconds for the whole call (MongoDB is also given it as `maxTimeMS`; a SQL query the call gives up on may still run on the server until the server's own limit). Every failure raises `QueryError`, whose message names the server; nothing fails into an empty result.
 """
 
 import ast
@@ -39,27 +39,27 @@ __all__ = ["QueryError", "read_query", "DATABASES", "MAX_ROWS", "MAX_BYTES", "TI
 
 
 class QueryError(RuntimeError):
-    """A query whose rows could not be read; the message names the database and why."""
+    """A query whose rows could not be read; the message names the server and why."""
 
 
-def read_query(database, query, *, as_frame=False, max_rows=MAX_ROWS, max_bytes=MAX_BYTES, timeout=TIMEOUT):
-    """The rows of `query` on the attached `database` ("starrocks", "postgres" or "mongo"), read through its read-only MCP server and the gateway: a list of dicts (column name to value), or a pandas DataFrame with `as_frame=True`.
+def read_query(server, query, *, as_frame=False, max_rows=MAX_ROWS, max_bytes=MAX_BYTES, timeout=TIMEOUT):
+    """The rows of `query` on the attached database `server` ("starrocks", "postgres" or "mongo"; a database or schema inside it, like `reddit`, is named in the query), read through its read-only MCP server and the gateway: a list of dicts (column name to value), or a pandas DataFrame with `as_frame=True`.
 
-    For StarRocks and PostgreSQL `query` is SQL; for MongoDB a dict, `{"collection", "database", "pipeline"}` for an aggregation or `{"collection", "database", "filter", "projection", "sort", "limit"}` for a find. More than `max_rows` rows, more than `max_bytes` bytes read, or more than `timeout` seconds raise QueryError, as does a refused query, a database not attached to this chat, or a server that cannot be reached.
+    For StarRocks and PostgreSQL `query` is SQL; for MongoDB a dict, `{"collection", "database", "pipeline"}` for an aggregation or `{"collection", "database", "filter", "projection", "sort", "limit"}` for a find. More than `max_rows` rows, more than `max_bytes` bytes read, or more than `timeout` seconds raise QueryError, as does a refused query, a server not attached to this chat, or a server that cannot be reached.
     """
-    if not isinstance(database, str) or database not in DATABASES:
-        raise QueryError(f"sdp_data: unknown database {database!r}: it is one of {', '.join(DATABASES)}")
+    if not isinstance(server, str) or server not in DATABASES:
+        raise QueryError(f"sdp_data: {server!r} is not a database server: give starrocks, postgres or mongo, and name databases and tables inside the query (for example reddit.comments)")
     for name, value in (("max_rows", max_rows), ("max_bytes", max_bytes)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise QueryError(f"sdp_data: {database}: {name} must be a whole number from 1")
+            raise QueryError(f"sdp_data: {server}: {name} must be a whole number from 1")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
-        raise QueryError(f"sdp_data: {database}: timeout must be a number of seconds above 0")
-    url, kind = _address(database)
-    tool, arguments = _request(database, query, max_rows, timeout)
-    result = _run(lambda: _call(database, url, kind, tool, arguments, max_bytes, timeout))
-    columns, rows = _rows(database, result)
+        raise QueryError(f"sdp_data: {server}: timeout must be a number of seconds above 0")
+    url, kind = _address(server)
+    tool, arguments = _request(server, query, max_rows, timeout)
+    result = _run(lambda: _call(server, url, kind, tool, arguments, max_bytes, timeout))
+    columns, rows = _rows(server, result)
     if len(rows) > max_rows:
-        raise QueryError(f"sdp_data: {database}: the result has more than {max_rows:,} rows (max_rows): aggregate in the query, or pass a larger max_rows=")
+        raise QueryError(f"sdp_data: {server}: the result has more than {max_rows:,} rows (max_rows): aggregate in the query, or pass a larger max_rows=")
     if as_frame:
         import pandas
 

@@ -164,8 +164,26 @@ def test_a_database_not_attached_or_unknown_is_refused_before_any_connection(mon
             sdp_data.read_query("starrocks", "SELECT 1")
         with pytest.raises(TimeoutError):
             listening.accept()
-    with pytest.raises(sdp_data.QueryError, match="unknown database 'mysql'"):
+    with pytest.raises(sdp_data.QueryError, match=r"^sdp_data: 'mysql' is not a database server: "):
         sdp_data.read_query("mysql", "SELECT 1")
+
+
+def test_a_database_name_in_place_of_the_server_says_the_first_argument_is_the_server():
+    """Bug class: the assistant passing the StarRocks database (`reddit`) as the first argument and being told only that it is unknown, with nothing saying where the database name goes."""
+    with pytest.raises(sdp_data.QueryError) as raised:
+        sdp_data.read_query("reddit", "SELECT 1 FROM comments")
+    assert str(raised.value) == "sdp_data: 'reddit' is not a database server: give starrocks, postgres or mongo, and name databases and tables inside the query (for example reddit.comments)"
+
+
+@needs_mcp
+def test_the_server_is_taken_by_position_or_by_the_keyword_server(served):
+    """Bug class: the rename breaking the positional call scripts already make, or the keyword the role text names (`server=`) not being accepted; the old keyword `database=` is not taken."""
+    served.answers["read_query"] = starrocks_result(["n"], [[1]])
+    assert sdp_data.read_query("starrocks", "SELECT 1 AS n FROM reddit.comments") == [{"n": 1}]
+    assert sdp_data.read_query(server="starrocks", query="SELECT 1 AS n FROM reddit.comments") == [{"n": 1}]
+    assert served.calls == [("read_query", {"query": "SELECT 1 AS n FROM reddit.comments"})] * 2
+    with pytest.raises(TypeError):
+        sdp_data.read_query(database="starrocks", query="SELECT 1")
 
 
 @pytest.mark.parametrize("query, reason", [

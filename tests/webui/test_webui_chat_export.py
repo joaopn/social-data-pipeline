@@ -249,12 +249,13 @@ def test_an_export_holds_a_place_of_the_downloads(exporting, scripted):
     assert results[0].status_code == 200 and client.get(f"/chat/{CHAT_ID}/file/a.png").status_code == 200
 
 
-def test_the_export_link_is_in_a_chats_header_and_not_on_the_list_page(exporting, scripted):
-    """Bug class: an Export link on the page with no chat open (it would export nothing), or missing beside the model picker."""
+def test_the_export_link_is_in_this_chat_and_not_on_the_list_page(exporting, scripted):
+    """Bug class: an Export link on the page with no chat open (it would export nothing), missing from the right column "This chat", or not after the turn totals."""
     client = exporting()
     page = client.get(f"/chat/{CHAT_ID}").text
-    header = re.search(r'<div class="chead">(.*?)</div>', page, re.DOTALL).group(1)
-    assert re.search(rf'<a class="btn sm" href="/chat/{CHAT_ID}/export" download[^>]*>Export</a>', header)
+    aside = re.search(r'<aside class="rightp"[^>]*>(.*?)</aside>', page, re.DOTALL).group(1)
+    link = re.search(rf'<a class="btn sm" href="/chat/{CHAT_ID}/export" download[^>]*>Export</a>', aside)
+    assert link and aside.index('id="chat-totals"') < link.start() and page.count("/export") == 1
     assert "/export" not in client.get("/chat").text
     scripted.chats = []
     assert "/export" not in html.unescape(client.get(f"/chat/{CHAT_ID}").text)

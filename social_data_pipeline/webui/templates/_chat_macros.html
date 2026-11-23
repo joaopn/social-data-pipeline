@@ -33,7 +33,7 @@
 {%- if item.image %}<img class="chat-image" src="{{ item.image }}" alt="an image the assistant made">{% endif %}
 {%- if item.buttons %}<div class="row wrap mt">{% for button in item.buttons %}<a class="btn sm" href="{{ button.href }}">{{ button.label }}</a>{% endfor %}</div>{% endif %}</div>
 {%- elif item.kind == "end" %}
-<p class="chat-end small muted">{{ 'The turn ended with an error' if item.is_error else 'The turn ended' }}{% if item.seconds %} after {{ item.seconds }} s{% endif %}{% if item.turns is not none %}, {{ item.turns }} model turns{% endif %}{% if item.cost %}; cost {{ item.cost }} USD as reported by the back end{% endif %}.</p>
+<p class="chat-end small muted">{{ 'The turn ended with an error' if item.is_error else 'The turn ended' }}{% if item.seconds %} after {{ item.seconds }} s{% endif %}{% if item.turns is not none %}, {{ item.turns }} model turns{% endif %}.</p>
 {%- elif item.kind == "error" %}
 <p class="note crit chat-error">{{ vis(item.parts) }}</p>
 {%- elif item.kind == "skipped" %}

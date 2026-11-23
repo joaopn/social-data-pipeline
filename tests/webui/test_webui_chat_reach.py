@@ -369,7 +369,8 @@ def test_the_new_chat_form_carries_the_offered_models_for_app_js(client, scripte
 def test_an_openai_compatible_back_end_shows_its_one_model_not_choosable(client, scripted):
     scripted.answers["hello"] = {**HELLO, "backend": "openai-compatible", "models": ["vendor/m-1"], "model_default": "vendor/m-1"}
     page = client.get(f"/chat/{CHAT_ID}").text
-    assert "<select" not in page.split('<section class="mid"')[1].split("</section>")[0] and '<span class="tag">vendor/m-1</span>' in page
+    aside = page.split('<aside class="rightp"')[1].split("</aside>")[0]
+    assert 'id="chat-model"' not in page and 'name="model"' not in page and "<dt>Model</dt><dd>vendor/m-1</dd>" in aside
 
 
 HOSTILE_HELLOS = [

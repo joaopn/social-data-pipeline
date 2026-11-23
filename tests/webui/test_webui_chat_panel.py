@@ -12,6 +12,7 @@ Every special character in this file is written as an escape.
 from __future__ import annotations
 
 import html
+from html.parser import HTMLParser
 import re
 
 import pytest
@@ -194,17 +195,116 @@ def test_the_right_column_is_this_chat_with_its_controls(client, scripted):
     assert "/totals" not in page and "<dt>Backend</dt>" not in page
 
 
-def test_the_right_column_names_the_chats_model_as_text_beside_the_one_picker(client, scripted):
-    """Bug class: a second field named `model` in the send form (the guard refuses a repeated name, so every question would be refused), a repeated id, or the right column naming another model than the header's picker."""
+def test_the_right_column_names_the_chats_model_once_as_the_picker_or_as_text(client, scripted):
+    """Bug class: a second field named `model` in the send form (the guard refuses a repeated name, so every question would be refused), a repeated id, the model shown twice (as text beside the picker), or the picker choosing another model than the chat's."""
     scripted.answers["hello"] = {**HELLO, "models": ["opus", "sonnet", "haiku"], "model_default": None}
     scripted.chats[0]["model"] = "sonnet"
     page = client.get(f"/chat/{CHAT_ID}").text
     aside = re.search(r'<aside class="rightp" id="chat-panel"[^>]*>(.*?)</aside>', page, re.DOTALL).group(1)
-    assert "<dt>Model</dt><dd>sonnet</dd>" in aside and "<select" not in aside and 'name="model"' not in aside
+    lines = re.search(r'<dl class="kv chat-model">(.*?)</dl>', aside, re.DOTALL).group(1)
+    assert lines.count("<dt") == 2 and '<dt><label for="chat-model">Model</label></dt><dd class="model-pick">' in lines and "<dd>sonnet</dd>" not in aside
     assert page.count('id="chat-model"') == 1 and page.count('form="chat-send"') == 1
-    assert re.search(r'<option value="sonnet" selected>sonnet</option>', page)
+    assert re.search(r'<option value="sonnet" selected>sonnet</option>', aside)
     scripted.chats[0]["model"] = None
-    assert "<dt>Model</dt><dd>the backend's default</dd>" in client.get(f"/chat/{CHAT_ID}").text
+    assert '<option value="" selected>backend default</option>' in client.get(f"/chat/{CHAT_ID}").text
     scripted.answers["hello"] = {**HELLO, "backend": "openai-compatible", "models": ["vendor/m-1"], "model_default": "vendor/m-1"}
     page = client.get(f"/chat/{CHAT_ID}").text
     assert "<dt>Backend</dt><dd>OpenAI-compatible</dd>" in page and "<dt>Model</dt><dd>vendor/m-1</dd>" in page and 'id="chat-model"' not in page
+
+
+# ── the layout without a conversation header (PLAN_CHAT_LAYOUT) ──
+
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
+class Elements(HTMLParser):
+    """Every start tag of a page with its attributes and the chain of elements it sits in (outermost first)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.open, self.found = [], []
+
+    def handle_starttag(self, tag, attrs):
+        here = (tag, dict(attrs))
+        self.found.append((here, list(self.open)))
+        if tag not in VOID:
+            self.open.append(here)
+
+    def handle_endtag(self, tag):
+        for index in range(len(self.open) - 1, -1, -1):
+            if self.open[index][0] == tag:
+                del self.open[index:]
+                break
+
+
+def elements(page):
+    parser = Elements()
+    parser.feed(page)
+    return parser.found
+
+
+def has_class(element, name):
+    return name in element[1].get("class", "").split()
+
+
+def inside(chain, tag, name):
+    return any(element[0] == tag and has_class(element, name) for element in chain)
+
+
+def test_no_page_of_the_chat_window_has_a_conversation_header(client, scripted):
+    """Bug class: the header the maintainer had removed (title, picker, Export, file count above the conversation) drawn again on either page."""
+    scripted.answers["hello"] = {**HELLO, "models": ["opus", "sonnet", "haiku"], "model_default": None}
+    for path in ("/chat", f"/chat/{CHAT_ID}"):
+        page = client.get(path).text
+        assert 'class="chead"' not in page and "chat-name" not in page
+
+
+def test_the_title_opens_this_chat_escaped(client, scripted):
+    """Bug class: the chat's title lost with the header, drawn below other lines of the column, or a hostile title becoming markup."""
+    scripted.answers["hello"] = HELLO
+    scripted.chats[0]["title"] = "a <i>b</i> & \"c\""
+    page = client.get(f"/chat/{CHAT_ID}").text
+    aside = re.search(r'<aside class="rightp" id="chat-panel"[^>]*>(.*?)</aside>', page, re.DOTALL).group(1)
+    body = aside.split("</div>", 1)[1]
+    first = re.search(r"<(\w+)[^>]*>", re.sub(r'^\s*<div class="col">', "", body))
+    assert 'id="chat-title"' in first.group(0)
+    title = re.search(r'<[^>]*id="chat-title"[^>]*>(.*?)</', body, re.DOTALL).group(1)
+    assert text_of(title) == "a <i>b</i> & \"c\"" and "<i>b" not in page
+    assert body.index('id="chat-title"') < body.index("<dt>Backend</dt>")
+    scripted.chats[0]["title"] = ""
+    aside = re.search(r'<aside class="rightp" id="chat-panel"[^>]*>(.*?)</aside>', client.get(f"/chat/{CHAT_ID}").text, re.DOTALL).group(1)
+    assert "(no question yet)" in text_of(re.search(r'<[^>]*id="chat-title"[^>]*>(.*?)</', aside, re.DOTALL).group(1))
+
+
+def test_the_picker_is_in_this_chat_and_the_one_model_field_of_the_send_form(client, scripted):
+    """Bug class: the picker left outside the right column, a second field that posts `model` with the question (the guard refuses a repeated name), or the picker cut from the send form."""
+    scripted.answers["hello"] = {**HELLO, "models": ["opus", "sonnet", "haiku"], "model_default": None}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    found = elements(page)
+    picker = [chain for element, chain in found if element[1].get("id") == "chat-model"]
+    assert len(picker) == 1 and inside(picker[0], "aside", "rightp")
+    sent = [element for element, chain in found if element[1].get("name") == "model" and (element[1].get("form") == "chat-send" or any(outer[0] == "form" and outer[1].get("id") == "chat-send" for outer in chain))]
+    assert len(sent) == 1 and sent[0][0] == "select"
+
+
+def test_the_answer_box_follows_the_conversation_in_its_scroller(client, scripted):
+    """Bug class: the answer box pinned under the conversation again (outside the scroller), placed before the events, or the stop button moved into the send form."""
+    scripted.events = [an_event("user", n=0, text="q"), end(1)]
+    for path in (f"/chat/{CHAT_ID}", "/chat"):
+        found = elements(client.get(path).text)
+        order = [(element, chain) for element, chain in found if has_class(element, "chat") or has_class(element, "composer") or element[1].get("id") in ("chat-send", "chat-controls")]
+        assert [element[1].get("id") or element[1]["class"] for element, chain in order][:2] == ["chat", "composer"]
+        for element, chain in order:
+            assert inside(chain, "div", "convo") and inside(chain, "section", "mid"), element
+        if path != "/chat":
+            assert [element[1].get("id") for element, chain in order][2:] == ["chat-send", "chat-controls"]
+            controls = order[3][1]
+            assert not any(outer[0] == "form" for outer in controls)
+
+
+def test_the_end_of_a_turn_names_no_cost_while_the_totals_do(client, scripted):
+    """Bug class: the per-turn cost the maintainer had removed shown again after each answer, or the cost lost from the totals with it."""
+    scripted.events = [an_event("user", n=0, text="q"), end(1, cost_usd=0.25, duration_ms=8400, turns=3)]
+    text = text_of(main_html(client.get(f"/chat/{CHAT_ID}").text))
+    assert "The turn ended after 8.4 s, 3 model turns." in text and "USD" not in text
+    assert "Cost 0.2500 USD" in text_of(totals(client).text)

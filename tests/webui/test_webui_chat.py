@@ -349,10 +349,10 @@ def test_an_event_with_a_lone_surrogate_is_one_line(client, scripted):
 
 
 def test_numbers_of_an_end_are_shown_only_when_they_are_numbers_within_bounds(client, scripted):
-    """Bug class: a cost the back end did not report, or one no back end reports (1e300), shown as reported; a count made into text that overflows."""
+    """Bug class: a duration or a count the back end did not report shown, a count made into text that overflows, or a cost shown after a turn (the turn totals of the right column hold it)."""
     scripted.events = [an_event("end", is_error=False, cost_usd=0.25, duration_ms=1500, turns=2), an_event("end", n=1, is_error=True, cost_usd=1e300, duration_ms=None, turns=None)]
     text = main_text(client.get(f"/chat/{CHAT_ID}").text)
-    assert "The turn ended after 1.5 s, 2 model turns; cost 0.2500 USD as reported by the back end." in text
+    assert "The turn ended after 1.5 s, 2 model turns." in text and "USD" not in text
     assert "The turn ended with an error." in text and "1e+300" not in text
 
 
@@ -715,7 +715,7 @@ def test_a_real_turn_through_the_page(make_app, make_client, real_runner):
     text = main_text(page)
     assert page.count('class="msg user"') == 1 and "What is there?" in text and '<span class="nm">Bash</span>' in page and "made-up listing" in text
     assert "<strong>Done</strong>: see <code>notes.txt</code>" in page and f'href="/chat/{chat_id}/file/notes.txt"' in page
-    assert "cost 0.5000 USD as reported by the back end" in text and chat.NOT_UNDERSTOOD_EVENT not in text and NOT_UNDERSTOOD not in text
+    assert "The turn ended after 1.2 s, 2 model turns." in text and chat.NOT_UNDERSTOOD_EVENT not in text and NOT_UNDERSTOOD not in text
     assert nexts(page) == [(f"/chat/{chat_id}/events?offset=6&from=0", "load")]
     assert nexts(made.get(f"/chat/{chat_id}/events?offset=6", headers=HX).text) == []
     assert made.get(f"/chat/{chat_id}/file/notes.txt").content == b"made-up notes\n" * 50000

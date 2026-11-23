@@ -5,8 +5,9 @@ It is not collected by pytest (no test can run the page's script). In headless C
 
 - the settings box: the gear opens it (`aria-expanded`, the focus inside), Escape closes it and gives the focus back to the gear, a click outside closes it; the theme is dark by default, light once chosen and after a reload, and follows the browser's scheme when "Follow the browser" is chosen; the default model is kept in `sdp.defaultModel`;
 - every page (the Overview, a source page, Queue, Chat, a chat, a confirm page and the login) in both themes: no Content-Security-Policy violation, no console error, no failed request of the page's own origin; a screenshot of each when a folder is given;
+- the conversation's scroller: only `.convo` scrolls, it opens at its bottom with the answer box (which follows the conversation) in view, and a view scrolled up stays where it is;
 - the answer box: a box of blanks and Enter sends nothing, Shift+Enter makes a new line, an Enter while an input method composes (`isComposing`, and `keyCode` 229) does nothing, Enter sends the question, and the turn totals of the right column are asked again once the turn has ended;
-- the right column: Hide gives the conversation its width (two grid columns), the state survives a reload, the handle shows it again; the sandbox's facts stay open after a reload once opened.
+- the right column: the model picker is in it; Hide gives the conversation its width (two grid columns), the handle covers no part of the conversation or the answer box, the state survives a reload, the handle shows it again; the sandbox's facts stay open after a reload once opened.
 
 Standard library and Playwright only.
 """
@@ -31,6 +32,17 @@ COMPOSING = """(mode) => {
   return event.defaultPrevented;
 }"""
 COLUMNS = "() => getComputedStyle(document.querySelector('.cw')).gridTemplateColumns.split(' ').length"
+AT_BOTTOM = "() => { const box = document.querySelector('.cw .convo'); return box.scrollHeight - box.scrollTop - box.clientHeight <= 40; }"
+BOX_SEEN = "() => { const box = document.querySelector('.cw .convo').getBoundingClientRect(); const answer = document.querySelector('.cw .convo .composer').getBoundingClientRect(); return answer.top >= box.top && answer.bottom <= box.bottom + 1; }"
+MID_STILL = "() => { const mid = document.querySelector('.cw .mid'); return mid.scrollHeight <= mid.clientHeight + 1; }"
+UNDER_HANDLE = """() => {
+  const handle = document.querySelector('.panel-handle').getBoundingClientRect();
+  const parts = document.querySelectorAll('.cw .chat > *, .cw .convo .composer > *, .cw .composer-line');
+  return Array.prototype.filter.call(parts, function (part) {
+    const box = part.getBoundingClientRect();
+    return box.width > 0 && box.left < handle.right && box.right > handle.left && box.top < handle.bottom && box.bottom > handle.top;
+  }).length;
+}"""
 
 
 def main():
@@ -139,6 +151,8 @@ def main():
         page.wait_for_load_state("networkidle")
         page.evaluate("window.__sdpMark = 'not reloaded'")
         before = page.locator(".cw .chat .msg.user").count()
+        expect(page.evaluate(MID_STILL), "only the conversation's scroller scrolls, not its column")
+        expect(page.evaluate(AT_BOTTOM) and page.evaluate(BOX_SEEN), "the conversation opens at its bottom with the answer box in view")
         box_text = page.locator(".cw form.send textarea")
         expect("Enter to send, Shift+Enter for a new line" in (box_text.get_attribute("placeholder") or ""), "the box says what Enter and Shift+Enter do")
         box_text.fill("   \n  ")
@@ -154,6 +168,7 @@ def main():
         expect(page.evaluate("window.__sdpMark") == "not reloaded", "nothing was sent while composing")
         totals_before = page.inner_text("#chat-totals")
         picker = page.locator("#chat-model")
+        expect(picker.count() == page.locator("aside.rightp #chat-model").count(), "the model picker is in This chat")
         if picker.count():
             picker.select_option("haiku")
         with page.expect_navigation(), page.expect_request(lambda request: request.method == "POST" and request.url.endswith("/send")) as sent:
@@ -161,11 +176,13 @@ def main():
         fields = urllib.parse.parse_qs(sent.value.post_data or "", keep_blank_values=True)
         expect(fields.get("text") == ["first line\nsecond line"] or fields.get("text") == ["first line\r\nsecond line"], "the question was sent whole")
         if picker.count():
-            expect(fields.get("model") == ["haiku"], f"the header's picker posts the model once ({fields.get('model')})")
+            expect(fields.get("model") == ["haiku"], f"the picker of This chat posts the model once ({fields.get('model')})")
         page.wait_for_load_state("networkidle")
         expect(page.evaluate("window.__sdpMark") is None and page.locator(".cw .chat .msg.user").count() == before + 1, "Enter sent the question (the page was posted and shows it)")
         ends = page.locator(".cw .chat .chat-end").count()
+        page.evaluate("document.querySelector('.cw .convo').scrollTop = 0")
         expect(wait_until("(ends) => document.querySelectorAll('.cw .chat .chat-end').length > ends", ends, 180), "the turn ended without a reload")
+        expect(page.evaluate("document.querySelector('.cw .convo').scrollTop") == 0, "new events did not move a view scrolled up")
         changed = wait_until("(old) => { const part = document.getElementById('chat-totals'); return part !== null && part.innerText !== old && !part.innerText.includes('Adding up'); }", totals_before)
         expect(changed, f"the turn totals were asked again once the turn ended ({totals_before!r} -> {page.inner_text('#chat-totals')!r})")
         violations()
@@ -195,6 +212,9 @@ def main():
         expect(page.evaluate(COLUMNS) == 3 and page.locator("aside.rightp").is_visible(), "three columns with This chat open")
         page.click("[data-chat-panel='close']")
         expect(page.evaluate(COLUMNS) == 2 and page.locator("aside.rightp").is_hidden() and page.locator(".panel-handle").is_visible(), "Hide gives the conversation the width; the handle is shown")
+        for where in ("0", "document.querySelector('.cw .convo').scrollHeight"):
+            page.evaluate(f"document.querySelector('.cw .convo').scrollTop = {where}")
+            expect(page.evaluate(UNDER_HANDLE) == 0, f"the handle covers no part of the conversation (scrolled to {where})")
         page.reload()
         page.wait_for_load_state("networkidle")
         expect(page.evaluate(COLUMNS) == 2 and page.get_attribute(".panel-handle", "aria-expanded") == "false", "the column stays hidden after a reload")

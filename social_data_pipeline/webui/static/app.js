@@ -8,49 +8,49 @@ document.addEventListener("htmx:configRequest", function (event) {
   }
 });
 
-// The Chat window's conversation (.cw .chat) opens scrolled to its newest event, and follows new events (an htmx swap inside it, an image that loads) only while the view is at the bottom (within 40 px), so that scrolling up to read is not interrupted. Nothing is focused.
+// The Chat window's scroller (.cw .convo: the conversation and, after it, the answer box) opens scrolled to its bottom, so the newest event and the answer box are in view, and follows new events (an htmx swap inside it, an image that loads) only while the view is at the bottom (within 40 px), so that scrolling up to read is not interrupted. Nothing is focused.
 (function () {
   var NEAR = 40;
   var follow = true;
 
-  function conversation() {
-    return document.querySelector(".cw .chat");
+  function scrollerOf() {
+    return document.querySelector(".cw .convo");
   }
 
-  function atBottom(chat) {
-    return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= NEAR;
+  function atBottom(scroller) {
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= NEAR;
   }
 
   function keepAtBottom() {
-    var chat = conversation();
-    if (chat && follow) {
-      chat.scrollTop = chat.scrollHeight;
+    var scroller = scrollerOf();
+    if (scroller && follow) {
+      scroller.scrollTop = scroller.scrollHeight;
     }
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    var chat = conversation();
-    if (!chat) {
+    var scroller = scrollerOf();
+    if (!scroller) {
       return;
     }
-    chat.scrollTop = chat.scrollHeight;
-    chat.addEventListener("scroll", function () {
-      follow = atBottom(chat);
+    scroller.scrollTop = scroller.scrollHeight;
+    scroller.addEventListener("scroll", function () {
+      follow = atBottom(scroller);
     }, { passive: true });
   });
 
   document.addEventListener("htmx:beforeSwap", function (event) {
-    var chat = conversation();
-    if (chat && event.detail.target && chat.contains(event.detail.target)) {
-      follow = atBottom(chat);
+    var scroller = scrollerOf();
+    if (scroller && event.detail.target && scroller.contains(event.detail.target)) {
+      follow = atBottom(scroller);
     }
   });
   document.addEventListener("htmx:afterSwap", keepAtBottom);
   document.addEventListener("htmx:afterSettle", keepAtBottom);
   // An image of the conversation that loads after the page or a swap makes it taller: follow it while at the bottom (load does not bubble, so it is caught on its way down).
   document.addEventListener("load", function (event) {
-    var chat = conversation();
-    if (chat && event.target && event.target.tagName === "IMG" && chat.contains(event.target)) {
+    var scroller = scrollerOf();
+    if (scroller && event.target && event.target.tagName === "IMG" && scroller.contains(event.target)) {
       keepAtBottom();
     }
   }, true);
@@ -281,7 +281,7 @@ var sdpStore = {
   });
 })();
 
-// The Chat window's right column ("This chat", chat.html): its button and the handle beside the conversation hide and show it (the grid then has two columns; the state is kept as sdp.chatPanel and drawn by theme.js before the page shows); the sandbox's facts (details.sandbox) stay open or closed as last left (sdp.sandboxOpen), and so does the left column's data in reach (details.reach-box, sdp.reachOpen), which is open unless this browser closed it last. Once a new end of a turn has come into the conversation, the turn totals are asked again (the event sdp-turn-ended on the body, which their part listens for).
+// The Chat window's right column ("This chat", chat.html): its button and the handle over the conversation's top right corner hide and show it (the grid then has two columns; the state is kept as sdp.chatPanel and drawn by theme.js before the page shows); the sandbox's facts (details.sandbox) stay open or closed as last left (sdp.sandboxOpen), and so does the left column's data in reach (details.reach-box, sdp.reachOpen), which is open unless this browser closed it last. Once a new end of a turn has come into the conversation, the turn totals are asked again (the event sdp-turn-ended on the body, which their part listens for).
 (function () {
   function panelButtons() {
     return document.querySelectorAll("[data-chat-panel]");

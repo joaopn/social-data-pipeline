@@ -1,17 +1,9 @@
-{#- The chat's model picker, drawn in the conversation's header: the models of `hello` (the runner's allow-list) and "backend default", the open chat's model (`chat_model`, from `chat.list`) chosen. The select belongs to the send form (`form="chat-send"`), so the next question is sent with it and its turn runs on it. A back end with one model and no default of its own (OpenAI-compatible) shows that model, not choosable; a runner that names no model shows nothing. Every name is escaped. -#}
-{%- if hello and hello.models %}
-<span class="model-pick">
-  {%- if hello.choosable %}
-  <label class="small muted" for="chat-model">Model</label>
-  <select id="chat-model" name="model" form="chat-send" aria-label="The model of this chat's next turns">
-    <option value=""{% if chat_model not in hello.models %} selected{% endif %}>backend default</option>
-    {%- for name in hello.models %}
-    <option value="{{ name }}"{% if name == chat_model %} selected{% endif %}>{{ name }}</option>
-    {%- endfor %}
-  </select>
-  {%- else %}
-  <span class="small muted">Model</span><span class="tag">{{ hello.models[0] }}</span>
-  {%- endif %}
-  <span class="tag" title="The chat's back end">{{ hello.backend_name or hello.backend }}</span>
-</span>
+{#- The chat's model picker, in the right column ("This chat") as the Model row of `_chat_model_line.html`, drawn only when the back end offers a choice: the models of `hello` (the runner's allow-list) and "backend default", the open chat's model (`chat_model`, from `chat.list`) chosen. The select is the one field of the page that posts `model` with a question: it belongs to the send form by its `form="chat-send"` attribute (from outside that form), so the next question is sent with it and its turn runs on it. Every name is escaped. -#}
+{%- if hello and hello.choosable and hello.models %}
+<select id="chat-model" name="model" form="chat-send" aria-label="The model of this chat's next turns">
+  <option value=""{% if chat_model not in hello.models %} selected{% endif %}>backend default</option>
+  {%- for name in hello.models %}
+  <option value="{{ name }}"{% if name == chat_model %} selected{% endif %}>{{ name }}</option>
+  {%- endfor %}
+</select>
 {%- endif %}

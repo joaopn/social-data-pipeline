@@ -1,7 +1,11 @@
-{#- The chat's backend and model in the right column ("This chat"), as text only: the one field that posts a model is the header's picker (`_chat_model.html`), since a form takes no repeated name and an id is unique. The model is the chat's own (`chat_model`, from `chat.list`) when it has one of the runner's models, the one configured model of a back end without a choice, else the back end's default. Every name is escaped. -#}
+{#- The chat's backend and model in the right column ("This chat"): the backend as text; the model as the picker (`_chat_model.html`, the one field that posts a model, since a form takes no repeated name and an id is unique) when the back end offers a choice, else as text: the one configured model of a back end without a choice (OpenAI-compatible). A runner that names no model shows no Model row. Every name is escaped. -#}
 <dl class="kv chat-model">
   <dt>Backend</dt><dd>{% if hello %}{{ hello.backend_name }}{% else %}not known: the sandbox did not answer{% endif %}</dd>
   {%- if hello and hello.models %}
-  <dt>Model</dt><dd>{% if not hello.choosable %}{{ hello.models[0] }}{% elif chat_model in hello.models %}{{ chat_model }}{% else %}the backend's default{% endif %}</dd>
+  {%- if hello.choosable %}
+  <dt><label for="chat-model">Model</label></dt><dd class="model-pick">{% include "_chat_model.html" %}</dd>
+  {%- else %}
+  <dt>Model</dt><dd>{{ hello.models[0] }}</dd>
+  {%- endif %}
   {%- endif %}
 </dl>

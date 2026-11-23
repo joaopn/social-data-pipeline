@@ -599,20 +599,12 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
     except db_answers.SetupRefused as refused:
         raise ActionError(refused.message) from None
 
-    # The ports the answers come to (defaults included) against each other and against the deployment's other services.
-    webui_port = None
-    try:
-        from social_data_pipeline import webui_host
-        saved = webui_host.read_config(str(ROOT))
-        webui_port = saved[0].port if saved else None
-    except Exception:
-        webui_port = None
-    leave_out = {key for name in chosen for key in dbsetup.DATABASE_PORT_KEYS[name]}
-    used = dbsetup.ports_in_use(env, webui_port, leave_out)
+    # The ports the answers come to (defaults included) against each other and against the deployment's other services; a database being set up does not count its own old ports.
+    used = _ports_in_use(leave_out=set(chosen))
     ports = {field: settings[field] for field in dbsetup.PORT_FIELDS if field in settings}
     for field, port in ports.items():
         if port in used:
-            raise ActionError(f"db setup: {field} {port} is used by {used[port]} already.")
+            raise ActionError(f"db setup: {field} {port} is used by {_SERVICE_TITLES[used[port]]} already.")
         if list(ports.values()).count(port) > 1:
             raise ActionError(f"db setup: {field} {port} is given to two services of this setup.")
 
@@ -689,7 +681,7 @@ _SERVICE_TITLES = {
 
 
 def _sdp_service_ports():
-    """{service: set of host ports} of the services this deployment has set up, read as `db start` and the compose file read them: each database with a config/db/<db>.yaml, each MCP server enabled in config/db/mcp.yaml and the scheduler when it is configured, with their ports from .env or the compose file's defaults; and the web UI (`webui`) when it is set up, with the port of its settings. A value that is no whole number is left out: it cannot be the same port as a whole number."""
+    """{service: set of host ports} of the deployment's services, the one reading of the ports in use for every setup from the browser: each service this deployment has set up, read as `db start` and the compose file read them (each database with a config/db/<db>.yaml, each MCP server enabled in config/db/mcp.yaml and the scheduler when it is configured), with their ports from .env or the compose file's defaults (StarRocks's backend 8040 included); every other service whose port key is set in .env, with the port it names there (a service not set up, or set up in part, still claims it); and the web UI (`webui`) when it is set up, with the port of its settings. A value that is no whole number is left out: it cannot be the same port as a whole number."""
     env = load_env()
     configured = set(_get_configured_db_services())
     configured |= {profile.replace("_", "-") for profile in _get_configured_mcp_services()}
@@ -697,14 +689,16 @@ def _sdp_service_ports():
         configured.add("jobs")
     ports = {}
     for service, keys in _SERVICE_PORT_KEYS:
-        if service not in configured:
-            continue
         found = set()
         for key, default in keys:
-            text = (env.get(key) or default) if key else default
-            if text.isdigit() and len(text) <= 5:
+            if service in configured:
+                text = (env.get(key) or default) if key else default
+            else:
+                text = (env.get(key) or "") if key else ""
+            if isinstance(text, str) and text.isdigit() and len(text) <= 5:
                 found.add(int(text))
-        ports[service] = found
+        if service in configured or found:
+            ports[service] = found
     try:
         saved = _webui_host().read_config(str(ROOT))
     except Exception:
@@ -714,13 +708,20 @@ def _sdp_service_ports():
     return ports
 
 
+def _ports_in_use(leave_out=()):
+    """{port: service} of every port in use (`_sdp_service_ports`), the services in `leave_out` (those being set up, which keep or change their own ports) not counted; a port two services name is given to the first of them."""
+    taken = {}
+    for service, found in _sdp_service_ports().items():
+        if service in leave_out:
+            continue
+        for port in sorted(found):
+            taken.setdefault(port, service)
+    return taken
+
+
 def _refuse_ports_in_use(chosen):
     """Refuse a port chosen for a service (`chosen`: {service: [ports]}, the services being set up, a service switched off with none) that another service of the deployment uses, or that two of the chosen ones share. The services being set up are compared by their new ports only, so a service keeps its own current port. Raises ActionError naming both services."""
-    others = {service: found for service, found in _sdp_service_ports().items() if service not in chosen}
-    taken = {}
-    for service, found in others.items():
-        for port in found:
-            taken.setdefault(port, service)
+    taken = _ports_in_use(leave_out=set(chosen))
     for service, found in chosen.items():
         for port in found:
             if port in taken:

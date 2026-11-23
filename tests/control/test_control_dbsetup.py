@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from social_data_pipeline.control import dbsetup, errors, verbs
+from social_data_pipeline.control import errors, verbs
 from social_data_pipeline.webui import setup_db_table
 
 PW = "made-up-pw-31b7"
@@ -102,10 +102,3 @@ def test_values_out_of_the_terminals_range_are_refused_by_their_type(field, valu
     with pytest.raises(errors.InputError) as refused:
         verbs.validate_request("db.setup", {"databases": ["postgres"], field: value})
     assert refused.value.field == field
-
-
-def test_the_ports_in_use_are_read_from_env_and_the_web_ui():
-    """Bug class: a port of another SDP service missed by the action's check (an MCP server, the scheduler, the web UI), or a database's own old port counted against itself when it is the one set up."""
-    env = {"POSTGRES_PORT": "5432", "MONGO_MCP_PORT": "3000", "JOBS_PORT": "8050", "STARROCKS_PORT": "x", "UNRELATED_PORT": "1"}
-    used = dbsetup.ports_in_use(env, 8443, leave_out={"POSTGRES_PORT"})
-    assert used == {3000: "the MongoDB MCP server", 8050: "the query scheduler", 8443: "the web UI"}

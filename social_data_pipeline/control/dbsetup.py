@@ -1,6 +1,6 @@
 """The answers of `sdp db setup` given all at once (the verb `db.setup`): which inputs belong together, and what a value may hold so that the files it is written to stay readable.
 
-`check(fields)` takes the validated fields of a request (a secret as anything with `reveal()`) and raises `Refused` naming the field at fault, with a reason that holds no value. The registry runs it as the verb's cross-field check (`verbs._check_db_setup`), and the CLI's action `do_db_setup` runs it again before it reads or writes anything. `ports_in_use(env, webui_port)` is what the action asks about the ports the deployment's other services use.
+`check(fields)` takes the validated fields of a request (a secret as anything with `reveal()`) and raises `Refused` naming the field at fault, with a reason that holds no value. The registry runs it as the verb's cross-field check (`verbs._check_db_setup`), and the CLI's action `do_db_setup` runs it again before it reads or writes anything.
 
 Two modes, as the terminal has them: without `add` the first-time questionnaire (`db setup`: a data base path, an export path, one or more databases), with `add` one database added to an existing setup (`db setup --add <db>`: no base path, no export path, the setup's authentication when it is on). Standard library only.
 """
@@ -28,21 +28,6 @@ RESERVED_TABLESPACE = "pgdata"
 PATH_FORBIDDEN = frozenset("$:#\"'\\`")
 # Characters a typed read-only password may not hold: the entrypoints put it between single quotes in SQL (`PASSWORD '<password>'`), and `.ro_credentials` is read back stripped of white space.
 RO_PASSWORD_FORBIDDEN = frozenset("'\"\\`")
-
-# The services whose ports are in .env, by key, with what the refusal calls them.
-PORT_KEYS = {
-    "POSTGRES_PORT": "PostgreSQL",
-    "MONGO_PORT": "MongoDB",
-    "STARROCKS_PORT": "StarRocks (MySQL protocol)",
-    "STARROCKS_FE_HTTP_PORT": "StarRocks (FE HTTP)",
-    "POSTGRES_MCP_PORT": "the PostgreSQL MCP server",
-    "MONGO_MCP_PORT": "the MongoDB MCP server",
-    "STARROCKS_MCP_PORT": "the StarRocks MCP server",
-    "JOBS_PORT": "the query scheduler",
-}
-# The .env keys of each database's own ports: left out when that database is the one being set up.
-DATABASE_PORT_KEYS = {"postgres": ("POSTGRES_PORT",), "mongo": ("MONGO_PORT",), "starrocks": ("STARROCKS_PORT", "STARROCKS_FE_HTTP_PORT")}
-
 
 class Refused(ValueError):
     """An answer refused: `field` names the input at fault; the message holds no value."""
@@ -142,17 +127,3 @@ def check(fields):
         reason = ro_password_reason(_plain(fields["ro_password"]))
         _need(reason is None, "ro_password", reason)
         _need(_plain(fields["ro_password"]) == _plain(fields["ro_password_confirm"]), "ro_password_confirm", "does not match the read-only password")
-
-
-def ports_in_use(env, webui_port=None, leave_out=()):
-    """{port: what uses it} from the deployment's .env (as `load_env` reads it: the database, MCP and scheduler ports) and the web UI's port; the .env keys in `leave_out` are not counted. A value that is not a whole number is skipped."""
-    used = {}
-    for key, owner in PORT_KEYS.items():
-        if key in leave_out:
-            continue
-        text = env.get(key, "")
-        if isinstance(text, str) and text.isdigit():
-            used.setdefault(int(text), owner)
-    if isinstance(webui_port, int) and not isinstance(webui_port, bool):
-        used.setdefault(webui_port, "the web UI")
-    return used

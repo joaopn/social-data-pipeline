@@ -227,6 +227,18 @@ def test_a_port_another_service_uses_is_refused_before_anything_is_written(tmp_p
     assert "two services" in _refused(monkeypatch, tmp_path, {"databases": ["postgres", "mongo"], "pg_port": 27017})
 
 
+def test_the_ports_in_use_are_read_from_env_and_the_web_ui(monkeypatch):
+    """Bug class: a port of another SDP service missed by the setups' one reading of the ports in use (an MCP server or the scheduler named in .env only, the web UI, a configured database's compose default, StarRocks's backend 8040), a value that is no port counted, or a database's own old port counted against itself when it is the one set up."""
+    monkeypatch.setattr(sdp, "load_env", lambda: {"POSTGRES_PORT": "5432", "MONGO_MCP_PORT": "3000", "JOBS_PORT": "8050", "STARROCKS_PORT": "x", "UNRELATED_PORT": "1"})
+    monkeypatch.setattr(sdp, "_get_configured_db_services", lambda: ["postgres", "starrocks"])
+    monkeypatch.setattr(sdp, "_get_configured_mcp_services", lambda: [])
+    monkeypatch.setattr(sdp, "_is_jobs_configured", lambda: False)
+    monkeypatch.setattr(sdp, "_webui_host", lambda: type("W", (), {"read_config": staticmethod(lambda root: (type("C", (), {"port": 8443})(), {}))}))
+
+    assert sdp._ports_in_use(leave_out={"postgres"}) == {3000: "mongo-mcp", 8050: "jobs", 8443: "webui", 8030: "starrocks", 8040: "starrocks"}
+    assert sdp._ports_in_use()[5432] == "postgres"
+
+
 def test_only_a_database_not_set_up_yet_is_set_up(tmp_path, monkeypatch):
     """Bug class: the first-time path run over an existing setup (it rewrites .env and the override whole), or an add over a database that is set up (a reconfigure, which stays in the terminal for now)."""
     _project(tmp_path, ADD_ENV)

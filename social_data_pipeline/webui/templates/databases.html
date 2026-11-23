@@ -20,6 +20,7 @@
     <a class="chipbtn{{ ' on' if key == tab else '' }}" href="/databases?tab={{ key }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}</a>
     {%- endfor %}
   </nav>
+  <span class="right row"><a class="btn primary" href="/databases/setup?new=1">Set up a database…</a></span>
   {%- endif %}
 </div>
 
@@ -27,7 +28,7 @@
   {%- if not db_status.ok %}
   {%- with block = db_status %}{% include "_failure.html" %}{% endwith %}
   {%- elif not db_status.configured %}
-  <p class="muted">No database is configured. Set them up in a terminal with <code>python sdp.py db setup</code>.</p>
+  <p class="muted">No database is configured. <a href="/databases/setup?new=1">Set one up</a>, here or in a terminal with <code>python sdp.py db setup</code>.</p>
   {%- endif %}
   <div class="cards dbcards">
   {%- for section in sections %}
@@ -45,6 +46,9 @@
     </dl>
     {%- if row.db %}
     <div class="row mt wrap">
+      {%- if not row.running %}
+      <a class="btn sm primary" href="/databases/setup/start?db={{ row.db }}" title="Start {{ row.db }}, giving its admin password">Start it now</a>
+      {%- endif %}
       {{ forms.button("db.start", "Start", {"service": row.db}, "", "Start " ~ row.db) }}
       {{ forms.button("db.stop", "Stop", {"service": row.db}, "", "Stop " ~ row.db) }}
       {{ forms.button("db.reset", "Reset…", {"db": row.db}, "danger", "Reset " ~ row.db) }}
@@ -57,7 +61,8 @@
   {%- for name in databases %}{% if name not in db_status.configured %}
   <section class="card unset" aria-label="{{ name }}">
     <div class="row"><h2>{{ {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}[name] }}</h2>{% if name == "postgres" %}<span class="tag">legacy</span>{% endif %}<span class="pill right"><span class="dot"></span>not set up</span></div>
-    <p class="muted small mt">Not configured on this deployment. Set it up in a terminal with <code>python sdp.py db setup</code>.</p>
+    <p class="muted small mt">Not configured on this deployment.{% if name == "postgres" %} New analytics work targets StarRocks.{% endif %}</p>
+    <div class="row mt"><a class="btn sm" href="/databases/setup?new=1&amp;db={{ name }}">Set up…</a></div>
   </section>
   {%- endif %}{% endfor %}
   {%- endif %}

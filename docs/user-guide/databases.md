@@ -461,7 +461,7 @@ Which classifiers are ingested, and each one's `suffix` and `data_types` scope, 
 
 ## Authentication
 
-Database authentication is optional and can be enabled during `python sdp.py db setup`. When it is enabled, it adds password-based access control to PostgreSQL, MongoDB and StarRocks. When you add a database with `python sdp.py db setup --add`, auth is extended to it automatically if it is already enabled on the existing databases.
+Database authentication is optional and can be enabled during `python sdp.py db setup` (or from the web UI's Databases page, which asks the same questions for a database not set up yet: see [Setting up a database](webui.md#setting-up-a-database)). When it is enabled, it adds password-based access control to PostgreSQL, MongoDB and StarRocks. When you add a database with `python sdp.py db setup --add`, auth is extended to it automatically if it is already enabled on the existing databases.
 
 ### Users
 

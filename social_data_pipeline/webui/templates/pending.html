@@ -38,6 +38,14 @@
   {%- if step.also %}<p class="notice">{{ step.also }}</p>{% endif %}
   {%- endfor %}
   {%- endif %}
+  {%- if pending.writes %}
+  <h4>What this will do</h4>
+  <ul class="writes">
+    {%- for line in pending.writes %}
+    <li>{{ line }}</li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
   {%- if pending.destroys %}
   <p class="notice notice-bad"><strong>{{ pending.destroys[1] }}</strong>: {{ pending.destroys[0] }}</p>
   {%- endif %}

@@ -1,0 +1,17 @@
+{#- "Start it now" after a database was set up: the `db.start` form with the service preset (none: every configured service) and its database admin password field, in the dialog look. -#}
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+{% block shell %}
+<main class="main">
+<section class="card dialog" aria-labelledby="start-title">
+  <h4>After the setup</h4>
+  <h2 id="start-title">Start {{ database_name or "the databases" }} now</h2>
+  <p class="muted small">The database's first start creates its data in the folders that were set up. With authentication on, the admin password you give here becomes the admin password (for PostgreSQL it is set again at every start).</p>
+  {%- call forms.action("db.start", "Start it now", {"service": service} if service else {}) %}
+  {{ forms.admin_password(db_password_kept) }}
+  <p class="muted small">The next page shows the command and asks for the management password.</p>
+  {%- endcall %}
+  <div class="row"><a class="btn right" href="/databases">Not now</a></div>
+</section>
+</main>
+{% endblock %}

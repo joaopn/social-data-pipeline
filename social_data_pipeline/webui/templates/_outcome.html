@@ -32,6 +32,10 @@
   {%- if outcome.verb in ("db.setup_mcp", "db.setup_jobs") and outcome.exit_code == 0 %}
   <p class="notice">Nothing was restarted. The output's last line names the running services that must restart to apply this; <a href="/">Needs attention on the Overview</a> restarts them.</p>
   {%- endif %}
+  {%- if outcome.verb == "db.setup" and outcome.exit_code == 0 %}
+  {%- set added = outcome.command.split("--add=")[1] if outcome.command and "--add=" in outcome.command else "" %}
+  <p class="row">The database is set up and not started yet. <a class="btn primary sm" href="/databases/setup/start{{ '?db=' ~ added if added else '' }}">Start it now</a></p>
+  {%- endif %}
   {%- if outcome.output %}
   <h3>Output <small>(its end)</small></h3>
   <pre class="output">{{ outcome.output }}</pre>

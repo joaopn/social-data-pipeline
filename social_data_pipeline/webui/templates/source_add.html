@@ -40,7 +40,7 @@
 <form method="post" action="{{ '/add-source/' ~ wizard_id ~ '/origin' if wizard_id else '/add-source' }}">
   {{ forms.token() }}
   {%- if wizard_id %}<input type="hidden" name="nav" value="next">{% endif %}
-  <div class="pick mt">{% for key, title, words in origins %}<button type="submit" name="platform" value="{{ key }}"{% if key == platform %} class="on"{% endif %}><b>{{ title }}</b><span>{{ words }}</span></button>{% endfor %}</div>
+  <div class="pick mt narrow">{% for key, title, words in origins %}<button type="submit" name="platform" value="{{ key }}"{% if key == platform %} class="on"{% endif %}><b>{{ title }}</b><span>{{ words }}</span></button>{% endfor %}</div>
 </form>
 <p class="muted small mt">A Hugging Face dataset is added in a terminal for now: <code>python sdp.py source add &lt;name&gt; --hf &lt;dataset&gt;</code>.</p>
 <div class="col mt add-cli">{% for words, value in cli %}<div class="cli">{{ words }} <b>{{ value }}</b></div>{% endfor %}</div>

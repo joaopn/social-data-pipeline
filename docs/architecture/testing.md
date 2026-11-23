@@ -49,7 +49,7 @@ pytest --override-ini="pythonpath=." --ignore=tests/e2e --ignore=tests/benchmark
 | `--ignore=data` | Skips the runtime database volumes, which are owned by container users while containers run and unreadable by pytest's collection. CI has no `data/`, so it leaves the flag out |
 | `-m "not slow"` | Skips the slow decompression tests (marker `slow`) |
 
-`requirements-test.txt` holds pytest and pyzstd, the project's light dependencies (pyyaml, polars, pyarrow) and FastAPI, Jinja2 and httpx for the web UI's route tests. It has no lingua, psycopg, database drivers or torch: tests of code that imports them replace those modules with stand-ins (the scheduler's tests install theirs in `tests/jobs/conftest.py`). The web UI's route tests are skipped (through `pytest.importorskip`) where FastAPI, Starlette or Jinja2 is missing; its tests of pure parts run everywhere.
+`requirements-test.txt` holds pytest and pyzstd, the project's light dependencies (pyyaml, polars, pyarrow), FastAPI, Jinja2 and httpx for the web UI's route tests, and python-multipart, which FastAPI needs to read the jobs scheduler's forms. It has no lingua, psycopg, database drivers or torch: tests of code that imports them replace those modules with stand-ins (the scheduler's tests install theirs in `tests/jobs/conftest.py`). The web UI's route tests are skipped (through `pytest.importorskip`) where FastAPI, Starlette or Jinja2 is missing; its tests of pure parts run everywhere.
 
 ## CI
 

@@ -1,4 +1,5 @@
-{#- The Overview's live figures (`GET /overview/live`, `overview.read_live`): the queue's line in the place of its placeholder in "Needs attention", then the counts of the grid's cells and a source's failed read out of band. Every text is escaped; no element here asks again. -#}
+{#- The Overview's live figures (`GET /overview/live`, `overview.read_live`): the queue's line in the place of its placeholder in "Needs attention", then the grid's cells that were read and a source's failed read out of band. Every text is escaped; no element here asks again. -#}
+{% from "_overview_cell.html" import cell with context %}
 {%- if live.broker %}
 <div class="att"><span class="dot bad"></span><p><b>Live figures:</b> {{ live.broker }}</p></div>
 {%- elif live.queue and live.queue.get("failed") %}
@@ -9,16 +10,19 @@
 <div class="att"><span class="dot ok"></span><p class="muted">Nothing needs attention.</p></div>
 {%- endif %}
 {%- if live.sources %}
-<div class="att"><span class="dot bad"></span><p><b>Finished files:</b> the sources could not be read: {{ live.sources }}</p></div>
+<div class="att"><span class="dot bad"></span><p><b>Grid:</b> the sources could not be read: {{ live.sources }}</p></div>
+{%- endif %}
+{%- if live.runs %}
+<div class="att"><span class="dot bad"></span><p><b>Grid:</b> the runs could not be read, so no cell says running and no unfinished file is called being written: {{ live.runs }}</p></div>
 {%- endif %}
 {%- for row in live.rows %}
-{%- for profile, cell in row.cells.items() %}
-<span class="cnt" id="c-{{ row.key }}-{{ profile }}" hx-swap-oob="true" title="{{ cell.title }}">{{ cell.text }}</span>
+{%- for profile, c in row.cells.items() %}
+{{ cell(c, oob=True) }}
 {%- endfor %}
 {%- if row.failed %}
-<div class="small muted" id="m-{{ row.key }}" hx-swap-oob="true">Finished files not read: {{ row.failed }}</div>
+<div class="small muted" id="m-{{ row.key }}" hx-swap-oob="true">{{ row.failed }}</div>
 {%- endif %}
 {%- endfor %}
 {%- if live.cut %}
-<p class="muted small mt" id="grid-note" hx-swap-oob="true">The counts are the finished files of each stage, shown for the first {{ live.cut[0] }} of {{ live.cut[1] }} sources only.</p>
+<p class="muted small mt" id="grid-note" hx-swap-oob="true">{% include "_grid_legend.html" %} Shown for the first {{ live.cut[0] }} of {{ live.cut[1] }} sources only.</p>
 {%- endif %}

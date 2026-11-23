@@ -2,9 +2,9 @@
 
 Each block is made on its own: a failed read, or an answer of a shape this module does not expect, becomes that block's sentence and leaves the other blocks as they are. Every text that came from the broker is passed through `cleaning.clean_log_text` (with line breaks made spaces) before it is shown, and is escaped by the template; a name becomes a link only when it is a plain name (`PLAIN_NAME`, the registry's pattern), and then its URL-encoded form is used.
 
-The page draws "Needs attention" (the notices, a failed read, Docker that cannot be asked), "Right now" (the runs alive, the state of the databases, the MCP servers and the scheduler) and the grid of sources and pipeline profiles (`grid`): one row per source, one cell per profile of `GRID_PROFILES`, each "running" when a run of that profile on that source is alive, "set up" when the source has the profile, "not set up" otherwise. Nothing else is said of a cell: no state the reads do not give is drawn.
+The page draws "Needs attention" (the notices, a failed read, Docker that cannot be asked), "Right now" (the runs alive, the state of the databases, the MCP servers and the scheduler) and the grid of sources and pipeline profiles (`grid`): one row per source, one cell per profile of `GRID_PROFILES`, each "running" when a run of that profile on that source is alive, "configured" when the source has the profile, "–" otherwise. What a configured cell has produced comes with the live figures (`live_cell`): no state the reads do not give is drawn.
 
-The live figures are asked after the page has loaded, so that a slow scheduler or a source with many files never slows the page: `read_live` runs in a worker of a bound of its own, asks the broker first whether it still knows the session (as `status` does), then the scheduler's `queue.counts` and, for at most `LIVE_SOURCES_MAX` sources and `LIVE_TOTAL_SECONDS` in all, `source.progress` per source, each call with the time limit `LIVE_SECONDS`, each failure confined to its own line or row. `source.progress` counts the finished files of the parse and lingua stages and of each classifier folder (the `ml` profile); it gives no total, so a cell shows the finished count alone, never a fraction or a bar.
+The live figures are asked after the page has loaded, so that a slow scheduler or a source with many files never slows the page: `read_live` runs in a worker of a bound of its own, asks the broker first whether it still knows the session (as `status` does), then the scheduler's `queue.counts`, `source.list`, `run.list` and, for at most `LIVE_SOURCES_MAX` sources and `LIVE_TOTAL_SECONDS` in all, `source.progress` and `source.status` per source, each call with the time limit `LIVE_SECONDS`, each failure confined to its own line or row. `source.progress` counts the finished files of the parse and lingua stages and of each classifier folder (the `ml` profile); it gives no total, so a cell shows the finished count alone, never a fraction or a bar. `source.status` gives the files each database profile loaded and failed, as the source's page shows them in its lanes (`pages.load_figure`). A stage's unfinished files (`.temp`) are "being written" only while a run that may write them is alive (`writing_of`); otherwise they were left by a run that ended.
 
 Two notices are made from `db.status`. Databases without authentication: authentication is set once for every database of a setup, and the status names the databases with an admin user; a database counts as without authentication when authentication is off, or when the status names no admin user for it. Ports open beyond this machine: `docker-compose.yml` publishes the ports of the databases, the MCP servers and the scheduler without an address, which Docker opens on every address of the machine, so the notice lists the services that run now with their ports. Standard library and this package only.
 """
@@ -35,6 +35,10 @@ LIVE_SECONDS = 5
 LIVE_SOURCES_MAX = 50
 LIVE_TOTAL_SECONDS = 20
 LIVE_TIME_OUT = "Not asked: the time for the figures ran out."
+# The profile whose run writes each kind of stage of a `source.progress` answer.
+STAGE_PROFILES = {"parse": "parse", "lingua": "lingua", "classifier": "ml"}
+# The grid's profiles whose figures are files in a folder (`source.progress`); the others are loads into a database (`source.status`).
+FILE_PROFILES = ("parse", "lingua", "ml")
 
 
 class ShapeError(Exception):
@@ -207,7 +211,7 @@ def cell_key(name):
 
 
 def grid(sources, runs):
-    """The grid's rows from the blocks of `source.list` and `run.list`: per source `name`, `href`, `key` (None for a name that is not plain: its cells are not links and get no live figures), `set_up` (how many of the grid's profiles it has) and `cells` (`profile`, `state`: `run`, `setup` or `none`, `href`, `id` of the count the live figures fill)."""
+    """The grid's rows from the blocks of `source.list` and `run.list`: per source `name`, `href`, `key` (None for a name that is not plain: its cells are not links and get no live figures), `set_up` (how many of the grid's profiles it has) and `cells` (`profile`, `state`: `run`, `setup` or `none`, `parts` and `title`: what the cell says until the live figures come, `href`, `id` of the cell the live figures replace)."""
     running = {(row["source"], row["profile"]) for row in runs["rows"]} if runs["ok"] else set()
     rows = []
     for row in sources["rows"] if sources["ok"] else []:
@@ -216,10 +220,42 @@ def grid(sources, runs):
         for profile in GRID_PROFILES:
             set_up = profile in row["profiles"]
             state = "run" if (row["name"], profile) in running else "setup" if set_up else "none"
+            parts = {"run": [("▶", "running")], "setup": [("○", "configured")], "none": [("–", "")]}[state]
+            title = f"{profile} on {row['name']}: " + {"run": "running", "setup": "configured", "none": "not configured"}[state]
             href = (row["href"] + ("#run-" + profile if set_up else "")) if row["href"] else None
-            cells.append({"profile": profile, "state": state, "href": href, "id": f"c-{key}-{profile}" if key and state != "none" else None})
+            cells.append({"profile": profile, "state": state, "parts": parts, "note": None, "title": title, "href": href, "id": f"c-{key}-{profile}" if key and state != "none" else None})
         rows.append({"name": row["name"], "href": row["href"], "key": key, "set_up": sum(profile in row["profiles"] for profile in GRID_PROFILES), "cells": cells})
     return rows
+
+
+def unfinished_words(count, writing):
+    """What the page says of a stage's `count` unfinished (`.temp`) files: "being written" only when `writing` is True (a run that may write them is alive); left by a run that ended when it is False; and that it cannot be told when None."""
+    files = "file" if count == 1 else "files"
+    if writing is True:
+        return f"{count} being written"
+    if writing is False:
+        return f"{count} unfinished {files}, left by a run that ended"
+    return f"{count} unfinished {files}: whether a run still writes them cannot be told"
+
+
+def writing_of(runs, source):
+    """A function of a profile (`parse`, `lingua`, `ml`) that says whether a run may be writing that stage's files of the source `source` now: True while a pipeline run of that profile on the source, or a task of the source, is alive; None when that cannot be told (the runs were not read; Docker cannot be asked, so runs started in a terminal are not listed; a terminal run of that profile whose source Docker does not hand over); False otherwise. `runs` is a runs block (`ok`, `docker_available`, `rows`) whose rows are the runs alive, with `kind`, `profile` and `source` as text (`-` for none)."""
+
+    def writing(profile):
+        if not runs.get("ok"):
+            return None
+        unknown = not runs.get("docker_available")
+        for row in runs["rows"]:
+            if row["kind"] == "terminal":
+                if row["profile"] == profile and row["source"] == source:
+                    return True
+                if row["profile"] == profile and row["source"] == "-":
+                    unknown = True
+            elif row["source"] == source and (row["kind"] == "task" or row["profile"] == profile):
+                return True
+        return None if unknown else False
+
+    return writing
 
 
 def _count(value):
@@ -242,8 +278,8 @@ def _stage_figure(stage):
     return finished, written, readable
 
 
-def progress_cells(result):
-    """The live figures of one source from its `source.progress` answer: {profile: {"text", "title"}} for `parse`, `lingua` and `ml` (each classifier folder's count, in name order), the finished files summed over the data types. Nothing for a profile the answer counts no folder of. Raises ShapeError."""
+def progress_cells(result, writing):
+    """The figures of one source's file stages from its `source.progress` answer: {profile: {"text", "finished", "readable", "title", "unfinished"}} for `parse`, `lingua` and `ml` (each classifier folder's count, in name order), the finished files summed over the data types: `text` the count as shown ("?" for a folder that could not be read; for `ml` one count per classifier folder), `finished` the sum, `unfinished` None or {"text", "writing"} for the stage's `.temp` files, worded by `writing(profile)` (`writing_of`). Nothing for a profile the answer counts no folder of. Raises ShapeError."""
     data = _data(result)
     sources = data.get("sources")
     _need(isinstance(sources, list) and len(sources) == 1 and isinstance(sources[0], dict))
@@ -258,14 +294,54 @@ def progress_cells(result):
         finished, written, readable = _stage_figure(stage)
         name, kind = text(_string(stage.get("stage"))), stage.get("kind")
         shown = str(finished) if readable else "?"
-        title = f"{finished} finished files" + (f", {written} being written" if written else "") + ("" if readable else ", and a folder that could not be read")
         if kind in ("parse", "lingua"):
-            cells[kind] = {"text": shown, "title": title}
+            cells[kind] = _figure(shown, finished, written, readable, writing(kind))
         elif kind == "classifier":
-            classifiers.append((name, shown, title))
+            classifiers.append((name, shown, finished, written, readable))
     if classifiers:
-        cells["ml"] = {"text": " · ".join(shown for _, shown, _ in classifiers), "title": "; ".join(f"{name}: {title}" for name, _, title in classifiers)}
+        written = sum(item[3] for item in classifiers)
+        writes = writing("ml")
+        cells["ml"] = {
+            "text": " · ".join(shown for _, shown, _, _, _ in classifiers),
+            "finished": sum(item[2] for item in classifiers),
+            "readable": all(item[4] for item in classifiers),
+            "title": "; ".join(f"{name}: " + _figure(shown, finished, each, readable, writes)["title"] for name, shown, finished, each, readable in classifiers),
+            "unfinished": {"text": unfinished_words(written, writes), "writing": writes} if written else None,
+        }
     return cells
+
+
+def _figure(shown, finished, written, readable, writes):
+    unfinished = {"text": unfinished_words(written, writes), "writing": writes} if written else None
+    title = f"{finished} finished files" + (", " + unfinished["text"] if unfinished else "") + ("" if readable else ", and a folder that could not be read")
+    return {"text": shown, "finished": finished, "readable": readable, "title": title, "unfinished": unfinished}
+
+
+def live_cell(profile, running, figure, load):
+    """What a configured cell of the grid says once the live figures are read: `state` (`run`, `done`, `fail`, `setup`), `parts` (pairs of an icon and a text), `note` (None or {"text", "warn"}: the stage's unfinished files) and `text` (all of it as one line). `running`: a run of the profile on the source is alive. For a file profile `figure` is its `progress_cells` entry (None: the answer counts no folder of it); for a database profile `load` is its `pages.load_figure` (None: no state file)."""
+    parts, state, note = [], "setup", None
+    if profile in FILE_PROFILES:
+        if figure is not None:
+            if not figure["readable"]:
+                parts, state = [("?", f"{figure['text']} files, a folder could not be read")], "fail"
+            elif figure["finished"]:
+                parts, state = [("✓", f"{figure['text']} files")], "done"
+            if figure["unfinished"]:
+                note = {"text": figure["unfinished"]["text"], "warn": figure["unfinished"]["writing"] is not True}
+    elif load is not None:
+        if load["loaded"] is None:
+            parts, state = [("?", "state files of another shape")], "fail"
+        else:
+            if load["loaded"]:
+                parts, state = [("✓", f"{load['loaded']} loaded")], "done"
+            if load["failed"]:
+                parts, state = parts + [("✕", f"{load['failed']} failed")], "fail"
+    if running:
+        parts, state = [("▶", "running")] + parts, "run"
+    elif not parts:
+        parts = [("○", "configured · nothing yet")]
+    shown = " · ".join(f"{icon} {words_}" for icon, words_ in parts) + (f" · {note['text']}" if note else "")
+    return {"state": state, "parts": parts, "note": note, "text": shown}
 
 
 class LiveSessionEnded:
@@ -276,10 +352,11 @@ class LiveSessionEnded:
 
 
 def read_live(session_error, scheduler, ask, clock=time.monotonic):
-    """The live figures of the Overview: {"broker": None or the sentence of a broker that did not confirm the session (then nothing else is asked), "queue": None (not set up, or nothing asked) or {"pending"} or {"failed"}, "sources": None or the sentence of a failed `source.list`, "rows": per source asked {"key", "cells", "failed"}, "cut": None or (asked, listed)}, or `LiveSessionEnded`. `session_error()` is the broker's check of the session, `scheduler` the way to the scheduler, `ask(verb, fields)` a read of the broker with the live time limit."""
+    """The live figures of the Overview: {"broker": None or the sentence of a broker that did not confirm the session (then nothing else is asked), "queue": None (not set up, or nothing asked) or {"pending"} or {"failed"}, "sources": None or the sentence of a failed `source.list`, "runs": None or the sentence of a failed `run.list` (then no cell says running, and unfinished files are not called "being written"), "rows": per source asked {"key", "cells": {profile: the cell (`live_cell`) with its `href`, `title` and `id`}, "failed"}, "cut": None or (asked, listed)}, or `LiveSessionEnded`. `session_error()` is the broker's check of the session, `scheduler` the way to the scheduler, `ask(verb, fields)` a read of the broker with the live time limit."""
+    from social_data_pipeline.webui import pages  # here, not at the top: `pages` imports this module
     from social_data_pipeline.webui.scheduler import SchedulerUnavailable  # here, not at the top: `scheduler` imports `actions`, which imports this module
 
-    model = {"broker": None, "queue": None, "sources": None, "rows": [], "cut": None}
+    model = {"broker": None, "queue": None, "sources": None, "runs": None, "rows": [], "cut": None}
     error = session_error()
     if error is not None:
         if getattr(error, "code", None) in SESSION_ENDING_CODES:
@@ -311,22 +388,59 @@ def read_live(session_error, scheduler, ask, clock=time.monotonic):
     if len(listed) > LIVE_SOURCES_MAX:
         model["cut"] = (LIVE_SOURCES_MAX, len(listed))
     deadline = clock() + LIVE_TOTAL_SECONDS
+
+    runs = {"ok": False}
+    if listed:
+        kind, value = ask("run.list", {})
+        if kind == "error" and getattr(value, "code", None) in SESSION_ENDING_CODES:
+            return LiveSessionEnded(value)
+        runs = _runs_of(kind, value)
+        if not runs["ok"]:
+            model["runs"] = runs["sentence"]
+    running = {(row["source"], row["profile"]) for row in runs["rows"]} if runs["ok"] else set()
+
     for row in listed[:LIVE_SOURCES_MAX]:
         entry = {"key": cell_key(row["name"]), "cells": {}, "failed": None}
         model["rows"].append(entry)
-        if clock() >= deadline:
-            entry["failed"] = LIVE_TIME_OUT
-            continue
-        kind, value = ask("source.progress", {"name": row["name"]})
-        if kind == "error":
-            if getattr(value, "code", None) in SESSION_ENDING_CODES:
-                return LiveSessionEnded(value)
-            entry["failed"] = words.sentence(value)
-            continue
-        try:
-            cells = progress_cells(value)
-        except Exception:
-            entry["failed"] = SHAPE_SENTENCE
-            continue
-        entry["cells"] = {profile: cell for profile, cell in cells.items() if profile in row["profiles"]}
+        failed, figures, loads = [], None, None
+        for verb, label in (("source.progress", "Finished files"), ("source.status", "Loads")):
+            if clock() >= deadline:
+                failed.append(f"{label} not read: {LIVE_TIME_OUT}")
+                continue
+            kind, value = ask(verb, {"name": row["name"]})
+            if kind == "error":
+                if getattr(value, "code", None) in SESSION_ENDING_CODES:
+                    return LiveSessionEnded(value)
+                failed.append(f"{label} not read: {words.sentence(value)}")
+                continue
+            try:
+                if verb == "source.progress":
+                    figures = progress_cells(value, writing_of(runs, row["name"]))
+                else:
+                    status = pages.source_status_block(value)
+                    loads = status if status["found"] else None
+                    if loads is None:
+                        failed.append(f"{label} not read: the source has no readable configuration.")
+            except Exception:
+                failed.append(f"{label} not read: {SHAPE_SENTENCE}")
+        entry["failed"] = " · ".join(failed) or None
+        for profile in GRID_PROFILES:
+            if profile not in row["profiles"]:
+                continue
+            is_file = profile in FILE_PROFILES
+            if (figures if is_file else loads) is None:
+                continue
+            cell = live_cell(profile, (row["name"], profile) in running, figures.get(profile) if is_file else None, None if is_file else pages.load_figure(loads, profile))
+            cell.update({"profile": profile, "href": row["href"] + "#run-" + profile, "id": f"c-{entry['key']}-{profile}", "title": f"{profile} on {row['name']}: {cell['text']}" + (f" ({figures[profile]['title']})" if is_file and profile in figures else "")})
+            entry["cells"][profile] = cell
     return model
+
+
+def _runs_of(kind, value):
+    """The runs block of a `run.list` read (`runs_block`), or {"ok": False, "sentence"} when it failed or had another shape."""
+    if kind == "error":
+        return {"ok": False, "sentence": words.sentence(value)}
+    try:
+        return {"ok": True, **runs_block(value)}
+    except Exception:
+        return {"ok": False, "sentence": SHAPE_SENTENCE}

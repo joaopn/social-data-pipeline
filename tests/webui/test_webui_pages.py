@@ -22,7 +22,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
 from markupsafe import escape
-from webui_helpers import ORIGIN, a_job, a_run, db_status, form_token, log_in, run_list, session_cookie, source_list, source_progress, with_cookie
+from webui_helpers import ORIGIN, a_job, a_run, db_status, form_token, log_in, main_html, run_list, session_cookie, source_list, source_progress, source_status, with_cookie
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.control import verbs
@@ -282,18 +282,31 @@ def test_the_grid_has_a_column_for_every_profile_and_no_other():
     assert sorted(overview.GRID_PROFILES) == sorted(actions.VALID_PROFILES) and len(set(overview.GRID_PROFILES)) == len(overview.GRID_PROFILES)
 
 
+def live_cells(part, key):
+    """The cells of one source that a live part sends out of band: {profile: (state, the text shown, the look of its note: `unfinished`, `muted` or None)}."""
+    found = {}
+    for match in re.finditer(r'<a class="stage (\w+)" id="c-' + key + r'-(\w+)" hx-swap-oob="true" title="[^"]*" href="[^"]*">(.*?)</a>', part):
+        note = re.search(r'<span class="sub (\w+)">', match[3])
+        found[match[2]] = (match[1], " ".join(html.unescape(re.sub(r"<[^>]+>", " ", match[3])).split()), note[1] if note else None)
+    return found
+
+
 def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_only(client, broker, door, monkeypatch):
-    """Bug class: a cell that claims a state or a count the reads do not give (a profile not set up shown with files, a running profile not shown running), a wrong number of waiting queries, one source's failed read taking the other sources' figures or the queue's line with it, a call outside the table or without the short time limit, every source asked however many there are."""
-    broker.answers["source.list"] = source_list({"name": "demo", "profiles": ["parse", "lingua", "ml"]}, {"name": "b.2", "profiles": ["parse"]}, {"name": "third", "profiles": ["parse"]})
+    """Bug class: a cell that claims a state or a count the reads do not give (a profile not configured shown with files, a running profile not shown running, a load without its failures), "set up" where the reads say what the stage produced, a wrong number of waiting queries, one source's failed read taking the other sources' figures or the queue's line with it, a call outside the table or without the short time limit, every source asked however many there are."""
+    broker.answers["source.list"] = source_list({"name": "demo", "profiles": ["parse", "lingua", "ml", "sr_ingest", "mongo_ingest"]}, {"name": "b.2", "profiles": ["parse", "sr_ingest"]}, {"name": "third", "profiles": ["parse"]})
     broker.answers["run.list"] = run_list(a_run(profile="lingua", source="demo"))
     stage = {"not_readable": None, "path": "x", "data_types": [{"data_type": "submissions", "exists": True, "not_readable": None, "finished": 3, "being_written": 1, "newest": None}, {"data_type": "comments", "exists": True, "not_readable": None, "finished": 4, "being_written": 0, "newest": None}]}
     stages = [{**stage, "stage": "parse", "kind": "parse"}, {**stage, "stage": "lingua", "kind": "lingua"}, {**stage, "stage": "a_cls", "kind": "classifier"}, {**stage, "stage": "b_cls", "kind": "classifier", "data_types": [{**stage["data_types"][0], "finished": 1}]}]
     broker.answers["source.progress"] = lambda fields: broker_client.BrokerError("timeout", "x") if fields["name"] == "b.2" else source_progress(fields["name"], stages=stages)
+    loads = [{"db_type": "sr_ingest", "has_state_files": True, "entries": [{"label": "comments", "count": 40, "latest": "RC_2024-02", "in_progress": None, "failed_count": 2, "last_updated": None}, {"label": "submissions", "count": 8, "latest": "RS_2024-02", "in_progress": None, "failed_count": 0, "last_updated": None}]}]
+    broker.answers["source.status"] = lambda fields: source_status(fields["name"], profiles=["parse", "sr_ingest"], ingestion=loads if fields["name"] == "demo" else [{**loads[0], "entries": [{**loads[0]["entries"][1]}]}])
     page = client.get("/").text
     demo, other = overview.cell_key("demo"), overview.cell_key("b.2")
-    cells = dict(re.findall(r'<a class="stage (\w+)" href="/sources/demo(?:#run-\w+)?" title="(\w+) on demo', page)[i][::-1] for i in range(8))
-    assert cells == {"parse": "setup", "lingua": "run", "ml": "setup", "sr_ingest": "none", "sr_ml": "none", "mongo_ingest": "none", "postgres_ingest": "none", "postgres_ml": "none"}
-    assert f'id="c-{demo}-parse"' in page and f'id="c-{demo}-sr_ingest"' not in page
+    cells = dict(re.findall(r'<a class="stage (\w+)"(?: id="[^"]*")? title="(\w+) on demo: [^"]*" href="/sources/demo(?:#run-\w+)?"', page)[i][::-1] for i in range(8))
+    assert cells == {"parse": "setup", "lingua": "run", "ml": "setup", "sr_ingest": "setup", "sr_ml": "none", "mongo_ingest": "setup", "postgres_ingest": "none", "postgres_ml": "none"}
+    assert f'id="c-{demo}-parse"' in page and f'id="c-{demo}-sr_ml"' not in page
+    grid_text = html.unescape(re.sub(r"<[^>]+>", " ", main_html(page).split('id="grid-title"')[1]))
+    assert "set up" not in grid_text and "configured" in grid_text
 
     door.add("pending", a_job())
     door.add("pending", a_job("pg_0123abce"))
@@ -302,13 +315,19 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
     part = client.get("/overview/live", headers=HX)
     assert part.status_code == 200 and not part.text.startswith("<!doctype")
     assert "<b>Queue:</b> 2 queries wait for approval" in part.text and 'href="/queue"' in part.text
-    counts = dict(re.findall(r'<span class="cnt" id="c-' + demo + r'-(\w+)" hx-swap-oob="true" title="[^"]*">([^<]*)</span>', part.text))
-    assert counts == {"parse": "7", "lingua": "7", "ml": "7 · 1"}
-    assert f'id="m-{other}" hx-swap-oob="true">Finished files not read: {html.escape(words.CODE_SENTENCES["timeout"], quote=True)}' in part.text and f'id="c-{other}-' not in part.text
+    assert live_cells(part.text, demo) == {
+        "parse": ("done", "✓ 7 files 1 unfinished file, left by a run that ended", "unfinished"),
+        "lingua": ("run", "▶ running · ✓ 7 files 1 being written", "muted"),
+        "ml": ("done", "✓ 7 · 1 files 2 unfinished files, left by a run that ended", "unfinished"),
+        "sr_ingest": ("fail", "✓ 48 loaded · ✕ 2 failed", None),
+        "mongo_ingest": ("setup", "○ configured · nothing yet", None),
+    }
+    assert live_cells(part.text, other) == {"sr_ingest": ("done", "✓ 8 loaded", None)}
+    assert f'id="m-{other}" hx-swap-oob="true">Finished files not read: {html.escape(words.CODE_SENTENCES["timeout"], quote=True)}' in part.text and f'id="c-{other}-parse"' not in part.text
     assert "for the first 2 of 3 sources only" in part.text
     asked = [(call[2], call[3]) for call in broker.calls if call[0] == "call"]
-    assert asked == [("audit.list", {"limit": 1}), ("source.list", {}), ("source.progress", {"name": "demo"}), ("source.progress", {"name": "b.2"})]
-    assert {timeout for kind, verb, timeout in broker.timeouts[-4:]} == {overview.LIVE_SECONDS}
+    assert asked == [("audit.list", {"limit": 1}), ("source.list", {}), ("run.list", {}), ("source.progress", {"name": "demo"}), ("source.status", {"name": "demo"}), ("source.progress", {"name": "b.2"}), ("source.status", {"name": "b.2"})]
+    assert {timeout for kind, verb, timeout in broker.timeouts[-6:]} == {overview.LIVE_SECONDS}
     assert door.ops() == ["counts"] and door.timeouts == [("counts", overview.LIVE_SECONDS)]
 
     door.jobs.clear()
@@ -317,3 +336,16 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
     door.answers["counts"] = broker_client.BrokerUnreachable("no_reply")
     part = client.get("/overview/live", headers=HX).text
     assert "<b>Queue:</b> The scheduler did not answer: " in part and f'id="c-{demo}-parse" hx-swap-oob="true"' in part
+
+    broker.answers["run.list"] = broker_client.BrokerError("timeout", "x")
+    part = client.get("/overview/live", headers=HX).text
+    assert "the runs could not be read, so no cell says running" in part
+    assert live_cells(part, demo)["lingua"] == ("done", "✓ 7 files 1 unfinished file: whether a run still writes them cannot be told", "unfinished")
+
+
+def test_the_overview_legend_says_what_the_counts_are(client):
+    """Bug class: cells whose counts nobody can read: files or loads, finished or attempted, and what "configured" and "–" mean."""
+    note = re.search(r'<p class="muted small mt" id="grid-note">(.*?)</p>', client.get("/").text, re.S)[1]
+    text = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", note)).split())
+    for words_ in ("✓ N files : the finished files of a stage", "✓ N loaded , ✕ M failed : the files a database profile loaded and failed, from its state files", "running : a run of the profile on the source is alive", "configured · nothing yet", "– : not configured", 'being written" only while a run of the source is alive'):
+        assert words_ in text, words_

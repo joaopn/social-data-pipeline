@@ -7,12 +7,14 @@ import json
 
 from social_data_pipeline.webui import actions
 from social_data_pipeline.webui.cleaning import clean_log_text
-from social_data_pipeline.webui.overview import ALIVE_STATES, SHAPE_SENTENCE, ShapeError, failure, link, text
+from social_data_pipeline.webui.overview import ALIVE_STATES, SHAPE_SENTENCE, STAGE_PROFILES, ShapeError, failure, link, text, unfinished_words
 
 VALUE_MAX_CHARS = 300
 ERROR_TEXT_MAX_CHARS = 4000
 DATABASE_NAMES = {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}
 INGESTION_NAMES = {"postgres": "PostgreSQL", "mongo": "MongoDB", "sr_ingest": "StarRocks", "sr_ml": "StarRocks classifiers"}
+# Where the loads of each database profile are in a `source.status` answer: the database view (its name in `source_status_block`) and the start of its state files' labels.
+LOAD_VIEWS = {"sr_ingest": ("StarRocks", ""), "sr_ml": ("StarRocks classifiers", ""), "mongo_ingest": ("MongoDB", "ingest_"), "postgres_ingest": ("PostgreSQL", "ingest_"), "postgres_ml": ("PostgreSQL", "ml_")}
 
 
 def _need(condition):
@@ -99,28 +101,54 @@ def source_status_block(result):
     return block
 
 
-def source_progress_block(result):
-    """`found`, `warnings`, `not_readable`, `stages` (each with `stage`, `path`, `not_readable` and `data_types`: `data_type`, `state` as text, `newest`) and `output` from a `source.progress` answer for one source. Raises ShapeError."""
+def _number(value):
+    """A count of the ingestion state as the page shows it (text), or None when it is no plain count."""
+    return int(value) if isinstance(value, str) and value.isdigit() and len(value) <= 12 else None
+
+
+def load_figure(status, profile):
+    """The loads of a database profile (a key of LOAD_VIEWS) from the `source_status_block` of a source that was found: None when the profile has no state file; else `labels` (its state files' labels), `loaded` and `failed` (the files loaded and failed, summed over its state files; both None when a count is not a plain number)."""
+    view_name, prefix = LOAD_VIEWS[profile]
+    view = {view["name"]: view for view in status["ingestion"]}.get(view_name)
+    entries = [entry for entry in view["entries"] if entry["label"].startswith(prefix)] if view else []
+    if not entries:
+        return None
+    loaded = [_number(entry["count"]) for entry in entries]
+    failed = [_number(entry["failed_count"]) for entry in entries]
+    labels = [entry["label"] for entry in entries]
+    if None in loaded or None in failed:
+        return {"labels": labels, "loaded": None, "failed": None}
+    return {"labels": labels, "loaded": sum(loaded), "failed": sum(failed)}
+
+
+def source_progress_block(result, writing):
+    """`found`, `warnings`, `not_readable`, `stages` (each with `stage`, `path`, `not_readable` and `data_types`: `data_type`, `state` as text, `unfinished` (True when that text names files a run left unfinished, or whose run cannot be told), `newest`) and `output` from a `source.progress` answer for one source. `writing(profile)` says whether a run may be writing that stage's files now (`overview.writing_of`): the `.temp` files of a stage are "being written" only then. Raises ShapeError."""
     entry, warnings = _one_source(result)
     block = {"found": entry["found"], "warnings": warnings, "not_readable": value_text(entry["not_readable"]) if entry.get("not_readable") else None, "stages": [], "output": None}
     for stage in _list(entry.get("stages", [])):
         _dict(stage)
+        profile = STAGE_PROFILES.get(stage.get("kind"))
         items = []
         for item in _list(stage.get("data_types", [])):
             _dict(item)
+            unfinished = False
             if item.get("not_readable"):
                 state = "not readable (" + value_text(item["not_readable"]) + ")"
             elif item.get("exists") is not True:
                 state = "no folder yet"
             else:
                 state = value_text(item.get("finished")) + " finished"
-                if item.get("being_written"):
-                    state += ", " + value_text(item.get("being_written")) + " being written"
+                count = item.get("being_written")
+                if count:
+                    written = writing(profile) if profile else None
+                    shown = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else value_text(count)
+                    state += ", " + unfinished_words(shown, written)
+                    unfinished = written is not True
             newest = item.get("newest")
             newest_text = None
             if isinstance(newest, dict):
                 newest_text = value_text(newest.get("name")) + " (" + value_text(newest.get("modified")) + ")"
-            items.append({"data_type": value_text(item.get("data_type")), "state": state, "newest": newest_text})
+            items.append({"data_type": value_text(item.get("data_type")), "state": state, "unfinished": unfinished, "newest": newest_text})
         block["stages"].append({"stage": value_text(stage.get("stage")), "path": value_text(stage.get("path")), "not_readable": value_text(stage["not_readable"]) if stage.get("not_readable") else None, "data_types": items})
     output = entry.get("output")
     if isinstance(output, dict):

@@ -287,9 +287,30 @@ def test_the_source_page_shows_state_progress_and_error_logs(client, broker):
     broker.answers["source.status"] = lambda fields: source_status(fields["name"], profiles=["parse", "mongo_ingest"], ingestion=[{"db_type": "mongo", "has_state_files": True, "entries": [{"label": "ingest_submissions", "count": 12, "latest": "RS_2024-02", "in_progress": None, "failed_count": 1, "last_updated": "2026-11-20T09:00:00Z"}]}])
     broker.answers["source.error_logs"] = lambda fields: error_logs(fields["profile"], files=[{"label": "submissions", "failed": [{"filename": "RS_2024-03", "error": "made-up import error", "timestamp": "2026-11-20"}]}], sections=[{"log_file": "mongoimport_1.log", "header": ["File: RS_2024-03"], "output": ["made-up mongoimport line"]}])
     page = client.get("/sources/demo").text
-    for text in ("MongoDB ingestion", "ingest_submissions", "RS_2024-02", "3 finished, 1 being written", "RS_2024-01.parquet", "RS_2024-03", "made-up import error", "made-up mongoimport line", "Run parse", "Run mongo_ingest"):
+    for text in ("MongoDB ingestion", "ingest_submissions", "RS_2024-02", "3 finished, 1 unfinished file, left by a run that ended", "RS_2024-01.parquet", "RS_2024-03", "made-up import error", "made-up mongoimport line", "Run parse", "Run mongo_ingest"):
         assert text in page, text
     assert [request["fields"].get("profile") for request in broker.requests if request["verb"] == "source.error_logs"] == ["mongo_ingest"]
+
+
+UNFINISHED_CASES = [
+    pytest.param([], True, "1 unfinished file, left by a run that ended", "unfinished", id="no-run"),
+    pytest.param([a_run(profile="parse", source="demo")], True, "1 being written", "muted", id="its-run"),
+    pytest.param([a_run(kind="task", profile=None, task="source.download", label="download demo", source="demo")], True, "1 being written", "muted", id="a-task-of-the-source"),
+    pytest.param([a_run(profile="lingua", source="demo"), a_run(profile="parse", source="other")], True, "1 unfinished file, left by a run that ended", "unfinished", id="other-profile-or-source"),
+    pytest.param([a_run(profile="parse", source="demo", state="finished")], True, "1 unfinished file, left by a run that ended", "unfinished", id="its-run-ended"),
+    pytest.param([a_run(kind="terminal", id="live-0123456789ab", profile="parse", source=None)], True, "1 unfinished file: whether a run still writes them cannot be told", "unfinished", id="terminal-run-of-unknown-source"),
+    pytest.param([], False, "1 unfinished file: whether a run still writes them cannot be told", "unfinished", id="docker-out-of-reach"),
+]
+
+
+@pytest.mark.parametrize("runs, docker, words_, look", UNFINISHED_CASES)
+def test_an_unfinished_file_is_being_written_only_while_a_run_of_the_source_is_alive(client, broker, runs, docker, words_, look):
+    """Bug class: "1 being written" for a `.temp` file that a stopped or crashed run left behind, with nothing running (seen on the maintainer's deployment), so the operator never learns the run ended unfinished; or the reverse, a file a live run of the source writes shown as left over. A run started in a terminal whose source Docker does not hand over, or Docker out of reach, cannot be told apart: the page says so."""
+    broker.answers["run.list"] = run_list(*runs, docker_available=docker)
+    page = client.get("/sources/demo").text
+    assert f'<td class="unfinished">3 finished, {words_}</td>' in page if look == "unfinished" else f"<td>3 finished, {words_}</td>" in page
+    assert f'<span class="small {look}">{words_}</span>' in page
+    assert ("being written" in page) is (words_ == "1 being written")
 
 
 def test_an_error_log_too_large_to_send_names_the_terminal_command(client, broker):

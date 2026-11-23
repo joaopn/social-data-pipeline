@@ -21,6 +21,12 @@
 .matrix tbody tr:hover td { background: none; }
 .stage .cnt:empty { display: none; }
 .stage.setup .top > span:first-child { color: var(--ink-2); }
+.stage.done .top > span:first-child { color: var(--good); }
+.stage .top .sep { color: var(--muted); }
+.stage .top .x { color: var(--crit); }
+.stage .sub { font-size: 11px; white-space: normal; }
+/* Unfinished files that no alive run writes (or whose run cannot be told): a muted warning, never an error. */
+.unfinished { color: var(--warn); opacity: .85; }
 /* A run is alive: the bar moves, because no read tells how far it is. */
 .stage.run .bar { position: relative; }
 .stage.run .bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 30%; border-radius: 2px; background: var(--accent); animation: sweep 1.6s ease-in-out infinite; }

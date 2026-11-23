@@ -53,7 +53,7 @@ SOURCE_TABS = ("pipeline", "configuration", "errors")
 DATABASE_TABS = ("servers", "mcp", "queue", "verify")
 SYSTEM_TABS = ("broker", "audit")
 # The "Load into databases" lanes of a source's pipeline: each database and its profiles, and which view of the ingestion state (`pages.INGESTION_NAMES`) holds each profile's state files, with the start of their labels when the view holds two profiles.
-LANES = (("StarRocks", (("sr_ingest", "StarRocks", ""), ("sr_ml", "StarRocks classifiers", ""))), ("MongoDB", (("mongo_ingest", "MongoDB", "ingest_"),)), ("PostgreSQL", (("postgres_ingest", "PostgreSQL", "ingest_"), ("postgres_ml", "PostgreSQL", "ml_"))))
+LANES = (("StarRocks", ("sr_ingest", "sr_ml")), ("MongoDB", ("mongo_ingest",)), ("PostgreSQL", ("postgres_ingest", "postgres_ml")))
 # The Management page each action belongs to.
 ACTIVE = {"run.start": "sources", "source.remove": "sources", "run.cancel": "runs", "source.add": "sources", "source.configure": "sources", "source.add_classifiers": "sources"}
 
@@ -228,12 +228,14 @@ def install(api, ctx, queue_hooks):
                 model["rail"] = overview.grid(listed, {"ok": False})
                 return model
             name = answers["name"][1]
-            makers = {"status": pages.source_status_block, "progress": pages.source_progress_block, "runs": pages.runs_block}
+            runs = pages.build(answers, {"runs": pages.runs_block})["runs"]
+            alive = {"ok": runs["ok"], "docker_available": runs["ok"] and runs["docker_available"], "rows": [row for row in runs["rows"] if row["alive"]] if runs["ok"] else []}
+            writing = overview.writing_of(alive, name)
+            makers = {"status": pages.source_status_block, "progress": partial(pages.source_progress_block, writing=writing)}
             profiles = [key.split(":", 1)[1] for key in answers if key.startswith("errors:")]
             makers.update({"errors:" + profile: partial(pages.error_logs_block, profile=profile) for profile in profiles})
             blocks = pages.build(answers, makers)
-            status, runs = blocks["status"], blocks["runs"]
-            alive = {"ok": runs["ok"], "rows": [row for row in runs["rows"] if row["alive"]] if runs["ok"] else []}
+            status = blocks["status"]
             forms = None
             if status["ok"] and status["found"]:
                 forms = [{"profile": profile, "inputs": actions.run_form_inputs(profile)} for profile in status["run_profiles"]]
@@ -242,7 +244,7 @@ def install(api, ctx, queue_hooks):
             model.update({
                 "source_name": name, "source_status": status, "progress": blocks["progress"], "error_logs": error_logs, "failed_files": failed, "run_forms": forms,
                 "db_password_kept": session.work.db_password_kept, "database_profiles": actions.DATABASE_PROFILES,
-                "rail": overview.grid(listed, alive), "pipeline": pipeline_model(name, status, answers.get("progress"), alive),
+                "rail": overview.grid(listed, alive), "pipeline": pipeline_model(name, status, answers.get("progress"), alive, writing),
             })
             return model
 
@@ -600,46 +602,39 @@ def run_chain(ask, outcome, chain, password, text_max_bytes):
         outcome.end_steps()
 
 
-def _number(value):
-    """A count of the ingestion state as the page shows it (text), or None when it is no plain count."""
-    return int(value) if isinstance(value, str) and value.isdigit() and len(value) <= 12 else None
-
-
-def pipeline_model(name, status, progress_answer, alive):
-    """The Pipeline tab of a source: `prepare` (the dumps folder, then the nodes of parse, lingua and ml) and `lanes` (per database, the nodes of its profiles). A node: `profile`, `state` (`run` while a run of it on this source is alive, `fail` when its state files name failed files, `setup` when the source has the profile, `none`), `dir`, `line` (what the reads say of it, or None), `title`, `href` (its run form on this page) and `run_href` (the page of its alive run). Only the reads' own figures are shown: the finished files of `source.progress` for parse, lingua and ml, the loaded and failed files of the state files for the loads."""
+def pipeline_model(name, status, progress_answer, alive, writing):
+    """The Pipeline tab of a source: `prepare` (the dumps folder, then the nodes of parse, lingua and ml) and `lanes` (per database, the nodes of its profiles). A node: `profile`, `state` (`run` while a run of it on this source is alive, `fail` when its state files name failed files, `setup` when the source has the profile, `none`), `dir`, `line` (what the reads say of it, or None), `note` (None or {"text", "warn"}: the stage's unfinished files, "being written" only while `writing(profile)` says a run may write them), `title`, `href` (its run form on this page) and `run_href` (the page of its alive run). Only the reads' own figures are shown: the finished files of `source.progress` for parse, lingua and ml, the loaded and failed files of the state files for the loads (`pages.load_figure`)."""
     found = status["ok"] and status["found"]
     run_profiles = status["run_profiles"] if found else []
     paths = dict(status["paths"]) if found else {}
     running = {row["profile"]: row for row in alive["rows"] if row["source"] == name}
     try:
-        counts = overview.progress_cells(progress_answer[1]) if progress_answer and progress_answer[0] == "ok" else {}
+        counts = overview.progress_cells(progress_answer[1], writing) if progress_answer and progress_answer[0] == "ok" else {}
     except Exception:
         counts = {}
 
-    def node(profile, directory, line, title, failed=False):
+    def node(profile, directory, line, title, failed=False, note=None):
         run = running.get(profile)
         state = "run" if run else "fail" if failed else "setup" if profile in run_profiles else "none"
-        return {"profile": profile, "state": state, "dir": directory, "line": line, "title": title, "href": f"/sources/{name}#run-{profile}" if profile in run_profiles else None, "run_href": run["href"] if run else None}
+        return {"profile": profile, "state": state, "dir": directory, "line": line, "note": note, "title": title, "href": f"/sources/{name}#run-{profile}" if profile in run_profiles else None, "run_href": run["href"] if run else None}
 
     prepare = []
     for profile, directory in (("parse", paths.get("parsed")), ("lingua", paths["output"].rstrip("/") + "/lingua" if paths.get("output") else None), ("ml", paths.get("output"))):
         figure = counts.get(profile)
-        prepare.append(node(profile, directory, figure["text"] + " finished" if figure else None, figure["title"] if figure else None))
-    views = {view["name"]: view for view in status["ingestion"]} if found else {}
+        unfinished = figure["unfinished"] if figure else None
+        note = {"text": unfinished["text"], "warn": unfinished["writing"] is not True} if unfinished else None
+        prepare.append(node(profile, directory, figure["text"] + " finished" if figure else None, figure["title"] if figure else None, note=note))
     lanes = []
     for database, profiles in LANES:
         nodes = []
-        for profile, view_name, prefix in profiles:
-            view = views.get(view_name)
-            entries = [entry for entry in view["entries"] if entry["label"].startswith(prefix)] if view else []
-            loaded = [_number(entry["count"]) for entry in entries]
-            failed = [_number(entry["failed_count"]) for entry in entries]
+        for profile in profiles:
+            figure = pages.load_figure(status, profile) if found else None
             line = None
-            if entries and None not in loaded and None not in failed:
-                line = f"{sum(loaded)} files loaded" + (f", {sum(failed)} failed" if sum(failed) else "")
-            elif entries:
+            if figure and figure["loaded"] is not None:
+                line = f"{figure['loaded']} files loaded" + (f", {figure['failed']} failed" if figure["failed"] else "")
+            elif figure:
                 line = "state files of another shape"
-            nodes.append(node(profile, None, line, ", ".join(entry["label"] for entry in entries) or None, failed=bool(entries) and None not in failed and sum(failed) > 0))
+            nodes.append(node(profile, None, line, ", ".join(figure["labels"]) if figure else None, failed=bool(figure and figure["failed"])))
         lanes.append({"database": database, "nodes": nodes, "legacy": database == "PostgreSQL"})
     return {"dumps": paths.get("dumps"), "prepare": prepare, "lanes": lanes}
 

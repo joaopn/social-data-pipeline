@@ -1,5 +1,6 @@
 {#- The Overview, as the mock-up draws it: "Needs attention" and "Right now" side by side, then the grid of sources and pipeline profiles. The page shows what its three reads say at once; the queue's line and the cells' counts come from `/overview/live` once the page has loaded (`_overview_live.html`). -#}
 {% extends "frame.html" %}
+{% from "_overview_cell.html" import cell with context %}
 {% block shell %}
 {%- set databases = blocks["db.status"] %}
 {%- set sources = blocks["source.list"] %}
@@ -74,21 +75,16 @@
     <tbody>
       {%- for row in grid %}
       <tr>
-        <td class="src"><b>{% if row.href %}<a href="{{ row.href }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</b><div class="small muted">{{ row.set_up }} of {{ profiles | length }} profiles set up</div>{% if row.key %}<div class="small muted" id="m-{{ row.key }}"></div>{% endif %}</td>
-        {%- for cell in row.cells %}
-        <td class="cellc">
-          {%- set word = {"run": "running", "setup": "set up", "none": "not set up"}[cell.state] %}
-          {%- set icon = {"run": "▶", "setup": "○", "none": "–"}[cell.state] %}
-          {%- if cell.href %}<a class="stage {{ cell.state }}" href="{{ cell.href }}" title="{{ cell.profile }} on {{ row.name }}: {{ word }}">{% else %}<span class="stage {{ cell.state }}">{% endif -%}
-          <span class="top"><span aria-hidden="true">{{ icon }}</span><span>{{ word }}</span>{% if cell.id %}<span class="cnt" id="{{ cell.id }}"></span>{% endif %}</span><span class="bar"></span>
-          {%- if cell.href %}</a>{% else %}</span>{% endif %}</td>
+        <td class="src"><b>{% if row.href %}<a href="{{ row.href }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</b><div class="small muted">{{ row.set_up }} of {{ profiles | length }} profiles configured</div>{% if row.key %}<div class="small muted" id="m-{{ row.key }}"></div>{% endif %}</td>
+        {%- for c in row.cells %}
+        <td class="cellc">{{ cell(c) }}</td>
         {%- endfor %}
       </tr>
       {%- endfor %}
     </tbody>
   </table>
   </div>
-  <p class="muted small mt" id="grid-note">The counts are the finished files of each stage (<code>python sdp.py source progress &lt;name&gt;</code>); the loads into the databases are counted on each source's page.</p>
+  <p class="muted small mt" id="grid-note">{% include "_grid_legend.html" %}</p>
   {%- endif %}
 </section>
 </main>

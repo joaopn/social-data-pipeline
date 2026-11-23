@@ -7,6 +7,7 @@
 {%- set href = n.run_href or n.href %}
 {%- if href %}<a class="node {{ n.state }}" href="{{ href }}"{% if n.title %} title="{{ n.title }}"{% endif %}>{% else %}<div class="node {{ n.state }}"{% if n.title %} title="{{ n.title }}"{% endif %}>{% endif -%}
 <span class="nm">{{ n.profile }}</span>{% if n.dir %}<span class="dir">{{ n.dir }}</span>{% endif %}<span class="small ink2">{{ word }}{% if n.line %} · {{ n.line }}{% endif %}</span>
+{%- if n.note %}<span class="small {{ 'unfinished' if n.note.warn else 'muted' }}">{{ n.note.text }}</span>{% endif %}
 {%- if href %}</a>{% else %}</div>{% endif %}
 {%- endmacro %}
 
@@ -118,7 +119,7 @@
       <tr><td class="mono">{{ stage.stage }}</td><td colspan="3" class="muted">No data types configured.</td></tr>
       {%- endif %}
       {%- for item in stage.data_types %}
-      <tr><td class="mono">{{ stage.stage }}{% if loop.first %}<div class="small muted">{{ stage.path }}</div>{% endif %}</td><td>{{ item.data_type }}</td><td>{{ item.state }}</td><td>{{ item.newest or "-" }}</td></tr>
+      <tr><td class="mono">{{ stage.stage }}{% if loop.first %}<div class="small muted">{{ stage.path }}</div>{% endif %}</td><td>{{ item.data_type }}</td><td{% if item.unfinished %} class="unfinished"{% endif %}>{{ item.state }}</td><td>{{ item.newest or "-" }}</td></tr>
       {%- endfor %}
       {%- endfor %}
     </tbody>

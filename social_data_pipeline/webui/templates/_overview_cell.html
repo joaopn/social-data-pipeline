@@ -1,0 +1,8 @@
+{#- One cell of the Overview's grid (`overview.grid`, or `overview.live_cell` for the live figures): a link to the source's run form when the source has a plain name. `oob`: the live part sends the cell in place of the one the page drew (`hx-swap-oob`, by its id). -#}
+{% macro cell(c, oob=False) -%}
+{%- set attrs %}class="stage {{ c.state }}"{% if c.id %} id="{{ c.id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} title="{{ c.title }}"{% endset %}
+{%- if c.href %}<a {{ attrs }} href="{{ c.href }}">{% else %}<span {{ attrs }}>{% endif -%}
+<span class="top">{% for icon, words in c.parts %}{% if not loop.first %}<span class="sep" aria-hidden="true">·</span>{% endif %}<span{% if icon == "✕" %} class="x"{% endif %} aria-hidden="true">{{ icon }}</span>{% if words %}<span>{{ words }}</span>{% endif %}{% endfor %}</span>
+{%- if c.note %}<span class="sub {{ 'unfinished' if c.note.warn else 'muted' }}">{{ c.note.text }}</span>{% endif %}<span class="bar"></span>
+{%- if c.href %}</a>{% else %}</span>{% endif %}
+{%- endmacro %}

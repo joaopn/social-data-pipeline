@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from social_data_pipeline.control import errors, verbs
+from social_data_pipeline.control import dbsetup, errors, verbs
 from social_data_pipeline.webui import setup_db_table
 
 PW = "made-up-pw-31b7"
@@ -102,3 +102,65 @@ def test_values_out_of_the_terminals_range_are_refused_by_their_type(field, valu
     with pytest.raises(errors.InputError) as refused:
         verbs.validate_request("db.setup", {"databases": ["postgres"], field: value})
     assert refused.value.field == field
+
+
+# ── over databases set up already (F5c): the keep answers and the rules on the setup as it is ──
+
+REFUSED_ANYWAY = [
+    # A keep answer together with the answer it keeps instead of.
+    ({"databases": ["postgres"], "keep_tablespaces": True, "tablespaces": [{"name": "a", "path": "/mnt/a"}]}, "keep_tablespaces"),
+    ({"databases": ["starrocks"], "keep_storage_paths": True, "starrocks_storage_paths": ["/mnt/a"]}, "keep_storage_paths"),
+    ({"databases": ["postgres"], "keep_pgtune": True, "pgtune": "work_mem = 4MB"}, "keep_pgtune"),
+    ({"databases": ["mongo"], "keep_tablespaces": True}, "keep_tablespaces"),
+    # `--add` never keeps a read-only password.
+    ({"add": "mongo", **AUTH, "ro_user": True, "ro_password_mode": "keep"}, "ro_password_mode"),
+]
+
+SET_UP = {"configured": ["postgres", "mongo"], "auth": True, "ro_username": "reader", "ro_password_set": True, "tablespaces": True, "storage_paths": False, "pgtune": True}
+CHANGE = {"databases": ["postgres", "mongo"], **AUTH}
+
+GOOD_NOW = [
+    ({**CHANGE, "keep_tablespaces": True, "keep_pgtune": True, "ro_user": True, "ro_password_mode": "keep"}, SET_UP),
+    ({**CHANGE, "databases": ["postgres", "mongo", "starrocks"], "pgdata_path": "/srv/pg"}, SET_UP),
+    ({"databases": ["mongo"], **AUTH}, {**SET_UP, "configured": ["mongo"], "auth": False}),
+    ({"add": "starrocks"}, SET_UP),
+]
+REFUSED_NOW = [
+    # Authentication switched off, or left out, over databases that have it (decided: a terminal command).
+    ({"databases": ["postgres", "mongo"], "auth": False}, SET_UP, "auth"),
+    ({"databases": ["postgres", "mongo"]}, SET_UP, "auth"),
+    # A database set up left out; an add of one set up.
+    ({**CHANGE, "databases": ["postgres"]}, SET_UP, "databases"),
+    ({"add": "mongo"}, SET_UP, "add"),
+    # Nothing to keep.
+    ({**CHANGE, "databases": ["postgres", "mongo", "starrocks"], "keep_storage_paths": True}, SET_UP, "keep_storage_paths"),
+    ({**CHANGE, "keep_pgtune": True}, {**SET_UP, "pgtune": False}, "keep_pgtune"),
+    # The read-only password kept for another name, or where none can be read.
+    ({**CHANGE, "ro_user": True, "ro_username": "other", "ro_password_mode": "keep"}, SET_UP, "ro_password_mode"),
+    ({**CHANGE, "ro_user": True, "ro_password_mode": "keep"}, {**SET_UP, "ro_password_set": False}, "ro_password_mode"),
+]
+
+
+@pytest.mark.parametrize("fields, field", REFUSED_ANYWAY)
+def test_keep_answers_that_contradict_are_refused_by_the_registry_and_the_web_copy(fields, field):
+    """Bug class: a keep answer sent with what it keeps instead of (which one wins would be a guess), or the read-only password kept by `--add`, which the terminal never offers."""
+    with pytest.raises(errors.InputError) as refused:
+        verbs.validate_request("db.setup", fields)
+    assert refused.value.field == field
+    assert setup_db_table.first_refusal(fields) == field
+
+
+@pytest.mark.parametrize("fields, current", GOOD_NOW)
+def test_a_change_that_fits_the_setup_passes_both_checks(fields, current):
+    """Bug class: a rule on the setup as it is that refuses an honest change (keeping what is there, a data path changed, a database added in the same run)."""
+    dbsetup.check(fields, current)
+    assert setup_db_table.first_refusal(fields, current) is None
+
+
+@pytest.mark.parametrize("fields, current, field", REFUSED_NOW)
+def test_a_change_the_setup_makes_wrong_is_refused_at_the_same_input_by_both(fields, current, field):
+    """Bug class: the action's and the page's rules on the setup as it is drifting apart (the page confirming what the action refuses), authentication switched off from the browser, a keep with nothing to keep, a database set up dropped from the run."""
+    with pytest.raises(dbsetup.Refused) as refused:
+        dbsetup.check(fields, current)
+    assert refused.value.field == field and PW not in str(refused.value)
+    assert setup_db_table.first_refusal(fields, current) == field

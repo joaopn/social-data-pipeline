@@ -6,6 +6,7 @@ Unified entrypoint for database management, source configuration, and pipeline e
 Usage:
     sdp.py db setup                          Configure databases (PostgreSQL, MongoDB)
     sdp.py db setup --add <db>               Add a single database to existing setup
+    sdp.py db settings [--json]              Show the current answers of db setup (never a password)
     sdp.py db setup-mcp                      Configure MCP servers for databases
     sdp.py db setup-jobs                     Configure the query scheduler
     sdp.py db setup-llm                      Bundle: setup-mcp then setup-jobs
@@ -550,9 +551,9 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
                 mongo_data_path=None, mongo_port=None, mongo_cache_size_gb=None, mongo_mem_limit=None, mongo_validate=None,
                 starrocks_data_path=None, starrocks_port=None, starrocks_fe_http_port=None, sr_fe_jvm_heap=None, starrocks_mem_limit=None,
                 sr_be_mem_limit=None, sr_alter_tablet_workers=None, sr_compression=None, starrocks_storage_paths=None,
-                auth=None, new_password=None, new_password_confirm=None, ro_user=None, ro_username=None,
+                keep_tablespaces=None, keep_storage_paths=None, keep_pgtune=None, auth=None, new_password=None, new_password_confirm=None, ro_user=None, ro_username=None,
                 ro_password_mode=None, ro_password=None, ro_password_confirm=None):
-    """`db setup` with its answers given all at once, for a database not set up yet: without `add` the first-time questionnaire (refused when a database is set up already), with `add` one database added as `db setup --add` adds it (refused when it is set up already). An answer left out is the terminal's Enter. Writes exactly the files and .env keys the terminal writes for the same answers (`setup.db_answers`). Refused, before anything is written: answers that do not belong together (`control.dbsetup.check`), a port another service of the deployment uses, a setup that is not first-time. The admin password is checked against its confirmation and dropped, as the terminal drops it. Asks nothing; returns the exit code."""
+    """`db setup` with its answers given all at once: without `add` its questionnaire, the first time or over the databases set up already (their current values are then the defaults, and `keep_*` and the read-only password's `keep` are its "Keep existing ...?" answers), with `add` one database not set up yet added as `db setup --add` adds it. An answer left out is the terminal's Enter. Writes exactly the files and .env keys the terminal writes for the same answers (`setup.db_answers`); a data path changed moves no data. Refused, before anything is written: answers that do not belong together or that the setup as it is makes wrong (`control.dbsetup.check` with the current setup: a database set up left out, authentication switched off, nothing to keep, an add of a database set up), a port another service of the deployment uses. The admin password is checked against its confirmation and dropped, as the terminal drops it. Asks nothing; returns the exit code."""
     from social_data_pipeline.control import dbsetup
     from social_data_pipeline.core.config import ConfigurationError
     from social_data_pipeline.setup import db as db_setup
@@ -564,14 +565,16 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
         "mongo_data_path": mongo_data_path, "mongo_port": mongo_port, "mongo_cache_size_gb": mongo_cache_size_gb, "mongo_mem_limit": mongo_mem_limit, "mongo_validate": mongo_validate,
         "starrocks_data_path": starrocks_data_path, "starrocks_port": starrocks_port, "starrocks_fe_http_port": starrocks_fe_http_port, "sr_fe_jvm_heap": sr_fe_jvm_heap,
         "starrocks_mem_limit": starrocks_mem_limit, "sr_be_mem_limit": sr_be_mem_limit, "sr_alter_tablet_workers": sr_alter_tablet_workers, "sr_compression": sr_compression,
-        "starrocks_storage_paths": starrocks_storage_paths, "auth": auth, "new_password": new_password, "new_password_confirm": new_password_confirm, "ro_user": ro_user,
+        "starrocks_storage_paths": starrocks_storage_paths, "keep_tablespaces": keep_tablespaces, "keep_storage_paths": keep_storage_paths, "keep_pgtune": keep_pgtune, "auth": auth, "new_password": new_password, "new_password_confirm": new_password_confirm, "ro_user": ro_user,
         "ro_username": ro_username, "ro_password_mode": ro_password_mode, "ro_password": ro_password, "ro_password_confirm": ro_password_confirm,
     }.items() if value is not None}
     for secret in ("new_password", "new_password_confirm", "ro_password", "ro_password_confirm"):
         if secret in given and not isinstance(given[secret], str):
             raise TypeError(f"{secret} must be a plain string")
+    configured = _get_configured_db_services()
+    existing = db_setup._load_existing_db_config()
     try:
-        dbsetup.check(given)
+        dbsetup.check(given, db_answers.current_of(existing, configured))
     except dbsetup.Refused as refused:
         raise ActionError(f"db setup: {refused.field} {refused}.") from None
     for key in dbsetup.PATH_FIELDS:
@@ -582,15 +585,10 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
     if "starrocks_storage_paths" in given:
         given["starrocks_storage_paths"] = [_as_written_path(path) for path in given["starrocks_storage_paths"]]
 
-    configured = _get_configured_db_services()
     chosen = dbsetup.chosen(given)
-    if add is None and configured:
-        raise ActionError("A database is set up already: add another one with add (db setup --add). Changing one that is set up is done in a terminal (python sdp.py db setup).")
-    if add is not None and add in configured:
-        raise ActionError(f"{add} is set up already: change it in a terminal (python sdp.py db setup --add={add}).")
+    changing = add is None and bool(configured)
 
     env = load_env()
-    existing = db_setup._load_existing_db_config()
     ram, cores = db_answers.machine()
     try:
         if add is None:
@@ -612,7 +610,10 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
     try:
         if add is None:
             files = db_answers.first_time_files(settings)
-            print("  Setting up: " + ", ".join(settings["databases"]), flush=True)
+            if changing:
+                print("  Changing the setup of: " + ", ".join(settings["databases"]), flush=True)
+            else:
+                print("  Setting up: " + ", ".join(settings["databases"]), flush=True)
             db_answers.write_first_time(settings, files)
         else:
             files, env_updates, volumes = db_answers.added_files(add, settings)
@@ -625,12 +626,67 @@ def do_db_setup(*, add=None, databases=None, data_path=None, export_path=None,
         raise ActionError(f"The read-only password file could not be written: {error}") from None
 
     print("\n  Done! The database configuration has been written.", flush=True)
+    for name in configured if changing else ():
+        key = db_setup.DB_DATA_PATH_KEYS[name]
+        if existing.get(key) and settings.get(key) != existing[key]:
+            print(f"  The data path of {name} is now {settings[key]}: no data was moved, so {name} starts empty there; its old data stays in {existing[key]}.", flush=True)
     if settings.get("auth_enabled"):
         print("  The admin password was not stored anywhere: give it when the database starts (python sdp.py db start).", flush=True)
         if settings.get("ro_username"):
             print(f"  Read-only user: {settings['ro_username']} (its password is in .ro_credentials in the database's data folder)", flush=True)
-    print("  Next: python sdp.py db start" + (f" {chosen[0]}" if len(chosen) == 1 else ""), flush=True)
+    if changing:
+        # As after the MCP servers' and the scheduler's setup: which running services must restart to use what was written (`db restart-needed`, Needs attention on the Overview). Nothing is restarted.
+        _print_restart_after_setup()
+    else:
+        print("  Next: python sdp.py db start" + (f" {chosen[0]}" if len(chosen) == 1 else ""), flush=True)
     return 0
+
+
+# ============================================================================
+# sdp db settings
+# ============================================================================
+
+def cmd_db_settings(args):
+    """Show the current answers of `db setup` for the databases set up."""
+    data = get_db_settings()
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+    else:
+        print_db_settings(data)
+    return 1 if data["not_readable"] else 0
+
+
+def get_db_settings():
+    """The current value of each question of `db setup` for the databases set up, which `db setup` would offer as its defaults (`setup.db_answers.settings_read`): `configured`, `not_readable`, `values`, `auth`, `ro_username`, `ro_password_set`, `tablespaces`, `storage_paths`, `pgtune`, `pgtune_set`. Never a password: whether the read-only one can be kept is a flag. Prints nothing; never raises on a damaged file."""
+    from social_data_pipeline.setup import db_answers
+    return db_answers.settings_read()
+
+
+def print_db_settings(data):
+    """Print the text of `db settings` from the data of `get_db_settings`."""
+    print()
+    if data["not_readable"]:
+        print(f"  Error: {data['not_readable']}.")
+        print()
+        return
+    if not data["configured"]:
+        print("  No database is set up. Set one up with: python sdp.py db setup")
+        print()
+        return
+    print("  The answers 'db setup' takes as its defaults (Enter keeps each):")
+    print()
+    for name, value in data["values"].items():
+        print(f"    {name:26s} {_display_safe(str(value))}")
+    for item in data["tablespaces"]:
+        print(f"    {'tablespace':26s} {_display_safe(item['name'])}: {_display_safe(item['path'])}")
+    for path in data["storage_paths"]:
+        print(f"    {'extra storage path':26s} {_display_safe(path)}")
+    if "postgres" in data["configured"]:
+        print(f"    {'PGTune output':26s} {'set' if data['pgtune_set'] else 'none'}")
+    print(f"    {'authentication':26s} {'on' if data['auth'] else 'off'}")
+    if data["ro_username"]:
+        print(f"    {'read-only user':26s} {_display_safe(data['ro_username'])} (password {'set' if data['ro_password_set'] else 'not found'})")
+    print()
 
 
 # ============================================================================
@@ -924,11 +980,11 @@ def do_db_setup_jobs(*, port, result_root, max_concurrent, history_retention, po
 # sdp db restart-needed / llm-settings
 # ============================================================================
 
-# The files each service reads its settings from: .env (which docker-compose.yml interpolates into every service), the compose override (PostgreSQL's and StarRocks's setup and data mounts), the servers' own local configuration files, the MCP settings and the scheduler's.
+# The files each service reads its settings from: .env (which docker-compose.yml interpolates into every service), the compose override (PostgreSQL's and StarRocks's setup and data mounts), each database's config/db/<db>.yaml (which `db start` reads: its data path, the setup's choices), the servers' own local configuration files, the MCP settings and the scheduler's. They are the files `db setup` writes, the first time and over databases set up already.
 _RESTART_SETTINGS = (
-    ("postgres", (".env", "docker-compose.override.yml", "config/postgres/postgresql.local.conf", "config/postgres/pg_hba.local.conf")),
-    ("mongo", (".env",)),
-    ("starrocks", (".env", "docker-compose.override.yml", "config/starrocks/fe.local.conf", "config/starrocks/be.local.conf")),
+    ("postgres", (".env", "docker-compose.override.yml", "config/db/postgres.yaml", "config/postgres/postgresql.local.conf", "config/postgres/pg_hba.local.conf")),
+    ("mongo", (".env", "config/db/mongo.yaml")),
+    ("starrocks", (".env", "docker-compose.override.yml", "config/db/starrocks.yaml", "config/starrocks/fe.local.conf", "config/starrocks/be.local.conf")),
     ("postgres-mcp", (".env", "config/db/mcp.yaml")),
     ("mongo-mcp", (".env", "config/db/mcp.yaml")),
     ("starrocks-mcp", (".env", "config/db/mcp.yaml")),
@@ -7117,6 +7173,10 @@ def build_parser():
     db_setup_p.add_argument("--add", choices=["postgres", "mongo", "starrocks"],
                             help="Add a single database to existing setup without reconfiguring others")
     db_setup_p.set_defaults(func=cmd_db_setup)
+
+    db_settings_p = db_sub.add_parser("settings", help="Show the current answers of db setup (never a password)")
+    db_settings_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
+    db_settings_p.set_defaults(func=cmd_db_settings)
 
     db_setup_mcp_p = db_sub.add_parser("setup-mcp", help="Configure MCP servers for databases")
     db_setup_mcp_p.set_defaults(func=cmd_db_setup_mcp)

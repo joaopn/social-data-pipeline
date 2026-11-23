@@ -2,7 +2,9 @@
 
 `check(fields)` takes the validated fields of a request (a secret as anything with `reveal()`) and raises `Refused` naming the field at fault, with a reason that holds no value. The registry runs it as the verb's cross-field check (`verbs._check_db_setup`), and the CLI's action `do_db_setup` runs it again before it reads or writes anything.
 
-Two modes, as the terminal has them: without `add` the first-time questionnaire (`db setup`: a data base path, an export path, one or more databases), with `add` one database added to an existing setup (`db setup --add <db>`: no base path, no export path, the setup's authentication when it is on). Standard library only.
+Two modes, as the terminal has them: without `add` the questionnaire of `db setup` (a data base path, an export path, one or more databases; the first time, or over databases set up already, whose current values are then its defaults and which it can keep: the tablespaces, the extra StarRocks disks, the PGTune output, the read-only password), with `add` one database added to an existing setup (`db setup --add <db>`: no base path, no export path, the setup's authentication when it is on).
+
+`check(fields, current)` also takes what is set up now (`current`, the shape `current_shape` describes; the action builds it from the deployment, the web UI from the `db.settings` read): then it refuses what only the deployment's state makes wrong, after every other rule. The registry calls it without `current`. Standard library only.
 """
 
 import re
@@ -11,10 +13,16 @@ DATABASES = ("postgres", "mongo", "starrocks")
 
 # The inputs that belong to each database: refused when that database is not set up by the request.
 PER_DATABASE = {
-    "postgres": ("pgdata_path", "db_name", "pg_port", "tablespaces", "filesystem", "pgtune", "pg_mem_limit"),
+    "postgres": ("pgdata_path", "db_name", "pg_port", "tablespaces", "filesystem", "pgtune", "pg_mem_limit", "keep_tablespaces", "keep_pgtune"),
     "mongo": ("mongo_data_path", "mongo_port", "mongo_cache_size_gb", "mongo_mem_limit", "mongo_validate"),
-    "starrocks": ("starrocks_data_path", "starrocks_port", "starrocks_fe_http_port", "sr_fe_jvm_heap", "starrocks_mem_limit", "sr_be_mem_limit", "sr_alter_tablet_workers", "sr_compression", "starrocks_storage_paths"),
+    "starrocks": ("starrocks_data_path", "starrocks_port", "starrocks_fe_http_port", "sr_fe_jvm_heap", "starrocks_mem_limit", "sr_be_mem_limit", "sr_alter_tablet_workers", "sr_compression", "starrocks_storage_paths", "keep_storage_paths"),
 }
+# A keep answer and the answer it keeps instead of: given together they contradict each other.
+KEEPS = (("keep_tablespaces", "tablespaces", "tablespaces"), ("keep_storage_paths", "starrocks_storage_paths", "storage_paths"), ("keep_pgtune", "pgtune", "pgtune"))
+# What `check` takes as `current`: the databases set up now (`configured`, in any order), whether authentication is on for them (`auth`), the read-only user's name (`ro_username`, or None), whether its password can be kept (`ro_password_set`), and whether there are tablespaces, extra StarRocks disks and a PGTune output to keep (`tablespaces`, `storage_paths`, `pgtune`).
+current_shape = ("configured", "auth", "ro_username", "ro_password_set", "tablespaces", "storage_paths", "pgtune")
+# The sentence of the refusal of authentication switched off (decided: the browser can only switch it on).
+AUTH_OFF = "cannot be switched off here: authentication is on for the databases set up, and switching it off is done in a terminal (python sdp.py db setup)"
 # The inputs of the first-time questionnaire only (`--add` takes the base path from .env and asks no export path).
 FIRST_TIME_ONLY = ("databases", "data_path", "export_path")
 PORT_FIELDS = ("pg_port", "mongo_port", "starrocks_port", "starrocks_fe_http_port")
@@ -71,8 +79,8 @@ def _need(condition, field, reason):
         raise Refused(field, reason)
 
 
-def check(fields):
-    """Refuse answers that do not belong together or that the files cannot hold. Raises Refused; returns None."""
+def check(fields, current=None):
+    """Refuse answers that do not belong together or that the files cannot hold; with `current`, also what the deployment as it is set up now makes wrong. Raises Refused; returns None."""
     add = "add" in fields
     _need(add != ("databases" in fields), "databases", "is required without add, and refused with it")
     if add:
@@ -127,3 +135,25 @@ def check(fields):
         reason = ro_password_reason(_plain(fields["ro_password"]))
         _need(reason is None, "ro_password", reason)
         _need(_plain(fields["ro_password"]) == _plain(fields["ro_password_confirm"]), "ro_password_confirm", "does not match the read-only password")
+    # `db setup --add` never offers to keep a read-only password (it takes the setup's, or makes a new one).
+    _need(not (add and fields.get("ro_password_mode") == "keep"), "ro_password_mode", "keep is offered only without add")
+    for keep, kept, _ in KEEPS:
+        _need(not (fields.get(keep) is True and kept in fields), keep, f"is taken only without {kept} given")
+    if current is not None:
+        _check_current(fields, current, add, databases)
+
+
+def _check_current(fields, current, add, databases):
+    """The rules that depend on what is set up now (`current`, see `current_shape`)."""
+    configured = set(current["configured"])
+    if add:
+        _need(fields["add"] not in configured, "add", "names a database that is set up already: change it without add")
+    else:
+        missing = [name for name in DATABASES if name in configured and name not in databases]
+        _need(not missing, "databases", "must hold every database set up already (" + ", ".join(missing) + "): one is removed with db unsetup")
+        _need(not current["auth"] or fields.get("auth") is True, "auth", AUTH_OFF)
+    for keep, _, what in KEEPS:
+        _need(fields.get(keep) is not True or bool(current[what]), keep, f"there are no {what.replace('_', ' ')} set up to keep")
+    if fields.get("ro_password_mode") == "keep":
+        name = fields.get("ro_username") or current["ro_username"] or "readonly"
+        _need(bool(current["ro_password_set"]) and name == current["ro_username"], "ro_password_mode", "keep needs the read-only user set up now, under its name, with a password that can be read")

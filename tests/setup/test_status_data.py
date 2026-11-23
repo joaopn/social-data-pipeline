@@ -31,7 +31,7 @@ from social_data_pipeline.setup import utils
 
 SCENARIOS_BY_NAME = {scenario.name: scenario for scenario in golden.SCENARIOS}
 
-GETTER_NAMES = ["get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
+GETTER_NAMES = ["get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_settings", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
 
 NAME_NOT_VALID = "the source name is not a valid name"
 
@@ -300,6 +300,7 @@ def stub_docker_with_secrets(monkeypatch, calls, root=None, running=None):
 
 # Every getter, in every form that reads something else.
 SECRET_CALLS = [
+    ("get_db_settings", {}, ["print_db_settings"]),
     ("get_db_status", {}, ["print_db_status"]),
     ("get_db_status", {"verbose": True}, ["print_db_status"]),
     ("get_db_index_targets", {"source": "reddit", "db": "postgres", "admin_password": "made-up-admin-value"}, ["print_db_index_targets"]),

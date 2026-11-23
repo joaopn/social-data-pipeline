@@ -314,6 +314,21 @@ def test_restart_needed_names_the_services_whose_files_are_newer(tmp_path, monke
     assert calls[1][:3] == ["docker", "inspect", "--format"] and calls[1][3] == sdp._STARTED_FORMAT
 
 
+def test_restart_needed_names_a_database_whose_setup_was_changed(tmp_path, monkeypatch):
+    """Bug class: a database whose setup was changed from the browser (`db setup` over databases set up: config/db/<db>.yaml rewritten, and for MongoDB nothing else when its .env keys stay as they are) left out of Needs attention, so the outcome's pointer to its Restart line leads to nothing."""
+    root = tmp_path / "p"
+    _seed(root)
+    started = 1_800_000_000
+    for relative in (".env", "docker-compose.override.yml", "config/db/postgres.yaml", "config/db/starrocks.yaml", "config/starrocks/fe.local.conf"):
+        if (root / relative).exists():
+            os.utime(root / relative, (started - 100, started - 100))
+    os.utime(root / "config" / "db" / "mongo.yaml", (started + 2, started + 2))
+    _point_at(monkeypatch, root)
+    _docker_listing(monkeypatch, ["postgres 2027-01-15T08:00:00Z", "mongo 2027-01-15T08:00:00Z"], [])
+
+    assert sdp.get_db_restart_needed()["services"] == [{"service": "mongo", "started": "2027-01-15T08:00:00Z", "files": [{"file": "config/db/mongo.yaml", "modified": "2027-01-15T08:00:02Z"}]}]
+
+
 def test_restart_needed_takes_nothing_but_its_own_lines_from_docker(tmp_path, monkeypatch):
     """Bug class: a reader of `docker inspect` that passes on what it did not ask for (a whole answer holds the containers' environment, the admin password in it), or that fails on it; and Docker that cannot be asked shown as "nothing to restart"."""
     root = tmp_path / "p"

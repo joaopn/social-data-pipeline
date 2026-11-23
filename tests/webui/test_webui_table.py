@@ -61,7 +61,7 @@ def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
         "run.start", "db.stop", "run.cancel", "db.start", "db.reset", "db.unsetup", "db.unsetup_mcp", "db.unsetup_jobs", "source.remove",
         "db.restart_needed", "db.llm_settings", "db.setup_mcp", "db.setup_jobs",
         "source.add", "source.hf_inspect", "source.download",
-        "db.setup",
+        "db.setup", "db.settings",
         "db.index_targets", "db.create_indexes",
     }
     for action in verb_entries:

@@ -569,6 +569,7 @@ TABLE = _table(
     Action("db.restart_needed", "read", "The running services whose settings changed after they started", form="python sdp.py db restart-needed"),
     Action("db.llm_settings", "read", "The current answers of the MCP servers' and the scheduler's setup", form="python sdp.py db llm-settings"),
     Action("db.index_targets", "read", "The tables, columns and indexes of a source in one database", {"source": _SOURCE, "db": Input("enum", "Database", required=True, choices=DATABASES)}, form="python sdp.py db index-targets --source=<name> --db=<database>"),
+    Action("db.settings", "read", "The current answers of the database setup", form="python sdp.py db settings"),
     # ── write ──
     Action(
         "run.start", "write", "Start a pipeline run",

@@ -240,7 +240,7 @@ def test_the_ports_in_use_are_read_from_env_and_the_web_ui(monkeypatch):
 
 
 def test_only_a_database_not_set_up_yet_is_set_up(tmp_path, monkeypatch):
-    """Bug class: the first-time path run over an existing setup (it rewrites .env and the override whole), or an add over a database that is set up (a reconfigure, which stays in the terminal for now)."""
+    """Bug class: an add over a database that is set up (a change goes through `db setup` without add), or a run over the setup that leaves a database set up out of it (`test_db_reconfigure_action.py` has the change itself)."""
     _project(tmp_path, ADD_ENV)
     _mongo_set_up(tmp_path)
     assert "set up already" in _refused(monkeypatch, tmp_path, {"databases": ["starrocks"]})

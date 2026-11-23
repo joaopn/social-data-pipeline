@@ -1,14 +1,15 @@
 """`sdp db setup` with its answers given all at once: the settings the questionnaire would build from them, and the files it would write, without a terminal.
 
-Used by the CLI's action `do_db_setup` (the verb `db.setup`, the web UI's "Set up a database"). Two paths, as the terminal has them:
+Used by the CLI's action `do_db_setup` (the verb `db.setup`, the web UI's "Set up a database" and "Change…") and its read `get_db_settings` (`settings_read`: the current value of every question, never a password). Two paths, as the terminal has them:
 
-- First time (`first_time_settings`, `write_first_time`): the answers of `db.main` (`run_questionnaire`), then its write step: `.env` rewritten by `generate_env` (keys it does not manage are kept), `config/db/<db>.yaml` per database, `config/postgres/postgresql.local.conf` (and `pg_hba.local.conf` with authentication) for PostgreSQL, `config/starrocks/fe.local.conf` and `be.local.conf` for StarRocks, `docker-compose.override.yml` rewritten whole when there are tablespaces or extra StarRocks disks, each existing file kept as `.bak`; the export folder made; `.ro_credentials` written into each database's data folder with a read-only user.
+- The questionnaire (`first_time_settings`, `write_first_time`), the first time or over databases set up already: the answers of `db.main` (`run_questionnaire`, whose defaults are then the current values, and which offers to keep the tablespaces, the extra StarRocks disks, the PGTune output and the read-only password: `keep_tablespaces`, `keep_storage_paths`, `keep_pgtune`, the read-only password's `keep`), then its write step: `.env` rewritten by `generate_env` (keys it does not manage are kept), `config/db/<db>.yaml` per database, `config/postgres/postgresql.local.conf` (and `pg_hba.local.conf` with authentication) for PostgreSQL, `config/starrocks/fe.local.conf` and `be.local.conf` for StarRocks, `docker-compose.override.yml` rewritten whole when there are tablespaces or extra StarRocks disks, each existing file kept as `.bak`; the export folder made; `.ro_credentials` written into each database's data folder with a read-only user.
 - One database added (`add_settings`, `write_added`): the answers of `db.add_database`, then its write step: that database's files, its `.env` keys merged by `update_env_file`, its block of `docker-compose.override.yml` replaced by `_update_override_volumes`, its `.ro_credentials`. When authentication is on already, the new database gets it with the same read-only user and password, as the terminal does.
 
 An answer left out (None) is what pressing Enter takes in the terminal, computed the same way (from the existing settings and this machine's memory and cores); the PGTune output left out is none (the terminal's "skip"). The values are the terminal's types: `ask` returns text, so the StarRocks heap and memory sizes are kept as text, as the terminal writes them. The functions never prompt, never exit and never print a secret; a refusal is `SetupRefused` with a message that holds no answer. The generators and writers are the questionnaire's own (`setup.db`, `setup.utils`), so the terminal path is not touched.
 """
 
 import secrets
+import unicodedata
 from pathlib import Path
 
 from social_data_pipeline.core.config import ConfigurationError
@@ -60,10 +61,23 @@ def _postgres(answers, ram, existing, settings):
     settings["db_name"] = _text(answers.get("db_name"), existing.get("db_name", "datasets"))
     settings["pg_port"] = _int(answers.get("pg_port"), existing.get("pg_port", 5432))
     tablespaces = {item["name"]: item["path"] for item in answers.get("tablespaces") or []}
+    if answers.get("keep_tablespaces") is True:
+        # "Keep existing tablespaces?" yes: the terminal's `dict(existing_ts)`.
+        kept = existing.get("tablespaces")
+        if not isinstance(kept, dict) or not kept:
+            raise SetupRefused("config/db/postgres.yaml holds no tablespaces that can be kept; nothing was written.")
+        tablespaces = dict(kept)
     if tablespaces:
         settings["tablespaces"] = tablespaces
     settings["filesystem"] = answers.get("filesystem") or "standard"
-    settings["pgtune_output"] = pgtune_lines(answers.get("pgtune"))
+    if answers.get("keep_pgtune") is True:
+        # The PGTune choice "keep": the output after the marker of postgresql.local.conf, as the terminal reads it.
+        kept = db._extract_existing_pgtune()
+        if not kept:
+            raise SetupRefused("config/postgres/postgresql.local.conf holds no PGTune output to keep; nothing was written.")
+        settings["pgtune_output"] = kept
+    else:
+        settings["pgtune_output"] = pgtune_lines(answers.get("pgtune"))
     pg_mem = _int(answers.get("pg_mem_limit"), existing.get("pg_mem_limit", int(ram * 0.6) if ram else 0))
     if pg_mem > 0:
         settings["pg_mem_limit"] = pg_mem
@@ -96,7 +110,13 @@ def _starrocks(answers, ram, cores, existing, settings):
     settings["sr_be_mem_limit"] = _text(answers.get("sr_be_mem_limit"), existing.get("sr_be_mem_limit", default_be))
     settings["sr_alter_tablet_workers"] = _int(answers.get("sr_alter_tablet_workers"), existing.get("sr_alter_tablet_workers", max(4, min(cores // 2, 10)) if cores else 4))
     settings["sr_compression"] = answers.get("sr_compression") or existing.get("sr_compression", "ZSTD")
-    if answers.get("starrocks_storage_paths"):
+    if answers.get("keep_storage_paths") is True:
+        # "Keep existing extra storage paths?" yes: the terminal's `list(existing_paths)`.
+        kept = existing.get("starrocks_storage_paths")
+        if not isinstance(kept, list) or not kept:
+            raise SetupRefused("config/db/starrocks.yaml holds no extra storage paths that can be kept; nothing was written.")
+        settings["starrocks_storage_paths"] = list(kept)
+    elif answers.get("starrocks_storage_paths"):
         settings["starrocks_storage_paths"] = list(answers["starrocks_storage_paths"])
 
 
@@ -110,21 +130,37 @@ def _questions_of(name, answers, ram, cores, existing, settings):
         _starrocks(answers, ram, cores, existing, settings)
 
 
-def _ro_password(answers):
-    """The read-only password of the answers: typed, or made as the terminal's "Auto-generate read-only password?" makes it."""
-    if answers.get("ro_password_mode") == "typed":
+def keepable_ro_password(ro_username, existing):
+    """The read-only password `db setup` offers to keep for this user name (`_resolve_ro_password`: only for the name set up now, read from a `.ro_credentials` of the data folders set up now), or None."""
+    if ro_username != existing.get("ro_username"):
+        return None
+    try:
+        return db._read_existing_ro_password(existing)
+    except ConfigurationError:
+        return None
+
+
+def _ro_password(answers, ro_username, existing):
+    """The read-only password of the answers, as `_resolve_ro_password` decides it: kept ("Keep existing read-only password?", the default when there is one to keep), made as "Auto-generate read-only password?" makes it, or typed. With `existing` None (`db setup --add`) none is kept."""
+    mode = answers.get("ro_password_mode")
+    if mode == "typed":
         return answers["ro_password"]
-    return secrets.token_urlsafe(24)
+    if mode == "generate":
+        return secrets.token_urlsafe(24)
+    kept = keepable_ro_password(ro_username, existing) if existing is not None else None
+    if mode == "keep" and not kept:
+        raise SetupRefused("The read-only password cannot be kept: no readable password of that user is set up; nothing was written.")
+    return kept or secrets.token_urlsafe(24)
 
 
-def _ask_auth(answers, default_ro_username, settings):
+def _ask_auth(answers, default_ro_username, settings, existing=None):
     """The authentication questions, answered: on or off, the read-only user and its password. The admin password is checked by the caller and kept nowhere, as the terminal keeps it nowhere."""
     if answers.get("auth") is not True:
         return
     settings["auth_enabled"] = True
     if answers.get("ro_user") is True:
         settings["ro_username"] = answers.get("ro_username") or default_ro_username
-        settings["ro_password"] = _ro_password(answers)
+        settings["ro_password"] = _ro_password(answers, settings["ro_username"], existing)
 
 
 def first_time_settings(answers, ram, cores, existing):
@@ -137,8 +173,7 @@ def first_time_settings(answers, ram, cores, existing):
     settings["export_path"] = _text(answers.get("export_path"), existing.get("export_path", f"{data_path}/export"))
     for name in settings["databases"]:
         _questions_of(name, answers, ram, cores, existing, settings)
-    # No existing read-only user to keep: the first-time path sets up databases that have none.
-    _ask_auth(answers, existing.get("ro_username", "readonly"), settings)
+    _ask_auth(answers, existing.get("ro_username", "readonly"), settings, existing)
     return settings
 
 
@@ -280,3 +315,131 @@ def write_added(name, settings, files, env, volumes):
     if settings.get("auth_enabled") and settings.get("ro_username") and settings.get("ro_password"):
         for written in _write_ro_credentials(settings):
             print(f"  Written: {written} (chmod 600)", flush=True)
+
+
+# ── what is set up now ──────────────────────────────────────────────────────
+
+
+def ro_password_present(existing):
+    """Whether a `.ro_credentials` of the data folders set up now holds a password, judged as `_read_existing_ro_password` reads it, but without rewriting a file of the old `user:password` form (a read must not write). The password itself is dropped at once."""
+    for key in ("pgdata_path", "mongo_data_path", "starrocks_data_path"):
+        folder = existing.get(key)
+        if not isinstance(folder, str) or not folder:
+            continue
+        try:
+            content = (Path(folder) / ".ro_credentials").read_text().strip()
+        except (OSError, ValueError):
+            continue
+        if content and (":" not in content or content.partition(":")[2]):
+            return True
+    return False
+
+
+def current_of(existing, configured):
+    """What `control.dbsetup.check` takes as `current`, for the deployment as `_load_existing_db_config` reads it and the databases set up (`configured`)."""
+    return {
+        "configured": list(configured),
+        "auth": bool(existing.get("auth_enabled")),
+        "ro_username": existing.get("ro_username") if isinstance(existing.get("ro_username"), str) else None,
+        "ro_password_set": ro_password_present(existing),
+        "tablespaces": isinstance(existing.get("tablespaces"), dict) and bool(existing.get("tablespaces")),
+        "storage_paths": isinstance(existing.get("starrocks_storage_paths"), list) and bool(existing.get("starrocks_storage_paths")),
+        "pgtune": bool(db._extract_existing_pgtune()),
+    }
+
+
+_UNSAFE = ("Cc", "Cf", "Cs", "Zl", "Zp")
+TEXT_MAX_BYTES = 4096
+PGTUNE_MAX_BYTES = 16384
+# The questions whose current value is a whole number, with the range the verb takes.
+_NUMBERS = {
+    "pg_port": (1024, 65535), "pg_mem_limit": (0, 4096), "mongo_port": (1024, 65535), "mongo_cache_size_gb": (1, 4096), "mongo_mem_limit": (0, 4096),
+    "starrocks_port": (1024, 65535), "starrocks_fe_http_port": (1024, 65535), "sr_fe_jvm_heap": (1, 4096), "starrocks_mem_limit": (0, 4096),
+    "sr_be_mem_limit": (1, 4096), "sr_alter_tablet_workers": (1, 1024),
+}
+_CHOICES = {"mongo_validate": ("full", "tail", "none"), "sr_compression": ("ZSTD", "LZ4")}
+_TEXTS = ("data_path", "export_path", "pgdata_path", "db_name", "mongo_data_path", "starrocks_data_path")
+# The memory limits written to .env only when one is set: a database set up without the key has none (0, unlimited).
+_LIMIT_KEYS = {"pg_mem_limit": "POSTGRES_MEM_LIMIT", "mongo_mem_limit": "MONGO_MEM_LIMIT", "starrocks_mem_limit": "STARROCKS_MEM_LIMIT"}
+_OF_DATABASE = {
+    "postgres": ("pgdata_path", "db_name", "pg_port", "pg_mem_limit"),
+    "mongo": ("mongo_data_path", "mongo_port", "mongo_cache_size_gb", "mongo_mem_limit", "mongo_validate"),
+    "starrocks": ("starrocks_data_path", "starrocks_port", "starrocks_fe_http_port", "sr_fe_jvm_heap", "starrocks_mem_limit", "sr_be_mem_limit", "sr_alter_tablet_workers", "sr_compression"),
+}
+
+
+def _text_ok(value, max_bytes=TEXT_MAX_BYTES, allowed=()):
+    return isinstance(value, str) and value != "" and len(value.encode("utf-8", "surrogatepass")) <= max_bytes and not any(character not in allowed and unicodedata.category(character) in _UNSAFE for character in value)
+
+
+def _number(value, low, high):
+    """A whole number of the range, from an int or a text of digits (the terminal writes some sizes as text), else None."""
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 6:
+        value = int(value)
+    if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+        return value
+    return None
+
+
+def _filesystem():
+    """The filesystem postgresql.local.conf was written for, told by its part before the PGTune marker (`generate_postgresql_local_conf` writes it from the base file, the ZFS block switched on for "zfs"), or None when it is neither."""
+    try:
+        local = (db.CONFIG_DIR / "postgres" / "postgresql.local.conf").read_text()
+    except (OSError, ValueError):
+        return None
+    for name in ("standard", "zfs"):
+        try:
+            head = db.generate_postgresql_local_conf({"filesystem": name})
+        except (SystemExit, OSError, ValueError):
+            return None
+        if local.startswith(head):
+            return name
+    return None
+
+
+EMPTY_READ = {"configured": [], "not_readable": None, "values": {}, "auth": False, "ro_username": None, "ro_password_set": False, "tablespaces": [], "storage_paths": [], "pgtune": "", "pgtune_set": False}
+
+
+def settings_read():
+    """The current value of each question of `db setup` for the databases set up, what its "Change…" form is filled in with: `configured`, `not_readable` (None, or a constant reason), `values` (question to value, only those of the expected shape: paths, names and choices as text, sizes and ports as numbers, a memory limit not written as 0, `filesystem` when postgresql.local.conf tells it), `auth`, `ro_username`, `ro_password_set` (a password that can be kept: never the password), `tablespaces` (`name`, `path`), `storage_paths`, `pgtune` (the output kept, "" when none or not of the expected shape) and `pgtune_set`. Reads only; never raises on a damaged file."""
+    data = {key: (list(value) if isinstance(value, list) else dict(value) if isinstance(value, dict) else value) for key, value in EMPTY_READ.items()}
+    try:
+        existing = db._load_existing_db_config()
+        env = utils.load_env()
+        configured = [name for name in DATABASES if (db.CONFIG_DIR / "db" / f"{name}.yaml").exists()]
+        data["configured"] = configured
+        values = data["values"]
+        wanted = ["data_path", "export_path"] + [name for database in configured for name in _OF_DATABASE[database]]
+        for name in wanted:
+            value = existing.get(name)
+            if name in _LIMIT_KEYS and _LIMIT_KEYS[name] not in env:
+                value = 0
+            if name in _NUMBERS:
+                value = _number(value, *_NUMBERS[name])
+            elif name in _CHOICES:
+                value = value if value in _CHOICES[name] else None
+            elif not _text_ok(value):
+                value = None
+            if value is not None:
+                values[name] = value
+        if "postgres" in configured:
+            filesystem = _filesystem()
+            if filesystem is not None:
+                values["filesystem"] = filesystem
+            tablespaces = existing.get("tablespaces")
+            if isinstance(tablespaces, dict):
+                data["tablespaces"] = [{"name": key, "path": path} for key, path in tablespaces.items() if _text_ok(key, 63) and _text_ok(path)]
+            pgtune = db._extract_existing_pgtune()
+            data["pgtune_set"] = bool(pgtune)
+            data["pgtune"] = pgtune if _text_ok(pgtune, PGTUNE_MAX_BYTES, ("\t", "\n")) else ""
+        if "starrocks" in configured and isinstance(existing.get("starrocks_storage_paths"), list):
+            data["storage_paths"] = [path for path in existing["starrocks_storage_paths"] if _text_ok(path)]
+        data["auth"] = bool(existing.get("auth_enabled"))
+        if _text_ok(existing.get("ro_username"), 63):
+            data["ro_username"] = existing["ro_username"]
+        data["ro_password_set"] = ro_password_present(existing)
+    except Exception:
+        # A damaged file of any kind (a YAML value of another shape, text that is not UTF-8, a folder that cannot be read): no value is guessed.
+        data = {key: (list(value) if isinstance(value, list) else dict(value) if isinstance(value, dict) else value) for key, value in EMPTY_READ.items()}
+        data["not_readable"] = "the database configuration (.env, config/db/*.yaml) cannot be read"
+    return data

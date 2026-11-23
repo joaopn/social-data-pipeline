@@ -223,7 +223,7 @@ def _check_db_setup(fields):
         raise FieldRefused(exc.field, str(exc)) from None
 
 
-# The answers of `db setup` (`setup/db.py`), one input per question; an input left out is the terminal's Enter (its default), except the PGTune output (none) and the yes/no questions (no). Memory sizes in GB; 0 is "unlimited" where the terminal says so.
+# The answers of `db setup` (`setup/db.py`), one input per question; an input left out is the terminal's Enter (its default), except the PGTune output (none) and the yes/no questions (no), the keep questions included. Memory sizes in GB; 0 is "unlimited" where the terminal says so. Over databases set up already the current values are the defaults, and `keep_*` and the read-only password's `keep` are the terminal's "Keep existing ...?" questions.
 _GB = 4096
 DB_SETUP_INPUTS = {
     "add": Field(Enum(DATABASES)),
@@ -251,12 +251,15 @@ DB_SETUP_INPUTS = {
     "sr_alter_tablet_workers": Field(IntRange(1, 1024)),
     "sr_compression": Field(Enum(("ZSTD", "LZ4"))),
     "starrocks_storage_paths": Field(ListOf(Path(), 16, unique=True)),
+    "keep_tablespaces": Field(Bool()),
+    "keep_storage_paths": Field(Bool()),
+    "keep_pgtune": Field(Bool()),
     "auth": Field(Bool()),
     "new_password": Field(Secret()),
     "new_password_confirm": Field(Secret()),
     "ro_user": Field(Bool()),
     "ro_username": Field(Name()),
-    "ro_password_mode": Field(Enum(("generate", "typed"))),
+    "ro_password_mode": Field(Enum(("generate", "typed", "keep"))),
     "ro_password": Field(Secret()),
     "ro_password_confirm": Field(Secret()),
 }
@@ -376,6 +379,11 @@ VERBS = _registry(
         socket_enabled=True,
         action="get_source_hf_inspect",
     ),
+    Verb(
+        name="db.settings", cls="read", cli=("db", "settings"),
+        socket_enabled=True,
+        action="get_db_settings",
+    ),
     # ---- write ----
     Verb(
         name="run.start", cls="write", cli=("run",),
@@ -468,7 +476,7 @@ VERBS = _registry(
         cli_inputs={"add"},
         # Each question of the questionnaire is one input; the admin password typed twice is `new_password` and its confirmation.
         prompted_inputs=set(DB_SETUP_INPUTS) - {"add"},
-        # A database not set up yet: the first-time questionnaire, or one database added with `add`. Reconfiguring one that is set up stays a terminal command for now.
+        # Without `add` the questionnaire, the first time or over the databases set up already (their values are its defaults); with `add` one database not set up yet. Authentication switched off stays a terminal command (the action refuses it).
         socket_inputs=DB_SETUP_INPUTS,
         socket_enabled=True,
         check=_check_db_setup,

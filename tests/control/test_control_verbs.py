@@ -52,6 +52,7 @@ CLASSIFICATION = {
     "run.logs": ("read", True),
     "audit.list": ("read", True),
     "source.hf_inspect": ("read", True),
+    "db.settings": ("read", True),
     "run.start": ("write", True),
     "run.cancel": ("write", True),
     "db.stop": ("write", True),

@@ -47,6 +47,7 @@ ACTIONS = {
     "db.index_targets": "get_db_index_targets",
     "source.hf_inspect": "get_source_hf_inspect",
     "source.download": "do_source_download",
+    "db.settings": "get_db_settings",
 }
 
 # The private parameter an action has for each thing its command asks on the terminal.

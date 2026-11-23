@@ -98,6 +98,9 @@ ALIVE_STATES = ("starting", "running", "detached", "unknown")
 RUN_LOGS_DEFAULT_LIMIT = 65536
 AUDIT_LIST_DEFAULT_LIMIT = 50
 
+# The sentence of `audit_not_writable` when the log works but this call's own `call_accepted` line could not be written.
+AUDIT_LINE_NOT_WRITTEN = "the audit line of this call could not be written (its fields make it too long, or the log failed), so nothing was done"
+
 MESSAGES = {
     "bad_request": "the request is not one the broker takes",
     "request_too_large": "the request is larger than a request may be",
@@ -1249,7 +1252,7 @@ class Broker:
     # ── state-changing verbs ────────────────────────────────────────────────
 
     def _state_changing_verb(self, context):
-        """A call of the class `write` or `step_up`. The write lock is taken first (exclusive; shared for `run.start`; none for `run.cancel`), and only then are the live runs looked for, for a destructive verb, so that no run can start between the look and the action. `call_accepted` is written before anything runs and `call_ended` after, also when the call ends on an error."""
+        """A call of the class `write` or `step_up`. The write lock is taken first (exclusive; shared for `run.start`; none for `run.cancel`), and only then are the live runs looked for, for a destructive verb, so that no run can start between the look and the action. `call_accepted` is written before anything runs, and a call whose `call_accepted` line could not be written is refused (`audit_not_writable`) before anything runs; `call_ended` is written after, also when the call ends on an error."""
         verb, number = context["verb"], context["number"]
         validated, db_password_from = context["validated"], context["db_password_from"]
         if not self.audit.writable():
@@ -1265,7 +1268,9 @@ class Broker:
         try:
             if verb.name in DESTRUCTIVE_VERBS:
                 self._refuse_while_a_run_is_alive(number, verb.name)
-            self.audit.call_accepted(number, verb, validated, db_password_from)
+            if not self.audit.call_accepted(number, verb, validated, db_password_from):
+                # `writable()` above cannot know that this call's own line fails (its fields can make it longer than a line may be: non-ASCII text grows sixfold in the log's ASCII form): no state-changing call runs unaudited.
+                raise self._refuse(number, verb.name, "audit_not_writable", message=AUDIT_LINE_NOT_WRITTEN)
             if db_password_from == "fields":
                 # Kept for redaction like a session's password: what a run prints with it is overwritten after the call.
                 self.sessions.remember_secret(context["plain"][DB_PASSWORD_FIELD])

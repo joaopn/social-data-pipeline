@@ -1202,6 +1202,39 @@ class TestWriteLock:
         assert read["data"]["verb"] == "db.status"
         assert not _write_lock_is_held(rig)
 
+    def test_a_call_whose_audit_line_is_too_long_is_refused_and_never_runs(self, rig):
+        """Bug class: a state-changing call run unaudited because its own `call_accepted` line could not be written while the log itself works (`writable()` said yes): the setup verbs take text, and the log's ASCII form writes each non-ASCII character as an escape of six bytes, so a request well under the 64 KiB frame makes a line over the 64 KiB a line may hold. The call is refused with `audit_not_writable`, its child never starts, no source folder is made, and the log takes the next call."""
+        rig.start()
+        session = rig.login()
+        patterns = ["\u00e9" * 256] * 64
+        fields = {"name": "wide", "platform": "custom", "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse", "lingua"], "remove_patterns": patterns}
+        assert len(json.dumps({"op": "call", "token": session.token, "verb": "source.add", "fields": fields}, ensure_ascii=False).encode("utf-8")) < 60000
+
+        refused = code_of(lambda: session.call("source.add", fields, step_up=PASSWORD))
+
+        assert refused.code == "audit_not_writable"
+        assert "nothing was done" in str(refused)
+        assert rig.calls() == []
+        assert not (rig.root / "config" / "sources" / "wide").exists()
+        assert [line["code"] for line in rig.events("call_refused")] == ["audit_not_writable"]
+        assert rig.events("call_accepted") == []
+        assert not _write_lock_is_held(rig)
+        session.call("db.stop", {})
+        assert [note["verb"] for note in rig.calls()] == ["db.stop"]
+
+    @pytest.mark.parametrize("verb_name, fields", [("db.stop", {}), ("run.start", {"profile": "parse", "source": "ok"})])
+    def test_a_write_call_whose_audit_line_fails_never_runs(self, rig, verb_name, fields):
+        """Bug class: the same for the write verbs, a run's start included: whatever makes the `call_accepted` line fail (here a log whose line is refused), the child is not started and no run is started."""
+        rig.start()
+        session = rig.login()
+        rig.broker.audit.call_accepted = lambda *args, **kwargs: False
+
+        refused = code_of(lambda: session.call(verb_name, fields))
+
+        assert refused.code == "audit_not_writable"
+        assert rig.calls() == [] and rig.started_runs == []
+        assert not _write_lock_is_held(rig)
+
 
 # ── 8. run.logs ─────────────────────────────────────────────────────────────
 

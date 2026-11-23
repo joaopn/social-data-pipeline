@@ -36,6 +36,8 @@ Supported compression: `.zst`, `.gz`, `.json.gz`, `.xz`, `.tar.gz`. For Hugging 
 python sdp.py source add mydata
 ```
 
+The same questions are asked in the browser by the web UI's **Add source** (Reddit dumps and your own files; see [Adding a source](webui.md#adding-a-source)); both write the same files. A Hugging Face dataset is added in a terminal.
+
 The setup walks you through:
 
 | Question | What it sets |

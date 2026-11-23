@@ -63,10 +63,12 @@ def text_start(text, max_bytes=TEXT_MAX_BYTES):
 class Pending:
     """An action chosen and not confirmed yet. `step_up` says whether its confirmation needs the management password again; `shown` is what a Queue action's page shows (None for the others), `weight` the bytes of record it holds."""
 
-    __slots__ = ("id", "action", "fields", "created", "step_up", "shown", "weight", "then")
+    __slots__ = ("id", "action", "fields", "created", "step_up", "shown", "weight", "then", "wizard")
 
-    def __init__(self, pending_id, action, fields, created, step_up=None, shown=None, weight=0, then=None):
+    def __init__(self, pending_id, action, fields, created, step_up=None, shown=None, weight=0, then=None, wizard=False):
         self.id = pending_id
+        # A wizard's answers so far (`setup_source`): kept, counted and expired with the pending actions, never shown or confirmed as one.
+        self.wizard = wizard
         self.action = action
         self.fields = fields
         self.created = created
@@ -252,14 +254,20 @@ class SessionWork:
         dropped.shown = None
         dropped.then = None
 
+    def _drop(self, key):
+        dropped = self._pending.pop(key)
+        dropped.fields = None
+        dropped.shown = None
+        dropped.then = None
+
     def _weight(self):
         return sum(kept.weight for kept in self._pending.values())
 
-    def add_pending(self, action, fields, now, step_up=None, shown=None, weight=0, then=None):
-        """Keep a pending action and return it, or None (nothing kept, nothing dropped) when it alone weighs more than PENDING_WEIGHT_MAX; the oldest is dropped when sixteen are kept, and while the records kept weigh more than PENDING_WEIGHT_MAX with it."""
+    def add_pending(self, action, fields, now, step_up=None, shown=None, weight=0, then=None, wizard=False):
+        """Keep a pending action and return it, or None (nothing kept, nothing dropped) when it alone weighs more than PENDING_WEIGHT_MAX; the oldest is dropped when sixteen are kept, and while the records kept weigh more than PENDING_WEIGHT_MAX with it. With `wizard` it is a wizard's answers instead (`fields` a dict the wizard owns), which `pending` and `take_pending` never return."""
         if weight > PENDING_WEIGHT_MAX:
             return None
-        pending = Pending(new_id(), action, fields, now, step_up=step_up, shown=shown, weight=weight, then=then)
+        pending = Pending(new_id(), action, fields, now, step_up=step_up, shown=shown, weight=weight, then=then, wizard=wizard)
         with self.lock:
             self._prune(now)
             while len(self._pending) >= self.pending_max or (self._pending and self._weight() + weight > PENDING_WEIGHT_MAX):
@@ -271,13 +279,40 @@ class SessionWork:
         """The pending action of an id that has not expired, or None. Changes nothing but dropping expired ones."""
         with self.lock:
             self._prune(now)
-            return self._pending.get(pending_id)
+            kept = self._pending.get(pending_id)
+            return None if kept is None or kept.wizard else kept
 
     def take_pending(self, pending_id, now):
-        """Take a pending action out, in one step: the action, or None when there is none of this id (taken already, expired, never made)."""
+        """Take a pending action out, in one step: the action, or None when there is none of this id (taken already, expired, never made, or a wizard's)."""
         with self.lock:
             self._prune(now)
-            return self._pending.pop(pending_id, None)
+            kept = self._pending.get(pending_id)
+            if kept is None or kept.wizard:
+                return None
+            return self._pending.pop(pending_id)
+
+    def wizard(self, wizard_id, now, touch=False, weight=None):
+        """The wizard of an id that has not expired, or None. With `touch` its five minutes start again from `now` (a step was taken) and it becomes the newest; `weight` replaces its weight then (the oldest are dropped while the records kept weigh more than PENDING_WEIGHT_MAX, never this one)."""
+        with self.lock:
+            self._prune(now)
+            kept = self._pending.get(wizard_id)
+            if kept is None or not kept.wizard:
+                return None
+            if touch:
+                kept.created = now
+                if weight is not None:
+                    kept.weight = weight
+                self._pending.move_to_end(wizard_id)
+                while len(self._pending) > 1 and self._weight() > PENDING_WEIGHT_MAX:
+                    self._drop_oldest()
+            return kept
+
+    def drop_wizard(self, wizard_id):
+        """Forget a wizard (cancelled, or made into its pending action)."""
+        with self.lock:
+            kept = self._pending.get(wizard_id)
+            if kept is not None and kept.wizard:
+                self._drop(wizard_id)
 
     def put_back(self, pending, now):
         """Keep a pending action that was taken out again, under its id, unless it has expired since."""

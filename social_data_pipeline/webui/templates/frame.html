@@ -28,7 +28,7 @@
   <a class="tab" href="{{ address }}">{{ page_title }}{% if key in counts_of %} ({{ counts_of[key] }}){% endif %}</a>
   {%- endif %}
   {%- endfor %}
-  <span class="right row small ink2">{% block subbar_right %}{% if window == "management" %}<a class="btn sm" href="/sources">Run a profile…</a>{% endif %}{% endblock %}</span>
+  <span class="right row small ink2">{% block subbar_right %}{% if window == "management" %}<a class="btn sm" href="/sources">Run a profile…</a><a class="btn sm primary" href="/add-source">Add source</a>{% endif %}{% endblock %}</span>
 </nav>
 {%- endif %}
 {% block shell %}

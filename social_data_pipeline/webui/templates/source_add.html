@@ -1,0 +1,227 @@
+{#- The Add source wizard (`setup_source`), in the mock-up's look: the Sources rail on the left, the pane with the stepper, the step's fields (label.f in the two-column .form), "What this will do" as .cli lines, the write-verb tag and Cancel, Back and Next. One form per step; Cancel posts to the wizard's cancel address (formaction), so nothing needs a script. A token is never drawn back. -#}
+{% extends "frame.html" %}
+{% import "_forms.html" as forms with context %}
+
+{% macro val(key, default="") -%}{{ raw.get(key, default) if visited else default }}{%- endmacro %}
+{% macro box(key, label, default=False) -%}
+<label class="row small ink2"><input type="checkbox" name="{{ key }}" value="yes"{% if (visited and raw.get(key) == "yes") or (not visited and default) %} checked{% endif %}> {{ label }}</label>
+{%- endmacro %}
+{% macro text(key, label, default="", hint="", mono=False, wide=False) -%}
+<label class="f{{ ' wide' if wide else '' }}">{{ label }}<input type="text" name="{{ key }}" value="{{ val(key, default) }}" autocomplete="off" spellcheck="false"{% if mono %} class="mono"{% endif %}>{% if hint %}<span class="muted small">{{ hint }}</span>{% endif %}</label>
+{%- endmacro %}
+{% macro number(key, label, hint="", default="") -%}
+<label class="f">{{ label }}<input type="number" name="{{ key }}" value="{{ val(key, default) }}" step="1" min="0" inputmode="numeric">{% if hint %}<span class="muted small">{{ hint }}</span>{% endif %}</label>
+{%- endmacro %}
+{% macro choice(key, label, options, default) -%}
+<label class="f">{{ label }}<select name="{{ key }}">{% for value, words in options %}<option value="{{ value }}"{% if val(key, default) == value %} selected{% endif %}>{{ words }}</option>{% endfor %}</select></label>
+{%- endmacro %}
+
+{% block shell %}
+<div class="srcwin">
+<aside class="rail" aria-label="Sources">
+  <h4>Sources</h4>
+  {%- for row in (rail if rail is defined else []) %}
+  {%- if row.href %}<a class="srcbtn" href="{{ row.href }}"><b>{{ row.name }}</b></a>{% else %}<span class="srcbtn"><b>{{ row.name }}</b></span>{% endif %}
+  {%- endfor %}
+  <a class="btn sm on add-source" href="/add-source" aria-current="page">+ Add source</a>
+</aside>
+<main class="main pane">
+<div class="row wrap"><h1>Add a source</h1><span class="muted small">the same questions <code>sdp source add</code> asks in the terminal; both write the same files</span></div>
+<div class="stepper mt">{% for s in stepper %}<span{% if s.state %} class="{{ s.state }}"{% endif %}{% if s.state == "skip" %} title="Not asked for the answers so far"{% endif %}>{{ s.label }}</span>{% endfor %}</div>
+{%- if line %}
+<p class="notice notice-bad mt" role="alert">{{ line }}</p>
+{%- endif %}
+{%- if failure is defined and failure %}
+<div class="mt">{% with block = failure %}{% include "_failure.html" %}{% endwith %}</div>
+{%- endif %}
+
+{%- if step == "origin" %}
+<h4 class="mt-l">Where does the data come from?</h4>
+<form method="post" action="{{ '/add-source/' ~ wizard_id ~ '/origin' if wizard_id else '/add-source' }}">
+  {{ forms.token() }}
+  {%- if wizard_id %}<input type="hidden" name="nav" value="next">{% endif %}
+  <div class="pick mt">{% for key, title, words in origins %}<button type="submit" name="platform" value="{{ key }}"{% if key == platform %} class="on"{% endif %}><b>{{ title }}</b><span>{{ words }}</span></button>{% endfor %}</div>
+</form>
+<p class="muted small mt">A Hugging Face dataset is added in a terminal for now: <code>python sdp.py source add &lt;name&gt; --hf &lt;dataset&gt;</code>.</p>
+<div class="col mt add-cli">{% for words, value in cli %}<div class="cli">{{ words }} <b>{{ value }}</b></div>{% endfor %}</div>
+<div class="row mt add-nav"><span class="tag step">step-up verb · source.add</span><span class="right row"><a class="btn" href="/sources">Cancel</a></span></div>
+{%- else %}
+{%- set reddit = platform == "reddit" %}
+{%- set data_types = answers.get("data_types", []) %}
+{%- set profiles = answers.get("profiles", []) %}
+<form method="post" action="/add-source/{{ wizard_id }}/{{ step }}">
+  {{ forms.token() }}
+
+{%- if step == "files" %}
+  <h4 class="mt-l">Files</h4>
+  <div class="form mt">
+    {%- if reddit %}
+    <label class="f">Source name<input type="text" value="reddit" disabled><span class="muted small">Reddit dumps are always the source reddit.</span></label>
+    {{ text("data_types", "Data types", "submissions, comments", "Comma-separated.") }}
+    {%- else %}
+    {{ text("name", "Source name", "", "A letter or digit, then letters, digits, _ . -") }}
+    {{ text("data_types", "Data types", "", "Comma-separated, at most 8 (for example posts, replies).") }}
+    {%- endif %}
+    {%- for stage in ("dumps", "extracted", "parsed", "output") %}
+    {{ text(stage ~ "_path", stage | capitalize ~ " folder", "", "Empty: data/" ~ stage ~ "/<name>. Any path, absolute or relative to the deployment; a folder of another source is refused.", mono=True) }}
+    {%- endfor %}
+    {{ choice("file_format", "Intermediate file format", (("parquet", "parquet"), ("csv", "csv")), "parquet") }}
+    {{ number("parquet_row_group_size", "Parquet row-group size", "Larger: better compression, more memory. Parquet only.", "1000000") }}
+    {%- if not reddit %}
+    {{ choice("input_format", "Raw input file format", (("ndjson", "NDJSON, one JSON object per line"), ("csv", "CSV with a header")), "ndjson") }}
+    {{ choice("csv_delimiter", "CSV delimiter", (("comma", "comma ,"), ("tab", "tab"), ("pipe", "pipe |"), ("semicolon", "semicolon ;")), "comma") }}
+    {%- endif %}
+    <fieldset class="f-group wide">
+      <legend>Profiles to configure</legend>
+      <div class="row wrap">{% for profile in offered %}{{ box("profiles[" ~ profile ~ "]", profile, profile != "ml") }}{% endfor %}</div>
+      <p class="muted small">The profiles of the databases that are set up. ml needs a GPU.</p>
+    </fieldset>
+    {{ number("parse_workers", "Parse workers", "Empty: the CPU cores, at most 8. With the profile parse.") }}
+  </div>
+
+{%- elif step == "fields" %}
+  <h4 class="mt-l">Fields</h4>
+  {%- if reddit %}
+  <p class="muted small mt">The fields of the Reddit template (config/templates/reddit.yaml) are kept; name the ones to leave out, as <code>source configure reddit</code> asks. Empty: keep them all.</p>
+  <div class="form mt">
+    {%- for kind in reddit_kinds %}
+    {{ text("removed[" ~ kind ~ "]", "Fields to remove from " ~ kind, "", "Comma-separated.", wide=True) }}
+    {%- endfor %}
+  </div>
+  {%- else %}
+  <p class="muted small mt">For each data type: a glob for its compressed dump files, and the fields to extract from each record (dot notation for nested fields, such as user.name). Field types start as text; refine them in platform.yaml later.</p>
+  {%- for dt in data_types %}
+  <h4 class="mt-l">{{ dt }}</h4>
+  <div class="form mt">
+    {{ text("glob[" ~ dt ~ "]", "Dump file pattern", "", "Such as tweets_*.json.gz, RC_*.zst, data_*.csv.xz.", mono=True) }}
+    {{ choice("compression[" ~ dt ~ "]", "Compression (only when the pattern's extension does not name it)", (("", "from the pattern's extension"), ("zst", "zst"), ("gz", "gz"), ("xz", "xz"), ("tar.gz", "tar.gz")), "") }}
+    {{ text("fields[" ~ dt ~ "]", "Fields", "", "Comma-separated.", wide=True) }}
+  </div>
+  {%- endfor %}
+  <p class="muted small mt">For uncompressed data, put the files straight into the extracted folder's data/extracted/&lt;source&gt;/&lt;data type&gt;/: the pipeline picks them up with no dump files.</p>
+  {%- endif %}
+
+{%- elif step == "classifiers" %}
+  <h4 class="mt-l">Classifiers</h4>
+  <div class="form mt">
+    {%- if not reddit %}
+    {%- for dt in data_types %}
+    {{ text("text_columns[" ~ dt ~ "]", "Text columns of " ~ dt, "", "Comma-separated; empty: classifiers may skip this data type.") }}
+    {%- endfor %}
+    {{ text("remove_strings", "Exact strings to remove before classification", "", "Comma-separated; empty: none.", wide=True) }}
+    {{ text("remove_patterns", "Regex patterns to remove", default_pattern, "Comma-separated.", mono=True, wide=True) }}
+    {{ text("gpu_fields", "Extra fields to keep in the GPU classifiers' output", "", ("The primary key is included by itself. " if answers.get("primary_key") else "") ~ "Comma-separated.", wide=True) }}
+    {%- else %}
+    <p class="muted small wide">A Reddit source's text columns and removed strings are the terminal's fixed ones.</p>
+    {%- endif %}
+    {%- if "lingua" in profiles %}
+    <h4 class="wide">Language detection (Lingua)</h4>
+    {{ number("lingua_workers", "Lingua workers (threads in all)", "Empty: the CPU cores.") }}
+    {{ number("lingua_file_workers", "Lingua file workers (files at once)", "Empty: an eighth of the CPU cores, at least 1.") }}
+    {{ number("lingua_batch_size", "Lingua batch size (rows per batch)", "Empty: the base configuration's.") }}
+    <div class="f">{{ box("lingua_low_accuracy", "Low accuracy mode (faster)") }}</div>
+    {%- endif %}
+    {%- if "ml" in profiles %}
+    <h4 class="wide">GPU classifiers</h4>
+    {{ text("gpu_ids", "GPUs", "", "GPU numbers, comma-separated. Empty: every GPU of the machine (GPU 0 when none is found).") }}
+    {{ number("ml_file_workers", "File workers", "Empty: one per GPU chosen.") }}
+    {{ number("ml_tokenize_workers", "Tokenize workers", "Empty: half the CPU cores, 1 to 8.") }}
+    {{ number("ml_classifier_batch_size", "Classifier batch size", "Empty: the base configuration's.") }}
+    {{ text("ml_classifiers", "Classifiers to run", "", "Names from config/ml/gpu_classifiers.yaml, comma-separated. Empty: all of them.", wide=True) }}
+    {%- if data_types | length > 1 %}
+    {%- for name in scope_names %}
+    {{ text("scope[" ~ name ~ "]", "Data types for " ~ name, "", "Comma-separated; empty: all.") }}
+    {%- endfor %}
+    {%- endif %}
+    <label class="f">Hugging Face token <span class="muted">(optional, for gated models; saved to .env as HF_TOKEN, as the terminal does)</span><input type="password" name="hf_token" autocomplete="off" maxlength="1024" placeholder="{{ 'kept: type a new one to replace it' if token_kept else 'none' }}"></label>
+    {%- if token_kept %}<div class="f">{{ box("hf_token_forget", "Forget the token typed before") }}</div>{% endif %}
+    {%- endif %}
+  </div>
+
+{%- elif step == "databases" %}
+  <h4 class="mt-l">Databases</h4>
+  {%- set has_postgres = profiles | select("in", ("postgres_ingest", "postgres_ml")) | list %}
+  {%- set has_mongo = "mongo_ingest" in profiles %}
+  {%- set has_starrocks = "sr_ingest" in profiles %}
+  <div class="form mt">
+  {%- if reddit %}
+    {{ text("reddit_db_schema", "Database schema name", "", "Empty: the template's (reddit).") }}
+    {%- for kind in reddit_kinds %}
+    {{ text("reddit_index[" ~ kind ~ "]", "Index columns of " ~ kind, "", "Comma-separated; empty: the template's.") }}
+    {%- endfor %}
+  {%- endif %}
+  {%- if has_postgres %}
+    <h4 class="wide">PostgreSQL</h4>
+    {%- if "postgres_ingest" in profiles %}
+    <div class="f">{{ box("pg_prefer_lingua", "Use the Lingua files (language columns in the base tables)", "lingua" in profiles) }}</div>
+    {{ number("pg_parallel_index_workers", "Parallel index workers", "Empty: half the CPU cores, 1 to 8.") }}
+    {%- endif %}
+    {%- if not reddit %}{{ text("db_schema", "PostgreSQL schema name", answers.get("name", "")) }}{% endif %}
+    {%- for dt in data_types %}
+    {{ text("tablespace[" ~ dt ~ "]", "Tablespace of " ~ dt, "", "Only when PostgreSQL has tablespaces (db setup). Empty: pgdata.") }}
+    {%- endfor %}
+  {%- endif %}
+  {%- if has_mongo and not reddit %}
+    <h4 class="wide">MongoDB</h4>
+    {{ choice("mongo_collection_strategy", "Collection strategy", (("per_data_type", "one collection per data type"), ("per_file", "one collection per input file")), "per_data_type") }}
+    {{ text("mongo_db_name", "MongoDB database name", answers.get("name", "")) }}
+    {%- for dt in data_types %}
+    {{ text("collection[" ~ dt ~ "]", "Collection of " ~ dt, dt, "With one collection per data type.") }}
+    {%- endfor %}
+  {%- endif %}
+  {%- if has_starrocks %}
+    <h4 class="wide">StarRocks</h4>
+    <div class="f">{{ box("sr_prefer_lingua", "Use the Lingua files (language columns in the base tables)", "lingua" in profiles) }}</div>
+    {{ number("sr_buckets", "Buckets per table", "Empty: the CPU cores × 8. Aim for 1 to 10 GB per tablet; fewer for a source under 10 GB.") }}
+  {%- endif %}
+  {%- if not reddit and (has_postgres or has_mongo or has_starrocks) %}
+    <h4 class="wide">Indexes</h4>
+    {%- for dt in data_types %}
+    {%- if has_postgres %}{{ text("pg_indexes[" ~ dt ~ "]", "PostgreSQL indexes of " ~ dt, "", "Column names, comma-separated.") }}{% endif %}
+    {%- if has_mongo %}{{ text("mongo_indexes[" ~ dt ~ "]", "MongoDB indexes of " ~ dt, "", "Field names, comma-separated.") }}{% endif %}
+    {%- if has_starrocks %}{{ text("sr_indexes[" ~ dt ~ "]", "StarRocks bitmap indexes of " ~ dt, "", "Column names, comma-separated.") }}{% endif %}
+    {%- endfor %}
+    {%- if has_postgres or has_starrocks %}
+    {{ text("primary_key", "Primary key column", "", "Optional: a column unique per row enables duplicate detection and upsert on re-ingest. Empty: re-runs append rows.") }}
+    {%- endif %}
+  {%- endif %}
+  </div>
+
+{%- elif step == "review" %}
+  <h4 class="mt-l">Review</h4>
+  {%- if review %}
+  <dl class="kv mt">
+    {%- for label, value in review.inputs %}
+    <dt>{{ label }}</dt><dd>{{ value }}</dd>
+    {%- endfor %}
+    {%- if review.defaults %}
+    <dt>Left to the terminal's default</dt><dd>{{ review.defaults | join("; ") }}</dd>
+    {%- endif %}
+  </dl>
+  <h4 class="mt-l">Files written</h4>
+  <p class="small mt">config/sources/{{ answers.name }}/: {{ review.files | join(", ") }}</p>
+  <h4 class="mt-l">Folders</h4>
+  <ul class="small mt">{% for stage, path in review.folders %}<li>{{ stage }}: <code>{{ path }}</code></li>{% endfor %}</ul>
+  <p class="muted small">This creates none of them: the first run of a profile creates each one that is missing.</p>
+  {%- elif review_error_step is defined and review_error_step != "review" %}
+  <p class="mt"><a href="/add-source/{{ wizard_id }}/{{ review_error_step }}">Open the step to change it</a></p>
+  {%- endif %}
+{%- endif %}
+
+  <h4 class="mt-l">What this will do</h4>
+  <div class="col mt add-cli">{% for words, value in (review.cli if review else cli) %}<div class="cli">{{ words }} <b>{{ value }}</b></div>{% endfor %}</div>
+  <div class="row mt add-nav"><span class="tag step">step-up verb · source.add</span><span class="right row">
+    {#- Next comes first in the page, so that Enter in a field means Next; the row draws it last. #}
+    {%- if step == "review" %}
+    <button type="submit" class="btn primary" name="nav" value="confirm"{% if not review %} disabled{% endif %}>Confirm…</button>
+    {%- else %}
+    <button type="submit" class="btn primary" name="nav" value="next">Next</button>
+    {%- endif %}
+    <button type="submit" class="btn" name="nav" value="back" formnovalidate>Back</button>
+    <button type="submit" class="btn" formaction="/add-source/{{ wizard_id }}/cancel" formnovalidate>Cancel</button>
+  </span></div>
+</form>
+{%- endif %}
+</main>
+</div>
+{% endblock %}

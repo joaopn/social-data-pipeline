@@ -29,11 +29,12 @@
     <span class="mini">{% for cell in row.cells %}<i class="{{ {'run': 'r', 'setup': 's', 'none': ''}[cell.state] }}" title="{{ cell.profile }}: {{ {'run': 'running', 'setup': 'set up', 'none': 'not set up'}[cell.state] }}"></i>{% endfor %}</span>
   {%- if row.href %}</a>{% else %}</span>{% endif %}
   {%- endfor %}
+  <a class="btn sm add-source" href="/add-source">+ Add source</a>
 </aside>
 <main class="main pane">
 {%- if source_name is none %}
 <h1>Sources</h1>
-<p class="muted mt">{% if block.ok %}No source is configured. Add one in a terminal with <code>python sdp.py source add &lt;name&gt;</code>.{% else %}The sources could not be read.{% endif %}</p>
+<p class="muted mt">{% if block.ok %}No source is configured. Add one with <a href="/add-source">Add source</a>, or in a terminal with <code>python sdp.py source add &lt;name&gt;</code>.{% else %}The sources could not be read.{% endif %}</p>
 {%- else %}
 {%- set status = source_status %}
 {%- set known = status.ok and status.found %}

@@ -236,6 +236,7 @@ def test_the_back_end_gets_exactly_its_environment_and_nothing_of_the_runner(cha
     r.wait(chat)
     config, tmp = str(r.work / chat / "home"), str(r.tmp / f"sdp-chat-{chat}")
     assert r.records()[0]["env"] == {
+        "SDP_CHAT_GATEWAY": "127.0.0.1", "SDP_CHAT_DATABASES": "mongo",
         "HOME": f"{tmp}/home", "CLAUDE_CONFIG_DIR": config, "CLAUDE_CODE_TMPDIR": tmp, "TMPDIR": tmp, "MPLCONFIGDIR": f"{tmp}/matplotlib",
         "PATH": "/usr/local/bin:/usr/bin:/bin", "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080", "CLAUDE_CODE_OAUTH_TOKEN": claude.PLACEHOLDER_TOKEN,
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1", "DISABLE_AUTOUPDATER": "1", "DISABLE_ERROR_REPORTING": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",

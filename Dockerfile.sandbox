@@ -40,6 +40,9 @@ COPY social_data_pipeline/__init__.py /app/social_data_pipeline/__init__.py
 COPY social_data_pipeline/control/__init__.py social_data_pipeline/control/errors.py social_data_pipeline/control/framing.py /app/social_data_pipeline/control/
 COPY social_data_pipeline/chat/ /app/social_data_pipeline/chat/
 RUN chmod -R a+rX /app
+# sdp_data, with which the assistant's scripts query the attached databases through the gateway (chat/sdp_data.py, which imports nothing of the package), as a top-level module in the interpreter's own site-packages: `python3 -I` ignores PYTHONPATH and imports it there too.
+RUN install -m 0644 /app/social_data_pipeline/chat/sdp_data.py "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/sdp_data.py" \
+    && python -I -c "import sdp_data, mcp"
 
 # Nobody by default; the chat is to run it as the operator's uid and gid.
 USER 65534:65534

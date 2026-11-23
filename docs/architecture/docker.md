@@ -23,6 +23,7 @@ flowchart TD
             SR["starrocks"]
         end
         MCPS["postgres-mcp, mongo-mcp, starrocks-mcp"]
+        CMCP["chat-mongo-mcp, chat-starrocks-mcp"]
         JOBS["jobs"]
     end
     subgraph OWN["Containers of their own commands"]
@@ -32,6 +33,7 @@ flowchart TD
     end
     ING --> SERVERS
     MCPS --> SERVERS
+    CMCP --> SERVERS
     JOBS --> SERVERS
     DATA[("Host data folders: dumps, extracted, parsed, output, database")] --- STAGES
     DATA --- SERVERS
@@ -39,13 +41,14 @@ flowchart TD
     WEB -.->|"data/jobs/control"| JOBS
     WEB -.->|".sdp/chat/socket"| SB
     SB -->|"sdp-chat"| GW
-    GW -->|"sdp-chat-up"| MCPS
+    GW -->|"sdp-chat-up: postgres-mcp"| MCPS
+    GW -->|"sdp-chat-up"| CMCP
     GW -->|"sdp-chat-up"| JOBS
 ```
 
 ## Profiles and services
 
-15 services, one per profile. Three images are pulled; the others are built locally from the Dockerfiles in the repository.
+17 services, one per profile. Three images are pulled; the others are built locally from the Dockerfiles in the repository.
 
 | Profile | Service | Image | What it is for | Started by |
 |---|---|---|---|---|
@@ -63,6 +66,8 @@ flowchart TD
 | `postgres_mcp` | `postgres-mcp` | Pulled: `crystaldba/postgres-mcp` | MCP server (SSE) | `python sdp.py db start`, when configured |
 | `mongo_mcp` | `mongo-mcp` | Built: `Dockerfile.mcp-mongo` | MCP server (Streamable HTTP) | `python sdp.py db start`, when configured |
 | `starrocks_mcp` | `starrocks-mcp` | Built: `Dockerfile.mcp-starrocks` | MCP server (Streamable HTTP) | `python sdp.py db start`, when configured |
+| `chat_mongo_mcp` | `chat-mongo-mcp` | The image of `mongo-mcp` (`sdp-mongo-mcp`), never pulled | The chat's copy of the MongoDB MCP server, with the query time limit; no published port | `python sdp.py chat start` |
+| `chat_starrocks_mcp` | `chat-starrocks-mcp` | The image of `starrocks-mcp` (`sdp-starrocks-mcp`), never pulled | The chat's copy of the StarRocks MCP server, with the query time limit; no published port | `python sdp.py chat start` |
 | `jobs` | `jobs` | Built: `Dockerfile.jobs` | Query scheduler: page, MCP and runner | `python sdp.py db start jobs`, or `python sdp.py db start` when one of its targets' databases is being started |
 
 Three more containers live outside the Compose file:
@@ -85,8 +90,8 @@ The databases restart only on request (`restart: "no"`) and get long stop grace 
 | `Dockerfile.starrocks` | `python:3.13-slim` | `requirements-starrocks.txt`: MySQL Connector/Python, PyArrow, PyYAML | none |
 | `Dockerfile.jobs` | `python:3.13-slim` | `requirements-jobs.txt`: FastAPI, uvicorn, Jinja2, the `mcp` SDK, sqlparse, PyArrow and the three database clients | Downloads its page's CSS and JS at build time |
 | `Dockerfile.postgres` | `postgres:18` | none | `pg_parquet`, the first-start scripts in `config/postgres/initdb.d/` |
-| `Dockerfile.mcp-mongo` | `oven/bun:1` build, `node:22-slim` runtime | none | `mcp-mongo-server` at a pinned commit with three patches from `config/mcp/` |
-| `Dockerfile.mcp-starrocks` | `python:3.13-slim` | `mcp-server-starrocks==0.3.0` | none |
+| `Dockerfile.mcp-mongo` | `oven/bun:1` build, `node:22-slim` runtime | none | `mcp-mongo-server` at a pinned commit with four patches from `config/mcp/` |
+| `Dockerfile.mcp-starrocks` | `python:3.13-slim` | `mcp-server-starrocks==0.3.0` | One patch from `config/mcp/`, applied with `patch`, which is removed again |
 | `Dockerfile.webui` | `python:3.13-slim` | `requirements-webui.txt`: FastAPI, uvicorn, Jinja2 | `openssl`; htmx 2.0.4, Vega 6.4.0, Vega-Lite 6.5.0 and vega-embed 7.3.0, each checked against a SHA-256 sum |
 | `Dockerfile.gateway` | `python:3.13-slim` | none | The gateway package only |
 | `Dockerfile.sandbox` | `python:3.13-slim` | `requirements-sandbox.txt`: pandas, NumPy, Matplotlib, PyArrow, Altair and vl-convert (pinned), the `mcp` SDK | Claude Code at a pinned version, checked against a SHA-256 sum |
@@ -126,9 +131,9 @@ The web UI and the chat mount only folders under `.sdp/` in the deployment folde
 | The compose project's default network | Docker Compose | Every Compose service | The MCP servers and the scheduler reach the databases by service name (`postgres`, `mongo`, `starrocks`) |
 | `sdp-webui` | `python sdp.py webui start`, when missing | `sdp-webui` | A bridge with masquerading switched off, so the container reaches the machine and nothing beyond; start refuses a network of that name of another driver or with masquerading on |
 | `sdp-chat` | `python sdp.py chat start` | `sdp-sandbox`, `sdp-gateway` | Internal, IPv4 only, IPv4 gateway mode `isolated`: this machine has no address on it, and the sandbox's only peer is the gateway |
-| `sdp-chat-up` | `python sdp.py chat start` | `sdp-gateway`, each attached MCP server and the scheduler, under aliases | An ordinary bridge; the compose project's own network is never touched |
+| `sdp-chat-up` | `python sdp.py chat start` | `sdp-gateway`, each attached MCP server (`postgres-mcp`, and the chat's copies `chat-mongo-mcp` and `chat-starrocks-mcp`) and the scheduler, under aliases | An ordinary bridge; the compose project's own network is never touched |
 
-`python sdp.py chat stop` removes both chat networks; `python sdp.py webui unsetup` removes `sdp-webui`.
+`python sdp.py chat stop` removes both chat networks and the chat's copies of the MCP servers; `python sdp.py webui unsetup` removes `sdp-webui`.
 
 ## Published ports
 
@@ -155,6 +160,7 @@ The gateway and the sandbox publish no port.
 | `python sdp.py db stop [<db>]` | `down` with every configured database and MCP profile and, when it is configured, the jobs profile; with `<db>`, that database and its MCP profile only |
 | `python sdp.py db stop <db>-mcp`, `db stop jobs` | `stop` and `rm -f` of that one service |
 | `python sdp.py run <profile>` | `--profile <profile> run --rm [--build] <service>` with the source's folders in the environment |
+| `python sdp.py chat start` | For MongoDB and StarRocks, when attached: `--project-directory <deployment> --profile <db> --profile chat_<db>_mcp up --detach --no-deps --wait --wait-timeout 60 chat-<db>-mcp`, with `CHAT_QUERY_TIMEOUT_SECONDS` in its environment; this call is not printed. `chat stop` removes the copies with `docker rm --force`, not through Compose |
 
 Every call prints the command it runs; passwords are never part of it, they travel in the environment. Running Compose by hand works the same way, but every command needs the right `--profile` flags, and an MCP service also needs its database's profile, for example `docker compose --profile mongo --profile mongo_mcp logs mongo-mcp`.
 
@@ -167,8 +173,8 @@ Every call prints the command it runs; passwords are never part of it, they trav
 | Python code in `social_data_pipeline/`, `requirements.txt`, `requirements-gpu.txt`, `requirements-mongo.txt`, `requirements-starrocks.txt`, or the stage Dockerfiles | `python sdp.py run <profile> --build` for each stage that uses it (for example `python sdp.py run mongo_ingest --build`) |
 | The scheduler's code, `requirements-jobs.txt` or `Dockerfile.jobs` | `python sdp.py db start jobs`: the scheduler's image is rebuilt every time it is started, also by `python sdp.py db start [<db>]` when one of its targets' databases is being started |
 | `Dockerfile.postgres` or `config/postgres/initdb.d/` | `docker compose --profile postgres build postgres`, then a restart; the first-start scripts run only when the database is first initialized |
-| `Dockerfile.mcp-mongo`, its patches or `config/mcp/entrypoint-mongo.sh` | `docker compose --profile mongo --profile mongo_mcp build mongo-mcp`, then a restart |
-| `Dockerfile.mcp-starrocks` or `config/mcp/entrypoint-starrocks.sh` | `docker compose --profile starrocks --profile starrocks_mcp build starrocks-mcp`, then a restart |
+| `Dockerfile.mcp-mongo`, its patches or `config/mcp/entrypoint-mongo.sh` | `docker compose --profile mongo --profile mongo_mcp build mongo-mcp`, then a restart (for the chat's copy `chat-mongo-mcp`, `python sdp.py chat stop`, then `chat start`) |
+| `Dockerfile.mcp-starrocks`, its patch or `config/mcp/entrypoint-starrocks.sh` | `docker compose --profile starrocks --profile starrocks_mcp build starrocks-mcp`, then a restart (for the chat's copy `chat-starrocks-mcp`, `python sdp.py chat stop`, then `chat start`) |
 | The web UI's code, `requirements-webui.txt` or `Dockerfile.webui` | `python sdp.py webui rebuild`: it builds the image from the saved settings, then stops and starts the web UI (logged-in sessions end) |
 | The chat's code, the gateway's code, `requirements-sandbox.txt`, `Dockerfile.gateway` or `Dockerfile.sandbox` | `python sdp.py chat rebuild`: it builds both images from the saved settings, then stops and starts the chat |
 | The broker's code (`social_data_pipeline/control/`) | `python sdp.py broker stop`, then `python sdp.py broker start`: it runs from the clone, not from an image |

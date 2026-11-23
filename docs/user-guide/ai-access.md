@@ -73,4 +73,4 @@ Configure it with `python sdp.py db setup-jobs` after `python sdp.py db setup-mc
 
 ## The built-in assistant (chat)
 
-The chat is an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential and reaches the model and the databases' MCP servers for it. `python sdp.py chat start` attaches the running MCP server of each database that is on a read-only user. You ask it questions in the web UI's Chat window. See [Chat](chat.md).
+The chat is an AI assistant in a sandbox container whose only network peer is a gateway container that holds the model's credential and reaches the model and the databases' MCP servers for it. `python sdp.py chat start` attaches the running MCP server of each database that is on a read-only user; for MongoDB and StarRocks it runs the chat's own copy of the server, which stops every query after `CHAT_QUERY_TIMEOUT_SECONDS` of `.env` (90 seconds by default; PostgreSQL ignores it, its MCP server keeping its own limit), and leaves the shared servers you connect your own tools to unchanged. You ask it questions in the web UI's Chat window. See [Chat](chat.md).

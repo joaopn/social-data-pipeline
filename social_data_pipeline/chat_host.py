@@ -2,7 +2,7 @@
 
 What it keeps, in `<root>/.sdp/chat/` (0700): `config.json` (0600: the back end, for an OpenAI-compatible one its address and model, the soft cap of the work folder in GiB, the Claude Code version of the sandbox image), `credential/` (0700) with `model.token` (0600: the model's secret, asked without echo, never printed, logged, put on a command line or in an environment), `work/` (0700: one folder per chat, later) and `socket/` (0700). Every folder is opened relative to the one above it without following a link, must be a real folder of the operator and is given mode 0700 whatever the umask; files are written by the broker's file rules (`control.files`: a temporary file made exclusively with mode 0600, then renamed).
 
-`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which, for each database whose MCP server runs on a read-only user, an MCP container is attached under an alias (for MongoDB and StarRocks the chat's own copy of the server, the compose service `chat-<db>-mcp`, which `start` starts and `stop` removes, with the query time limit `CHAT_QUERY_TIMEOUT_SECONDS` of the deployment's `.env` that the database enforces; for PostgreSQL, whose server ignores that limit, the shared server itself), and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`); `rebuild` builds both images again from the saved settings, then stops and starts the chat. `apply_query_limit` (`chat query-limit <seconds>`, after `sdp` wrote the value to `.env`) starts the copies that run now again with the new limit and attaches them again, leaving the gateway and the sandbox running. Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
+`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which, for each database whose MCP server runs on a read-only user, an MCP container is attached under an alias (for MongoDB and StarRocks the chat's own copy of the server, the compose service `chat-<db>-mcp`, which `start` starts and `stop` removes, with the query time limit `CHAT_QUERY_TIMEOUT_SECONDS` of the deployment's `.env` that the database enforces; for PostgreSQL, whose server ignores that limit, the shared server itself), and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`); `rebuild` builds both images again from the saved settings, then stops and starts the chat. `apply_query_limit` (`chat query-limit <seconds>`, after `sdp` wrote the value to `.env`) starts the copies that run now again with the new limit and attaches them again, leaving the gateway and the sandbox running. The switch of generated chat titles, `CHAT_AUTO_TITLE` of `.env` (`auto_title`, set by `chat auto-title on|off`), is handed to the sandbox at `start` only. Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
 """
 
 import contextlib
@@ -634,6 +634,10 @@ QUERY_KEY = "CHAT_QUERY_TIMEOUT_SECONDS"
 DEFAULT_QUERY_SECONDS = 90
 QUERY_SECONDS_MAX = 3600
 QUERY_ENV = "SDP_CHAT_QUERY_SECONDS"
+# The switch of generated chat titles: the key of the deployment's `.env` (absent or empty: on), its two values, and the sandbox's environment entry for it, which the runner reads at its start.
+AUTO_TITLE_KEY = "CHAT_AUTO_TITLE"
+AUTO_TITLE_VALUES = ("on", "off")
+AUTO_TITLE_ENV = "SDP_CHAT_AUTO_TITLE"
 # How long `start` lets Compose wait for a copy to run.
 COPY_WAIT_SECONDS = 60
 # The label the mongo and starrocks MCP Dockerfiles give an image that honours the query time limit (an image built before it ignores the limit silently).
@@ -749,8 +753,8 @@ def gateway_arguments(root, uid, gid, address):
     ]
 
 
-def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None, queue=False, query_seconds=None):
-    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`), the models a chat may be given (`SDP_CHAT_MODELS`: `CLAUDE_MODELS`, or the one model of an OpenAI-compatible back end), with `queue` `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler) and with `query_seconds` `SDP_CHAT_QUERY_SECONDS` (the query time limit of the chat's MongoDB and StarRocks servers), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
+def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None, queue=False, query_seconds=None, auto_title=True):
+    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`), the models a chat may be given (`SDP_CHAT_MODELS`: `CLAUDE_MODELS`, or the one model of an OpenAI-compatible back end), with `queue` `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler) with `query_seconds` `SDP_CHAT_QUERY_SECONDS` (the query time limit of the chat's MongoDB and StarRocks servers), and always `SDP_CHAT_AUTO_TITLE` (`on` or `off` from `auto_title`: whether a new chat gets a title made by the model), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
     return [
         *_confined(SANDBOX_CONTAINER, root, uid, gid),
         "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
@@ -763,6 +767,7 @@ def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=No
         "-e", f"SDP_CHAT_MODELS={model if backend == OPENAI_COMPATIBLE else ','.join(CLAUDE_MODELS)}",
         *(["-e", f"{QUEUE_ENV}=1"] if queue else []),
         *(["-e", f"{QUERY_ENV}={query_seconds}"] if query_seconds is not None else []),
+        "-e", f"{AUTO_TITLE_ENV}={'on' if auto_title else 'off'}",
         SANDBOX_IMAGE,
     ]
 
@@ -1015,6 +1020,32 @@ def query_setting(root):
     return data
 
 
+def auto_title(root):
+    """Whether a new chat gets a title made by the chat's model: `CHAT_AUTO_TITLE` of the deployment's `.env` (`env_value`), on when there is no file, no such line or an empty value. Raises Refused, naming the key and the command that sets it, for any value but `on` or `off`."""
+    return _auto_title_from_value(env_value(root, AUTO_TITLE_KEY))
+
+
+def _auto_title_from_value(value):
+    if not value:
+        return True
+    if value not in AUTO_TITLE_VALUES:
+        raise Refused(f"{AUTO_TITLE_KEY} in the deployment's .env is neither on nor off. Set it again: python sdp.py chat auto-title on|off")
+    return value == "on"
+
+
+def auto_title_setting(root):
+    """The switch of generated chat titles as `chat auto-title` and the web UI show it: {"on": whether the sandbox gets it on at its next start (None when it cannot be told), "default": whether `.env` sets none (on then applies), "problem": why there is no setting to show (a value that is neither on nor off, a `.env` that cannot be read), else None}. Only that one value of `.env` is read. Never raises."""
+    data = {"on": None, "default": False, "problem": None}
+    try:
+        value = env_value(root, AUTO_TITLE_KEY)
+        data["on"], data["default"] = _auto_title_from_value(value), not value
+    except Refused as refusal:
+        data["problem"] = refusal.message
+    except Exception as error:
+        data["problem"] = f"the deployment's .env cannot be read ({type(error).__name__})"
+    return data
+
+
 def _find_queue(root):
     """((the scheduler's container id, its port), None) when exactly one container of the compose service `jobs` of this deployment runs, else (None, why)."""
     listing = _docker(compose_listing(JOBS_SERVICE))
@@ -1259,6 +1290,7 @@ def _start(root, uid, gid):
     _check_root(root)
     settings = _settings_or_refuse(root)
     seconds = query_seconds(root)
+    titles = auto_title(root)
     for image in (GATEWAY_IMAGE, SANDBOX_IMAGE):
         if _docker(["docker", "image", "inspect", "--format", "{{.Id}}", image]).returncode != 0:
             raise Refused(f"the image {image} is missing.\n{SETUP_FIRST}")
@@ -1314,7 +1346,7 @@ def _start(root, uid, gid):
             _step(["docker", "network", "connect", "--alias", db.alias, UP_NETWORK, container], f"the MCP server of {db.name} could not be attached")
         if queue is not None:
             _step(["docker", "network", "connect", "--alias", QUEUE_ALIAS, UP_NETWORK, queue[0]], "the query scheduler could not be attached")
-        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"], settings.get("model"), queue=queue is not None, query_seconds=seconds), "the sandbox's container could not be created")
+        _step(sandbox_arguments(root, uid, gid, address, settings["backend"], [db.name for db, _ in attached], settings["work_cap_gib"], settings.get("model"), queue=queue is not None, query_seconds=seconds, auto_title=titles), "the sandbox's container could not be created")
         made.append(SANDBOX_CONTAINER)
         _step(["docker", "start", SANDBOX_CONTAINER], "the sandbox did not start")
         after = _state(SANDBOX_CONTAINER)

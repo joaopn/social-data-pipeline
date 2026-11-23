@@ -341,20 +341,22 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
 
     @api.get("/settings/deployment")
     async def deployment_settings(request: Request):
-        """The settings box's section "This deployment" (`_settings_deployment.html`): the read-only query limit for chats from `chat.settings`, and the form that changes it through the pending page (the management password asked there, as for every step-up action). A part the box asks the first time it is opened, so that no page waits for it; a full bound answers the part with a line, a session the broker has ended the usual way to the login."""
+        """The settings box's section "This deployment" (`_settings_deployment.html`): the read-only query limit for chats and the switch of generated chat titles from one `chat.settings`, and the forms that change them through the pending page (the management password asked there for the limit, a step-up action; none for the switch, a write action). A part the box asks the first time it is opened, so that no page waits for it; a full bound answers the part with a line, a session the broker has ended the usual way to the login."""
         session_id, session = current(request)
         if session is None:
             return to_login(request, clear_cookie=bool(session_id))
         answer = await indicators.run(lambda: call_broker(lambda: read_client(session.token), lambda made: actions.call(made, "chat.settings", {})))
         if answer is BUSY_GATE:
             model = {**pages_data.query_limit_model("ok", None), "failure": pages_data.QUERY_LIMIT_BUSY}
+            titles = {**pages_data.auto_title_model("ok", None), "failure": pages_data.AUTO_TITLE_BUSY}
         else:
             kind, value = answer
             if kind == "error" and session_ends(value):
                 sessions.forget(session_id)
                 return to_login(request, why(value), clear_cookie=True)
             model = pages_data.query_limit_model(kind, value)
-        return render("_settings_deployment.html", limit=model, form_token=session.form_token)
+            titles = pages_data.auto_title_model(kind, value)
+        return render("_settings_deployment.html", limit=model, titles=titles, form_token=session.form_token)
 
     @api.get("/overview/live")
     async def overview_live(request: Request):

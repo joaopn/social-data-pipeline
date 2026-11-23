@@ -66,6 +66,8 @@ SERVICES = ("postgres", "mongo", "starrocks", "postgres-mcp", "mongo-mcp", "star
 ERROR_LOG_PROFILES = ("postgres_ingest", "postgres_ml", "mongo_ingest")
 # The largest query time limit of the chat's MCP servers, in seconds (`chat_host.QUERY_SECONDS_MAX`; a test compares them).
 CHAT_QUERY_SECONDS_MAX = 3600
+# The two values of the switch of generated chat titles (`chat_host.AUTO_TITLE_VALUES`, the parser's choices of `chat auto-title`).
+AUTO_TITLE_CHOICES = ("on", "off")
 
 
 class FieldRefused(ValueError):
@@ -587,6 +589,15 @@ VERBS = _registry(
         socket_enabled=True,
         note="Writes CHAT_QUERY_TIMEOUT_SECONDS to .env and, when the chat runs, starts its MongoDB and StarRocks MCP servers again with it; the gateway and the sandbox go on.",
         action="do_chat_query_limit",
+    ),
+    Verb(
+        name="chat.auto_title", cls="write", cli=("chat", "auto-title"),
+        # Without `value` the command only shows the setting, which `chat.settings` reads: the socket always sets one.
+        cli_inputs={"value"},
+        socket_inputs={"value": Field(Enum(AUTO_TITLE_CHOICES), required=True)},
+        socket_enabled=True,
+        note="Writes CHAT_AUTO_TITLE to .env; the chat's sandbox takes it at its next start, nothing is restarted.",
+        action="do_chat_auto_title",
     ),
     Verb(
         name="db.recover_password", cls="step_up", cli=("db", "recover-password"),

@@ -12,6 +12,7 @@ from social_data_pipeline.webui.overview import ALIVE_STATES, SHAPE_SENTENCE, ST
 VALUE_MAX_CHARS = 300
 # The line of the settings box's "This deployment" when the page could not ask the broker (its bound was full).
 QUERY_LIMIT_BUSY = "The current limit could not be asked now: close the box and open it on the next page."
+AUTO_TITLE_BUSY = "The current setting could not be asked now: close the box and open it on the next page."
 ERROR_TEXT_MAX_CHARS = 4000
 DATABASE_NAMES = {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}
 INGESTION_NAMES = {"postgres": "PostgreSQL", "mongo": "MongoDB", "sr_ingest": "StarRocks", "sr_ml": "StarRocks classifiers"}
@@ -340,6 +341,26 @@ def query_limit_model(kind, value):
         model["failure"] = SHAPE_SENTENCE
         return model
     model.update(seconds=seconds, default=default, default_seconds=default_seconds, problem=None if problem is None else text(problem[:ERROR_TEXT_MAX_CHARS]))
+    return model
+
+
+def auto_title_model(kind, value):
+    """The switch of generated chat titles in the settings box's section "This deployment", from the same answer of `chat.settings` (`kind`, `value` as `call_broker` gives them): `on` (True, False, or None when there is no setting to show), `default` (whether .env sets none), `problem` (the CLI's sentence why there is no setting to show, cleaned) and `failure` (the sentence of a failed read or of an answer of another shape, a broker without the switch included). Without a failure the form is shown, with the setting in force selected when there is one. A failure here leaves the query limit's part alone."""
+    model = {"on": None, "default": False, "problem": None, "failure": None}
+    if kind != "ok":
+        model["failure"] = words.sentence(value)
+        return model
+    try:
+        _need(isinstance(value, dict))
+        setting = value.get("auto_title")
+        _need(isinstance(setting, dict))
+        on, default, problem = setting.get("on"), setting.get("default"), setting.get("problem")
+        _need(isinstance(default, bool))
+        _need((on is None and isinstance(problem, str)) or (isinstance(on, bool) and problem is None))
+    except ShapeError:
+        model["failure"] = SHAPE_SENTENCE
+        return model
+    model.update(on=on, default=default, problem=None if problem is None else text(problem[:ERROR_TEXT_MAX_CHARS]))
     return model
 
 

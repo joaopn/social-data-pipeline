@@ -43,6 +43,8 @@ RUN_LOGS_MAX_LIMIT = 1048576
 LOG_OFFSET_MAX = 2 ** 53
 # The largest read-only query limit for chats, in seconds (`control.verbs.CHAT_QUERY_SECONDS_MAX`).
 CHAT_QUERY_SECONDS_MAX = 3600
+# The two values of the switch of generated chat titles (`control.verbs.AUTO_TITLE_CHOICES`).
+AUTO_TITLE_CHOICES = ("on", "off")
 
 # Literal copies of the scheduler's control socket's rules (`jobs/door.py`: `JOB_ID`, `DIGEST`, `BY_LABEL`, `PHASES`, `JOBS_LIMIT_MAX`, `JOBS_OFFSET_MAX`, `REASON_MAX`): a test compares them.
 JOB_ID_PATTERN = r"(pg|sr|mg|job)_[0-9a-f]{8}"
@@ -602,6 +604,13 @@ QUERY_LIMIT_SENTENCE = (
     "The gateway and the sandbox are not restarted: running chats go on, and keep their own client-side waits until the chat is stopped and started again (python sdp.py chat stop, then python sdp.py chat start). PostgreSQL ignores the limit (its MCP server keeps its own)."
 )
 
+# What `chat auto-title on|off` does (`sdp.py` `do_chat_auto_title`: the setup's `update_env_file` for the one key, no restart; the sandbox is given the value at `chat_host._start` only), and what the setting does in the sandbox's runner.
+AUTO_TITLE_SENTENCE = (
+    "It writes CHAT_AUTO_TITLE to .env, one value for the whole deployment, and keeps every other line of the file. "
+    "It restarts nothing: the chat's sandbox reads the setting when it starts, so the change takes effect at the chat's next start (python sdp.py chat stop, then python sdp.py chat start), and a running chat keeps the setting it started with. "
+    "While it is on, a new chat gets a short title made from its first question by the chat's model a few seconds after it is sent (a title you set is never replaced, and its cost counts in the chat's Cost); while it is off, a new chat keeps the start of its first question as its title."
+)
+
 
 def _table(*actions):
     by_name = {}
@@ -631,7 +640,7 @@ TABLE = _table(
     Action("db.index_targets", "read", "The tables, columns and indexes of a source in one database", {"source": _SOURCE, "db": Input("enum", "Database", required=True, choices=DATABASES)}, form="python sdp.py db index-targets --source=<name> --db=<database>"),
     Action("db.settings", "read", "The current answers of the database setup", form="python sdp.py db settings"),
     Action("source.settings", "read", "The current answers of a source's setup", {"name": _SOURCE}, form="python sdp.py source settings <name>"),
-    Action("chat.settings", "read", "The chat's settings for the whole deployment (the read-only query limit)", form="python sdp.py chat settings"),
+    Action("chat.settings", "read", "The chat's settings for the whole deployment (the read-only query limit, generated chat titles)", form="python sdp.py chat settings"),
     # ── write ──
     Action(
         "run.start", "write", "Start a pipeline run",
@@ -655,6 +664,12 @@ TABLE = _table(
         also=source_download_sentence,
     ),
     Action("session.clear_db_password", "write", "Forget the database admin password of this session", form="(no command: the terminal keeps no password)", op=True),
+    Action(
+        "chat.auto_title", "write", "Switch generated chat titles on or off",
+        {"value": Input("enum", "Generated chat titles", required=True, choices=AUTO_TITLE_CHOICES)},
+        form="python sdp.py chat auto-title on|off", command=lambda fields: _command("chat", "auto-title", _q(fields["value"])),
+        also=lambda fields: AUTO_TITLE_SENTENCE,
+    ),
     # ── step-up ──
     Action(
         "db.start", "step_up", "Start database services",

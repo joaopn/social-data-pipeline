@@ -1,4 +1,4 @@
-{#- The settings box's section "This deployment" (`GET /settings/deployment`, model `pages.query_limit_model`): the read-only query limit for chats in force, and a form that posts `chat.query_limit` to /pending, whose page asks for the management password before anything changes. A failed read says why and offers no form. -#}
+{#- The settings box's section "This deployment" (`GET /settings/deployment`, models `pages.query_limit_model` as `limit` and `pages.auto_title_model` as `titles`, both from one `chat.settings`): the read-only query limit for chats in force, and a form that posts `chat.query_limit` to /pending, whose page asks for the management password before anything changes; then the switch of generated chat titles in force, and a form that posts `chat.auto_title` to /pending (a write action: its page asks no password). A failed read of either says why and offers no form for it. -#}
 {%- if limit.failure %}
 <p class="small muted">The read-only query limit for chats could not be read: {{ limit.failure }}</p>
 {%- else %}
@@ -15,3 +15,22 @@
 </form>
 {%- endif %}
 <p class="small muted">MongoDB and StarRocks stop a chat's query after this many seconds. PostgreSQL ignores it (its MCP server keeps its own limit). Running chats keep their own waits until restarted.</p>
+{%- if titles.failure %}
+<p class="small muted">Generated chat titles could not be read: {{ titles.failure }}</p>
+{%- else %}
+<form class="col" method="post" action="/pending">
+  <input type="hidden" name="form_token" value="{{ form_token }}">
+  <input type="hidden" name="action" value="chat.auto_title">
+  {%- if titles.problem %}
+  <p class="small">Generated chat titles: {{ titles.problem }}</p>
+  {%- else %}
+  <p class="small">Generated chat titles: {{ "on" if titles.on else "off" }}{% if titles.default %} (the default){% endif %}.</p>
+  {%- endif %}
+  <label for="setting-auto-title">Generated chat titles</label>
+  <span class="row"><select class="grow" id="setting-auto-title" name="value" required>
+    <option value="on"{% if titles.on is true %} selected{% endif %}>on</option>
+    <option value="off"{% if titles.on is false %} selected{% endif %}>off</option>
+  </select><button type="submit" class="btn">Save…</button></span>
+</form>
+{%- endif %}
+<p class="small muted">A new chat gets a short title made from its first question by the chat's model; a title you set is never replaced, and its cost counts in the chat's Cost. A change applies at the chat's next start.</p>

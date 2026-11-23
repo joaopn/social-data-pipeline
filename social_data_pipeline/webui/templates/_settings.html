@@ -1,4 +1,4 @@
-{#- The settings box of the top bar: a gear button that opens a small floating box (a dialog placed by app.css, no inline style). What it holds is kept per browser (localStorage, through app.js and theme.js), never sent to the server: the theme (`sdp.theme`: dark, light or follow the browser) and the default model for new chats (`sdp.defaultModel`: "opus", "sonnet", "haiku", or empty for the backend's default; the new-chat form reads it). Without the browser's storage the box still changes the open page, and the page is dark. Under them, apart, "This deployment": the read-only query limit for chats, one value of the server for the whole deployment, asked from `GET /settings/deployment` the first time the box opens (`_settings_deployment.html`) and changed through the pending page with the management password; the two browser settings work without it. -#}
+{#- The settings box of the top bar: a gear button that opens a small floating box (a dialog placed by app.css, no inline style). What it holds is kept per browser (localStorage, through app.js and theme.js), never sent to the server: the theme (`sdp.theme`: dark, light or follow the browser) and the default model for new chats (`sdp.defaultModel`: "opus", "sonnet", "haiku", or empty for the backend's default; the new-chat form reads it). Without the browser's storage the box still changes the open page, and the page is dark. Under them, apart, "This deployment": the read-only query limit for chats and the switch of generated chat titles, values of the server for the whole deployment, asked from `GET /settings/deployment` the first time the box opens (`_settings_deployment.html`) and changed through the pending page (the limit with the management password); the two browser settings work without it. -#}
 <span class="settings">
   <button type="button" class="btn ghost sm gear" id="settings-button" aria-expanded="false" aria-controls="settings-box" aria-haspopup="dialog" aria-label="Settings" title="Settings"><span aria-hidden="true">⚙</span></button>
   <div class="settings-box" id="settings-box" role="dialog" aria-label="Settings" hidden>
@@ -21,7 +21,7 @@
     <p class="small muted">The model applies to Claude Code; an OpenAI-compatible backend always uses its one configured model. Both settings are kept in this browser only.</p>
     <h4>This deployment</h4>
     <div class="col" id="settings-deployment" hx-get="/settings/deployment" hx-trigger="click from:#settings-button once" hx-swap="innerHTML">
-      <p class="small muted">Read-only query limit for chats: read from the server when the box opens.</p>
+      <p class="small muted">Read-only query limit and generated titles for chats: read from the server when the box opens.</p>
     </div>
   </div>
 </span>

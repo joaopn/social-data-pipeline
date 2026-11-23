@@ -60,6 +60,7 @@ Usage:
     sdp.py chat status                       Say whether the chat runs, which databases it can read now and the size of its work folder
     sdp.py chat settings                     Show the chat's settings for the whole deployment (the read-only query limit)
     sdp.py chat query-limit [<seconds>]      Show or set the read-only query limit of the chat's MongoDB and StarRocks MCP servers
+    sdp.py chat auto-title [on|off]          Show or set whether a new chat gets a short title made by the chat's model (on by default)
     sdp.py chat unsetup                      Remove the chat's images, settings and credential (and, if asked, all chats)
 
     sdp.py setup                             Legacy: full interactive setup (core + classifiers + platform)
@@ -7443,8 +7444,9 @@ def cmd_chat_settings(args):
 
 
 def get_chat_settings():
-    """The chat's settings for the whole deployment: `query_limit`, the query time limit of the chat's MongoDB and StarRocks MCP servers (`chat_host.query_setting`: `seconds`, `default`, `default_seconds`, `max_seconds`, `problem`). Only that one value of .env is read. Prints nothing; never raises."""
-    return {"query_limit": _chat_host().query_setting(str(ROOT))}
+    """The chat's settings for the whole deployment: `query_limit`, the query time limit of the chat's MongoDB and StarRocks MCP servers (`chat_host.query_setting`: `seconds`, `default`, `default_seconds`, `max_seconds`, `problem`), and `auto_title`, the switch of generated chat titles (`chat_host.auto_title_setting`: `on`, `default`, `problem`), which `chat settings` does not print (`chat auto-title` does). Only those two values of .env are read. Prints nothing; never raises."""
+    host = _chat_host()
+    return {"query_limit": host.query_setting(str(ROOT)), "auto_title": host.auto_title_setting(str(ROOT))}
 
 
 def print_chat_settings(data):
@@ -7491,6 +7493,45 @@ def do_chat_query_limit(*, seconds):
         return 1
     print(f"  Updated:   .env ({host.QUERY_KEY}={seconds})")
     return host.apply_query_limit(str(ROOT), seconds)
+
+
+def cmd_chat_auto_title(args):
+    """Without a value, show whether a new chat gets a title made by the chat's model; with `on` or `off` (the parser refuses anything else), set it (`do_chat_auto_title`)."""
+    if args.value is None:
+        setting = _chat_host().auto_title_setting(str(ROOT))
+        key = _chat_host().AUTO_TITLE_KEY
+        print()
+        if setting["problem"]:
+            print(f"  Error: {setting['problem']}.")
+        else:
+            source = f"the default: {key} is not set in .env" if setting["default"] else f"{key} in .env"
+            print(f"  Generated chat titles: {'on' if setting['on'] else 'off'} ({source})")
+        print("  A new chat gets a short title made from its first question by the chat's model, a few seconds after it is sent; a title you set is never replaced; its cost counts in the chat's Cost.")
+        print("  Change it: python sdp.py chat auto-title on|off (on when it is not set); a change takes effect at the chat's next start.")
+        print()
+        return 1 if setting["problem"] else 0
+    try:
+        return do_chat_auto_title(value=args.value)
+    except ActionError as error:
+        print(f"  Error: {error.message}.")
+        return error.exit_code
+
+
+def do_chat_auto_title(*, value):
+    """`chat auto-title on|off` with its value given: write CHAT_AUTO_TITLE to .env (`update_env_file`, every other line kept). Restarts nothing: the sandbox is given the setting at the chat's next start (`chat_host.sandbox_arguments`). Asks nothing; returns the exit code. Raises ActionError, before anything is written, for a value that is not exactly `on` or `off`."""
+    host = _chat_host()
+    if not isinstance(value, str) or value not in host.AUTO_TITLE_VALUES:
+        raise ActionError("the setting must be on or off")
+    from social_data_pipeline.setup.utils import update_env_file
+
+    try:
+        update_env_file({host.AUTO_TITLE_KEY: value})
+    except OSError as error:
+        print(f"  Error: .env could not be written ({error.strerror or type(error).__name__}). Check the file and run the command again.")
+        return 1
+    print(f"  Updated:   .env ({host.AUTO_TITLE_KEY}={value})")
+    print("  It takes effect at the chat's next start: python sdp.py chat stop, then python sdp.py chat start. Nothing was restarted.")
+    return 0
 
 
 def cmd_chat_unsetup(args):
@@ -7810,6 +7851,10 @@ def build_parser():
     chat_query_limit_p = chat_sub.add_parser("query-limit", help="Show or set the read-only query limit of the chat's MongoDB and StarRocks MCP servers (whole seconds, 1 to 3600; 90 when not set); setting it restarts those two servers when the chat runs, not the chat itself")
     chat_query_limit_p.add_argument("seconds", nargs="?", default=None, help="The new limit in seconds; without it, the limit in force is shown")
     chat_query_limit_p.set_defaults(func=cmd_chat_query_limit)
+
+    chat_auto_title_p = chat_sub.add_parser("auto-title", help="Show or set whether a new chat gets a short title made from its first question by the chat's model (on when not set); a change takes effect at the chat's next start, nothing is restarted")
+    chat_auto_title_p.add_argument("value", nargs="?", default=None, choices=("on", "off"), help="on or off; without it, the setting in force is shown")
+    chat_auto_title_p.set_defaults(func=cmd_chat_auto_title)
 
     chat_unsetup_p = chat_sub.add_parser("unsetup", help="Remove the chat's images, settings and credential (and, if asked, all chats)")
     chat_unsetup_p.set_defaults(func=cmd_chat_unsetup)

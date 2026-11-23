@@ -122,11 +122,12 @@ The gear beside them opens the **settings** (Escape or a click outside closes th
 
 In a private window, or with the site's storage blocked, the settings apply to the open page only and every page opens dark.
 
-Under them, apart, **This deployment** holds a setting of the server, one value for the whole deployment, read from the broker when the box is first opened on a page:
+Under them, apart, **This deployment** holds settings of the server, each one value for the whole deployment, read from the broker when the box is first opened on a page:
 
 | Setting | What it does |
 |---|---|
 | **Read-only query limit for chats (seconds)** | The time after which MongoDB and StarRocks stop a chat's query (`CHAT_QUERY_TIMEOUT_SECONDS`, 1 to 3600; the box shows the value in force and whether it is the default of 90). **Save…** opens the confirm page, which asks for the management password, as `python sdp.py chat query-limit <seconds>`. When the chat runs, its MongoDB and StarRocks MCP servers are started again with the new limit; the chat itself is not restarted, and running chats keep their own waits until it is (`chat stop`, then `chat start`). PostgreSQL ignores the limit (its MCP server keeps its own). See [The query time limit](chat.md#the-query-time-limit). |
+| **Generated chat titles** | Whether a new chat gets a short title made from its first question by the chat's model (`CHAT_AUTO_TITLE`, on or off; the box shows the setting in force and whether it is the default, on). **Save…** opens the confirm page, which asks for no management password, as `python sdp.py chat auto-title on\|off`. The change applies at the chat's next start (`chat stop`, then `chat start`); nothing is restarted. See [Generated chat titles](chat.md#generated-chat-titles). |
 
 | Page | What it shows | What you can do there |
 |---|---|---|

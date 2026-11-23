@@ -64,7 +64,7 @@ def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
         "db.setup", "db.settings",
         "db.index_targets", "db.create_indexes",
         "source.configure", "source.add_classifiers", "source.settings",
-        "chat.settings", "chat.query_limit",
+        "chat.settings", "chat.query_limit", "chat.auto_title",
     }
     for action in verb_entries:
         verb = verbs.VERBS[action.name]
@@ -113,6 +113,7 @@ def test_the_patterns_and_choices_are_the_registrys():
     assert (actions.HF_DATASET_PART, actions.HF_DATASET_PATTERN, actions.HF_SQL_TYPES) == (types.HF_DATASET_PART, types.HF_DATASET_PATTERN, verbs.HF_SQL_TYPES)
     assert (actions.VALID_PROFILES, actions.DATABASES, actions.SERVICES, actions.ERROR_LOG_PROFILES) == (verbs.VALID_PROFILES, verbs.DATABASES, verbs.SERVICES, verbs.ERROR_LOG_PROFILES)
     assert actions.RUN_LOGS_MIN_LIMIT == broker_server.redact.MIN_PIECE_BYTES
+    assert actions.AUTO_TITLE_CHOICES == verbs.VERBS["chat.auto_title"].socket_inputs["value"].type.choices == verbs.AUTO_TITLE_CHOICES == ("on", "off")
     assert (actions.PATH_MAX_BYTES, actions.TEXT_MAX_BYTES, actions.PORT_MIN, actions.PORT_MAX, actions.CONTAINER_ITEMS_MAX, actions.RECORD_KEY_PATTERN) == (types.PATH_MAX_BYTES, types.TEXT_MAX_BYTES, types.PORT_MIN, types.PORT_MAX, types.CONTAINER_ITEMS_MAX, types.RECORD_KEY_PATTERN)
 
 
@@ -235,6 +236,8 @@ COMMAND_CASES = [
     ("db.unsetup_mcp", {}),
     ("db.unsetup_jobs", {}),
     ("source.remove", {"name": "demo.v2"}),
+    ("chat.auto_title", {"value": "on"}),
+    ("chat.auto_title", {"value": "off"}),
 ]
 
 

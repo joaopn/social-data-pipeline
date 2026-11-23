@@ -288,6 +288,7 @@ def test_the_sandbox_argument_list_is_pinned(backend, model, extra):
         "--mount", "type=bind,source=/srv/d/.sdp/chat/socket,target=/run/sdp-chat",
         "-e", "SDP_CHAT_GATEWAY=10.201.0.2", "-e", "HOME=/work",
         "-e", f"SDP_CHAT_BACKEND={backend}", "-e", "SDP_CHAT_DATABASES=mongo,starrocks", "-e", "SDP_CHAT_CAP_GIB=7", *extra,
+        "-e", "SDP_CHAT_AUTO_TITLE=on",
         "sdp-sandbox",
     ]
 
@@ -930,8 +931,8 @@ def with_scheduler(root, docker, *, control=True, mode=0o700):
 def test_the_sandbox_argument_list_with_the_queue_is_pinned():
     """Bug class: the sandbox's runner not told the queue is there, or anything else of the list changed with it."""
     arguments = host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", "claude-code", ["mongo"], 7, queue=True)
-    assert arguments[-3:] == ["-e", "SDP_CHAT_QUEUE=1", "sdp-sandbox"]
-    assert arguments[:-3] == host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", "claude-code", ["mongo"], 7)[:-1]
+    assert arguments[-5:] == ["-e", "SDP_CHAT_QUEUE=1", "-e", "SDP_CHAT_AUTO_TITLE=on", "sdp-sandbox"]
+    assert arguments[:-5] == host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", "claude-code", ["mongo"], 7)[:-3]
 
 
 def test_start_attaches_the_scheduler_behind_a_new_secret(root, docker, capsys):

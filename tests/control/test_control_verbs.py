@@ -81,6 +81,7 @@ CLASSIFICATION = {
     "db.llm_settings": ("read", True),
     "chat.settings": ("read", True),
     "chat.query_limit": ("step_up", True),
+    "chat.auto_title": ("write", True),
 }
 
 ALL_VERBS = sorted(verbs.VERBS)
@@ -632,3 +633,21 @@ def test_the_chat_query_limit_needs_its_value_and_the_management_password_and_sh
     assert exc.value.field == "seconds"
     assert verbs.VERBS["chat.query_limit"].cls == "step_up"
     assert verbs.CHAT_QUERY_SECONDS_MAX == chat_host.QUERY_SECONDS_MAX == actions.CHAT_QUERY_SECONDS_MAX == 3600
+
+
+# ── the chat's generated titles ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("value, accepted", [("on", True), ("off", True), ("ON", False), ("", False), ("yes", False), (True, False), (None, False), (1, False), (["on"], False)])
+def test_the_chat_auto_title_takes_on_or_off_and_asks_no_management_password(value, accepted):
+    """Bug class: a value `chat start` would refuse written to .env from a browser (after which the chat no longer starts), a bool taken for a word, a request without the value reaching the action (which only shows the setting at the terminal), or the verb classed otherwise than the maintainer chose (`write`, no password)."""
+    from social_data_pipeline import chat_host
+
+    assert verbs.VERBS["chat.auto_title"].cls == "write"
+    assert verbs.AUTO_TITLE_CHOICES == chat_host.AUTO_TITLE_VALUES == ("on", "off")
+    if accepted:
+        assert verbs.validate_request("chat.auto_title", {"value": value}) == {"value": value}
+        return
+    with pytest.raises(errors.InputError) as exc:
+        verbs.validate_request("chat.auto_title", {"value": value} if value is not None else {})
+    assert exc.value.field == "value"

@@ -1,4 +1,4 @@
-"""Tests of the scheduler's assistant endpoint (`social_data_pipeline.jobs.assistant`), the `submitted_by` mark of `Job`, the auto-accept exclusion and the door's short view of a marked job.
+"""Tests of the scheduler's assistant endpoint (`social_data_pipeline.jobs.assistant`), the `submitted_by` mark of `Job`, auto-accept of a marked job and the door's short view of a marked job.
 
 The gate is a plain ASGI callable, driven here by hand with a real `Store` in the temp folder and stand-ins for the page and the MCP app; nothing needs FastAPI. What needs the real `mcp` package (the assistant's MCP server and its tools as the SDK runs them, two session managers in one process) is covered by `tests/e2e/manual/check_chat_queue.py`.
 """
@@ -252,17 +252,23 @@ def runner_for(tmp_path, store):
     return Runner(cfg, store, AutoAcceptStore(state_path=tmp_path / "auto_accept.json", max_limit=4))
 
 
-def test_auto_accept_never_approves_a_marked_job(tmp_path, store):
-    """Bug class (security): a query of the assistant (which scraped text can steer) run with the database's admin login without a person's approval because its target auto-accepts."""
+def test_auto_accept_approves_a_marked_job_like_any_other(tmp_path, store):
+    """Bug class: a query of the chat's assistant left waiting for a person although its target auto-accepts (skipped by the scheduler), approved out of its turn among unmarked jobs, beyond the target's limit, or approved while the target's auto-accept is off."""
     runner = runner_for(tmp_path, store)
-    runner.auto_accept.set_target("warehouse", enabled=True, limit=4)
+    runner.auto_accept.set_target("warehouse", enabled=True, limit=2)
     store.submit(make_job(OWN))
     time.sleep(0.01)
     store.submit(make_job(FOREIGN, ""))
-    assert runner._auto_approve_eligible() == 1
-    assert {p.stem for p in store.approved.glob("*.json")} == {FOREIGN}
-    assert {p.stem for p in store.pending.glob("*.json")} == {OWN}
-    assert runner._auto_approve_eligible() == 0 and store.find(OWN)[0] == "pending"
+    time.sleep(0.01)
+    store.submit(make_job(UNKNOWN))
+    assert runner._auto_approve_eligible() == 2
+    assert {p.stem for p in store.approved.glob("*.json")} == {OWN, FOREIGN}
+    assert {p.stem for p in store.pending.glob("*.json")} == {UNKNOWN}
+    assert runner._auto_approve_eligible() == 0 and store.find(UNKNOWN)[0] == "pending"
+    for job_id in (OWN, FOREIGN):
+        (store.approved / f"{job_id}.json").unlink()
+    runner.auto_accept.set_target("warehouse", enabled=False)
+    assert runner._auto_approve_eligible() == 0 and store.find(UNKNOWN)[0] == "pending"
 
 
 # ── query_status and query_cancel ───────────────────────────────────────────

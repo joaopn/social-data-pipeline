@@ -1163,7 +1163,7 @@ def _start(root, uid, gid):
     if left:
         print(f"  {DATABASE_FIX}")
     if queue is not None:
-        print("  The query queue is attached: the assistant can submit queries to the scheduler (each waits for a person's approval, never auto-accepted), see its own and fetch their results.")
+        print("  The query queue is attached: the assistant can submit queries to the scheduler (each is approved by its target's auto-accept when that is on, otherwise it waits for a person's approval), see its own and fetch their results.")
     else:
         print(f"  The assistant cannot use the query queue: {queue_why}.")
     print(f"  {CHAT_WINDOW}")

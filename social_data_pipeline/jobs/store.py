@@ -67,7 +67,7 @@ class Job:
     extras: dict[str, Any] = field(default_factory=dict)
     # Who approved or rejected the job, or asked to kill it, through the scheduler's control socket: at most the keys "approved", "rejected", "killed", each a label such as "web-12". "killed" names who asked to kill: it is set on a job that may then finish by itself, and it is lost when the scheduler restarts before the job is retired. Left out of the record while empty, so a record without labels is written byte for byte as before.
     acted_by: dict[str, str] = field(default_factory=dict)
-    # Who submitted the job when it was not an ordinary client of `/mcp`: "assistant" for a query of the chat's assistant, submitted through the scheduler's assistant endpoint (such a job is never auto-accepted). Left out of the record while empty, so a record without it is written byte for byte as before.
+    # Who submitted the job when it was not an ordinary client of `/mcp`: "assistant" for a query of the chat's assistant, submitted through the scheduler's assistant endpoint (auto-accept approves such a job like any other). Left out of the record while empty, so a record without it is written byte for byte as before.
     submitted_by: str = ""
 
     def to_dict(self) -> dict[str, Any]:

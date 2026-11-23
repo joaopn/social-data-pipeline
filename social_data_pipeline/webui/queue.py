@@ -6,7 +6,7 @@ Pages, all GET (a HEAD is 405), each asking the socket in one worker of a bound 
 - `GET /queue/<job id>` (the id checked first, else not found): what the socket's `job` gives that the scheduler's page shows, the statement as stored with every invisible or control character shown as an escape (`statements.visible`), the hints (`statements.hints`), who approved, rejected or asked to kill; the buttons the job's phase allows (pending: approve, reject with a reason, EXPLAIN; running: kill); for a finished job a button for its preview (loaded at once when the address says `?preview=1`, as a History row's "Preview" link does) and one download link per part of its result (`results`). A job whose record is too large to send has no buttons: the page says to use the scheduler's own page.
 - `GET /queue/<job id>/preview`: a part of the page from the socket's `preview`: a table of text cells, the parts' names and sizes, "truncated" when the socket says so; its refusals as sentences.
 - `GET /queue/<job id>/download/<part>`: the part streamed from the web UI's read-only mount of the results folder (`results`), after the socket said the job is in the history as done; at most two at a time ("busy" beyond); anything else not found.
-- `GET /queue/auto-accept`: the targets with their auto-accept settings (`auto_accept`) and a form for each, and that the assistant's queries are never auto-accepted; the Pending tab's panel links here ("Change...").
+- `GET /queue/auto-accept`: the targets with their auto-accept settings (`auto_accept`) and a form for each; the Pending tab's panel links here ("Change...").
 
 Wherever a job is shown (the rows of every tab, its page, the confirm pages of its actions), a job whose record's `submitted_by` is exactly `"assistant"` is labelled as submitted by the chat's assistant (`assistant_label`); any other value of the field is shown as nothing. The approval of such a job also says that the assistant wrote it and to read it as one from a stranger, its EXPLAIN that an EXPLAIN of it runs before any approval (and that it may be the assistant's, when that could not be read).
 
@@ -94,7 +94,6 @@ ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the dat
 ASSISTANT_UNKNOWN = "Whether the chat's assistant submitted this query could not be read."
 EXPLAIN_ASSISTANT_SENTENCE = "The chat's assistant wrote this query, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
 EXPLAIN_MAYBE_SENTENCE = "This query may have been written by the chat's assistant, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
-NEVER_AUTO_SENTENCE = "Queries submitted by the chat's assistant are never auto-accepted, whatever the target's setting: each one waits until a person approves it."
 PHASE_WORDS = {"pending": "pending", "approved": "approved and waiting to run", "running": "running", "history": "in the history", "gone": "gone"}
 
 
@@ -598,7 +597,7 @@ def install(api, ctx):
 
     def auto_accept_model():
         """The targets' auto-accept settings, for the auto-accept page and the Pending tab's panel, in the calling worker: a failure is said in the model, never raised."""
-        base = {"failure": None, "rows": None, "max_limit": None, "max_limit_text": None, "step_up_note": STEP_UP_NOTE, "never_auto_note": NEVER_AUTO_SENTENCE}
+        base = {"failure": None, "rows": None, "max_limit": None, "max_limit_text": None, "step_up_note": STEP_UP_NOTE}
         kind, value = ask("queue.auto_accept_state")
         if kind == "error":
             return {**base, "failure": _failure(value)}

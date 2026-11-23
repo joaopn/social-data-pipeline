@@ -388,7 +388,7 @@ def _register_assistant_status_tool(mcp: MCPServer, store: Store) -> None:
         description=(
             "Return the current status of one of the queries you submitted, by its job id. Status values: "
             "pending, approved, running, done, failed, rejected, cancelled. "
-            "A person approves or rejects every query you submit; until then it stays pending. "
+            "A query you submit stays pending until it is approved, either by the scheduler itself when its target's auto-accept is on and has room under its limit, or by the operator in the Queue window, who can also reject it; you cannot approve it yourself. "
             "Any other id is answered `no such job`."
         ),
     )

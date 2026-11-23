@@ -170,10 +170,10 @@ The transcript is the file Claude Code keeps in the chat's `home/` (`projects/<t
 
 ## The query queue
 
-When the deployment's [query scheduler](query-scheduler.md) runs, the assistant can also submit long or heavy queries to its queue. A person approves each one in the Queue window of the web UI before it runs, and the assistant cannot approve it:
+When the deployment's [query scheduler](query-scheduler.md) runs, the assistant can also submit long or heavy queries to its queue. Each one runs once it is approved, by the scheduler itself when its target's [auto-accept](query-scheduler.md#auto-accept) is on and has room under its limit, or else by you in the Queue window of the web UI; the assistant cannot approve it:
 
-1. **The assistant submits** a query and tells you the job id and that the query waits for your approval, then ends its turn instead of waiting.
-2. **You approve it** (or reject it) in the web UI's [Queue window](webui.md#the-queue-window), where it is labelled "Submitted by the chat's assistant". Its queries are never auto-accepted, whatever the target's setting.
+1. **The assistant submits** a query and tells you the job id and that the query may already be approved by auto-accept or else waits for your approval, then ends its turn instead of waiting.
+2. **You approve it** (or reject it) in the web UI's [Queue window](webui.md#the-queue-window), where it is labelled "Submitted by the chat's assistant", unless auto-accept approved it already: its queries are auto-accepted like any other query when the target's auto-accept is on.
 3. **In a later turn** the assistant checks where the query stands, and fetches the parts of a finished result into the chat's folder, where they show as the turn's files. It can also withdraw one of its own queries while it is pending.
 
 Only the assistant's own queries are visible to it. The Chats page shows whether the queue is attached (the line "Query queue").

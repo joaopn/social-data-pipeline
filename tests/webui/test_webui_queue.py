@@ -10,7 +10,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - g. The pages: tabs, counts, the tab bar's figures (`stats`, its failure confined to them, hostile figures left out), paging with `more`, links only for job ids, the job page per phase, hostile text in every position, the running tab's poll and its `HX-Redirect`, the preview's table and its refusals.
 - h. Downloads: byte for byte with fixed headers; not done, a foreign or malformed id, a part out of range: not found and nothing opened; a link, a FIFO, a folder named like a part, an output file name with `/`, a link in place of the job's folder: never served (a marker file is in no answer); at most two at a time; the descriptor closed after the answer and after a client that went away.
 - k. The scans: no inline code in any page or part of the window; the guard's headers on every answer, the download's included; HEAD of every route of the window is 405.
-- l. Whose query it is: a job whose record's `submitted_by` is exactly `"assistant"` labelled on every page that shows it; any other value shown as nothing and never echoed; the approval's extra sentence only for such a job, the approval sent unchanged; the auto-accept page's sentence.
+- l. Whose query it is: a job whose record's `submitted_by` is exactly `"assistant"` labelled on every page that shows it; any other value shown as nothing and never echoed; the approval's extra sentence only for such a job, the approval sent unchanged; the auto-accept page no longer says the assistant's queries are never auto-accepted.
 
 Every special character in this file is written as an escape.
 """
@@ -691,7 +691,7 @@ def test_the_pending_tab_shows_the_auto_accept_panel_and_its_failure_stays_in_it
     text = main_text(panel)
     assert '<span class="sw on" role="img" aria-label="auto-accept on"></span>' in panel and '<span class="sw" role="img" aria-label="auto-accept off"></span>' in panel
     assert "warehouse postgres \u00b7 auto-approving 2 of 5" in text and "olap starrocks \u00b7 every query waits for you 0 of 5" in text
-    assert '<meter min="0" max="5" value="2"' in panel and panel.count('href="/queue/auto-accept"') == 2 and queue.NEVER_AUTO_SENTENCE in text
+    assert '<meter min="0" max="5" value="2"' in panel and panel.count('href="/queue/auto-accept"') == 2 and "never auto-accepted" not in text
     door.answers["auto_accept"] = broker_client.BrokerUnreachable(broker_client.NO_REPLY)
     response = client.get("/queue")
     rows, panel = response.text.split('id="auto-accept"')
@@ -1523,10 +1523,10 @@ def test_the_approval_of_an_assistants_query_warns_above_the_statement_and_sends
     assert changes(door) == [{"op": "approve", "job_id": JOB_ID, "digest": digest_of(record), "by": "web-37"}]
 
 
-def test_the_auto_accept_page_says_once_that_the_assistants_queries_are_never_auto_accepted(client):
-    """Bug class: an operator switching auto-accept on in the belief that it also runs the assistant's queries unseen, or the reverse."""
+def test_the_auto_accept_page_no_longer_says_the_assistants_queries_are_never_auto_accepted(client):
+    """Bug class: the page telling the operator that the assistant's queries always wait for a person while the scheduler auto-accepts them like any other."""
     text = main_text(client.get("/queue/auto-accept").text)
-    assert text.count(queue.NEVER_AUTO_SENTENCE) == 1
+    assert "never auto-accepted" not in text and "With auto-accept on, the scheduler approves the queries submitted to a target itself" in text
 
 
 LABELLED_ACTIONS = [("queue.reject", JOB_ID, {"reason": "no"}), ("queue.kill", PHASE_IDS["running"], {}), ("queue.explain", JOB_ID, {})]

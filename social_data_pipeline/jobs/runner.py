@@ -19,7 +19,7 @@ from .backends import (
     StarrocksBackend,
 )
 from .config import JobsConfig
-from .store import ASSISTANT, Job, Store
+from .store import Job, Store
 
 
 log = logging.getLogger(__name__)
@@ -126,8 +126,6 @@ class Runner:
         sort). Per-target slots are computed from the live counts of jobs in
         ``approved/`` + ``running/`` so the cap holds even when the runner is
         busy on other targets and the approved queue has built up.
-
-        A job of the chat's assistant (``submitted_by`` the assistant's mark) is never approved here, whatever its target's setting: it waits for a person.
         """
         running = self.store.list_phase("running")
         approved = self.store.list_phase("approved")
@@ -144,8 +142,6 @@ class Runner:
 
         approved_now = 0
         for job in self.store.list_phase("pending"):
-            if job.submitted_by == ASSISTANT:
-                continue
             remaining = slots.get(job.target, 0)
             if remaining <= 0:
                 continue

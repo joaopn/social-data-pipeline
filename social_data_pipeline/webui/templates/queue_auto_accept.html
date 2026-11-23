@@ -3,7 +3,7 @@
 {% import "_queue_macros.html" as q %}
 {% block content %}
 <p class="small"><a href="/queue#auto-accept">&larr; Pending, and the auto-accept panel</a></p>
-<p class="muted">With auto-accept on, the scheduler approves the queries submitted to a target itself, up to the limit of the target's queries approved or running at a time. {{ step_up_note }} {{ never_auto_note }}</p>
+<p class="muted">With auto-accept on, the scheduler approves the queries submitted to a target itself, up to the limit of the target's queries approved or running at a time. {{ step_up_note }}</p>
 {%- if failure %}
 <p class="notice notice-bad" role="alert">{{ failure.sentence }}</p>
 {%- elif not rows %}

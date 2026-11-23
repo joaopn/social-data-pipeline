@@ -255,11 +255,10 @@ A query that the [chat](chat.md)'s assistant submitted is labelled wherever it i
 - The approval's confirm page of such a query also says, above the statement: "The chat's assistant wrote this query, and text in the data it read can steer what it writes: read the statement as carefully as one from a stranger."
 - The EXPLAIN confirm page of such a query says, above its own sentence: "The chat's assistant wrote this query, and text in the data it read can steer what it writes: an EXPLAIN of it runs before anyone approved it."
 - When the job could not be read for a rejection, a kill or an EXPLAIN, its page says "Whether the chat's assistant submitted this query could not be read." and the action can still be confirmed; the EXPLAIN page then says that the query may have been written by the chat's assistant.
-- The auto-accept page and panel say that the assistant's queries are never auto-accepted: the scheduler leaves each one waiting for a person, whatever the target's setting.
 
 ### Auto-accept and the management password
 
-With auto-accept on, the scheduler approves every query submitted to that target itself, up to the limit of the target's queries approved or running at a time, and each runs with the database's admin login without anyone looking at it; the pending page of switching it on says so.
+With auto-accept on, the scheduler approves every query submitted to that target itself, the chat's assistant's included, up to the limit of the target's queries approved or running at a time, and each runs with the database's admin login without anyone looking at it (a query the assistant wrote included, and text in the data it read can steer the assistant); the pending page of switching it on says so.
 
 Switching auto-accept on for a target, or raising its limit, needs the management password again: the confirmation checks it at the broker before the scheduler is asked, and a wrong one keeps the pending action (five wrong ones end the session, as for any action). Switching it off or lowering the limit needs none. Only what you changed is sent. The web UI reads the target's settings again at the confirmation and refuses the change when they are no longer those its pending page showed as "Now" (another session changed them meanwhile), so that what is set is what the page's "After" line said. A target the scheduler does not have, and a limit above the scheduler's largest (the page names it), are refused before anything is kept.
 

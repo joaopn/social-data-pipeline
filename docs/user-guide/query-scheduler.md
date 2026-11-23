@@ -140,7 +140,7 @@ A pill next to the **SDP Jobs** title in the navbar opens a floating popover wit
 - **Slot accounting.** The cap counts `approved + running` for the target, so a backed-up approved queue doesn't sneak past the limit while the runner is busy on other targets.
 - **Persistence.** Settings are stored in `data/jobs/auto_accept.json` (atomic writes). They survive container restarts; deleting the file resets every target to disabled.
 - **No Save button.** Flipping a switch or releasing a slider posts the change immediately.
-- **The chat's assistant is never auto-accepted.** Its queries wait for a person whatever the target's setting.
+- **The chat's assistant's queries are auto-accepted like any other.** On a target with auto-accept on they are approved oldest first together with every other pending query, within the same limit; on a target with it off they wait for a person. With auto-accept on, a query the assistant wrote (and text in the data it read can steer the assistant) runs with the database's admin login without anyone reading it first.
 
 In the web UI's Queue window, switching auto-accept on or raising its limit needs the management password again (see [Auto-accept and the management password](webui.md#auto-accept-and-the-management-password)).
 

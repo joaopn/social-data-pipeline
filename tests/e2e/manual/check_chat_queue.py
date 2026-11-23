@@ -7,7 +7,7 @@ It is not collected by pytest. It builds a throwaway deployment in a temp folder
 2. `/mcp` lists its tools as before (`list_mongo_databases` among them), and a query submitted through it (plain HTTP, as before) has no `submitted_by` in its record.
 3. On the scheduler's published port, `/assistant/mcp` and `/assistant/results/x` answer the page's own 404 (the same bytes as a path it does not have) before the secret file exists, then without the header and with a wrong secret; the secret file is made by `sdp chat start`'s own code (`chat_host._queue_secret`), mode 0600.
 4. A gateway container on a throwaway network, with an `mcp` listener with the secret file (port 8004) and one without (port 8005) to the scheduler attached to that network under the alias `sdp-chat-jobs`. A helper container from the sandbox image (its `mcp` client), on that network as the current user, playing the sandbox: the assistant's MCP server lists its tools (without `list_mongo_databases`), a query is submitted (its record on disk carries the mark), `query_status` answers for it and "no such job" for the job of step 2 and for a made-up and a malformed id; `query_cancel` of the job of step 2 is "no such job" and the job stays pending.
-5. With auto-accept switched on for the target through the control socket, the marked job stays pending while a new unmarked one is approved by the auto-accept thread.
+5. With auto-accept switched on for the target through the control socket, the auto-accept thread approves the marked job like any other, and a new unmarked one after it.
 6. Finished jobs written with the store's own code inside the container (`Store.complete`) and their files by hand: the marked one's part list and part are fetched byte for byte through the gateway; an unmarked one's part and list are 404; a link planted as a part of a marked job is not listed and its marker is in no answer. The helper sending the right secret itself as `x-sdp-assistant` through the listener without a secret file does not get in (404).
 7. The scheduler's own page still answers.
 
@@ -348,13 +348,13 @@ def check_session(d, address, plain_id):
 def check_auto_accept(d, plain_id, marked):
     print("5. auto-accept on")
     check(d.door({"op": "reject", "job_id": plain_id, "reason": "", "by": BY}) == {}, "the job of step 2 is rejected through the control socket (it would take the slot)")
-    changed = d.door({"op": "auto_accept.set", "target": TARGET, "enabled": True, "limit": 1, "by": BY})
+    changed = d.door({"op": "auto_accept.set", "target": TARGET, "enabled": True, "limit": 2, "by": BY})
     check(changed["targets"][0]["enabled"] is True, "auto-accept is switched on for the target through the control socket")
+    approved = wait_for("the auto-accept thread to approve the marked job", lambda: d.record(marked)[0] != "pending" and d.record(marked)[1], 30)
+    check(approved.get("approved_at") and "acted_by" not in approved and approved.get("submitted_by") == "assistant", f"the marked job ({marked}) is approved by the auto-accept thread (no one's label in its record) and keeps its mark")
     unmarked = submit_through_mcp(d, "SELECT 2", "two.csv")
     approved = wait_for("the auto-accept thread to approve the unmarked job", lambda: d.record(unmarked)[0] != "pending" and d.record(unmarked)[1], 30)
     check(approved.get("approved_at") and "acted_by" not in approved, f"a new unmarked job ({unmarked}) is approved by the auto-accept thread (no one's label in its record)")
-    time.sleep(3)
-    check(d.record(marked)[0] == "pending", f"the marked job ({marked}) is still pending after the thread's passes")
     d.door({"op": "auto_accept.set", "target": TARGET, "enabled": False, "limit": None, "by": BY})
 
 

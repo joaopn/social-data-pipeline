@@ -19,7 +19,7 @@ from social_data_pipeline.webui import actions
 
 SECRET = "made-up-db-admin-pw-77e1"
 KIND_OF_TYPE = {
-    types.Enum: "enum", types.Bool: "bool", types.Name: "name", types.ConfiguredSource: "source", types.FileFilter: "filter", types.Secret: "secret", types.RunId: "run_id", types.IntRange: "int",
+    types.Enum: "enum", types.Bool: "bool", types.Name: "name", types.ConfiguredSource: "source", types.FileFilter: "filter", types.Secret: "secret", types.RunId: "run_id", types.IntRange: "int", types.HfDatasetId: "hf_dataset",
     types.Path: "path", types.Port: "port", types.Text: "text", types.ListOf: "list", types.MapOf: "map", types.Record: "record",
 }
 
@@ -60,7 +60,7 @@ def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
         "db.status", "db.verify", "source.list", "source.status", "source.progress", "source.error_logs", "run.list", "run.logs", "audit.list",
         "run.start", "db.stop", "run.cancel", "db.start", "db.reset", "db.unsetup", "db.unsetup_mcp", "db.unsetup_jobs", "source.remove",
         "db.restart_needed", "db.llm_settings", "db.setup_mcp", "db.setup_jobs",
-        "source.add",
+        "source.add", "source.hf_inspect", "source.download",
         "db.setup",
         "db.index_targets", "db.create_indexes",
     }
@@ -108,6 +108,7 @@ def test_the_patterns_and_choices_are_the_registrys():
     """Bug class: a literal copy of a pattern or a list that drifted: names the broker refuses offered as links or accepted in forms, or names it takes refused."""
     assert actions.FILE_FILTER_PATTERN == types.FILE_FILTER_PATTERN
     assert actions.RUN_ID_PATTERN == types.RUN_ID_PATTERN
+    assert (actions.HF_DATASET_PART, actions.HF_DATASET_PATTERN, actions.HF_SQL_TYPES) == (types.HF_DATASET_PART, types.HF_DATASET_PATTERN, verbs.HF_SQL_TYPES)
     assert (actions.VALID_PROFILES, actions.DATABASES, actions.SERVICES, actions.ERROR_LOG_PROFILES) == (verbs.VALID_PROFILES, verbs.DATABASES, verbs.SERVICES, verbs.ERROR_LOG_PROFILES)
     assert actions.RUN_LOGS_MIN_LIMIT == broker_server.redact.MIN_PIECE_BYTES
     assert (actions.PATH_MAX_BYTES, actions.TEXT_MAX_BYTES, actions.PORT_MIN, actions.PORT_MAX, actions.CONTAINER_ITEMS_MAX, actions.RECORD_KEY_PATTERN) == (types.PATH_MAX_BYTES, types.TEXT_MAX_BYTES, types.PORT_MIN, types.PORT_MAX, types.CONTAINER_ITEMS_MAX, types.RECORD_KEY_PATTERN)

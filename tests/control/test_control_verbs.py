@@ -24,7 +24,7 @@ from social_data_pipeline.control import errors, types, verbs
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The type classes a socket input may use, written out here on purpose: adding a type to the package does not widen this set.
-ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "ConfiguredSource", "RunId", "Secret", "Path", "Port", "Text", "ListOf", "MapOf", "Record"}
+ALLOWED_TYPE_NAMES = {"Bool", "IntRange", "Enum", "Name", "FileFilter", "ConfiguredSource", "RunId", "Secret", "HfDatasetId", "Path", "Port", "Text", "ListOf", "MapOf", "Record"}
 # The wide types (a host path, any port, free text), and every (verb, field) that uses one, also nested in a container. Each entry is a decision of the maintainer (any path and any port with the management password); a setup unit adds its own here when it lists the input.
 WIDE_TYPE_NAMES = {"Path", "Port", "Text"}
 WIDE_INPUTS = {
@@ -51,10 +51,11 @@ CLASSIFICATION = {
     "run.list": ("read", True),
     "run.logs": ("read", True),
     "audit.list": ("read", True),
+    "source.hf_inspect": ("read", True),
     "run.start": ("write", True),
     "run.cancel": ("write", True),
     "db.stop": ("write", True),
-    "source.download": ("write", False),
+    "source.download": ("write", True),
     "db.start": ("step_up", True),
     "db.reset": ("step_up", True),
     "db.unsetup": ("step_up", True),
@@ -79,12 +80,14 @@ ENABLED_VERBS = [name for name in ALL_VERBS if verbs.VERBS[name].socket_enabled]
 DISABLED_VERBS = [name for name in ALL_VERBS if not verbs.VERBS[name].socket_enabled]
 
 # Other fields a request needs so that a given field is admissible (a cross-field rule would refuse it otherwise).
-COMPANIONS = {("run.start", "classifier"): {"profile": "ml"}}
+COMPANIONS = {("run.start", "classifier"): {"profile": "ml"}, ("source.add", "hf_dataset"): {"hf_groups": []}, ("source.add", "hf_groups"): {"hf_dataset": "org/dataset"}}
 # The fields every request of a verb carries so that its cross-field rules take it, and the ones a given field cannot go with.
 BASES = {"db.setup": {"databases": ["postgres", "mongo", "starrocks"], "auth": True, "new_password": "correct horse", "new_password_confirm": "correct horse", "ro_user": True, "ro_password_mode": "typed", "ro_password": "correct-horse", "ro_password_confirm": "correct-horse"}}
 WITHOUT = {("db.setup", "add"): {"databases"}, ("db.setup", "ro_password_mode"): {"ro_password", "ro_password_confirm"}}
 # A valid value where the type's sample would break a cross-field rule (an empty list of databases, a password with a space).
 VALID_VALUES = {("db.setup", "databases"): ["mongo"], ("db.setup", "ro_password"): "correct-horse", ("db.setup", "ro_password_confirm"): "correct-horse"}
+# Socket inputs named apart from the CLI destination they stand for, each with why: the run store keys a task's source by the field `source`, and the download's positional is `name`.
+RENAMED = {("source.download", "source"): "name"}
 
 LINE_BREAK_VALUES = ["a\nB=c", "a\rB=c", "a\u2028B=c", "a\x85B=c", "ok\n"]
 PATH_VALUES = ["/etc/passwd", "..", "../x", "a/b"]
@@ -137,6 +140,7 @@ def _valid_value(kind):
         types.ConfiguredSource: "ok",
         types.RunId: "r20261121T101500-0a1b2c",
         types.Secret: "correct horse",
+        types.HfDatasetId: "org/dataset",
         types.Path: "data/x",
         types.Port: 8080,
         types.Text: "x",
@@ -230,7 +234,7 @@ class TestSocketInputsAreNarrowerThanTheCli:
         """Bug class: the socket accepting a field the command has no use for, which is either dead or an input someone invented past the CLI."""
         verb = verbs.VERBS[name]
 
-        assert set(verb.socket_inputs) <= verb.cli_inputs | verb.prompted_inputs
+        assert {RENAMED.get((name, field), field) for field in verb.socket_inputs} <= verb.cli_inputs | verb.prompted_inputs
         assert verb.cli_inputs & verb.prompted_inputs == set()
 
     @pytest.mark.parametrize("name", DISABLED_VERBS)
@@ -334,13 +338,39 @@ class TestDenyByDefault:
                 verbs.validate_request(name, fields)
             assert exc.value.code == "not_available"
 
-    def test_source_add_takes_no_hugging_face_dataset_yet(self):
-        """Bug class: a Hugging Face source reachable from the browser before its folder names from the Hub are checked (F4b-2): `hf_dataset` is a CLI input the socket does not list."""
-        request = {"name": "x", "platform": "custom", "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse"]}
-        assert verbs.validate_request("source.add", request)["name"] == "x"
+    @pytest.mark.parametrize("extra, refused_field", [
+        ({"hf_dataset": "org/data"}, "hf_groups"),
+        ({"hf_groups": [{"configs": ["default"], "data_type": "posts", "fields": [{"name": "id", "sql_type": "text"}]}]}, "hf_groups"),
+        ({"hf_dataset": "org/data", "hf_groups": [{"configs": ["default"], "data_type": "other", "fields": []}]}, "data_types"),
+        ({"hf_dataset": "org/data", "hf_groups": [{"configs": ["default"], "data_type": "posts", "fields": [{"name": "id", "sql_type": "varchar"}]}]}, "hf_groups"),
+        ({"hf_dataset": "org/data", "hf_groups": [{"configs": ["../x"], "data_type": "posts", "fields": []}]}, "hf_groups"),
+        ({"hf_dataset": "org/da?ta", "hf_groups": [{"configs": ["default"], "data_type": "posts", "fields": []}]}, "hf_dataset"),
+        ({"hf_dataset": "org/data", "hf_groups": [{"configs": ["default"], "data_type": "posts", "fields": [{"name": "id", "sql_type": "text"}], "excluded": ["image"]}]}, None),
+    ])
+    def test_source_add_takes_a_hugging_face_dataset_with_its_grouping(self, extra, refused_field):
+        """Bug class: a Hugging Face add the terminal cannot make: a dataset without its grouping (or a grouping without a dataset), data types that are not the groups' names in their order, a SQL type the loaders do not know, a config name that is a path, an id that is no Hub id (it is joined into the Hub's addresses)."""
+        request = {"name": "x", "platform": "custom", "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse"], **extra}
+        if refused_field is None:
+            assert verbs.validate_request("source.add", request)["hf_groups"][0]["excluded"] == ["image"]
+            return
         with pytest.raises(errors.InputError) as exc:
-            verbs.validate_request("source.add", {**request, "hf_dataset": "user/data"})
+            verbs.validate_request("source.add", request)
+        assert exc.value.field == refused_field
+
+    def test_a_hugging_face_dataset_is_never_the_reddit_source(self):
+        """Bug class: a Reddit source with a Hub dataset, which would download parquet files into the Reddit dumps and parse them with the Reddit parser."""
+        request = {"name": "reddit", "platform": "reddit", "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse"], "hf_dataset": "org/data", "hf_groups": [{"configs": ["default"], "data_type": "posts", "fields": []}]}
+        with pytest.raises(errors.InputError) as exc:
+            verbs.validate_request("source.add", request)
         assert exc.value.field == "hf_dataset"
+
+    @pytest.mark.parametrize("dataset", ["org", "org/", "/data", "a/b/c", "org/da ta", "org/data?x=1", "org/data#x", "org/da%2Fta", "org/..", "../data", "org/a..b", "org/a--b", "-org/data", "org/data.", "org/data-", "org/" + "d" * 97, "org/dat\u00e4"])
+    def test_a_hugging_face_dataset_id_is_only_an_owner_and_a_name(self, dataset):
+        """Bug class: a dataset id that changes the Hub address it is joined into (a second path part, a query, a fragment, an escape, a parent reference) or that the Hub itself refuses; bounded at 96 characters a part."""
+        with pytest.raises(errors.InputError) as exc:
+            verbs.validate_request("source.hf_inspect", {"dataset": dataset})
+        assert exc.value.field == "dataset" and dataset not in str(exc.value)
+        assert verbs.validate_request("source.hf_inspect", {"dataset": "Org-1/data_set.v2"}) == {"dataset": "Org-1/data_set.v2"}
 
     @pytest.mark.parametrize("name, platform, refused", [("reddit", "reddit", False), ("x", "custom", False), ("reddit", "custom", True), ("x", "reddit", True)])
     def test_source_add_platform_follows_the_name(self, name, platform, refused):
@@ -383,6 +413,10 @@ class TestBoundary:
     def test_plain_string_inputs_refuse_paths(self, source_tree, name, field, value):
         """Bug class: a request addressing the host file system through an ordinary field: an absolute path, a parent reference or a nested path where a name, a choice or a file-id pattern is expected. (`../x` exists in the fixture tree and holds a platform.yaml.)"""
         verb = verbs.VERBS[name]
+        if value == "a/b" and isinstance(verb.socket_inputs[field].type, types.HfDatasetId):
+            # A Hub dataset id is an owner and a name: the one '/' it holds is joined into the Hub's addresses, never into a path.
+            assert verbs.validate_request(name, _request_with(verb, field, value))[field] == value
+            return
 
         with pytest.raises(errors.InputError) as exc:
             verbs.validate_request(name, _request_with(verb, field, value))

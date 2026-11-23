@@ -23,6 +23,7 @@ Usage:
 
     sdp.py source add <name> [--hf ID]        Add a new source (--hf for HF datasets)
     sdp.py source download <name>            Download HF dataset files
+    sdp.py source hf-inspect <org/dataset>   Show an HF dataset's schema groups
     sdp.py source configure <name>           Reconfigure existing source (platform-specific)
     sdp.py source add-classifiers <name>     Add ML classifiers for a source
     sdp.py source remove <name>              Remove source config
@@ -1984,6 +1985,23 @@ def _state_float(text):
 def _parse_state_json(text):
     """Parse the text of a state file. The JSON parser accepts NaN, Infinity and -Infinity, and reads a number too large for a float (`1e999`) as an infinity; JSON itself has no such numbers, so as floats they could not be returned as data. They become the word the terminal prints for such a value on its own. Two shapes of a damaged file print differently than before because of it: a non-finite number inside a list or object that is printed whole now shows in quotes, and a failed entry whose file name is such a number can now match a log section named `nan` or `inf`."""
     return json.loads(text, parse_constant=_state_float, parse_float=_state_float)
+
+
+def _hf_downloaded(dumps):
+    """Whether a Hugging Face source's dumps folder holds a downloaded Parquet file where `source download` puts them (<dumps>/<config>/<split>/*.parquet), looking at no more than 256 folders of each level. False for a folder that is missing or cannot be read."""
+    if not isinstance(dumps, str) or not dumps:
+        return False
+    folder = Path(dumps) if Path(dumps).is_absolute() else ROOT / dumps
+    try:
+        for config in list(os.scandir(folder))[:256]:
+            if not config.is_dir(follow_symlinks=False):
+                continue
+            for split in list(os.scandir(config.path))[:256]:
+                if split.is_dir(follow_symlinks=False) and any(item.name.endswith(".parquet") and item.is_file(follow_symlinks=False) for item in os.scandir(split.path)):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def _json_fact(value):
@@ -5353,9 +5371,9 @@ def do_source_add(
     primary_key=None, sr_prefer_lingua=None, sr_buckets=None, reddit_db_schema=None, reddit_removed_fields=None, reddit_indexes=None,
     text_columns=None, remove_strings=None, remove_patterns=None, gpu_fields=None,
     lingua_workers=None, lingua_file_workers=None, lingua_batch_size=None, lingua_low_accuracy=None,
-    gpu_ids=None, ml_file_workers=None, ml_tokenize_workers=None, ml_classifier_batch_size=None, ml_classifiers=None, ml_classifier_data_types=None, hf_token=None,
+    gpu_ids=None, ml_file_workers=None, ml_tokenize_workers=None, ml_classifier_batch_size=None, ml_classifiers=None, ml_classifier_data_types=None, hf_token=None, hf_dataset=None, hf_groups=None,
 ):
-    """Add a new source for Reddit dumps or your own files without a terminal: each parameter is the answer to one question of `source add` (and, for a Reddit source, of `source configure reddit`), None being the question answered with Enter. Writes the files the terminal writes for the same answers (`setup.source_add`). Raises ActionError before anything is written for an answer the terminal would not take or not ask, a name that is already a source, and a folder that belongs to another source. Returns the exit code."""
+    """Add a new source for Reddit dumps, a Hugging Face dataset (`hf_dataset` with its grouping `hf_groups`, the schema as `get_source_hf_inspect` read it) or your own files without a terminal: each parameter is the answer to one question of `source add` (and, for a Reddit source, of `source configure reddit`), None being the question answered with Enter. Writes the files the terminal writes for the same answers (`setup.source_add`). Raises ActionError before anything is written for an answer the terminal would not take or not ask, a name that is already a source, and a folder that belongs to another source. Returns the exit code."""
     from social_data_pipeline.setup.source_add import Refused, add_source
 
     answers = {key: value for key, value in dict(
@@ -5368,6 +5386,7 @@ def do_source_add(
         remove_strings=remove_strings, remove_patterns=remove_patterns, gpu_fields=gpu_fields, lingua_workers=lingua_workers, lingua_file_workers=lingua_file_workers,
         lingua_batch_size=lingua_batch_size, lingua_low_accuracy=lingua_low_accuracy, gpu_ids=gpu_ids, ml_file_workers=ml_file_workers, ml_tokenize_workers=ml_tokenize_workers,
         ml_classifier_batch_size=ml_classifier_batch_size, ml_classifiers=ml_classifiers, ml_classifier_data_types=ml_classifier_data_types, hf_token=hf_token,
+        hf_dataset=hf_dataset, hf_groups=hf_groups,
     ).items() if value is not None}
     try:
         code = add_source(answers)
@@ -5378,8 +5397,51 @@ def do_source_add(
 
 
 # ============================================================================
+# sdp source hf-inspect
+# ============================================================================
+
+def get_source_hf_inspect(*, dataset, token=None):
+    """Read a Hugging Face dataset's schema from the Hub and group it as `source add --hf` groups it: `{"dataset", "groups"}`, each group with its `configs` (`name`, `rows`) and `fields` (`name`, `sql_type` or None for a type without a mapping, `hf_type`), in the terminal's order (`setup.hf_checked.inspect`). Prints nothing. The token is the one given, else HF_TOKEN of the environment, as `source add --hf` takes it; it is used for this request and kept nowhere. Raises ActionError for a dataset the Hub does not give (not found, no access, no network) or one the browser does not take (names that are not plain, more than 8 groups or 256 configs or fields in a group)."""
+    import os
+    from social_data_pipeline.setup.hf_checked import Refused, inspect
+
+    try:
+        return inspect(dataset, token or os.environ.get("HF_TOKEN"))
+    except Refused as refused:
+        raise ActionError(refused.message) from None
+
+
+def cmd_source_hf_inspect(args):
+    """Print a Hugging Face dataset's schema groups, as `source add --hf` will offer them."""
+    try:
+        data = get_source_hf_inspect(dataset=args.dataset, token=getattr(args, "token", None))
+    except ActionError as error:
+        print(f"\n  Error: {error.message}\n")
+        return 1
+    print(f"\n  Dataset: {data['dataset']}")
+    for number, group in enumerate(data["groups"]):
+        print(f"\n  Schema {chr(65 + number)} ({len(group['configs'])} config(s)):")
+        for config in group["configs"]:
+            rows = f"  ({config['rows']:,} rows)" if config["rows"] else ""
+            print(f"    - {config['name']}{rows}")
+        print("    Fields:")
+        for field in group["fields"]:
+            mapped = field["sql_type"] or "no SQL mapping: skip it or choose a type"
+            print(f"      {field['name']}: {field['hf_type']} -> {mapped}")
+    print()
+    return 0
+
+
+# ============================================================================
 # sdp source download
 # ============================================================================
+
+def do_source_download(*, source, token=None):
+    """Download a Hugging Face source's Parquet files without a terminal, for every data type: what `source download <name>` does (the 1-to-1 mirror into the dumps folder through `.partial` files, then the copies into the extracted folder by data type), with every folder and file name built from the Hub's reply checked before anything is written (`setup.hf_checked.download`). Prints its progress. The token is used for this download and kept nowhere. Returns the exit code."""
+    from social_data_pipeline.setup.hf_checked import download
+
+    return download(source, token)
+
 
 def cmd_source_download(args):
     """Download HF dataset files for a source."""
@@ -5633,7 +5695,7 @@ def cmd_source_status(args):
 
 
 def get_source_status(*, name=None):
-    """Gather what `source status` shows, for the named source or for all. Prints nothing and returns `{"sources": [...]}` for `print_source_status`: one entry per source with `name`, `found` and `warnings` (the lines about a platform.yaml that cannot be read); a source that was found also has `platform`, `data_types`, `profiles`, `paths` and `ingestion` (one entry per database view the terminal shows). Raises ActionError for a name that is not one path component, the empty string included (only None means all sources); a well-formed name that does not exist is an entry with `found` false."""
+    """Gather what `source status` shows, for the named source or for all. Prints nothing and returns `{"sources": [...]}` for `print_source_status`: one entry per source with `name`, `found` and `warnings` (the lines about a platform.yaml that cannot be read); a source that was found also has `platform`, `data_types`, `profiles`, `paths` and `ingestion` (one entry per database view the terminal shows), and one whose platform.yaml names a Hugging Face dataset `hf_dataset` and `hf_downloaded` (whether its dumps folder holds a downloaded Parquet file; the terminal shows neither). Raises ActionError for a name that is not one path component, the empty string included (only None means all sources); a well-formed name that does not exist is an entry with `found` false."""
     if name is not None and not _is_one_path_component(name):
         raise ActionError(_SOURCE_NAME_NOT_VALID)
     return _get_source_status(name)
@@ -5676,6 +5738,9 @@ def _get_source_status(source_name):
             "parsed": _json_fact(paths.get('parsed', f'./data/parsed/{source}')),
             "output": _json_fact(paths.get('output', f'./data/output/{source}')),
         }
+        if config.get("hf_dataset"):
+            entry["hf_dataset"] = _json_fact(config["hf_dataset"])
+            entry["hf_downloaded"] = _hf_downloaded(entry["paths"]["dumps"])
 
         # Show ingestion state for this source
         entry["ingestion"] = []
@@ -7170,6 +7235,11 @@ def build_parser():
     src_add_p.add_argument("--hf", dest="hf_dataset", default=None,
                            help="Hugging Face dataset ID (e.g. user/dataset-name)")
     src_add_p.set_defaults(func=cmd_source_add)
+
+    src_hf_inspect_p = source_sub.add_parser("hf-inspect", help="Show a Hugging Face dataset's schema groups, as source add --hf offers them")
+    src_hf_inspect_p.add_argument("dataset", help="Hugging Face dataset ID (e.g. user/dataset-name)")
+    src_hf_inspect_p.add_argument("--token", help="HF token for private datasets (fallback: HF_TOKEN env var)")
+    src_hf_inspect_p.set_defaults(func=cmd_source_hf_inspect)
 
     src_download_p = source_sub.add_parser("download", help="Download HF dataset files")
     src_download_p.add_argument("name", help="Source name")

@@ -28,6 +28,9 @@ from social_data_pipeline.webui.overview import PLAIN_NAME
 
 # Literal copies of the registry's patterns and choices (`control.types`, `control.verbs`): a test compares them.
 FILE_FILTER_PATTERN = r"[A-Za-z0-9_.*?\[\]!-]{1,128}"
+HF_DATASET_PART = r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,94}[A-Za-z0-9_])?"
+HF_DATASET_PATTERN = HF_DATASET_PART + "/" + HF_DATASET_PART
+HF_SQL_TYPES = ("text", "integer", "bigint", "float", "boolean")
 RUN_ID_PATTERN = r"r[0-9]{8}T[0-9]{6}-[0-9a-f]{6}|live-[0-9a-f]{12}"
 VALID_PROFILES = ("parse", "lingua", "ml", "postgres_ingest", "postgres_ml", "mongo_ingest", "sr_ingest", "sr_ml")
 DATABASES = ("postgres", "mongo", "starrocks")
@@ -75,7 +78,7 @@ RECORD_KEY_PATTERN = r"[a-z][a-z0-9_]{0,63}"
 CONTAINER_KINDS = ("list", "map", "record")
 MAP_KEY_KINDS = ("name", "enum")
 # The kinds whose value a form posts as one text (the others are containers, or a box: `bool`).
-TEXT_KINDS = ("enum", "name", "source", "filter", "secret", "run_id", "path", "text")
+TEXT_KINDS = ("enum", "name", "source", "filter", "secret", "run_id", "hf_dataset", "path", "text")
 # A form name: a top-level input and its bracketed segments (at most five: a container's depth is at most four, and a list's remove box adds one).
 FORM_NAME = re.compile(r"([a-z][a-z0-9_]{0,63})((?:\[[^\[\]]{1,64}\]){1,5})")
 FORM_SEGMENT = re.compile(r"\[([^\[\]]{1,64})\]")
@@ -450,6 +453,13 @@ SOURCE_ADD_INPUTS = {
     "ml_classifiers": Input("list", "Classifiers", item=_ADD_NAME, max_items=64, unique=True),
     "ml_classifier_data_types": Input("map", "Data types per classifier", key=_ADD_NAME, item=Input("list", "Data types", item=Input("name", "Data type"), max_items=32, unique=True), max_items=64),
     "hf_token": Input("secret", "Hugging Face token"),
+    "hf_dataset": Input("hf_dataset", "Hugging Face dataset"),
+    "hf_groups": Input("list", "Hugging Face groups", max_items=8, item=Input("record", "Group", fields={
+        "configs": Input("list", "Configs", required=True, item=_ADD_NAME, max_items=256, unique=True),
+        "data_type": Input("name", "Data type", required=True),
+        "fields": Input("list", "Fields", required=True, max_items=256, item=Input("record", "Field", fields={"name": Input("name", "Name", required=True), "sql_type": Input("enum", "SQL type", required=True, choices=HF_SQL_TYPES)})),
+        "excluded": Input("list", "Left out", item=_ADD_NAME, max_items=256, unique=True),
+    })),
 }
 
 # The files `source add` writes in config/sources/<name>/ for each profile (`setup.source.main`), after platform.yaml.
@@ -465,6 +475,9 @@ def source_add_sentence(fields):
     """What `source add` does with these fields (`sdp.do_source_add`, `setup.source_add.add_source`), clause by clause."""
     name, profiles = fields["name"], fields["profiles"]
     parts = [f"It creates config/sources/{name}/ and writes {', '.join(source_files(profiles))} in it."]
+    if "hf_dataset" in fields:
+        groups = "; ".join(f"{group['data_type']} from {', '.join(group['configs'])}" for group in fields["hf_groups"])
+        parts.append(f"platform.yaml names the Hugging Face dataset {fields['hf_dataset']} (hf_dataset) and maps its configs to the data types ({groups}); the fields chosen and their SQL types are the ones read from the Hub when the wizard read the dataset, and the fields left out of each data type are kept out of MongoDB's documents (mongo_exclude_fields). The add itself asks the Hub nothing and downloads nothing.")
     if "hf_token" in fields:
         parts.append("It writes the Hugging Face token into .env as HF_TOKEN, in place of the line of HF_TOKEN there (a commented one too), or as a new line.")
     if fields["platform"] == "reddit" and any(key in fields for key in ("reddit_db_schema", "reddit_removed_fields", "reddit_indexes")):
@@ -513,6 +526,24 @@ def _indexes_also(fields):
     return INDEXES_RUN_SENTENCE + (" " + INDEXES_SAVE_SENTENCE.replace("<name>", fields["source"]) if fields.get("save") is True else "")
 
 
+# The entries whose result is the id of a recorded run (`run_id`), to which the outcome links: a pipeline run, and the tasks of the broker (`control.tasks.TASKS`: an index build, a download).
+RUN_STARTERS = ("run.start", "db.create_indexes", "source.download")
+
+
+def source_download_sentence(fields):
+    """What `source download` does for a source (`sdp.do_source_download`, `setup.hf_checked.download`), clause by clause."""
+    name = fields["source"]
+    parts = [
+        "It runs as a run of its own (Runs and the Overview show it, with its log and Cancel).",
+        "It asks the Hub for the dataset's list of Parquet files and refuses the whole list, before anything is written, when a config, a split or a file name in it is not a plain name or an address is not an https address on huggingface.co.",
+        f"Then it downloads every file into the dumps folder of {name} as <config>/<split>/<file> (each through a .partial file renamed when it is complete, skipping a file already there at the Hub's size), with the dataset's README.md beside them when the Hub has one and none is there, and copies the files of each data type into its folder of the extracted folder.",
+        "The broker refuses it while a pipeline run of this source is alive (and when Docker cannot be asked), and refuses a pipeline run of this source while it runs.",
+    ]
+    if "token" in fields:
+        parts.append("The token is sent with each request of this download (to the Hub, and, as the terminal sends it, on to where the Hub redirects a file), and is stored nowhere: not in a file, the run's record, its log or the session.")
+    return " ".join(parts)
+
+
 def _table(*actions):
     by_name = {}
     for action in actions:
@@ -533,6 +564,7 @@ TABLE = _table(
     Action("source.error_logs", "read", "Error logs of a source", {"name": _SOURCE, "profile": Input("enum", "Profile", required=True, choices=ERROR_LOG_PROFILES)}, form="python sdp.py source error-logs <name> --profile=<profile>"),
     Action("run.list", "read", "List the runs", {"limit": Input("int", "Limit", lo=1, hi=1000)}, form="python sdp.py runs list --limit=<n>"),
     Action("run.logs", "read", "Read a run's output", {"run_id": Input("run_id", "Run", required=True), "offset": Input("int", "Offset", lo=0, hi=LOG_OFFSET_MAX), "limit": Input("int", "Limit", lo=RUN_LOGS_MIN_LIMIT, hi=RUN_LOGS_MAX_LIMIT)}, form="python sdp.py runs logs <run> --offset=<bytes> --limit=<bytes>"),
+    Action("source.hf_inspect", "read", "Read a Hugging Face dataset's schema", {"dataset": Input("hf_dataset", "Dataset", required=True), "token": Input("secret", "Hugging Face token")}, form="python sdp.py source hf-inspect <owner>/<dataset>"),
     Action("audit.list", "read", "The newest lines of the audit log", {"limit": Input("int", "Limit", lo=1, hi=1000)}, form="python sdp.py broker audit --limit=<n>"),
     Action("db.restart_needed", "read", "The running services whose settings changed after they started", form="python sdp.py db restart-needed"),
     Action("db.llm_settings", "read", "The current answers of the MCP servers' and the scheduler's setup", form="python sdp.py db llm-settings"),
@@ -554,6 +586,11 @@ TABLE = _table(
     ),
     Action("db.stop", "write", "Stop database services", {"service": Input("enum", "Service", choices=SERVICES, absent=_ALL_SERVICES)}, form="python sdp.py db stop [<service>]", command=_service_command("stop"), note=_REFUSED_WHILE_A_RUN_LIVES, also=_stop_also),
     Action("run.cancel", "write", "Cancel a run", {"run_id": Input("run_id", "Run", required=True)}, form="python sdp.py runs cancel <run>", command=lambda fields: _command("runs", "cancel", _q(fields["run_id"]))),
+    Action(
+        "source.download", "write", "Download a Hugging Face dataset", {"source": _SOURCE, "token": Input("secret", "Hugging Face token (private datasets only)")},
+        form="python sdp.py source download <name>", command=lambda fields: _command("source", "download", _q(fields["source"])),
+        also=source_download_sentence,
+    ),
     Action("session.clear_db_password", "write", "Forget the database admin password of this session", form="(no command: the terminal keeps no password)", op=True),
     # ── step-up ──
     Action(
@@ -641,14 +678,11 @@ TABLE = _table(
     # ── setup (step-up) ──
     Action(
         "source.add", "step_up", "Add a source", SOURCE_ADD_INPUTS,
-        form="python sdp.py source add <name> (Reddit dumps or your own files; the questions are the wizard's steps)", command=lambda fields: _command("source", "add", _q(fields["name"])),
+        form="python sdp.py source add <name> [--hf <owner>/<dataset>] (the questions are the wizard's steps)", command=lambda fields: _command("source", "add", _q(fields["name"]), *(("--hf=" + _q(fields["hf_dataset"]),) if "hf_dataset" in fields else ())),
         also=lambda fields: source_add_sentence(fields),
     ),
     _db_setup_entry(),
 )
-
-# The entries whose outcome is a recorded run (the broker answers its id), linked to the run's page.
-RUN_STARTERS = ("run.start", "db.create_indexes")
 
 # The entries of the scheduler's control socket, by name.
 QUEUE_ENTRIES = tuple(name for name, action in TABLE.items() if action.door is not None)
@@ -679,6 +713,11 @@ def has_control_character(value):
 def is_plain_name(value):
     """Whether `value` is a plain name: the registry's pattern, and not only dots."""
     return isinstance(value, str) and re.fullmatch(PLAIN_NAME, value) is not None and value.strip(".") != ""
+
+
+def is_hf_dataset(value):
+    """Whether `value` is a Hugging Face dataset id the registry takes (`<owner>/<name>`, no `--` or `..`)."""
+    return isinstance(value, str) and re.fullmatch(HF_DATASET_PATTERN, value) is not None and "--" not in value and ".." not in value
 
 
 def is_run_id(value):
@@ -763,6 +802,8 @@ def _value_is_valid(spec, value):
         return re.fullmatch(FILE_FILTER_PATTERN, value) is not None and value.strip(".") != ""
     if kind == "run_id":
         return is_run_id(value)
+    if kind == "hf_dataset":
+        return is_hf_dataset(value)
     if kind == "job_id":
         return is_job_id(value)
     if kind == "digest":

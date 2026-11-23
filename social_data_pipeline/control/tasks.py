@@ -42,7 +42,11 @@ def _allow_list(*tasks):
 TASKS = _allow_list(
     # One index build per database at a time: a second one would queue behind the first's schema change (StarRocks) or compete for its maintenance memory (PostgreSQL).
     Task("db.create_indexes", key=("database",), label="create indexes \u00b7 {database}"),
+    Task("source.download", key=("source",), label="download \u00b7 {source}"),
 )
+
+# The tasks that write a source's files (a download into its dumps and extracted folders): one is refused while a pipeline run of its source is alive (a terminal run whose source Docker did not hand over counts, and so does Docker out of reach), and a pipeline run of the source is refused while one is alive (`control.runs`).
+SOURCE_FILE_TASKS = frozenset({"source.download"})
 
 
 def key_values(task, validated):

@@ -2,7 +2,7 @@
 
 Each type is a small immutable object whose `validate(value)` returns the accepted value or raises ValueError with a reason that never contains the value. A value is refused, never coerced (two exceptions, both normalizations of text: `Path` returns its value through `os.path.normpath`, and nothing else changes a value).
 
-The scalar types are `Bool`, `IntRange`, `Enum`, `Name`, `FileFilter`, `ConfiguredSource`, `RunId`, `Secret`, and the three wide ones the setup verbs need (decided by the maintainer: any path and any port with the management password): `Path` (a host path as text, never looked up here), `Port` (1024 to 65535; whether another service uses it is the action's check) and `Text` (free text, such as PGTune's output). A wide type is reachable only through the inputs listed in the registry test's allow-list of wide inputs.
+The scalar types are `Bool`, `IntRange`, `Enum`, `Name`, `FileFilter`, `ConfiguredSource`, `RunId`, `Secret`, `HfDatasetId`, and the three wide ones the setup verbs need (decided by the maintainer: any path and any port with the management password): `Path` (a host path as text, never looked up here), `Port` (1024 to 65535; whether another service uses it is the action's check) and `Text` (free text, such as PGTune's output). A wide type is reachable only through the inputs listed in the registry test's allow-list of wide inputs.
 
 The containers are `ListOf`, `MapOf` and `Record`. They refuse unknown keys at every level, check their size before they look at any item, and wrap every nested secret in `SecretValue` themselves; `reveal` and `secrets_in` walk a validated value for the broker. Each type has a `capacity` (the most values it can hold, counted leaf by leaf) and a `depth`; a container whose capacity is over ITEMS_MAX or whose depth is over DEPTH_MAX is refused when it is built, so no declared shape can cost more than that, whatever a request holds (a request frame is at most 64 KiB, `control.REQUEST_MAX_BYTES`).
 """
@@ -196,6 +196,27 @@ class ConfiguredSource:
             raise ValueError("must be a source whose folder is not a symlink")
         if self.require_config and not has_config:
             raise ValueError("must be a source that has a platform.yaml")
+        return value
+
+
+# The id of a dataset on the Hugging Face Hub, `<owner>/<name>`: each part 1 to 96 characters of letters, digits, '_', '.' and '-', beginning with a letter or digit and not ending with '.' or '-' (the Hub's rule for repository ids). `--` and `..` are refused apart (the Hub refuses them too).
+HF_DATASET_PART = r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,94}[A-Za-z0-9_])?"
+HF_DATASET_PATTERN = HF_DATASET_PART + "/" + HF_DATASET_PART
+
+
+@dataclass(frozen=True)
+class HfDatasetId:
+    """The id of a dataset on the Hugging Face Hub (`HF_DATASET_PATTERN`). The CLI joins it into the Hub's addresses as it is (`/api/datasets/<id>/parquet`, `?dataset=<id>`), so it holds no character a URL reads specially: no '?', '#', '%', '&', space, and one '/' only."""
+
+    is_string = True
+    is_secret = False
+    capacity = 1
+    depth = 0
+
+    def validate(self, value):
+        value = _checked_string(value)
+        if not re.fullmatch(HF_DATASET_PATTERN, value) or "--" in value or ".." in value:
+            raise ValueError("must be a Hugging Face dataset id, <owner>/<name>, each part letters, digits, '_', '.' and '-' (at most 96 characters)")
         return value
 
 
@@ -530,6 +551,6 @@ def secrets_in(value):
 
 
 # The whole set. A socket input whose type is not one of these classes is refused when the registry is built.
-INPUT_TYPES = (Bool, IntRange, Enum, Name, FileFilter, ConfiguredSource, RunId, Secret, Path, Port, Text, ListOf, MapOf, Record)
+INPUT_TYPES = (Bool, IntRange, Enum, Name, FileFilter, ConfiguredSource, RunId, Secret, HfDatasetId, Path, Port, Text, ListOf, MapOf, Record)
 # The types that accept a host path, any port or free text: each input of one of them (also nested in a container) is a decision, listed in the registry test.
 WIDE_TYPES = (Path, Port, Text)

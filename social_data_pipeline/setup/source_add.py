@@ -2,7 +2,9 @@
 
 The web UI's wizard reaches this through the broker (`sdp.do_source_add`). Every question that `sdp source add` asks for a Reddit source or a source of your own files (and, for a Reddit source, the field and index questions of `sdp source configure reddit`) is a key of `answers`; a key left out is the question answered with Enter, so its value is the default the terminal would offer, computed here on the host the same way (the hardware, `.env`'s DATA_PATH, the base classifier configuration). The settings are built in the questionnaire's order and shape (`source.run_questionnaire`, `classifiers.run_questionnaire`, `reddit.run_questionnaire`), and the files are made by the questionnaire's own generators and written by `utils.write_files`, so the same answers give the same bytes (a test runs both).
 
-Narrower than the terminal on purpose: an answer to a question the terminal would not ask for these answers is refused (a parse worker count without the parse profile, a compression for a dump pattern whose compression is known), and so is anything the terminal's prompts could never produce (a list item with a comma, a name that already is a source, a folder of another source). `Refused` carries one line that holds no answer's value. Hugging Face sources are not handled here.
+Narrower than the terminal on purpose: an answer to a question the terminal would not ask for these answers is refused (a parse worker count without the parse profile, a compression for a dump pattern whose compression is known), and so is anything the terminal's prompts could never produce (a list item with a comma, a name that already is a source, a folder of another source). `Refused` carries one line that holds no answer's value.
+
+A Hugging Face dataset (`hf_dataset`) comes with `hf_groups`, the answers of the terminal's grouping (`source._run_hf_config_grouping`) for the schema groups the Hub's reply was read into (`setup.hf_checked.inspect`): the schema travels in the answers, so the add asks the Hub nothing and takes no token. Its settings are made as that function makes them (the data types in the groups' order, the configs of each, its fields with their SQL types merged across groups with the first type kept, the fields left out as `mongo_exclude_fields`), and the custom platform's questions the terminal skips for it (input format, dump patterns, fields) are refused.
 """
 
 import os
@@ -25,6 +27,9 @@ REDDIT_ONLY = ("reddit_db_schema", "reddit_removed_fields", "reddit_indexes")
 LINGUA_ONLY = ("lingua_workers", "lingua_file_workers", "lingua_batch_size", "lingua_low_accuracy")
 ML_ONLY = ("gpu_ids", "ml_file_workers", "ml_tokenize_workers", "ml_classifier_batch_size", "ml_classifiers", "ml_classifier_data_types", "hf_token")
 CLASSIFIER_CUSTOM = ("text_columns", "remove_strings", "remove_patterns", "gpu_fields")
+# The custom platform's questions the terminal does not ask for a Hugging Face dataset (`source.run_questionnaire`).
+HF_NOT_ASKED = ("input_format", "csv_delimiter", "dump_globs", "compressions", "fields")
+HF_FILE_PATTERNS = {"parquet": r"^.+\.parquet$", "csv": r"^.+\.csv$"}
 
 
 class Refused(ValueError):
@@ -97,10 +102,17 @@ def build(answers, hw, db_setup):
     if (answers["platform"] == "reddit") != (platform == "reddit"):
         raise Refused("a Reddit source is the source named reddit, and only it")
     is_reddit = platform == "reddit"
+    is_hf = "hf_dataset" in answers
     if is_reddit:
-        _not_asked(answers, CUSTOM_ONLY, "for a Reddit source")
+        _not_asked(answers, CUSTOM_ONLY + ("hf_dataset", "hf_groups"), "for a Reddit source")
     else:
         _not_asked(answers, REDDIT_ONLY, "for a source of your own files")
+    if is_hf:
+        _not_asked(answers, HF_NOT_ASKED, "for a Hugging Face dataset")
+        if "hf_groups" not in answers:
+            raise Refused("a Hugging Face dataset needs its grouping ('hf_groups')")
+    else:
+        _not_asked(answers, ("hf_groups",), "without a Hugging Face dataset")
 
     # The questionnaire, step by step (`source.run_questionnaire` for a new source: nothing exists, so every default is the fresh one).
     existing = {}
@@ -113,6 +125,8 @@ def build(answers, hw, db_setup):
         raise Refused("at least one data type is required")
     _list_items("data_types", data_types)
     settings["data_types"] = data_types
+    if is_hf:
+        _hf_grouping(answers, settings)
 
     for stage in STAGES:
         settings[f"{stage}_path"] = answers[f"{stage}_path"]
@@ -165,7 +179,7 @@ def build(answers, hw, db_setup):
         _not_asked(answers, ("table_tablespaces",), "without PostgreSQL tablespaces (set up by python sdp.py db setup)")
 
     if not is_reddit:
-        _custom(answers, settings, name, data_types, has_postgres, has_mongo, has_starrocks)
+        _custom(answers, settings, name, data_types, has_postgres, has_mongo, has_starrocks, is_hf)
 
     if has_starrocks:
         settings["sr_prefer_lingua"] = answers.get("sr_prefer_lingua", defaults["sr_prefer_lingua"])
@@ -191,13 +205,62 @@ def build(answers, hw, db_setup):
     return settings, classifier_settings, reddit_settings
 
 
-def _custom(answers, settings, name, data_types, has_postgres, has_mongo, has_starrocks):
-    """The block of `run_questionnaire` for a custom platform (not a Hugging Face one)."""
+def _hf_grouping(answers, settings):
+    """The settings `source._run_hf_config_grouping` makes, from the answers of each group (see the module)."""
+    groups = answers["hf_groups"]
+    if [group["data_type"] for group in groups] != settings["data_types"]:
+        raise Refused("the data types must be the names of the Hugging Face groups, in their order")
+    seen = set()
+    config_map, fields, field_types, excluded_by_type = {}, {}, {}, {}
+    for group in groups:
+        data_type, configs = group["data_type"], list(group["configs"])
+        if not configs:
+            raise Refused("every Hugging Face group needs at least one config")
+        if seen & set(configs):
+            raise Refused("a Hugging Face config is in two groups")
+        seen |= set(configs)
+        names = [field["name"] for field in group["fields"]]
+        if not names:
+            raise Refused("at least one field is required for every data type")
+        if len(set(names)) != len(names):
+            raise Refused("a field is chosen twice in one Hugging Face group")
+        excluded = list(group.get("excluded", []))
+        if set(excluded) & set(names):
+            raise Refused("a field is both chosen and left out in one Hugging Face group")
+        config_map[data_type] = configs
+        fields[data_type] = names
+        if excluded:
+            excluded_by_type[data_type] = excluded
+        for field in group["fields"]:
+            fname, ftype = field["name"], field["sql_type"]
+            if fname in field_types and field_types[fname] != ftype:
+                print(f"    Warning: type conflict for '{fname}': {field_types[fname]} vs {ftype} (keeping first)")
+            else:
+                field_types[fname] = ftype
+    settings["hf_config_map"] = config_map
+    settings["custom_fields"] = fields
+    settings["custom_field_types"] = field_types
+    if excluded_by_type:
+        settings["mongo_exclude_fields"] = excluded_by_type
+
+
+def _custom(answers, settings, name, data_types, has_postgres, has_mongo, has_starrocks, is_hf=False):
+    """The block of `run_questionnaire` for a custom platform; for a Hugging Face dataset its fields and types come from the grouping (`_hf_grouping`) and its input is Parquet."""
     if has_postgres:
         settings["db_schema"] = answers.get("db_schema", name)
     else:
         _not_asked(answers, ("db_schema",), "without a PostgreSQL profile")
 
+    if is_hf:
+        settings["input_format"] = "parquet"
+        settings["custom_file_patterns"] = {dt: dict(HF_FILE_PATTERNS) for dt in data_types}
+    else:
+        _custom_files(answers, settings, data_types)
+    _custom_databases(answers, settings, name, data_types, has_postgres, has_mongo, has_starrocks)
+
+
+def _custom_files(answers, settings, data_types):
+    """The input format, dump patterns and fields of a source of your own files."""
     settings["input_format"] = answers.get("input_format", "ndjson")
     if settings["input_format"] == "csv":
         settings["input_csv_delimiter"] = CSV_DELIMITERS[answers.get("csv_delimiter", "comma")]
@@ -225,6 +288,9 @@ def _custom(answers, settings, name, data_types, has_postgres, has_mongo, has_st
             raise Refused("at least one field is required for every data type")
         settings["custom_fields"][dt] = _list_items("fields", fields[dt])
 
+
+def _custom_databases(answers, settings, name, data_types, has_postgres, has_mongo, has_starrocks):
+    """The MongoDB, index and primary key questions of a custom platform."""
     if has_mongo:
         settings["mongo_collection_strategy"] = answers.get("mongo_collection_strategy", "per_data_type")
         collections = _per_data_type(answers, "mongo_collections", data_types)
@@ -395,6 +461,8 @@ def add_source(answers, hw=None):
     hw = utils.detect_hardware() if hw is None else hw
     try:
         settings, classifier_settings, reddit_answers = build(answers, hw, db_setup)
+        if "hf_dataset" in answers:
+            settings["hf_dataset"] = answers["hf_dataset"]
         if classifier_settings is not None:
             settings["classifier_settings"] = classifier_settings
         files = files_to_write(settings)
@@ -419,5 +487,12 @@ def add_source(answers, hw=None):
         state = "exists" if os.path.isdir(_real(folders[stage])) else "missing: the first run of a profile creates it"
         print(f"    {stage}: {folders[stage]} ({state})")
     print(f"\n  Done! Source '{name}' has been configured.", flush=True)
+    if settings.get("hf_dataset"):
+        print("\n  Next steps:")
+        print(f"    python sdp.py source download {name}   # Download HF parquet files")
+        print(f"    python sdp.py run parse --source {name}  # Select/clean columns")
+        print()
+        utils.print_pipeline_commands([p for p in settings["profiles"] if p != "parse"], name)
+        return 0
     utils.print_pipeline_commands(settings["profiles"], name)
     return 0

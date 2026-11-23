@@ -19,6 +19,7 @@ from social_data_pipeline.control.types import (
     Enum,
     Field,
     FileFilter,
+    HfDatasetId,
     IntRange,
     ListOf,
     MapOf,
@@ -140,10 +141,20 @@ def _check_source_add(fields):
     """The one cross-field rule of `source add` that needs no file: the platform comes from the name (only the source named `reddit` is the Reddit platform). Every other rule (what is asked for the profiles chosen, the folders of other sources) is the action's, which reads the deployment."""
     if (fields["platform"] == "reddit") != (fields["name"] == "reddit"):
         raise FieldRefused("platform", "must be reddit exactly for the source named reddit")
+    # A Hugging Face dataset comes with its grouping, and its data types are the groups' names, in their order (the terminal asks the names in the grouping).
+    if ("hf_dataset" in fields) != ("hf_groups" in fields):
+        raise FieldRefused("hf_groups", "goes with hf_dataset, and hf_dataset with it")
+    if "hf_groups" in fields:
+        if fields["platform"] != "custom":
+            raise FieldRefused("hf_dataset", "is taken for a source of the platform custom only")
+        if [group["data_type"] for group in fields["hf_groups"]] != fields["data_types"]:
+            raise FieldRefused("data_types", "must be the names of the Hugging Face groups, in their order")
 
 
-# The questions of `source add` for Reddit dumps and your own files (and the Reddit questions of `source configure reddit`), each one typed input of `source.add`; an optional one left out is the question answered with Enter (the terminal's default, computed by the action on the host). Sizes: at most 32 data types, 256 fields per data type, 64 index columns and 64 text columns per data type.
+# The questions of `source add` for Reddit dumps, a Hugging Face dataset and your own files (and the Reddit questions of `source configure reddit`), each one typed input of `source.add`; an optional one left out is the question answered with Enter (the terminal's default, computed by the action on the host). Sizes: at most 32 data types, 256 fields per data type, 64 index columns and 64 text columns per data type.
 _DATA_TYPE = Name()
+# The SQL types a Hugging Face field can be given: those `setup.hf.map_hf_type_to_sql` maps the Hub's types to, which are also the ones the database loaders know (any other is loaded as text).
+HF_SQL_TYPES = ("text", "integer", "bigint", "float", "boolean")
 _NAMES = ListOf(Name(), 64, unique=True)
 _REDDIT_KIND = Enum(("submissions", "comments"))
 _WORKERS = IntRange(1, 1024)
@@ -194,6 +205,13 @@ SOURCE_ADD_QUESTIONS = {
     "ml_classifiers": Field(_NAMES),
     "ml_classifier_data_types": Field(MapOf(Name(), ListOf(_DATA_TYPE, 32, unique=True), 64)),
     "hf_token": Field(Secret()),
+    # A Hugging Face dataset's grouping (`source._run_hf_config_grouping`), one entry per schema group of the Hub's reply as `source.hf_inspect` read it: the configs included, the data type's name, the fields chosen with their SQL type (the Hub's type mapped, or for a type without a mapping the type chosen in its place), and the group's other fields (left out of the data type, and of MongoDB's documents). The schema travels in the request: the add asks the Hub nothing, so a private dataset's token is not one of its inputs.
+    "hf_groups": Field(ListOf(Record({
+        "configs": Field(ListOf(Name(), 256, unique=True), required=True),
+        "data_type": Field(_DATA_TYPE, required=True),
+        "fields": Field(ListOf(Record({"name": Field(Name(), required=True), "sql_type": Field(Enum(HF_SQL_TYPES), required=True)}), 256), required=True),
+        "excluded": Field(ListOf(Name(), 256, unique=True)),
+    }), 8)),
 }
 
 
@@ -351,6 +369,13 @@ VERBS = _registry(
         socket_enabled=True,
         note="Answered by the broker itself from its audit log: there is no action in the CLI.",
     ),
+    Verb(
+        name="source.hf_inspect", cls="read", cli=("source", "hf-inspect"),
+        cli_inputs={"dataset", "token"},
+        socket_inputs={"dataset": Field(HfDatasetId(), required=True), "token": Field(Secret())},
+        socket_enabled=True,
+        action="get_source_hf_inspect",
+    ),
     # ---- write ----
     Verb(
         name="run.start", cls="write", cli=("run",),
@@ -387,7 +412,11 @@ VERBS = _registry(
     Verb(
         name="source.download", cls="write", cli=("source", "download"),
         cli_inputs={"name", "token", "data_type"},
-        note="Not available until the folder names built from the Hub's reply are checked.",
+        # `source` is the CLI's `name`: a task's source is the field of that name in the run store. `--data-type` is not taken: the browser downloads every data type.
+        socket_inputs={"source": Field(ConfiguredSource(), required=True), "token": Field(Secret())},
+        socket_enabled=True,
+        note="Started as a task (a recorded run); every folder and file name built from the Hub's reply is checked before anything is written.",
+        action="do_source_download",
     ),
     # ---- step-up ----
     Verb(
@@ -462,13 +491,12 @@ VERBS = _registry(
     ),
     Verb(
         name="source.add", cls="step_up", cli=("source", "add"),
-        # A Hugging Face source (`hf_dataset`) is not taken over the socket yet.
         cli_inputs={"name", "hf_dataset"},
         prompted_inputs=set(SOURCE_ADD_QUESTIONS),
-        socket_inputs={"name": Field(Name(), required=True), **SOURCE_ADD_QUESTIONS},
+        socket_inputs={"name": Field(Name(), required=True), "hf_dataset": Field(HfDatasetId()), **SOURCE_ADD_QUESTIONS},
         socket_enabled=True,
         check=_check_source_add,
-        note="Reddit dumps and your own files; a Hugging Face source stays terminal-only for now.",
+        note="Reddit dumps, a Hugging Face dataset (with its grouping) and your own files.",
         action="do_source_add",
     ),
     Verb(

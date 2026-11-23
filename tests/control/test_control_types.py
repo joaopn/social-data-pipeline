@@ -268,6 +268,7 @@ class TestStringLayers:
             "ConfiguredSource": (True, False),
             "RunId": (True, False),
             "Secret": (True, True),
+            "HfDatasetId": (True, False),
             "Path": (True, False),
             "Port": (False, False),
             "Text": (False, False),

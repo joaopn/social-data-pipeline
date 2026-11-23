@@ -191,7 +191,7 @@ def deployment(tmp_path, monkeypatch, fake_run_docker):
 
 
 class TestStart:
-    @pytest.mark.parametrize("verb_name", ["run.start", "source.download", "db.create_indexes", "no.such_verb", None])
+    @pytest.mark.parametrize("verb_name", ["run.start", "source.add", "db.create_indexes", "no.such_verb", None])
     def test_a_verb_not_on_the_allow_list_creates_nothing(self, deployment, verb_name):
         """Bug class: any verb of the registry (a pipeline run, or a setup verb switched on later) started as a task, outside the checks of its own path, because it has an action. Refused before its fields are looked at, before the state folder exists and before Docker is asked."""
         with pytest.raises(errors.RunNotStarted) as exc:
@@ -311,7 +311,7 @@ class TestTheRecordOfATask:
 class TestTheAllowList:
     def test_every_task_is_a_switched_on_verb_with_plain_required_key_fields(self):
         """Bug class: a task whose verb cannot run over the socket (no action, switched off), whose key field is optional (the label would read "None" and two tasks without it would not be told apart) or a secret (written into the record as a key, and into the label); or a verb added to the allow-list unseen. Each unit that switches a task on adds its verb to the pinned set."""
-        assert set(tasks.TASKS) == {"db.create_indexes"}
+        assert set(tasks.TASKS) == {"db.create_indexes", "source.download"}
         for name, task in tasks.TASKS.items():
             verb = verbs.VERBS[name]
             assert task.verb == name and verb.socket_enabled and verb.action and verb.action.startswith("do_") and callable(getattr(sdp, verb.action, None))

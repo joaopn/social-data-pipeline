@@ -40,6 +40,9 @@ STARTED_BY_NOT_VALID = "started_by must be a short label of letters, digits, '_'
 NOT_A_TASK = "the verb is not one that runs as a task"
 TASK_ACTIVE = "a task of this verb for the same target is already active"
 TASK_NOT_USABLE = "the task's entry does not fit its verb"
+SOURCE_TASK_ACTIVE = "a download of this source is running, which writes its files: start the run when it has ended"
+SOURCE_RUN_ACTIVE = "a pipeline run of this source is alive, which reads its files: start the download when it has ended"
+DOCKER_NOT_REACHABLE_FOR_TASK = "Docker cannot be reached, so it cannot be told whether a pipeline run of this source is alive"
 
 START_FAILED_LINE = b"[run start] the process that supervises the run could not be started\n"
 
@@ -66,6 +69,8 @@ def _refuse_a_second_run(root, service_profiles, profile, source):
     if not listing["docker_available"]:
         raise errors.RunNotStarted(DOCKER_NOT_REACHABLE, "docker_not_reachable")
     for run in listing["runs"]:
+        if run["kind"] == runstore.KIND_TASK and run.get("task") in tasks.SOURCE_FILE_TASKS and run["source"] == source and run["state"] in _ALIVE_STATES:
+            raise errors.RunNotStarted(SOURCE_TASK_ACTIVE, "source_task_active")
         if run["profile"] != profile:
             continue
         if run["kind"] == runstore.KIND_TERMINAL:
@@ -183,10 +188,28 @@ def _refuse_a_second_task(root, verb_name, key):
             raise errors.RunNotStarted(TASK_ACTIVE, "task_active")
 
 
+def _refuse_beside_a_run_of_the_source(root, service_profiles, source):
+    """Raise RunNotStarted when a pipeline run of the source is alive: a recorded run of a profile (not a task) that has not ended and is not lost, or one started in a terminal whose container lives, its source the same or not handed over by Docker. With Docker out of reach nothing can be told, and the task is refused."""
+    listing = runstore.list_runs(root, service_profiles, _EVERY_RUN)
+    if not listing["docker_available"]:
+        raise errors.RunNotStarted(DOCKER_NOT_REACHABLE_FOR_TASK, "docker_not_reachable")
+    for run in listing["runs"]:
+        if run["kind"] == runstore.KIND_TASK:
+            continue
+        if run["kind"] == runstore.KIND_TERMINAL:
+            active = run["source"] in (source, None)
+        else:
+            active = run["source"] == source and run["state"] in _ALIVE_STATES
+        if active:
+            raise errors.RunNotStarted(SOURCE_RUN_ACTIVE, "source_run_active")
+
+
 def start_task(root, verb_name, fields, *, started_by):
     """Start the task `verb_name` (a verb of `control.tasks.TASKS`) for the request `fields` in the deployment `root` and return the id of the recorded run. `started_by` is as for `start_run`.
 
     A verb that is not on the allow-list is refused before its fields are looked at; then the fields are checked with `validate_request(verb_name, fields)`, and the CLI module must have the verb's action. Under the lock of the whole store, a task of the same verb whose key fields have the same values that is alive is refused, and the run is created with its lock taken: kind `task`, the verb, the label made from the key values, the `source` field (when the request has one) as its source, and as `flags` the request's other fields whose type is not a secret. The supervisor gets the request (`{"verb", "fields"}`, every secret in plain text) on its standard input; its child calls the action with the fields.
+
+    A task of `tasks.SOURCE_FILE_TASKS` (a download) is also refused while a pipeline run of its source is alive (`source_run_active`; Docker out of reach: `docker_not_reachable`), and `start_run` refuses a pipeline run of a source while such a task of it is alive (`source_task_active`).
 
     Raises the registry's errors for a request it refuses; ValueError for a `started_by` that is not a label; RunNotStarted with a constant message and a `code` for everything else (`not_a_task`, `task_not_usable` for an entry whose key fields are not required plain inputs of the verb or whose verb has no action in the CLI, `task_active`, and the codes of `start_run`).
     """
@@ -204,4 +227,13 @@ def start_task(root, verb_name, fields, *, started_by):
     flags = {name: value for name, value in validated.items() if not inputs[name].type.is_secret and name != "source"}
     plain = reveal(validated)
     record = {"profile": None, "task": verb_name, "label": tasks.label_of(task, key), "source": validated.get("source"), "flags": flags, "started_by": started_by}
-    return _create_and_spawn(root, record, lambda: _refuse_a_second_task(root, verb_name, key), lambda run_id: {"verb": verb_name, "fields": plain})
+    if verb_name in tasks.SOURCE_FILE_TASKS:
+        service_profiles = sdp._run_service_profiles()
+
+        def refuse_a_second():
+            _refuse_a_second_task(root, verb_name, key)
+            _refuse_beside_a_run_of_the_source(root, service_profiles, validated.get("source"))
+    else:
+        def refuse_a_second():
+            _refuse_a_second_task(root, verb_name, key)
+    return _create_and_spawn(root, record, refuse_a_second, lambda run_id: {"verb": verb_name, "fields": plain})

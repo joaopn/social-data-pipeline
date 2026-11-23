@@ -45,6 +45,7 @@ SUBCOMMANDS = [
     ["source", "--help"],
     ["source", "add", "--help"],
     ["source", "download", "--help"],
+    ["source", "hf-inspect", "--help"],
     ["source", "configure", "--help"],
     ["source", "add-classifiers", "--help"],
     ["source", "remove", "--help"],

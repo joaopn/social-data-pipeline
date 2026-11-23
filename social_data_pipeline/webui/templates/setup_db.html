@@ -1,4 +1,4 @@
-{#- The "Set up a database" wizard (`setup_db`), in the mock-up's add-source look: the stepper, one step's fields (label.f, pick cards), what it stands for (`.cli`), then Cancel, Back and Next. Each step posts its own fields only; the answers are kept in the session until Review makes the pending action. No secret is ever drawn. -#}
+{#- The "Set up a database" wizard (`setup_db`), in the mock-up's add-source look: the stepper, one step's fields (label.f, pick cards), what it stands for (`.cli`), then Cancel, Back and Next. Each step posts its own fields only; the answers are kept in the session until Review makes the pending action. No secret is ever drawn. In a change (`wizard.mode == "change"`) the fields hold the current values (`wizard.read`), with the keep boxes and the data-path sentence. -#}
 {% extends "frame.html" %}
 {% import "_forms.html" as forms with context %}
 
@@ -17,6 +17,14 @@
 {%- endif %}
 {%- endmacro %}
 
+{% macro moved(name) -%}
+{%- if wizard.mode == "change" and name in wizard.read["values"] %}Changing it moves no data: the database starts empty at the new path, and its data stays in {{ wizard.read["values"][name] }}.{% endif %}
+{%- endmacro %}
+
+{% macro keep(name, items) -%}
+<div class="wide">{{ forms.field(name, wizard.inputs[name], wizard["values"].get(name), label=wizard.inputs[name].label ~ ": " ~ (items | join(", "))) }}</div>
+{%- endmacro %}
+
 {% macro secret(name, note) -%}
 <label class="f">{{ wizard.inputs[name].label }}
   <input type="password" name="{{ name }}" autocomplete="new-password" maxlength="1024">
@@ -26,13 +34,24 @@
 
 {% block shell %}
 <main class="main">
-<div class="row wrap"><h1>Set up a database</h1><span class="muted small">the same questions <code>sdp db setup</code> asks in the terminal; both write the same files</span></div>
+<div class="row wrap"><h1>{{ wizard.heading }}</h1><span class="muted small">the same questions <code>sdp db setup</code> asks in the terminal; both write the same files</span></div>
 <div class="stepper mt" aria-label="Steps">{% for item in wizard.steps %}<span class="{{ item.state }}"{% if item.state == 'on' %} aria-current="step"{% endif %}>{{ loop.index }} {{ item.title }}</span>{% endfor %}</div>
 {%- if wizard.error %}
 <p class="notice notice-bad mt narrow" role="alert">{{ wizard.error }}</p>
 {%- endif %}
 
 {%- if wizard.step == "review" %}
+{%- if wizard.changes is not none %}
+<h4 class="mt-l">What changes</h4>
+{%- if wizard.changes %}
+<table class="t changes mt narrow">
+  <thead><tr><th scope="col">Setting</th><th scope="col">Now</th><th scope="col">After</th></tr></thead>
+  <tbody>{% for label, old, new in wizard.changes %}<tr><td>{{ label }}</td><td class="mono">{{ old }}</td><td class="mono">{{ new }}</td></tr>{% endfor %}</tbody>
+</table>
+{%- else %}
+<p class="muted small mt">No answer differs from the setup as it is now; the files are written again all the same, as the terminal writes them.</p>
+{%- endif %}
+{%- endif %}
 <h4 class="mt-l">Your answers</h4>
 <dl class="kv mt narrow">
   {%- for label, value in wizard.shown %}
@@ -57,11 +76,16 @@
   {#- The first button of the form is what Enter in a field presses: Next, never Add a row or Back. #}
   <button type="submit" name="go" value="next" class="enter-default" tabindex="-1" aria-hidden="true">Next</button>
   {%- if wizard.step == "databases" %}
-  {%- if wizard.mode == "first" %}
+  {%- if wizard.mode in ("first", "change") %}
   <h4 class="mt-l">Which databases?</h4>
+  {%- if wizard.mode == "change" %}<p class="muted small">Set up already: {{ wizard.configured | join(", ") }}. Each stays part of the setup (one is removed with Remove… on its card); a database not set up yet can be added in the same run, as <code>db setup</code> in a terminal does.</p>{% endif %}
   <div class="pick mt narrow">
     {%- for name in ("starrocks", "mongo", "postgres") %}
+    {%- if name in wizard.configured %}
+    <label class="pickcard"><input type="checkbox" name="pick_{{ name }}" value="yes" checked disabled><b>{{ wizard.names[name] }}</b><span>set up: its current values are filled in</span></label>
+    {%- else %}
     <label class="pickcard"><input type="checkbox" name="pick_{{ name }}" value="yes"{% if name in wizard.chosen %} checked{% endif %}><b>{{ wizard.names[name] }}</b><span>{{ {"starrocks": "analytics: columnar tables, the queue's main target", "mongo": "documents, one database per source", "postgres": "legacy: tables, tablespaces, PGTune"}[name] }}</span></label>
+    {%- endif %}
     {%- endfor %}
   </div>
   <h4 class="mt-l">Folders</h4>
@@ -78,26 +102,35 @@
     {%- endfor %}
   </div>
   {%- else %}
-  <p class="muted mt-l">Every database is set up already. A database that is set up is changed in a terminal: <code>python sdp.py db setup</code>.</p>
+  <p class="muted mt-l">Every database is set up already. A database that is set up is changed with <a href="/databases/setup?change=1">Change the setup…</a> (in a terminal: <code>python sdp.py db setup</code>).</p>
   {%- endif %}
 
   {%- elif wizard.step == "postgres" %}
   <h4 class="mt-l">PostgreSQL <span class="tag">legacy</span></h4>
   <div class="form mt">
-    {{ forms.field("pgdata_path", wizard.inputs.pgdata_path, wizard["values"].get("pgdata_path"), hint="Empty: <data base path>/database/postgres.") }}
+    {{ forms.field("pgdata_path", wizard.inputs.pgdata_path, wizard["values"].get("pgdata_path"), hint=moved("pgdata_path") or "Empty: <data base path>/database/postgres.") }}
     {{ input("db_name") }}
     {{ input("pg_port") }}
     {{ input("filesystem") }}
     {{ input("pg_mem_limit") }}
+    {%- if wizard.mode == "change" and wizard.read.tablespaces %}
+    {{ keep("keep_tablespaces", wizard.read.tablespaces | map(attribute="name") | list) }}
+    {%- endif %}
     {{ input("tablespaces") }}
+    {%- if wizard.mode == "change" and wizard.read.pgtune_set %}
+    {{ keep("keep_pgtune", ["the output below the marker of config/postgres/postgresql.local.conf"]) }}
+    {%- endif %}
     {{ forms.text_input("pgtune", wizard.inputs.pgtune, wizard["values"].get("pgtune"), hint="Paste the output of pgtune.leopard.in.ua (DB version 18, OS linux, DB type dw, storage ssd). Blank lines are left out; empty: none. If PostgreSQL then fails to start, remove an 'io_method = io_uring' line.") }}
   </div>
+  {%- if wizard.mode == "change" and (wizard.read.tablespaces or wizard.read.pgtune_set) %}
+  <p class="muted small mt">With a Keep box ticked the rows or the paste below it are not taken; untick it to give new ones, or to give none.</p>
+  {%- endif %}
   <p class="muted small mt">A tablespace name is lower-case letters, digits and '_' ('pgdata' is the default one); each is mounted at /data/tablespace/&lt;name&gt;. <button type="submit" name="go" value="stay" class="btn sm">Add a row</button></p>
 
   {%- elif wizard.step == "mongo" %}
   <h4 class="mt-l">MongoDB</h4>
   <div class="form mt">
-    {{ forms.field("mongo_data_path", wizard.inputs.mongo_data_path, wizard["values"].get("mongo_data_path"), hint="Empty: <data base path>/database/mongo.") }}
+    {{ forms.field("mongo_data_path", wizard.inputs.mongo_data_path, wizard["values"].get("mongo_data_path"), hint=moved("mongo_data_path") or "Empty: <data base path>/database/mongo.") }}
     {{ input("mongo_port") }}
     {{ input("mongo_cache_size_gb") }}
     {{ input("mongo_mem_limit") }}
@@ -108,7 +141,7 @@
   {%- elif wizard.step == "starrocks" %}
   <h4 class="mt-l">StarRocks</h4>
   <div class="form mt">
-    {{ forms.field("starrocks_data_path", wizard.inputs.starrocks_data_path, wizard["values"].get("starrocks_data_path"), hint="Empty: <data base path>/database/starrocks. Always used for storage.") }}
+    {{ forms.field("starrocks_data_path", wizard.inputs.starrocks_data_path, wizard["values"].get("starrocks_data_path"), hint=moved("starrocks_data_path") or "Empty: <data base path>/database/starrocks. Always used for storage.") }}
     {{ input("starrocks_port") }}
     {{ input("starrocks_fe_http_port") }}
     {{ input("sr_fe_jvm_heap") }}
@@ -116,6 +149,9 @@
     {{ input("sr_be_mem_limit") }}
     {{ input("sr_alter_tablet_workers") }}
     {{ input("sr_compression") }}
+    {%- if wizard.mode == "change" and wizard.read.storage_paths %}
+    {{ keep("keep_storage_paths", wizard.read.storage_paths) }}
+    {%- endif %}
     {{ input("starrocks_storage_paths") }}
   </div>
   <p class="muted small mt">ZSTD compresses text about a third smaller than LZ4 and applies to tables created from now on. More alter workers build indexes faster and use more memory. <button type="submit" name="go" value="stay" class="btn sm">Add a row</button></p>
@@ -123,6 +159,7 @@
   {%- elif wizard.step == "auth" %}
   <h4 class="mt-l">Authentication and users</h4>
   {%- if wizard.mode == "add" %}<p class="muted small">Authentication is off for the databases set up already; switching it on here applies to the new one only.</p>{% endif %}
+  {%- if wizard.mode == "change" and wizard.auth_on %}<p class="notice mt narrow">{{ wizard.auth_off }} The admin password is asked again, twice, as the terminal asks it.</p>{% elif wizard.mode == "change" %}<p class="muted small">Authentication is off now; switching it on here applies to every database of the setup.</p>{% endif %}
   <div class="form mt">
     <div class="wide">{{ forms.field("auth", wizard.inputs.auth, wizard["values"].get("auth"), label="Require passwords for connections (recommended for multi-user or remote servers)") }}</div>
     {{ secret("new_password", "Not stored anywhere: you give it when the database starts.") }}
@@ -131,6 +168,7 @@
     {{ input("ro_username") }}
     {{ input("ro_password_mode") }}
     {{ secret("ro_password", "Only when typed: no quotes, backslash, backtick or white space.") }}
+    {%- if wizard.mode == "change" %}<p class="muted small wide">Read-only password: keep takes the one set up now{% if wizard.read.ro_password_set %} (one is set{% if wizard.read.ro_username %} for {{ wizard.read.ro_username }}{% endif %}){% else %} (none can be read now, so keep is refused){% endif %}, for the same user name only; generate makes a new one, which every client that has the old one must be given.</p>{% endif %}
     {{ secret("ro_password_confirm", "") }}
   </div>
   <p class="muted small mt">With authentication off the passwords and the read-only user are not taken. A generated read-only password is 32 characters, kept in .ro_credentials in each database's data folder and never shown.</p>

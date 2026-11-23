@@ -42,6 +42,13 @@
   {%- if step.also %}<p class="notice">{{ step.also }}</p>{% endif %}
   {%- endfor %}
   {%- endif %}
+  {%- if pending.changes %}
+  <h4>What changes</h4>
+  <table class="t changes">
+    <thead><tr><th scope="col">Setting</th><th scope="col">Now</th><th scope="col">After</th></tr></thead>
+    <tbody>{% for label, old, new in pending.changes %}<tr><td>{{ label }}</td><td class="mono">{{ old }}</td><td class="mono">{{ new }}</td></tr>{% endfor %}</tbody>
+  </table>
+  {%- endif %}
   {%- if pending.writes %}
   <h4>What this will do</h4>
   <ul class="writes">

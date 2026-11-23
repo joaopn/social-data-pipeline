@@ -102,6 +102,9 @@ def pending_model(pending, now, seconds):
         "writes": action.writes(fields) if action.writes else None,
         # The statements a page worked out when it kept the action (a tuple of lines; the index build's), shown as they are.
         "preview": pending.shown if isinstance(pending.shown, tuple) else None,
+        "changes": None,
+        # A setup's change keeps its own lines and the list of what changes, made with the values it started from (`setup_db`).
+        **({key: pending.shown[key] for key in ("writes", "changes") if key in pending.shown} if isinstance(pending.shown, dict) and pending.action == "db.setup" else {}),
         "minutes_left": max(1, math.ceil((seconds - (now - pending.created)) / 60)),
         "queue": False,
     }
@@ -505,6 +508,8 @@ def install(api, ctx, queue_hooks):
             return await pending_page(session, taken, 503, ACTIONS_BUSY)
         command = actions.TABLE[taken.action].command(taken.fields) if actions.TABLE[taken.action].command else None
         outcome = Outcome(new_id(), taken.action, command, ctx.clock())
+        if taken.action == "db.setup" and isinstance(taken.shown, dict):
+            outcome.back = taken.shown.get("back")
         work.add_outcome(outcome)
         try:
             if queue_action:

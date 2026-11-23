@@ -286,7 +286,8 @@ def data_path_sentence(name, old, new):
 
 AUTH_OFF_SENTENCE = "Authentication is on for the databases set up, and it cannot be switched off here: switching it off is done in a terminal, with python sdp.py db setup."
 GENERIC_DATA_PATH = "When a database is set up already and its data path changes here, its existing data is NOT moved: it will start empty at the new path, and the old data stays in the old folder."
-RESTART = "Nothing is started or restarted: a database that runs keeps its old settings until it is stopped and started again (Stop, then Start on its card, or python sdp.py db stop <database> and python sdp.py db start <database>)."
+# The same line as the MCP servers' and the scheduler's setup (`actions._NOTHING_RESTARTS`, which this module cannot import): a change applies at the next start, and Needs attention names what must restart.
+RESTART = "Nothing is restarted: a running service keeps its old settings until it is restarted. Needs attention on the Overview names the services that must restart, with a Restart button."
 
 
 def writes(fields, read=None):

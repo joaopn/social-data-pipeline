@@ -62,6 +62,7 @@ See [Language detection and classifiers](classifiers.md) for tuning. Every profi
 
 ```bash
 python sdp.py db status                     # database config, health, MCP servers, scheduler
+python sdp.py db settings                   # the current answers of db setup
 python sdp.py source status                 # ingestion state per source
 python sdp.py source progress               # files finished per processing stage
 python sdp.py runs list                     # pipeline runs

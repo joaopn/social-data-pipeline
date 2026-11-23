@@ -34,6 +34,7 @@ With a `pipx` install (see [Install](install.md)) the same commands are `sdp <gr
 | `python sdp.py db start [service]` | Start services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp\|jobs` (all configured if unspecified) |
 | `python sdp.py db stop [service]` | Stop services: `postgres\|mongo\|starrocks\|postgres-mcp\|mongo-mcp\|starrocks-mcp\|jobs` (all configured if unspecified) |
 | `python sdp.py db status [--verbose]` | Show database config, health, MCP and query scheduler status; `--verbose` (`-v`) adds a per-source ingestion breakdown for each configured database |
+| `python sdp.py db settings [--json]` | Show the answers `db setup` takes as its defaults when run again (never a password) |
 | `python sdp.py db verify [--db <name>] [--json]` | Check config, env, credentials, mounts, MCP and scheduler coherence; exits 1 on drift. Use as a CI or pre-pipeline preflight. `--db` checks a single database (the cross-cutting MCP and scheduler checks still apply); `--json` emits machine-readable JSON |
 | `python sdp.py db recover-password [--regenerate-ro]` | Reset the database admin password (requires auth enabled). With `--regenerate-ro`, also rewrite `.ro_credentials` with a fresh password (combinable with the admin recovery; use it when `.ro_credentials` is missing, lost, or known-leaked) |
 | `python sdp.py db create-indexes [--source <name>]` | Interactively create database indexes (`-s` for short; auto-selects when only one source is configured) |

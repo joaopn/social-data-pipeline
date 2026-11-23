@@ -463,7 +463,7 @@ Which classifiers are ingested, and each one's `suffix` and `data_types` scope, 
 
 ## Authentication
 
-Database authentication is optional and can be enabled during `python sdp.py db setup` (or from the web UI's Databases page, which asks the same questions for a database not set up yet: see [Setting up a database](webui.md#setting-up-a-database)). When it is enabled, it adds password-based access control to PostgreSQL, MongoDB and StarRocks. When you add a database with `python sdp.py db setup --add`, auth is extended to it automatically if it is already enabled on the existing databases.
+Database authentication is optional and can be enabled during `python sdp.py db setup` (or from the web UI's Databases page, which asks the same questions for a database not set up yet, and with **Change…** for the databases set up, where it can switch authentication on but not off: see [Setting up a database](webui.md#setting-up-a-database)). When it is enabled, it adds password-based access control to PostgreSQL, MongoDB and StarRocks. When you add a database with `python sdp.py db setup --add`, auth is extended to it automatically if it is already enabled on the existing databases.
 
 ### Users
 
@@ -487,6 +487,8 @@ The admin password is never stored on disk: it is prompted each time `python sdp
 `recover-password --regenerate-ro` writes a fresh `.ro_credentials` for every database with auth and an RO user, and the database applies the new password on the restart that follows.
 
 Re-running `python sdp.py db setup` on an existing install keeps the existing RO password by default. An older default (always generate a new one) silently rotated it on every re-run and broke any client with cached credentials.
+
+`python sdp.py db settings` (`--json` for the data) shows the answers `db setup` takes as its defaults when it is run again: the paths, ports, memory sizes, tablespaces, extra disks, whether a PGTune output and a read-only password are set (never the password). A data path changed by `db setup` moves no data: the database starts empty at the new path and the old data stays in the old folder.
 
 ### Wiping data without losing config
 

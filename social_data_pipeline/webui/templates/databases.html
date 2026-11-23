@@ -21,8 +21,8 @@
     {%- endfor %}
   </nav>
   {%- endif %}
-  {#- The mock-up's header row: Create indexes…, then the primary Set up a database… rightmost (on the page of all databases). #}
-  <span class="right row"><a class="btn" href="/indexes">Create indexes…</a>{% if not only %}<a class="btn primary" href="/databases/setup?new=1">Set up a database…</a>{% endif %}</span>
+  {#- The mock-up's header row: Create indexes…, Change the setup… (when a database is set up), then the primary Set up a database… rightmost (on the page of all databases). #}
+  <span class="right row"><a class="btn" href="/indexes">Create indexes…</a>{% if not only %}{% if db_status.ok and db_status.configured %}<a class="btn" href="/databases/setup?change=1">Change the setup…</a>{% endif %}<a class="btn primary" href="/databases/setup?new=1">Set up a database…</a>{% endif %}</span>
 </div>
 
 <div class="mt-l"{% if not only and tab != "servers" %} hidden{% endif %}>
@@ -52,6 +52,7 @@
       {%- endif %}
       {{ forms.button("db.start", "Start", {"service": row.db}, "", "Start " ~ row.db) }}
       {{ forms.button("db.stop", "Stop", {"service": row.db}, "", "Stop " ~ row.db) }}
+      <a class="btn sm" href="/databases/setup?change=1&amp;db={{ row.db }}" title="Change the setup of {{ row.db }}: its current values are filled in">Change…</a>
       {{ forms.button("db.reset", "Reset…", {"db": row.db}, "danger", "Reset " ~ row.db) }}
       {{ forms.button("db.unsetup", "Remove…", {"db": row.db}, "danger", "Remove " ~ row.db) }}
     </div>

@@ -206,6 +206,10 @@
     {%- endfor %}
   </dl>
   <div class="cli mt"><span>python sdp.py source status <b>{{ source_name }}</b></span></div>
+  <div class="row mt"><form method="post" action="/sources/{{ source_name }}/reconfigure" class="inline-form">{{ forms.token() }}<button type="submit" class="btn sm">Reconfigure…</button></form><span class="cli grow">sdp source configure <b>{{ source_name }}</b></span></div>
+  {%- if "lingua" in status.profiles or "ml" in status.profiles %}
+  <div class="row mt"><form method="post" action="/sources/{{ source_name }}/add-classifiers" class="inline-form">{{ forms.token() }}<button type="submit" class="btn sm">Add classifiers…</button></form><span class="cli grow">sdp source add-classifiers <b>{{ source_name }}</b></span></div>
+  {%- endif %}
   <div class="row mt"><a class="btn sm" href="/indexes?source={{ source_name }}">Create indexes…</a><span class="cli grow">sdp db create-indexes --source <b>{{ source_name }}</b></span></div>
   </div>
   {%- else %}

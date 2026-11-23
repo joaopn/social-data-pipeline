@@ -97,6 +97,8 @@ class Outcome:
         self.output = ""
         self.errors = ""
         self.run_id = None
+        # The label of the run a refusal names (`source_run_alive`: its profile, or a task's label), or None.
+        self.run_label = None
         self.code = None
         self.sentence = None
         self.field = None
@@ -245,6 +247,12 @@ class Outcome:
         if isinstance(field_name, str) and field_name in actions.TABLE[self.action].inputs:
             self.field = actions.TABLE[self.action].inputs[field_name].label
         details = getattr(error, "details", None) or {}
+        if code == "source_run_alive" and actions.is_run_id(details.get("run_id")):
+            # The run that stands in the way, linked from the refusal: its id checked, its label kept only as plain short text.
+            self.run_id = details["run_id"]
+            label = details.get("run_label")
+            if isinstance(label, str) and 0 < len(label) <= 128 and not actions.has_control_character(label):
+                self.run_label = label
         if code == "failed":
             if isinstance(details.get("errors"), str):
                 self.errors = text_end(details["errors"], text_max_bytes)

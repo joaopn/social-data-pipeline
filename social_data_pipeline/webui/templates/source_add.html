@@ -1,4 +1,4 @@
-{#- The Add source wizard (`setup_source`), in the mock-up's look: the Sources rail on the left, the pane with the stepper, the step's fields (label.f in the two-column .form), "What this will do" as .cli lines, the write-verb tag and Cancel, Back and Next. One form per step; Cancel posts to the wizard's cancel address (formaction), so nothing needs a script. A token is never drawn back. -#}
+{#- The Add source wizard (`setup_source`), also as Reconfigure and Add classifiers (`mode`: add, configure, classifiers; `setup_source_change`), in the mock-up's look: the Sources rail on the left, the pane with the stepper, the step's fields (label.f in the two-column .form), "What this will do" as .cli lines, the write-verb tag and Cancel, Back and Next. One form per step; Cancel posts to the wizard's cancel address (formaction), so nothing needs a script. A token is never drawn back. -#}
 {% extends "frame.html" %}
 {% import "_forms.html" as forms with context %}
 
@@ -24,13 +24,25 @@
   {%- for row in (rail if rail is defined else []) %}
   {%- if row.href %}<a class="srcbtn" href="{{ row.href }}"><b>{{ row.name }}</b></a>{% else %}<span class="srcbtn"><b>{{ row.name }}</b></span>{% endif %}
   {%- endfor %}
-  <a class="btn sm on add-source" href="/add-source" aria-current="page">+ Add source</a>
+  <a class="btn sm{{ ' on' if mode == 'add' else '' }} add-source" href="/add-source"{% if mode == 'add' %} aria-current="page"{% endif %}>+ Add source</a>
 </aside>
 <main class="main pane">
+{%- if mode == "configure" %}
+<div class="row wrap"><h1>Reconfigure {{ source_name }}</h1><span class="muted small">the same questions <code>sdp source configure {{ source_name }}</code> asks in the terminal, with the current values; both write the same files</span></div>
+{%- elif mode == "classifiers" %}
+<div class="row wrap"><h1>Add classifiers to {{ source_name }}</h1><span class="muted small">the same questions <code>sdp source add-classifiers {{ source_name }}</code> asks in the terminal, with the current values; both write the same files</span></div>
+{%- else %}
 <div class="row wrap"><h1>Add a source</h1><span class="muted small">the same questions <code>sdp source add</code> asks in the terminal; both write the same files</span></div>
+{%- endif %}
 <div class="stepper mt">{% for s in stepper %}<span{% if s.state %} class="{{ s.state }}"{% endif %}{% if s.state == "skip" %} title="Not asked for the answers so far"{% endif %}>{{ s.label }}</span>{% endfor %}</div>
 {%- if line %}
 <p class="notice notice-bad mt" role="alert">{{ line }}</p>
+{%- endif %}
+{%- if mode != "add" and step != "review" %}
+<p class="muted small mt">Each field shows the source's current value. A field left empty keeps it (the terminal's Enter), or takes the terminal's default where there is none.</p>
+{%- for note in current.left_out or [] %}
+<p class="notice notice-warn mt">{{ note }}</p>
+{%- endfor %}
 {%- endif %}
 {%- if failure is defined and failure %}
 <div class="mt">{% with block = failure %}{% include "_failure.html" %}{% endwith %}</div>
@@ -48,15 +60,22 @@
 {%- else %}
 {%- set reddit = platform == "reddit" %}
 {%- set is_hf = platform == "hf" %}
-{%- set data_types = answers.get("data_types", []) %}
-{%- set profiles = answers.get("profiles", []) %}
+{%- set data_types = step_data_types %}
+{%- set profiles = step_profiles %}
 <form method="post" action="/add-source/{{ wizard_id }}/{{ step }}">
   {{ forms.token() }}
 
 {%- if step == "files" %}
   <h4 class="mt-l">Files</h4>
   <div class="form mt">
-    {%- if reddit %}
+    {%- if mode == "configure" %}
+    <label class="f">Source name<input type="text" value="{{ source_name }}" disabled><span class="muted small">The origin and the name stay: {% if reddit %}Reddit dumps{% elif is_hf %}the Hugging Face dataset {{ current.hf_dataset }}{% else %}your own files{% endif %}.</span></label>
+    {%- if is_hf %}
+    <label class="f">Data types<input type="text" value="{{ current.data_types | join(', ') }}" disabled><span class="muted small">A Hugging Face source keeps its grouping of configs into data types, its fields and their types, as the terminal does.</span></label>
+    {%- else %}
+    {{ text("data_types", "Data types", "", "Comma-separated.") }}
+    {%- endif %}
+    {%- elif reddit %}
     <label class="f">Source name<input type="text" value="reddit" disabled><span class="muted small">Reddit dumps are always the source reddit.</span></label>
     {{ text("data_types", "Data types", "submissions, comments", "Comma-separated.") }}
     {%- elif is_hf %}
@@ -69,7 +88,7 @@
     {{ text("data_types", "Data types", "", "Comma-separated, at most 8 (for example posts, replies).") }}
     {%- endif %}
     {%- for stage in ("dumps", "extracted", "parsed", "output") %}
-    {{ text(stage ~ "_path", stage | capitalize ~ " folder", "", "Empty: data/" ~ stage ~ "/<name>. Any path, absolute or relative to the deployment; a folder of another source is refused.", mono=True) }}
+    {{ text(stage ~ "_path", stage | capitalize ~ " folder", "", ("Empty: the current folder." if mode == "configure" else "Empty: data/" ~ stage ~ "/<name>.") ~ " Any path, absolute or relative to the deployment; a folder of another source is refused.", mono=True) }}
     {%- endfor %}
     {{ choice("file_format", "Intermediate file format", (("parquet", "parquet"), ("csv", "csv")), "parquet") }}
     {{ number("parquet_row_group_size", "Parquet row-group size", "Larger: better compression, more memory. Parquet only.", "1000000") }}
@@ -173,7 +192,7 @@
     {{ text("scope[" ~ name ~ "]", "Data types for " ~ name, "", "Comma-separated; empty: all.") }}
     {%- endfor %}
     {%- endif %}
-    <label class="f">Hugging Face token <span class="muted">(optional, for gated models; saved to .env as HF_TOKEN, as the terminal does)</span><input type="password" name="hf_token" autocomplete="off" maxlength="1024" placeholder="{{ 'kept: type a new one to replace it' if token_kept else 'none' }}"></label>
+    <label class="f">Hugging Face token <span class="muted">(optional, for gated models; saved to .env as HF_TOKEN, as the terminal does)</span><input type="password" name="hf_token" autocomplete="off" maxlength="1024" placeholder="{{ 'kept: type a new one to replace it' if token_kept else 'one is set in .env: type one to replace it' if current.hf_token_set else 'none' }}"></label>
     {%- if token_kept %}<div class="f">{{ box("hf_token_forget", "Forget the token typed before") }}</div>{% endif %}
     {%- endif %}
   </div>
@@ -219,17 +238,17 @@
     {%- for dt in data_types %}
     {%- if has_postgres %}{{ text("pg_indexes[" ~ dt ~ "]", "PostgreSQL indexes of " ~ dt, "", "Column names, comma-separated.") }}{% endif %}
     {%- if has_mongo %}{{ text("mongo_indexes[" ~ dt ~ "]", "MongoDB indexes of " ~ dt, "", "Field names, comma-separated.") }}{% endif %}
-    {%- if has_starrocks %}{{ text("sr_indexes[" ~ dt ~ "]", "StarRocks bitmap indexes of " ~ dt, "", "Column names, comma-separated.") }}{% endif %}
+    {%- if has_starrocks %}{{ text("sr_indexes[" ~ dt ~ "]", "StarRocks bitmap indexes of " ~ dt, "", "Column names, comma-separated." ~ (" Now typed by db create-indexes (bitmap: " ~ (current.typed_sr_indexes[dt].bitmap | join(", ") or "none") ~ "; bloom filter: " ~ (current.typed_sr_indexes[dt].bloomfilter | join(", ") or "none") ~ "): empty keeps them as they are." if current.typed_sr_indexes and dt in current.typed_sr_indexes else "")) }}{% endif %}
     {%- endfor %}
     {%- if has_postgres or has_starrocks %}
-    {{ text("primary_key", "Primary key column", "", "Optional: a column unique per row enables duplicate detection and upsert on re-ingest. Empty: re-runs append rows.") }}
+    {{ text("primary_key", "Primary key column", "", "Optional: a column unique per row enables duplicate detection and upsert on re-ingest. " ~ ("Empty keeps the current one: as in the terminal, a reconfigure cannot remove it." if mode == "configure" else "Empty: re-runs append rows.")) }}
     {%- endif %}
   {%- endif %}
   </div>
 
 {%- elif step == "review" %}
   <h4 class="mt-l">Review</h4>
-  {%- if is_hf %}
+  {%- if is_hf and mode == "add" %}
   <div class="mt">{{ box("download", "Download now: when the add has ended, start the download as a run (its log and Cancel in Runs and on the Overview)", download) }}</div>
   <p class="muted small">The access token, if one was typed, is sent with that download only and is not stored. Without Download now, download later with Download on the source's page.</p>
   {%- endif %}
@@ -244,9 +263,11 @@
   </dl>
   <h4 class="mt-l">Files written</h4>
   <p class="small mt">config/sources/{{ answers.name }}/: {{ review.files | join(", ") }}</p>
+  {%- if review.folders %}
   <h4 class="mt-l">Folders</h4>
   <ul class="small mt">{% for stage, path in review.folders %}<li>{{ stage }}: <code>{{ path }}</code></li>{% endfor %}</ul>
-  <p class="muted small">This creates none of them: the first run of a profile creates each one that is missing.</p>
+  <p class="muted small">This creates {% if mode == "configure" %}, moves or empties {% endif %}none of them: the first run of a profile creates each one that is missing.</p>
+  {%- endif %}
   {%- elif review_error_step is defined and review_error_step != "review" %}
   <p class="mt"><a href="/add-source/{{ wizard_id }}/{{ review_error_step }}">Open the step to change it</a></p>
   {%- endif %}
@@ -254,7 +275,7 @@
 
   <h4 class="mt-l">What this will do</h4>
   <div class="col mt add-cli">{% for line in (review.cli if review else cli) %}{{ cli_line(line) }}{% endfor %}</div>
-  <div class="row mt add-nav"><span class="tag step">step-up verb · source.add{% if is_hf and download %}, then source.download{% endif %}</span><span class="right row">
+  <div class="row mt add-nav"><span class="tag step">step-up verb · {{ verb }}{% if mode == "add" and is_hf and download %}, then source.download{% endif %}</span><span class="right row">
     {#- Next comes first in the page, so that Enter in a field means Next; the row draws it last. #}
     {%- if step == "review" %}
     <button type="submit" class="btn primary" name="nav" value="confirm"{% if not review %} disabled{% endif %}>Confirm…</button>

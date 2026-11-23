@@ -6,6 +6,8 @@
 
 A Hugging Face dataset (`hf`): Files asks the dataset id and its token (a password field, never drawn back, kept in the wizard as `actions.Hidden`); its Next reads the schema from the Hub through the broker (`source.hf_inspect`, `read_dataset`) and keeps it in the wizard. Fields shows the terminal's grouping (per group its configs, the data type's name, the fields and a type for each field without a SQL mapping). Review has Download now, ticked by default: the pending action of `source.add` then carries `source.download` with the token as the step that follows (`work.Pending.then`), which the confirm starts when the add has ended with exit code 0, and the token is dropped with it once it was sent.
 
+Reconfigure and Add classifiers (`sdp source configure <name>`, `sdp source add-classifiers <name>`) are the same wizard in another mode (`state["mode"]`: `configure`, `classifiers`; `setup_source_change` starts them, prefilled from the source's current answers): Reconfigure starts at Files with the Origin fixed and asks a Hugging Face source no Fields step (its grouping is kept); Add classifiers is the Classifiers step alone, then Review. Their confirm makes the pending action of `source.configure` or `source.add_classifiers`, and an empty answer there keeps the current value (the terminal's Enter on a reconfigure).
+
 The wizard lives in the session's pending actions (`work.SessionWork`, `wizard=True`): it counts against their cap of sixteen and their weight, and expires five minutes after its last step, like a pending action. Each step posts far fewer than the guard's 64 fields: lists of names are typed comma-separated as in the terminal, and the wizard takes at most eight data types. Empty answers are the terminal's Enter: the action computes those defaults on the host.
 """
 
@@ -161,7 +163,8 @@ class Answers:
         self.state = state
         self.raw = state["raw"]
         self.upto = STEP_KEYS.index(upto)
-        self.fields = {"platform": "custom" if state["platform"] == "hf" else state["platform"]}
+        self.mode = state.get("mode", "add")
+        self.fields = {"platform": "custom" if state["platform"] == "hf" else state["platform"]} if self.mode == "add" else {"name": state["name"]}
 
     def get(self, step, key, default=""):
         return self.raw.get(step, {}).get(key, default)
@@ -177,7 +180,20 @@ class Answers:
     def hf(self):
         return self.state["platform"] == "hf"
 
+    @property
+    def configure(self):
+        return self.mode == "configure"
+
+    @property
+    def data_types(self):
+        """The data types answered on Files, or (a Hugging Face source reconfigured, Add classifiers) the source's current ones."""
+        return self.fields["data_types"] if "data_types" in self.fields else list(self.state.get("current", {}).get("data_types", []))
+
     def build(self):
+        if self.mode == "classifiers":
+            if self.reached("classifiers"):
+                self._classifiers()
+            return self.fields
         self._files()
         if self.reached("fields"):
             self._fields_step()
@@ -191,13 +207,19 @@ class Answers:
 
     def _files(self):
         f = self.fields
-        name = "reddit" if self.reddit else self.get("files", "name").strip()
-        if not self.reddit and (not actions.is_plain_name(name) or name == "reddit"):
-            raise StepError("files", "name")
-        if name in self.state["existing"]:
-            raise StepError("files", "exists")
-        f["name"] = name
-        if self.hf:
+        if self.configure:
+            name = f["name"]
+        else:
+            name = "reddit" if self.reddit else self.get("files", "name").strip()
+            if not self.reddit and (not actions.is_plain_name(name) or name == "reddit"):
+                raise StepError("files", "name")
+            if name in self.state["existing"]:
+                raise StepError("files", "exists")
+            f["name"] = name
+        if self.hf and self.configure:
+            # A Hugging Face source keeps its data types, the names of its groups (the terminal asks none on a reconfigure).
+            pass
+        elif self.hf:
             # The data types are the groups' names, given on the Fields step (the terminal asks them in its grouping).
             dataset = self.get("files", "dataset").strip()
             if not actions.is_hf_dataset(dataset):
@@ -209,7 +231,11 @@ class Answers:
                 raise StepError("files", "data_types")
             f["data_types"] = data_types
         for stage in STAGES:
-            path = self.get("files", f"{stage}_path").strip() or f"data/{stage}/{name}"
+            path = self.get("files", f"{stage}_path").strip()
+            if not path and self.configure:
+                # Empty on a reconfigure: the current folder (the terminal's Enter).
+                continue
+            path = path or f"data/{stage}/{name}"
             spec = actions.SOURCE_ADD_INPUTS[f"{stage}_path"]
             value = actions._leaf_from_form(spec, path)
             if not actions._value_is_valid(spec, value):
@@ -242,6 +268,8 @@ class Answers:
 
     @property
     def profiles(self):
+        if self.mode == "classifiers":
+            return list(self.state.get("current", {}).get("profiles", []))
         return self.fields.get("profiles", [])
 
     @property
@@ -258,7 +286,7 @@ class Answers:
         if self.hf:
             self._hf_fields()
             return
-        f, data_types = self.fields, self.fields["data_types"]
+        f, data_types = self.fields, self.data_types
         if self.reddit:
             removed = {kind: _names("fields", self.get("fields", f"removed[{kind}]")) for kind in REDDIT_KINDS}
             removed = {kind: items for kind, items in removed.items() if items}
@@ -339,7 +367,7 @@ class Answers:
     # ── classifiers ──
 
     def _classifiers(self):
-        f, data_types, profiles = self.fields, self.fields["data_types"], self.profiles
+        f, data_types, profiles = self.fields, self.data_types, self.profiles
         step = "classifiers"
         if not self.reddit:
             columns = {dt: _names(step, self.get(step, f"text_columns[{dt}]")) for dt in data_types}
@@ -393,8 +421,10 @@ class Answers:
     # ── databases ──
 
     def _databases(self):
-        f, data_types, profiles = self.fields, self.fields["data_types"], self.profiles
+        f, data_types, profiles = self.fields, self.data_types, self.profiles
         step = "databases"
+        # On a reconfigure an empty name is the current one (the terminal's Enter), not the source's name.
+        keep = "" if self.configure else None
         visited = step in self.raw
         has_postgres = any(p.startswith("postgres") for p in profiles)
         has_mongo = "mongo_ingest" in profiles
@@ -428,25 +458,28 @@ class Answers:
         else:
             name = f["name"]
             if has_postgres:
-                schema = self.get(step, "db_schema", name).strip()
+                schema = self.get(step, "db_schema", name if keep is None else keep).strip()
                 if schema:
                     if not actions.is_plain_name(schema):
                         raise StepError(step, "names")
                     f["db_schema"] = schema
             if has_mongo:
-                strategy = self.get(step, "mongo_collection_strategy", "per_data_type")
-                f["mongo_collection_strategy"] = strategy if strategy in ("per_data_type", "per_file") else "per_data_type"
-                if f["mongo_collection_strategy"] == "per_data_type":
+                strategy = self.get(step, "mongo_collection_strategy", "per_data_type" if keep is None else "")
+                if strategy in ("per_data_type", "per_file"):
+                    f["mongo_collection_strategy"] = strategy
+                elif keep is None:
+                    f["mongo_collection_strategy"] = "per_data_type"
+                if f.get("mongo_collection_strategy", self.state.get("current", {}).get("mongo_collection_strategy", "per_data_type")) == "per_data_type":
                     collections = {}
                     for dt in data_types:
-                        chosen = self.get(step, f"collection[{dt}]", dt).strip()
+                        chosen = self.get(step, f"collection[{dt}]", dt if keep is None else keep).strip()
                         if chosen:
                             if not actions.is_plain_name(chosen):
                                 raise StepError(step, "names")
                             collections[dt] = chosen
                     if collections:
                         f["mongo_collections"] = collections
-                db_name = self.get(step, "mongo_db_name", name).strip()
+                db_name = self.get(step, "mongo_db_name", name if keep is None else keep).strip()
                 if db_name:
                     if not actions.is_plain_name(db_name):
                         raise StepError(step, "names")
@@ -473,8 +506,10 @@ class Answers:
 
 
 def needed_steps(answers):
-    """The steps a wizard goes through for its answers so far."""
-    needed = ["origin", "files", "fields"]
+    """The steps a wizard goes through for its answers so far: Add classifiers only Classifiers and Review; Reconfigure no Fields for a Hugging Face source (Origin is fixed, shown as done)."""
+    if answers.mode == "classifiers":
+        return ["classifiers", "review"]
+    needed = ["origin", "files"] if answers.configure and answers.hf else ["origin", "files", "fields"]
     if answers.has_classifiers:
         needed.append("classifiers")
     if answers.has_databases:
@@ -492,14 +527,18 @@ def try_answers(state, upto):
     return answers, None
 
 
+# The pending action each mode of the wizard makes.
+MODE_ACTIONS = {"add": "source.add", "configure": "source.configure", "classifiers": "source.add_classifiers"}
+
+
 def final_fields(state):
-    """The fields of `source.add` for a wizard whose every step was answered, checked by the table. Raises StepError."""
+    """The fields of the wizard's action (`MODE_ACTIONS`) for a wizard whose every step was answered, checked by the table. Raises StepError."""
     answers, error = try_answers(state, "review")
     if error is not None:
         raise error
     fields = answers.fields
     try:
-        actions.check_fields(actions.TABLE["source.add"], fields)
+        actions.check_fields(actions.TABLE[MODE_ACTIONS[state.get("mode", "add")]], fields)
     except actions.Refused:
         raise StepError("review", "names") from None
     if len(json.dumps(actions.revealed(fields))) > REQUEST_MAX_BYTES:
@@ -525,9 +564,13 @@ def defaults_left(fields):
     return left
 
 
-def cli_lines(fields_or_state, download=True):
+def cli_lines(fields_or_state, download=True, mode="add"):
     """The `sdp` commands the wizard stands for, as (words, bold value) pairs, or (words, bold value, words, bold value), for the `.cli` lines."""
     name = fields_or_state.get("name")
+    if mode == "configure":
+        return [("python sdp.py source configure", name)]
+    if mode == "classifiers":
+        return [("python sdp.py source add-classifiers", name)]
     if "hf_dataset" in fields_or_state:
         lines = [("python sdp.py source add", name or "<name>", "--hf", fields_or_state["hf_dataset"])]
         if download:
@@ -552,22 +595,29 @@ def install(api, ctx):
         return PlainTextResponse("Not found.\n", status_code=404)
 
     def frame(session, status=200, **model):
-        return ctx.frame("source_add.html", NOT_ACTIVE, session, status, title="Add a source", steps=STEPS, origins=ORIGINS, **model)
+        # The Origin page and a failed start are Add source's.
+        model = {"mode": "add", "current": {}, "verb": "source.add", "source_name": None, **model}
+        return ctx.frame("source_add.html", NOT_ACTIVE, session, status, title=title_of(model), steps=STEPS, origins=ORIGINS, **model)
 
-    def stepper(current, needed):
+    def stepper(current, needed, mode="add"):
         index = STEP_KEYS.index(current)
-        return [{"key": key, "label": f"{number} {label}", "state": "on" if key == current else "skip" if key not in needed else "done" if STEP_KEYS.index(key) < index else ""} for number, (key, label) in enumerate(STEPS, start=1)]
+        # Add classifiers shows its two steps only, numbered on their own.
+        shown = [(key, label) for key, label in STEPS if mode != "classifiers" or key in needed]
+        return [{"key": key, "label": f"{number} {label}", "state": "on" if key == current else "skip" if key not in needed else "done" if STEP_KEYS.index(key) < index else ""} for number, (key, label) in enumerate(shown, start=1)]
 
     def show(session, wizard, step, status=200, line=None):
         state = wizard.fields
+        mode = state.get("mode", "add")
         answers, error = try_answers(state, step)
         # Before the profiles are known (Files not answered yet), no step is said to be skipped.
-        needed = needed_steps(answers) if "profiles" in answers.fields else list(STEP_KEYS)
+        needed = needed_steps(answers) if "profiles" in answers.fields or mode == "classifiers" else list(STEP_KEYS)
         model = {
-            "wizard_id": wizard.id, "step": step, "platform": state["platform"], "stepper": stepper(step, needed), "line": line,
+            "step_data_types": answers.data_types, "step_profiles": answers.profiles,
+            "mode": mode, "source_name": state.get("name"), "current": state.get("current", {}), "verb": MODE_ACTIONS[mode],
+            "wizard_id": wizard.id, "step": step, "platform": state["platform"], "stepper": stepper(step, needed, mode), "line": line,
             "raw": state["raw"].get(step, {}), "visited": step in state["raw"], "answers": answers.fields, "offered": offered_profiles(state["databases"]),
             "databases": state["databases"], "reddit_kinds": REDDIT_KINDS, "default_pattern": DEFAULT_REMOVE_PATTERN, "token_kept": isinstance(state["raw"].get("classifiers", {}).get("hf_token"), actions.Hidden),
-            "cli": cli_lines(answers.fields, answers.download), "scope_names": _split(state["raw"].get("classifiers", {}).get("ml_classifiers", "")),
+            "cli": cli_lines(answers.fields, answers.download, mode), "scope_names": _split(state["raw"].get("classifiers", {}).get("ml_classifiers", "")),
             "review": None, "rail": rail(state["existing"]),
             "hf": state.get("hf"), "dataset_token_kept": isinstance(state["raw"].get("files", {}).get("dataset_token"), actions.Hidden), "download": answers.download, "sql_choices": [(name, name) for name in HF_SQL_TYPES],
         }
@@ -578,8 +628,15 @@ def install(api, ctx):
                 model["line"] = model["line"] or refused.line
                 model["review_error_step"] = refused.step
             else:
-                action = actions.TABLE["source.add"]
-                model["review"] = {"inputs": actions.shown_inputs(action, fields), "files": actions.source_files(fields["profiles"]), "folders": [(stage, fields[f"{stage}_path"]) for stage in STAGES], "defaults": defaults_left(fields), "cli": cli_lines(fields, answers.download)}
+                action = actions.TABLE[MODE_ACTIONS[mode]]
+                if mode == "classifiers":
+                    files = [filename for profile, filename in (("lingua", "lingua.yaml"), ("ml", "ml.yaml")) if profile in answers.profiles]
+                else:
+                    files = actions.source_files(fields["profiles"])
+                model["review"] = {
+                    "inputs": actions.shown_inputs(action, fields), "files": files, "folders": [(stage, fields[f"{stage}_path"]) for stage in STAGES if f"{stage}_path" in fields],
+                    "defaults": defaults_left(fields) if mode == "add" else [], "cli": cli_lines(fields, answers.download, mode),
+                }
         elif error is not None and error.step != step and STEP_KEYS.index(error.step) < STEP_KEYS.index(step):
             model["line"] = model["line"] or error.line
         return frame(session, status, **model)
@@ -684,6 +741,8 @@ def install(api, ctx):
             return ctx.to_login(request, clear_cookie=bool(session_id))
         if wizard is None:
             return ctx.frame("refused.html", NOT_ACTIVE, session, 404, title="Not kept", line=GONE, field=None, back=("/add-source", "Add source"))
+        if step not in steps_of(wizard.fields):
+            return not_found()
         return show(session, wizard, step)
 
     @api.post("/add-source/{wizard_id}/cancel")
@@ -693,8 +752,10 @@ def install(api, ctx):
         session_id, session = current(request)
         if session is None:
             return ctx.to_login(request, clear_cookie=bool(session_id))
+        wizard = session.work.wizard(wizard_id, ctx.clock())
+        name = wizard.fields.get("name") if wizard is not None and wizard.fields.get("mode", "add") != "add" else None
         session.work.drop_wizard(wizard_id)
-        return RedirectResponse("/sources", status_code=303)
+        return RedirectResponse(f"/sources/{name}" if name and actions.is_plain_name(name) else "/sources", status_code=303)
 
     @api.post("/add-source/{wizard_id}/{step}")
     async def post_step(request: Request, wizard_id: str, step: str):
@@ -706,6 +767,8 @@ def install(api, ctx):
         if wizard is None:
             return ctx.frame("refused.html", NOT_ACTIVE, session, 404, title="Not kept", line=GONE, field=None, back=("/add-source", "Add source"))
         state = wizard.fields
+        if step not in steps_of(state):
+            return not_found()
         form = dict(request.scope.get("sdp.form", {}))
         nav = form.pop("nav", None)
         if nav not in ("back", "next", "confirm") or (nav == "confirm") != (step == "review"):
@@ -751,7 +814,7 @@ def install(api, ctx):
             if step == "classifiers" and nav == "next":
                 answers, _ = try_answers(state, "files")
                 new_names = _split(kept.get("ml_classifiers", ""))
-                if "ml" in answers.profiles and new_names and new_names != old_names and len(answers.fields.get("data_types", [])) > 1:
+                if "ml" in answers.profiles and new_names and new_names != old_names and len(answers.data_types) > 1:
                     session.work.wizard(wizard_id, ctx.clock(), touch=True, weight=_weight(state))
                     return show(session, wizard, step, 200, LINES["scope"])
         session.work.wizard(wizard_id, ctx.clock(), touch=True, weight=_weight(state))
@@ -761,10 +824,10 @@ def install(api, ctx):
             if read is not None:
                 return read
             answers, error = try_answers(state, step)
-        needed = needed_steps(answers)
+        needed = [key for key in needed_steps(answers) if key in steps_of(state)]
         if nav == "back":
             earlier = [key for key in needed if STEP_KEYS.index(key) < STEP_KEYS.index(step)]
-            return RedirectResponse(f"/add-source/{wizard_id}/{earlier[-1] if earlier else 'origin'}", status_code=303)
+            return RedirectResponse(f"/add-source/{wizard_id}/{earlier[-1] if earlier else needed[0]}", status_code=303)
         if nav == "next":
             if error is not None:
                 if error.step == step:
@@ -777,15 +840,35 @@ def install(api, ctx):
         except StepError as refused:
             return show(session, wizard, refused.step if refused.step != "review" else "review", 400, refused.line)
         then = None
-        if "hf_dataset" in fields and Answers(state).download:
+        if state.get("mode", "add") == "add" and "hf_dataset" in fields and Answers(state).download:
             # The download follows the add; the dataset token goes with it and is dropped with the pending action once it was sent.
             token = state["raw"].get("files", {}).get("dataset_token")
             download = {"source": fields["name"], **({"token": token} if isinstance(token, actions.Hidden) else {})}
             actions.check_fields(actions.TABLE["source.download"], download)
             then = [("source.download", download)]
-        pending = session.work.add_pending("source.add", fields, ctx.clock(), then=then)
+        pending = session.work.add_pending(MODE_ACTIONS[state.get("mode", "add")], fields, ctx.clock(), then=then)
         session.work.drop_wizard(wizard_id)
         return RedirectResponse(f"/pending/{pending.id}", status_code=303)
+
+
+def steps_of(state):
+    """The steps a wizard of this mode may show: every one for Add source; all but Origin for Reconfigure (the origin is the source's); Classifiers and Review for Add classifiers."""
+    mode = state.get("mode", "add")
+    if mode == "classifiers":
+        return ("classifiers", "review")
+    if mode == "configure":
+        return STEP_KEYS[1:]
+    return STEP_KEYS
+
+
+def title_of(model):
+    """The page title of a wizard's step."""
+    mode, name = model.get("mode", "add"), model.get("source_name")
+    if mode == "configure":
+        return f"Reconfigure {name}"
+    if mode == "classifiers":
+        return f"Add classifiers to {name}"
+    return "Add a source"
 
 
 def _refusal_text(error):

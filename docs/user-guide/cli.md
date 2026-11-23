@@ -63,6 +63,7 @@ With a `pipx` install (see [Install](install.md)) the same commands are `sdp <gr
 | `python sdp.py source hf-inspect <owner>/<name> [--token <token>]` | Show a Hugging Face dataset's schema groups, as `--hf` will offer them |
 | `python sdp.py source configure <name>` | Reconfigure an existing source (platform-specific) |
 | `python sdp.py source add-classifiers <name>` | Add ML classifiers for a source |
+| `python sdp.py source settings <name> [--json]` | Show the current answers `source configure` takes as its defaults (never a secret) |
 | `python sdp.py source remove <name>` | Remove a source's configuration |
 | `python sdp.py source list` | List configured sources |
 | `python sdp.py source status [name]` | Show source processing and ingestion status (all sources by default) |

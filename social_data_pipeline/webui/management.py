@@ -55,7 +55,7 @@ SYSTEM_TABS = ("broker", "audit")
 # The "Load into databases" lanes of a source's pipeline: each database and its profiles, and which view of the ingestion state (`pages.INGESTION_NAMES`) holds each profile's state files, with the start of their labels when the view holds two profiles.
 LANES = (("StarRocks", (("sr_ingest", "StarRocks", ""), ("sr_ml", "StarRocks classifiers", ""))), ("MongoDB", (("mongo_ingest", "MongoDB", "ingest_"),)), ("PostgreSQL", (("postgres_ingest", "PostgreSQL", "ingest_"), ("postgres_ml", "PostgreSQL", "ml_"))))
 # The Management page each action belongs to.
-ACTIVE = {"run.start": "sources", "source.remove": "sources", "run.cancel": "runs", "source.add": "sources"}
+ACTIVE = {"run.start": "sources", "source.remove": "sources", "run.cancel": "runs", "source.add": "sources", "source.configure": "sources", "source.add_classifiers": "sources"}
 
 log = logging.getLogger("social_data_pipeline.webui")
 
@@ -135,6 +135,7 @@ def outcome_model(outcome):
         "errors": outcome.errors,
         "run_href": "/runs/" + outcome.run_id if outcome.run_id and actions.is_run_id(outcome.run_id) else None,
         "run_id": outcome.run_id,
+        "run_label": outcome.run_label,
         "sentence": outcome.sentence,
         "field": outcome.field,
         "op": action.op,

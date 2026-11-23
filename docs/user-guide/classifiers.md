@@ -145,7 +145,7 @@ Use the `CLASSIFIER` environment variable to run only one GPU classifier:
 CLASSIFIER=toxic_roberta docker compose --profile ml up
 ```
 
-This is a per-run override. For standard usage, configure classifiers with `python sdp.py source add-classifiers <name>` and run them with `python sdp.py run ml`.
+This is a per-run override. For standard usage, configure classifiers with `python sdp.py source add-classifiers <name>` (or **Add classifiers…** on the source's page in the [web UI](webui.md#reconfiguring-a-source-and-its-classifiers)) and run them with `python sdp.py run ml`.
 
 ## Reprocessing
 

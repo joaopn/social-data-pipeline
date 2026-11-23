@@ -83,7 +83,7 @@ These fields are always emitted by the parser regardless of the `fields` config 
 
 ## Field list
 
-Edit the `fields` section in `config/sources/reddit/platform.yaml` to choose which fields are extracted, or run `python sdp.py source configure reddit` to reconfigure interactively.
+Edit the `fields` section in `config/sources/reddit/platform.yaml` to choose which fields are extracted, or run `python sdp.py source configure reddit` to reconfigure interactively (or **Reconfigure…** on the source's page in the [web UI](webui.md#reconfiguring-a-source-and-its-classifiers)).
 
 **Submissions** (43 fields configured):
 

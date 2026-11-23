@@ -11,6 +11,9 @@
 <section class="card outcome" id="outcome-{{ outcome.id }}">
   {%- if outcome.kind == "refusal" %}
   <p class="notice notice-bad" role="alert">{{ outcome.sentence }}{% if outcome.field %} The field: {{ outcome.field }}.{% endif %}{% if outcome.queue and outcome.door.get("phase") %} It is now: {{ outcome.door.get("phase") }}.{% endif %}</p>
+  {%- if outcome.run_href %}
+  <p class="notice">The run: <a href="{{ outcome.run_href }}"><code>{{ outcome.run_id }}</code></a>{% if outcome.run_label %} ({{ outcome.run_label }}){% endif %}. Nothing was written.</p>
+  {%- endif %}
   {%- if outcome.queue and outcome.door.get("detail") %}
   <pre class="output">
 {{ outcome.door.get("detail") }}</pre>

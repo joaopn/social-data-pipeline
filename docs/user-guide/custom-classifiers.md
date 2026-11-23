@@ -41,7 +41,7 @@ gpu_classifiers:
 
 Each entry is either a string (runs on all configured `data_types`) or a `{name, data_types}` dict that limits the classifier to the listed data types. Unknown `data_types` raise a config error.
 
-`python sdp.py source add-classifiers <source>` does this interactively: for every selected classifier it asks which data types it should run on, when the source has more than one.
+`python sdp.py source add-classifiers <source>` does this interactively: for every selected classifier it asks which data types it should run on, when the source has more than one. The web UI's **Add classifiers…** on the source's Configuration tab asks the same questions, with the current answers filled in (see [Web UI](webui.md#reconfiguring-a-source-and-its-classifiers)).
 
 **3. Run it.**
 

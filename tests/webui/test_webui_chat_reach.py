@@ -208,6 +208,60 @@ def test_the_page_draws_a_placeholder_that_asks_the_part_once(client, scripted):
     assert "StarRocks: checking" in text_of(page)
 
 
+READ_VERBS = ("db.status", "source.list", "source.status")
+PLACEHOLDER = '<div class="col" id="chat-reach" hx-get="/chat/reach" hx-trigger="load" hx-swap="outerHTML">'
+
+
+def reads(broker):
+    return [request["verb"] for request in broker.requests if request["verb"] in READ_VERBS]
+
+
+def block_of(page):
+    """The opening tag of the block and its rows' text."""
+    found = re.search(r'(<div class="col" id="chat-reach"[^>]*>)(.*?)</div>', page, re.DOTALL)
+    return found.group(1), text_of(found.group(2))
+
+
+@pytest.fixture
+def kept(client, scripted, broker):
+    """A login that has read the block once: StarRocks holds reddit."""
+    scripted.answers["hello"] = HELLO
+    broker.answers["db.status"] = status()
+    with_sources(broker, {"reddit": [("sr_ingest", 40)]})
+    assert reach_rows(client)[0][0] == "StarRocks: reddit"
+    return reads(broker)
+
+
+def test_a_kept_read_is_drawn_at_once_and_not_asked_again_within_a_minute(client, broker, clock, kept):
+    """Bug class: every Chat page (opening a chat, sending, switching) re-reading the whole block (up to ~53 broker calls) and showing "checking…" although this login read it moments ago."""
+    clock.now += chat.REACH_FRESH_SECONDS - 1
+    for page in (client.get("/chat").text, client.get(f"/chat/{CHAT_ID}").text):
+        tag, rows = block_of(page)
+        assert tag == '<div class="col" id="chat-reach">' and rows.startswith("StarRocks: reddit") and "checking" not in text_of(page)
+    assert reads(broker) == kept
+
+
+def test_a_stale_kept_read_is_drawn_and_refreshed_in_place(client, broker, clock, kept):
+    """Bug class: a kept read shown for the whole login however old (a database started or stopped never showing), or a stale one hidden behind "checking…"."""
+    clock.now += chat.REACH_FRESH_SECONDS + 1
+    tag, rows = block_of(client.get("/chat").text)
+    assert tag == PLACEHOLDER and rows.startswith("StarRocks: reddit")
+    assert reads(broker) == kept
+    reach_rows(client)
+    assert block_of(client.get("/chat").text)[0] == '<div class="col" id="chat-reach">'
+
+
+def test_a_whole_block_failure_is_not_kept(client, scripted, broker, clock, kept):
+    """Bug class: a read the broker could not answer kept for the login (the block saying "Not known" for a minute after the broker is back), or an older read drawn as fact after the broker said it could not be read."""
+    clock.now += chat.REACH_FRESH_SECONDS + 1
+    broker.answers["audit.list"] = broker_client.BrokerUnreachable(broker_client.NO_SOCKET)
+    assert reach_rows(client)[0][0].startswith("Not known: the broker did not answer")
+    broker.answers["audit.list"] = {"data": []}
+    clock.now += queue.SESSION_CHECK_SECONDS + 1
+    tag, rows = block_of(client.get("/chat").text)
+    assert tag == PLACEHOLDER and rows.startswith("StarRocks: checking")
+
+
 # ── the model of a chat ─────────────────────────────────────────────────────
 
 

@@ -1,10 +1,10 @@
-{#- The frame of a page for a logged-in session, as the mock-up draws it: the top bar (SDP, the windows Chat, Management and Queue, the live indicators, the settings box (`_settings.html`), the operator and the logout form), the tab bar of the open window when it has more than one page, and the window's main area (`shell`, which a window may replace with a layout of its own). The indicators are drawn grey here and filled by `GET /status` once the page has loaded, so that a slow service never slows the page. -#}
+{#- The frame of a page for a logged-in session, as the mock-up draws it: the top bar (SDP, the windows Chat (`chat_href`: the chat last opened in this login, else `/chat`), Management and Queue, the live indicators, the settings box (`_settings.html`), the operator and the logout form), the tab bar of the open window when it has more than one page, and the window's main area (`shell`, which a window may replace with a layout of its own). The indicators are drawn grey here and filled by `GET /status` once the page has loaded, so that a slow service never slows the page. -#}
 {% extends "layout.html" %}
 {% block body %}
 <header class="topbar">
   <div class="brand">SDP</div>
   <nav class="wins" aria-label="Windows">
-    {%- for key, label, icon, address in (("chat", "Chat", "✦", "/chat"), ("management", "Management", "▤", "/"), ("queue", "Queue", "☑", "/queue")) %}
+    {%- for key, label, icon, address in (("chat", "Chat", "✦", chat_href), ("management", "Management", "▤", "/"), ("queue", "Queue", "☑", "/queue")) %}
     <a class="win{{ ' on' if key == window else '' }}" href="{{ address }}"{% if key == window %} aria-current="page"{% endif %}><span class="ico" aria-hidden="true">{{ icon }}</span>{{ label }}{% if key == "queue" %}<span id="queue-badge"></span>{% endif %}</a>
     {%- endfor %}
   </nav>

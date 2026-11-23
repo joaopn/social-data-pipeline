@@ -2,11 +2,11 @@
 
 Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule (`assistant.is_file_name`: a path under the chat's folder of at most three folders and the file, its parts joined by `/`, each of letters, digits, spaces, dots, dashes and underscores and none `.` or `..`), and nothing of an answer reaches a header or a script.
 
-Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat (with the browser's default model, filled by `app.js` from the models `hello` offers) and the data in reach (per database the sources the assistant can query, a part asked once the page has loaded, `GET /chat/reach`; whether the assistant can submit to the query queue, from `hello`); in the middle the open chat, its header with the chat's model picker (`hello`'s `models`, part of the send form); on the right "This chat" (it can be hidden, and the conversation then takes its width): the chat's backend and model as text (`_chat_model_line.html`), its turn totals (a lazy part), the sandbox as one line that opens on the facts of what it can and cannot reach (`hello`), the open chat's files and its queries. A failure of `hello` is shown in the side columns only.
+Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat (with the browser's default model, filled by `app.js` from the models `hello` offers) and the data in reach (per database the sources the assistant can query, `GET /chat/reach`: read once per login and kept in the session, drawn at once on later pages and asked again in the background once the kept read is older than `REACH_FRESH_SECONDS`; a part asked once the page has loaded while none is kept; whether the assistant can submit to the query queue, from `hello`); in the middle the open chat, its header with the chat's model picker (`hello`'s `models`, part of the send form); on the right "This chat" (it can be hidden, and the conversation then takes its width): the chat's backend and model as text (`_chat_model_line.html`), its turn totals (a lazy part), the sandbox as one line that opens on the facts of what it can and cannot reach (`hello`), the open chat's files and its queries. A failure of `hello` is shown in the side columns only.
 
 - `GET /chat`: the three columns with no chat open (`chat.list`, `hello`). `POST /chat/new` makes one (`chat.new`, with the form's `model` when it is not empty) and leads to it.
-- `GET /chat/reach`: the left column's data in reach (`reach.read_reach`), on a bound of its own (`Limits.chat_reach_workers`; a full bound answers 204 and the placeholder stays): the broker asked first (an ended session gets `HX-Redirect`), then `hello`, `db.status`, `source.list` and `source.status` per source, bounded as the Overview's live figures.
-- `GET /chat/<id>` (an id of the runner's form, else not found): the chats (the list `chat.list` gave when the chat was looked up: the runner is not asked twice), the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`: names are paths, a file of a subfolder shown as `scripts/vol.py`; a line says how many names the runner left out by its rule and how many files of subfolders by their type) with their download links, the sandbox (`hello`), the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
+- `GET /chat/reach`: the left column's data in reach (`reach.read_reach`), on a bound of its own (`Limits.chat_reach_workers`; a full bound answers 204 and the placeholder or the kept read stays): the broker asked first (an ended session gets `HX-Redirect`), then `hello`, `db.status`, `source.list` and `source.status` per source, bounded as the Overview's live figures. Its model is kept in the login's session (`WebSession.reach`, with the time of the read) unless the whole block failed, which drops a read kept before.
+- `GET /chat/<id>` (an id of the runner's form, else not found; a chat that is listed becomes the login's last chat, `WebSession.last_chat`, to which the top bar's Chat tab leads, and one the runner does not list, or a successful `POST /chat/<id>/delete`, clears it): the chats (the list `chat.list` gave when the chat was looked up: the runner is not asked twice), the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`: names are paths, a file of a subfolder shown as `scripts/vol.py`; a line says how many names the runner left out by its rule and how many files of subfolders by their type) with their download links, the sandbox (`hello`), the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
 - `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence; `model` from the header's picker, "" for the back end's default, sent to the runner as it is, which keeps it for the chat), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
 - `GET /chat/<id>/table/<name>` (a name of the runner's rule ending in `.csv`): the first 256 KiB of the file (one `chat.file` piece, the broker asked first and never believed from before) as a table in the frame: decoded as UTF-8 with errors replaced, parsed by `csv` (strict), at most 500 rows under the header row and 50 columns, the cells within the page's units (`Limits.chat_units_max`), every cell through `statements.visible` and the template's escaping; a file that is not CSV (a NUL, a quote that does not close where the file was read whole, a field over `csv`'s limit) is one sentence.
 - `GET /chat/<id>/queries`: the right column's "Queries in the queue", a part the page asks once it has loaded and every 60 seconds after (`queries_model`), on a bound of its own (`Limits.chat_query_workers`; a full bound answers 204 and the part stays as it is). The broker is asked first (`queue.broker_session_error`, a short time limit: an ended session gets `HX-Redirect`, a broker that does not answer is the part's one line and nothing else is asked); then the chat's own events (at most 2,000, read from the start, the runner's pages) give the job ids written in the texts of its tool calls and their results, newest first, at most 20; then the scheduler's `queue.job` for each, with a short time limit and a total one. Only a job whose record says it was submitted by the assistant is listed; an unknown id or another submitter's job is left out without a word, a failure of one job is its row.
@@ -61,6 +61,8 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 SIGNATURES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"))
 SANDBOX_POLICY = "sandbox"
 NOT_FOUND = "Not found.\n"
+# How long a login's kept read of "Data in reach" is drawn as it is; an older one is drawn too, with the request that refreshes it in place.
+REACH_FRESH_SECONDS = 60
 BUSY = "The web UI is busy with other requests to the chat: try again in a moment."
 DOWNLOADS_BUSY = "The web UI already sends two of the chat's files: try again when one has ended."
 EXPORTS_BUSY = "The web UI already sends two of the chat's files or exports: try again when one has ended."
@@ -645,9 +647,16 @@ def install(api, ctx):
 
     def page_model(chat_id=None, **values):
         """Every field `chat.html` reads, for no chat open (`chat_id` None) or for one."""
-        model = {"chat_id": chat_id, "chat_model": None, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "unlisted": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED, "totals_trigger": TOTALS_ASK}
+        model = {"chat_id": chat_id, "chat_model": None, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "unlisted": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED, "totals_trigger": TOTALS_ASK, "reach": None, "reach_stale": False}
         model.update(values)
         return model
+
+    def kept_reach(model, session):
+        """Put the login's kept read of "Data in reach" in `model`, and whether it is older than `REACH_FRESH_SECONDS` (the page then asks `/chat/reach` again)."""
+        kept = session.reach
+        if kept is not None:
+            model["reach"], read_at = kept
+            model["reach_stale"] = ctx.clock() - read_at > REACH_FRESH_SECONDS
 
     def ask_hello(model):
         """Ask `hello` and put its answer, or the sentence of its failure, in `model` (the side columns only); returns the error or None."""
@@ -660,6 +669,7 @@ def install(api, ctx):
 
     def list_work(session):
         model = page_model()
+        kept_reach(model, session)
         error = ask_hello(model)
         if error is not None and getattr(error, "code", None) == "unreachable":
             # The runner cannot be reached: the list is not asked for (the same wait again), the page says why in its middle.
@@ -688,7 +698,11 @@ def install(api, ctx):
 
         def work():
             made = reach.read_reach(lambda: queue.broker_session_error(ctx, session, timeout=reach.CALL_SECONDS), lambda: _ask(lambda: runner.hello(timeout=reach.CALL_SECONDS)), ask)
-            return made if isinstance(made, reach.ReachSessionEnded) else ctx.render("_chat_reach.html", reach=made)
+            if isinstance(made, reach.ReachSessionEnded):
+                return made
+            # Kept for the login's later Chat pages; a failure of the whole block is not kept, and drops an older read, which it no longer confirms.
+            session.reach = (made, ctx.clock()) if made["line"] is None else None
+            return ctx.render("_chat_reach.html", reach=made, reach_stale=False)
 
         made = await reach_gate.run(work)
         if made is BUSY_GATE:
@@ -728,12 +742,16 @@ def install(api, ctx):
         return ("ok", found, chats) if found is not None else ("error", client.BrokerError("not_found", "not listed"), chats)
 
     def conversation_work(chat_id, draft="", line=None, start=0):
-        def work(_session):
+        def work(session):
             model = page_model(chat_id, start=start, draft=draft, line=line)
+            kept_reach(model, session)
             kind, chat, chats = find(chat_id)
             if chats is not None:
                 model["chats"] = chat_rows(chats, chat_id)
             if kind == "error":
+                if getattr(chat, "code", None) == "not_found" and session.last_chat == chat_id:
+                    # The top bar's Chat tab no longer leads to a chat that is gone.
+                    session.last_chat = None
                 model.update(failure=words.chat_sentence(chat), _status=_status_of(chat))
                 if getattr(chat, "code", None) == "unreachable":
                     # The runner cannot be reached: `hello` is not asked (the same wait again).
@@ -741,6 +759,8 @@ def install(api, ctx):
                 else:
                     ask_hello(model)
                 return model
+            # The top bar's Chat tab reopens this chat (`chat_id` passed `assistant.is_chat_id` in the route).
+            session.last_chat = chat_id
             model["chat_title"] = statements.visible(chat["title"])[0] if chat["title"] else None
             model["chat_model"] = chat["model"]
             # The files first: the plot cards' buttons are made from their names.
@@ -834,7 +854,8 @@ def install(api, ctx):
             return await conversation(request, chat_id, text, words.chat_sentence(value), _status_of(value))
         return RedirectResponse(f"/chat/{chat_id}", status_code=303)
 
-    async def change(request, chat_id, function, done):
+    async def change(request, chat_id, function, done, succeeded=None):
+        """Send one change of a chat and lead to `done`; `succeeded(session)` runs once the runner took it."""
         if not assistant.is_chat_id(chat_id):
             return _not_found()
         if request.scope.get("sdp.form"):
@@ -845,6 +866,8 @@ def install(api, ctx):
         kind, value = made
         if kind == "error":
             return refused(session, words.chat_sentence(value), _status_of(value), (f"/chat/{chat_id}", "Back to the chat"))
+        if succeeded is not None:
+            succeeded(session)
         return RedirectResponse(done, status_code=303)
 
     @api.post("/chat/{chat_id}/stop")
@@ -853,7 +876,11 @@ def install(api, ctx):
 
     @api.post("/chat/{chat_id}/delete")
     async def delete(request: Request, chat_id: str):
-        return await change(request, chat_id, lambda: runner.delete(chat_id), "/chat")
+        def forget(session):
+            if session.last_chat == chat_id:
+                session.last_chat = None
+
+        return await change(request, chat_id, lambda: runner.delete(chat_id), "/chat", forget)
 
     @api.get("/chat/{chat_id}/delete")
     async def delete_page(request: Request, chat_id: str):

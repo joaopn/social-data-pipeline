@@ -622,6 +622,37 @@ def test_the_navigation_names_chat_first_as_a_link(client):
     assert '<a class="win on" href="/chat" aria-current="page"><span class="ico" aria-hidden="true">✦</span>Chat</a>' in client.get("/chat").text
 
 
+def chat_tab(page):
+    """The address of the top bar's Chat window link."""
+    windows = re.search(r'<nav class="wins"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1)
+    return re.findall(r'href="([^"]+)"', windows)[0]
+
+
+def test_the_chat_tab_reopens_the_chat_last_opened_in_this_login(client, token, scripted):
+    """Bug class: the top bar's Chat tab always landing on "No chat open" after a chat was opened, or still leading to a chat that was deleted here or is gone elsewhere (a dead link); Management and Queue moved along with it."""
+    assert chat_tab(client.get("/").text) == "/chat"
+    assert client.get(f"/chat/{CHAT_ID}").status_code == 200
+    for page in (client.get("/").text, client.get("/queue").text, client.get("/chat").text):
+        assert chat_tab(page) == f"/chat/{CHAT_ID}"
+        assert re.findall(r'href="([^"]+)"', re.search(r'<nav class="wins"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1))[1:] == ["/", "/queue"]
+    scripted.answers["chat.delete"] = refuse("internal")
+    post(client, f"/chat/{CHAT_ID}/delete", token)
+    assert chat_tab(client.get("/").text) == f"/chat/{CHAT_ID}"
+    del scripted.answers["chat.delete"]
+    assert post(client, f"/chat/{CHAT_ID}/delete", token).status_code == 303
+    assert chat_tab(client.get("/").text) == "/chat"
+    assert client.get(f"/chat/{CHAT_ID}").status_code == 200 and chat_tab(client.get("/").text) == f"/chat/{CHAT_ID}"
+    scripted.chats = []
+    assert client.get(f"/chat/{CHAT_ID}").status_code == 404
+    assert chat_tab(client.get("/").text) == "/chat"
+
+
+def test_the_left_column_has_no_bottom_note(client, scripted):
+    """Bug class: the removed note at the bottom of the left column coming back with a template merge."""
+    for page in (client.get("/chat").text, client.get(f"/chat/{CHAT_ID}").text):
+        assert "This window only reads data" not in page and "side-note" not in page
+
+
 # ── the real runner ─────────────────────────────────────────────────────────
 
 
@@ -751,7 +782,8 @@ def test_the_largest_honest_replies_pass(client, scripted):
     page = client.get(f"/chat/{CHAT_ID}").text
     assert page.count('class="msg user"') == 200 and page.count(f'href="/chat/{CHAT_ID}/file/file%20') == 500 and NOT_UNDERSTOOD not in main_text(page)
     scripted.chats = [{**GOOD_CHAT, "id": f"c_{index:012x}", "title": "x" * 80} for index in range(200)]
-    assert client.get("/chat").text.count('href="/chat/c_') == 200
+    # Counted in `<main>`: the top bar's Chat tab leads to the chat opened above.
+    assert main_html(client.get("/chat").text).count('href="/chat/c_') == 200
 
 
 ODD = [10 ** 400, -1, True, 1e308, "x"]

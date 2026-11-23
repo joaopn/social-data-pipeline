@@ -1,5 +1,5 @@
-{#- The left column's data in reach (`GET /chat/reach`, `reach.read_reach`): per database the sources the assistant can query, or one muted line saying why the database is out of reach; a failure of the whole block is its one line, a partial one a note under the databases. Takes the place of the placeholder in `chat.html`; asks nothing again. Every text is escaped. -#}
-<div class="col" id="chat-reach">
+{#- The left column's data in reach (`GET /chat/reach`, `reach.read_reach`): per database the sources the assistant can query, or one muted line saying why the database is out of reach; a failure of the whole block is its one line, a partial one a note under the databases. The answer of `/chat/reach` takes the place of the placeholder (or of the kept read) in `chat.html` and asks nothing again; `chat.html` also draws the login's kept read with it, and with `reach_stale` the block carries the request that refreshes it in place. Every text is escaped. -#}
+<div class="col" id="chat-reach"{% if reach_stale %} hx-get="/chat/reach" hx-trigger="load" hx-swap="outerHTML"{% endif %}>
   {%- if reach.line %}
   <span class="row"><span class="dot bad"></span>{{ reach.line }}</span>
   {%- else %}

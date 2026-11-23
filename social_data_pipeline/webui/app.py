@@ -197,10 +197,11 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
         return HTMLResponse(templates.get_template(name).render(**context), status_code=status, headers=headers)
 
     def frame(name, active, session, status=200, **context):
-        """A page in the frame: the Queue window's navigation when `active` is one of its pages (`queue:...`), the Chat window's for `chat:...`, the Management window's otherwise."""
+        """A page in the frame: the Queue window's navigation when `active` is one of its pages (`queue:...`), the Chat window's for `chat:...`, the Management window's otherwise. The top bar's Chat tab leads to the chat last opened in this login (`/chat` before one is opened or after it was deleted)."""
         window = "queue" if active.startswith("queue:") else "chat" if active.startswith("chat:") else "management"
         pages = {"queue": queue.QUEUE_PAGES, "chat": chat.CHAT_PAGES}.get(window, MANAGEMENT_PAGES)
-        return render(name, status, active=active, window=window, pages=pages, form_token=session.form_token, **context)
+        chat_href = f"/chat/{session.last_chat}" if session.last_chat else "/chat"
+        return render(name, status, active=active, window=window, pages=pages, form_token=session.form_token, chat_href=chat_href, **context)
 
     def to_login(request, why=None, clear_cookie=False):
         """The way to the login page: a redirect, or for a request of htmx (`HX-Request`) an empty answer whose `HX-Redirect` makes the browser load the login page, so that the login page is never swapped into a part of a page."""

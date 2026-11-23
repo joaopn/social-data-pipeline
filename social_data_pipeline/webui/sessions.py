@@ -25,13 +25,17 @@ def _key(session_id):
 
 @dataclass
 class WebSession:
-    """One session: the broker's token, its form token, when it began (on the clock of `WebSessions`), its work, and its number at the broker (from the login's reply; None when the reply had none), which names the session to the scheduler as `web-<number>`."""
+    """One session: the broker's token, its form token, when it began (on the clock of `WebSessions`), its work, its number at the broker (from the login's reply; None when the reply had none), which names the session to the scheduler as `web-<number>`, and what the Chat window keeps for the login (the chat last opened, the read of "Data in reach")."""
 
     token: str = field(repr=False)
     form_token: str = field(repr=False)
     started: float = 0.0
     work: object = field(default=None, repr=False)
     number: int | None = None
+    # The chat last opened in this login (an id that passed `assistant.is_chat_id`), which the top bar's Chat tab reopens; None before one is opened or after it was deleted.
+    last_chat: str | None = None
+    # The login's kept read of the Chat window's "Data in reach": (the model `reach.read_reach` returned, the clock's time of the read), or None.
+    reach: tuple | None = field(default=None, repr=False)
 
 
 class WebSessions:

@@ -12,7 +12,6 @@
 .cw .reach { padding: 0 10px; }
 .cw .reach .row { align-items: baseline; }
 .cw .reach .dot { transform: translateY(-1px); }
-.cw .side-note { padding: 8px 10px; }
 
 /* middle: the header, the conversation, the answer box */
 .cw .mid { display: flex; flex-direction: column; }
@@ -85,7 +84,6 @@ a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-dec
   .cw > * { min-height: auto; }
   .cw .mid { order: -1; height: calc(100vh - 46px); }
   .cw .left, .cw .rightp { overflow: visible; border: 0; border-top: 1px solid var(--line); }
-  .cw .left .grow { display: none; }
   :root[data-chat-panel="closed"] .cw { grid-template-columns: minmax(0, 1fr); }
 }
 

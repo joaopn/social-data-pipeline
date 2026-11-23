@@ -158,7 +158,7 @@ FORBIDDEN_NAMES = {
 
 ACTION_NAMES = [
     "do_db_create_indexes", "do_db_reset", "do_db_setup", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_add", "do_source_add_classifiers", "do_source_configure", "do_source_download", "do_source_remove",
-    "get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_settings", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_hf_inspect", "get_source_list", "get_source_progress", "get_source_settings", "get_source_status",
+    "get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_settings", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_hf_inspect", "get_source_list", "get_source_progress", "get_source_settings", "get_source_size", "get_source_status",
 ]
 
 # One helper each walk must have reached, so a walk that follows nothing cannot pass.
@@ -193,6 +193,7 @@ KNOWN_DEEP_HELPER = {
     "do_source_download": "do_source_download",
     "get_source_hf_inspect": "get_source_hf_inspect",
     "get_source_progress": "_count_stage_files",
+    "get_source_size": "_measure_stage_folder",
     "get_source_status": "_get_source_ingestion_state",
     "do_db_setup_mcp": "_sdp_service_ports",
     "do_db_setup_jobs": "_running_started_at",

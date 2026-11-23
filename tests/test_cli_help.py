@@ -53,6 +53,7 @@ SUBCOMMANDS = [
     ["source", "list", "--help"],
     ["source", "status", "--help"],
     ["source", "progress", "--help"],
+    ["source", "size", "--help"],
     ["source", "error-logs", "--help"],
     # run
     ["run", "--help"],

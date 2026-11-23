@@ -68,6 +68,7 @@ With a `pipx` install (see [Install](install.md)) the same commands are `sdp <gr
 | `python sdp.py source list` | List configured sources |
 | `python sdp.py source status [name]` | Show source processing and ingestion status (all sources by default) |
 | `python sdp.py source progress [name] [--json]` | Show how many files each processing stage (parse, lingua, classifiers) has finished, counted in the stage output folders |
+| `python sdp.py source size [name] [--json]` | Show how much disk space each source's dumps, extracted, parsed and output folders take (regular files only, links inside a folder not followed), and their total |
 | `python sdp.py source error-logs [name] [--profile <profile>]` | Show database ingestion error logs; `--profile` (`-p`) filters by ingestion profile: `postgres_ingest`, `postgres_ml` or `mongo_ingest` |
 
 `source add` walks you through platform selection, file patterns, fields, indexes, and optional classifier configuration. The name decides the platform: `reddit` uses the Reddit platform, any other name a platform of your own. With `--hf`, it fetches the Hugging Face dataset's metadata (configs, fields, types) to pre-populate defaults; you still go through the full interactive setup. All per-source config is written to `config/sources/<name>/`.

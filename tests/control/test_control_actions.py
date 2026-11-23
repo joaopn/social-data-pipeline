@@ -25,6 +25,7 @@ ACTIONS = {
     "source.list": "get_source_list",
     "source.status": "get_source_status",
     "source.progress": "get_source_progress",
+    "source.size": "get_source_size",
     "source.error_logs": "get_source_error_logs",
     "run.list": "get_run_list",
     "run.logs": "get_run_logs",

@@ -50,6 +50,7 @@ CLASSIFICATION = {
     "db.verify": ("read", True),
     "source.status": ("read", True),
     "source.progress": ("read", True),
+    "source.size": ("read", True),
     "source.error_logs": ("read", True),
     "run.list": ("read", True),
     "run.logs": ("read", True),

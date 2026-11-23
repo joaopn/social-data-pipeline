@@ -65,6 +65,7 @@ python sdp.py db status                     # database config, health, MCP serve
 python sdp.py db settings                   # the current answers of db setup
 python sdp.py source status                 # ingestion state per source
 python sdp.py source progress               # files finished per processing stage
+python sdp.py source size                   # disk space of each stage folder per source
 python sdp.py runs list                     # pipeline runs
 python sdp.py runs logs <run_id>            # output of a run (--follow to keep reading)
 python sdp.py runs cancel <run_id>          # stop a run with the interrupt signal

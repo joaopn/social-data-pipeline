@@ -191,6 +191,7 @@ The scheduler's database drivers and FastAPI are replaced by stand-ins (`tests/j
 | `test_status_data.py` | The getters behind those commands: they print nothing, return JSON-serialisable data that prints the golden text, carry no secret |
 | `test_db_reconfigure_action.py` | `db setup` run over databases set up already, as its action `do_db_setup`: the same files byte for byte as the terminal for the same answers (a port and memory changed, the keep answers, a data path changed, authentication switched on), authentication switched off refused before anything is written, and `db settings` never giving a password |
 | `test_source_progress.py` | `source progress`: finished and being-written files per stage and data type, damaged trees reported, not raised |
+| `test_source_size.py` | `source size`: bytes and files per stage folder and in total, links inside a folder not followed, vanished files passed over, a shared folder counted once, damaged configs reported, not raised |
 | `test_unsetup_cleanup.py` | `db unsetup` symmetry: StarRocks storage paths removed, the MCP image prune line, a warning for scheduler targets of a removed database |
 | `test_verify.py` | `db verify`'s drift matrix (yaml, env, credentials), its exit code, `--json` shape and `--db` filter |
 | `test_actions.py` | The state-changing commands as action functions: no prompt without a terminal, confirmation failing closed, a missing password failing before any side effect |

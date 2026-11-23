@@ -32,6 +32,7 @@ Usage:
     sdp.py source list                       List configured sources
     sdp.py source status [name]              Show source processing/ingestion status
     sdp.py source progress [name] [--json]   Show how many files each processing stage has finished
+    sdp.py source size [name] [--json]       Show how much disk space each source's stage folders take
     sdp.py source error-logs [name]          Show database ingestion error logs
 
     sdp.py run <profile> [--source <name>]   Run pipeline for a source (--build to rebuild, --filter to select files)
@@ -6345,6 +6346,191 @@ def print_source_progress(data):
 
 
 # ============================================================================
+# sdp source size
+# ============================================================================
+
+# The stage folders of a source whose size is reported, in pipeline order; each is `paths[<stage>]` of the source config, by default ./data/<stage>/<source>.
+_SIZE_STAGES = ("dumps", "extracted", "parsed", "output")
+# The units above bytes, each 1000 times the one before.
+_SIZE_UNITS = ("kB", "MB", "GB", "TB", "PB")
+
+
+def cmd_source_size(args):
+    """Show how much disk space each source's dumps, extracted, parsed and output folders take."""
+    try:
+        data = get_source_size(name=args.name)
+    except ActionError as e:
+        if getattr(args, "json", False):
+            # Standard output stays empty, so a reader of the JSON is not handed a line that is not JSON.
+            print(f"  Error: {e.message}", file=sys.stderr)
+        else:
+            print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+    else:
+        print_source_size(data)
+    if args.name is not None and not data["sources"][0]["found"]:
+        return 1
+    return 0
+
+
+def get_source_size(*, name=None):
+    """Measure the bytes on disk of each stage folder (dumps, extracted, parsed, output), for the named source or for all. Prints nothing and returns `{"sources": [...]}` for `print_source_size`: one entry per source with `name`, `found`, `warnings` (the line about a platform.yaml that cannot be read), `not_readable` (None, or why the config cannot be used), `stages`, `total_bytes` and `complete`. `stages` is empty without a usable config, else holds dumps, extracted, parsed and output in that order, each with `stage`, `path` (None when the config holds no usable path for it), `exists` (the folder was listed), `not_readable`, `files` (the regular files found under it) and `bytes` (their sizes summed). A folder is walked to any depth without following a link inside it; a file or folder that disappears while it is walked is passed over, and a sub-folder that cannot be listed makes its stage not readable with the bytes found so far still counted. `total_bytes` sums the stages, a folder two stages resolve to counted once; `complete` is True when the config was usable and no stage is not readable (a missing folder is 0 bytes, not incomplete). Every `not_readable` is None or a constant reason, and every name and path is display-safe. Raises ActionError for a name that is not one path component, the empty string included (only None means all sources); a well-formed name without a readable config is an entry with `found` false."""
+    if name is not None and not _is_one_path_component(name):
+        raise ActionError(_SOURCE_NAME_NOT_VALID)
+
+    from social_data_pipeline.setup.utils import list_sources
+
+    sources = [name] if name is not None else list_sources()
+    return {"sources": [_source_size_entry(source) for source in sources]}
+
+
+def _source_size_entry(source):
+    """The entry of one source in the data of `get_source_size`."""
+    from social_data_pipeline.setup.utils import read_source_config
+
+    entry = {"name": _display_safe(source), "found": False, "warnings": [], "not_readable": None, "stages": [], "total_bytes": 0, "complete": False}
+    try:
+        config, warning = read_source_config(source)
+    except Exception:
+        # As in `source progress`: the reader lets OSError, UnicodeDecodeError, RecursionError and the YAML parser's KeyError, IndexError or AttributeError for a tagged value through. This source's config cannot be read and the next source is still reported.
+        entry["not_readable"] = _PROGRESS_CONFIG_NOT_READABLE
+        return entry
+    if warning is not None:
+        entry["warnings"].append(_display_safe(warning))
+        entry["not_readable"] = _PROGRESS_CONFIG_NOT_READABLE
+    if config is None:
+        return entry
+
+    entry["found"] = True
+    if not isinstance(config, dict):
+        entry["not_readable"] = _PROGRESS_CONFIG_NOT_A_MAPPING
+        return entry
+    paths = config.get("paths", {})
+    if not isinstance(paths, dict):
+        entry["not_readable"] = _PROGRESS_PATHS_NOT_A_MAPPING
+        return entry
+
+    counted = set()
+    for stage in _SIZE_STAGES:
+        folder = _resolve_progress_folder(paths.get(stage, f"./data/{stage}/{source}"))
+        measured = _measure_stage_folder(folder)
+        entry["stages"].append({"stage": stage, "path": None if folder is None else _display_safe(folder), **measured})
+        if not measured["exists"]:
+            continue
+        # Two stages configured on one folder (or on a link to it) are one set of bytes on disk.
+        try:
+            real = os.path.realpath(folder)
+        except (OSError, ValueError):
+            real = folder
+        if real not in counted:
+            counted.add(real)
+            entry["total_bytes"] += measured["bytes"]
+    entry["complete"] = all(stage["not_readable"] is None for stage in entry["stages"])
+    return entry
+
+
+def _measure_stage_folder(folder):
+    """Walk one stage folder, without recursion and without following a link inside it, and return `exists`, `not_readable`, `files` and `bytes` as `get_source_size` describes them. The folder itself is opened as the configured path names it (a link to it is followed); `folder` None is a path the config does not hold in a usable form."""
+    measured = {"exists": False, "not_readable": None, "files": 0, "bytes": 0}
+    if folder is None:
+        measured["not_readable"] = _PROGRESS_PATH_NOT_VALID
+        return measured
+
+    pending = [folder]
+    top = True
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as listing:
+                measured["exists"] = measured["exists"] or top
+                for item in listing:
+                    try:
+                        if item.is_dir(follow_symlinks=False):
+                            pending.append(item.path)
+                            continue
+                        info = item.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        # A stage renames and deletes files while this runs: one gone since the listing is not counted.
+                        continue
+                    except OSError:
+                        measured["not_readable"] = _PROGRESS_FOLDER_NOT_READABLE
+                        continue
+                    if stat.S_ISREG(info.st_mode):
+                        measured["files"] += 1
+                        measured["bytes"] += info.st_size
+        except FileNotFoundError:
+            # The stage folder not made yet, or a sub-folder removed since its parent was listed.
+            continue
+        except (OSError, ValueError):
+            # ValueError: a path that cannot be handed to the file system at all (a NUL character, a character its encoding does not have).
+            measured["not_readable"] = _PROGRESS_FOLDER_NOT_READABLE
+        finally:
+            top = False
+    return measured
+
+
+def _format_size(size):
+    """A number of bytes as the text `source size` shows: `999 B`, then one decimal place in powers of 1000 (`1.0 kB`, `12.3 MB`, up to PB), rounded half up."""
+    if size < 1000:
+        return f"{size} B"
+    scale = 1
+    for unit in _SIZE_UNITS:
+        scale *= 1000
+        tenths = (size * 10 + scale // 2) // scale
+        if tenths < 10000 or unit == _SIZE_UNITS[-1]:
+            return f"{tenths // 10}.{tenths % 10} {unit}"
+
+
+def _files_text(count):
+    return "1 file" if count == 1 else f"{count} files"
+
+
+def print_source_size(data):
+    """Print the text of `source size` from the data of `get_source_size`."""
+    if not data["sources"]:
+        print("\n  No sources configured. Run: python sdp.py source add <name>\n")
+        return
+
+    print()
+    print("  Social Data Pipeline - Source Size")
+    print("  ==================================")
+
+    # Two spaces after the longest stage name and its colon; the sizes are right-aligned after that.
+    width = max(len(stage) for stage in _SIZE_STAGES) + 3
+    for entry in data["sources"]:
+        source = entry["name"]
+        for warning in entry["warnings"]:
+            print(warning)
+        if entry["not_readable"]:
+            print(f"\n  Source '{source}': not readable ({entry['not_readable']})")
+            continue
+        if not entry["found"]:
+            print(f"\n  Source '{source}': not found")
+            continue
+
+        print(f"\n  Source: {source}")
+        files_width = max((len(_files_text(stage["files"])) for stage in entry["stages"]), default=0)
+        for stage in entry["stages"]:
+            label = (stage["stage"] + ":").ljust(width)
+            if stage["path"] is None:
+                print(f"    {label}not readable ({stage['not_readable']})")
+                continue
+            if stage["not_readable"]:
+                found = f", at least {_format_size(stage['bytes'])} in {_files_text(stage['files'])}" if stage["exists"] else ""
+                print(f"    {label}not readable ({stage['not_readable']}){found}  {stage['path']}")
+            elif not stage["exists"]:
+                print(f"    {label}{'no folder':>9}  {'':{files_width}}  {stage['path']}")
+            else:
+                print(f"    {label}{_format_size(stage['bytes']):>9}  {_files_text(stage['files']):<{files_width}}  {stage['path']}")
+        total = _format_size(entry["total_bytes"])
+        print(f"    {'Total:'.ljust(width)}{total:>9}" if entry["complete"] else f"    {'Total:'.ljust(width)}at least {total}")
+    print()
+
+
+# ============================================================================
 # sdp source error-logs
 # ============================================================================
 
@@ -7441,6 +7627,11 @@ def build_parser():
     src_progress_p.add_argument("name", nargs="?", help="Source name (default: all sources)")
     src_progress_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
     src_progress_p.set_defaults(func=cmd_source_progress)
+
+    src_size_p = source_sub.add_parser("size", help="Show how much disk space each source's dumps, extracted, parsed and output folders take")
+    src_size_p.add_argument("name", nargs="?", help="Source name (default: all sources)")
+    src_size_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
+    src_size_p.set_defaults(func=cmd_source_size)
 
     src_errors_p = source_sub.add_parser("error-logs", help="Show database ingestion error logs")
     src_errors_p.add_argument("name", nargs="?", help="Source name (default: all sources)")

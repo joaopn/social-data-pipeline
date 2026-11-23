@@ -81,6 +81,8 @@ OPTIONAL_KEYS = {"call": frozenset({"step_up"}), "login": frozenset({"channel"})
 
 # Verbs that are refused while a pipeline run is alive, and when Docker cannot be asked whether one is.
 DESTRUCTIVE_VERBS = frozenset({"db.reset", "db.unsetup", "db.unsetup_mcp", "db.stop", "source.remove"})
+# Verbs that rewrite one source's configuration (field `name`): refused while a run of that source is alive (a recorded pipeline run or task of it, or a terminal run Docker reports for it or for no source it can tell), and when Docker cannot be asked whether one is.
+SOURCE_CONFIG_VERBS = frozenset({"source.configure", "source.add_classifiers"})
 # The state-changing verb that takes no write lock: a cancel must get through while something else runs.
 UNLOCKED_VERBS = frozenset({"run.cancel"})
 # The verb that takes the write lock shared: several runs can be started at once, never while a state-changing child runs, and no destructive verb looks for live runs while one is being started. The verbs of `control.tasks.TASKS` are started as runs too and take it shared as well.
@@ -110,6 +112,7 @@ MESSAGES = {
     "invalid_input": "a field of the request was refused",
     "step_up_required": "this verb needs the management password again",
     "run_active": "a pipeline run is alive: this verb waits until it has ended",
+    "source_run_alive": "a run of this source is alive: its configuration is changed only when no run of it is alive",
     "docker_unreachable": "Docker cannot be asked whether a pipeline run is alive",
     "store_not_usable": "the run state folder cannot be used",
     "password_not_allowed_here": "this start cannot take a database password that holds a quote, '$', a backtick or a backslash",
@@ -1088,9 +1091,9 @@ class Broker:
 
     # ── a call ──────────────────────────────────────────────────────────────
 
-    def _refuse(self, number, verb_name, code, field=None, message=None):
+    def _refuse(self, number, verb_name, code, field=None, message=None, **extra):
         self.audit.call_refused(number, verb_name, code, field)
-        return _Refusal(code, message, field)
+        return _Refusal(code, message, field, **extra)
 
     def _call(self, token, info, request, password_file):
         verb_name, fields = request["verb"], request["fields"]
@@ -1158,6 +1161,25 @@ class Broker:
         for run in listing["runs"]:
             if run["kind"] == runstore.KIND_TERMINAL or run["state"] in ALIVE_STATES:
                 raise self._refuse(number, verb_name, "run_active")
+
+    def _refuse_while_a_run_of_the_source_is_alive(self, number, verb_name, source):
+        """Refuse a verb of SOURCE_CONFIG_VERBS while a run of its source is alive (`runs.alive_run_of_source`): `source_run_alive`, whose message and `run_id`, `run_label` name the run; `docker_unreachable` when Docker cannot be asked. Called with the write lock held exclusively, so no run starts between the look and the action."""
+        from social_data_pipeline import runstore
+        from social_data_pipeline.control import runs
+
+        try:
+            listing = self.run_lister()
+        except runstore.DockerUnavailable:
+            raise self._refuse(number, verb_name, "docker_unreachable") from None
+        except runstore.StoreError:
+            raise self._refuse(number, verb_name, "store_not_usable") from None
+        if not listing["docker_available"]:
+            raise self._refuse(number, verb_name, "docker_unreachable")
+        run = runs.alive_run_of_source(listing, source)
+        if run is not None:
+            label = run.get("label") or run.get("profile") or "a run"
+            message = f"a run of this source is alive ({run['id']}, {label}): its configuration is changed only when no run of it is alive"
+            raise self._refuse(number, verb_name, "source_run_alive", message=message, run_id=run["id"], run_label=label)
 
     def _secrets(self, request_secrets):
         return [*self.sessions.known_secrets(), *environ.known_secrets(os.environ), *request_secrets]
@@ -1268,6 +1290,8 @@ class Broker:
         try:
             if verb.name in DESTRUCTIVE_VERBS:
                 self._refuse_while_a_run_is_alive(number, verb.name)
+            if verb.name in SOURCE_CONFIG_VERBS:
+                self._refuse_while_a_run_of_the_source_is_alive(number, verb.name, validated["name"])
             if not self.audit.call_accepted(number, verb, validated, db_password_from):
                 # `writable()` above cannot know that this call's own line fails (its fields can make it longer than a line may be: non-ASCII text grows sixfold in the log's ASCII form): no state-changing call runs unaudited.
                 raise self._refuse(number, verb.name, "audit_not_writable", message=AUDIT_LINE_NOT_WRITTEN)

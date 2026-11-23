@@ -108,9 +108,6 @@ def _check_run_start(fields):
         raise FieldRefused("classifier", "is accepted only with the profiles ml, lingua and sr_ml")
 
 
-_SETUP_NOTE = "Setup becomes available when its questions have typed inputs."
-
-
 def _check_setup_jobs(fields):
     """The scheduler's targets are one map by name: two targets of one name would leave one of them out of config/jobs/config.local.yaml without a word."""
     seen = set()
@@ -213,6 +210,15 @@ SOURCE_ADD_QUESTIONS = {
         "excluded": Field(ListOf(Name(), 256, unique=True)),
     }), 8)),
 }
+
+
+# The questions of `source configure <name>` (`source.main` answered yes at "Reconfigure?"): those of `source add` but the origin (it follows from the name) and a Hugging Face dataset's grouping (a Hugging Face source keeps its own). Each is optional, its default the source's current value, but the profiles: Enter there keeps only the profiles not configured yet, which the browser never means, so they are always given.
+SOURCE_CONFIGURE_QUESTIONS = {key: Field(spec.type, required=key == "profiles") for key, spec in SOURCE_ADD_QUESTIONS.items() if key not in ("platform", "hf_groups")}
+# The questions of `source add-classifiers <name>` (`classifiers.run_questionnaire`): the text columns and what is removed before classification (not asked for Reddit), the Lingua settings, the GPUs and GPU classifiers, and the Hugging Face token the terminal writes to .env as HF_TOKEN.
+SOURCE_CLASSIFIER_QUESTIONS = {key: SOURCE_ADD_QUESTIONS[key] for key in (
+    "text_columns", "remove_strings", "remove_patterns", "gpu_fields", "lingua_workers", "lingua_file_workers", "lingua_batch_size", "lingua_low_accuracy",
+    "gpu_ids", "ml_file_workers", "ml_tokenize_workers", "ml_classifier_batch_size", "ml_classifiers", "ml_classifier_data_types", "hf_token",
+)}
 
 
 def _check_db_setup(fields):
@@ -510,14 +516,27 @@ VERBS = _registry(
     Verb(
         name="source.configure", cls="step_up", cli=("source", "configure"),
         cli_inputs={"name"},
-        prompted_inputs={"questionnaire"},
-        note=_SETUP_NOTE,
+        prompted_inputs=set(SOURCE_CONFIGURE_QUESTIONS),
+        socket_inputs={"name": Field(ConfiguredSource(), required=True), **SOURCE_CONFIGURE_QUESTIONS},
+        socket_enabled=True,
+        note="Refused by the broker while a run of the source is alive (a pipeline run, a task such as a download, or a terminal run Docker reports), and when Docker cannot be asked.",
+        action="do_source_configure",
     ),
     Verb(
         name="source.add_classifiers", cls="step_up", cli=("source", "add-classifiers"),
         cli_inputs={"name"},
-        prompted_inputs={"questionnaire"},
-        note=_SETUP_NOTE,
+        prompted_inputs=set(SOURCE_CLASSIFIER_QUESTIONS),
+        socket_inputs={"name": Field(ConfiguredSource(), required=True), **SOURCE_CLASSIFIER_QUESTIONS},
+        socket_enabled=True,
+        note="Refused by the broker while a run of the source is alive, as source.configure is.",
+        action="do_source_add_classifiers",
+    ),
+    Verb(
+        name="source.settings", cls="read", cli=("source", "settings"),
+        cli_inputs={"name"},
+        socket_inputs={"name": Field(ConfiguredSource(), required=True)},
+        socket_enabled=True,
+        action="get_source_settings",
     ),
     Verb(
         name="db.create_indexes", cls="step_up", cli=("db", "create-indexes"),

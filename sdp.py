@@ -27,6 +27,7 @@ Usage:
     sdp.py source hf-inspect <org/dataset>   Show an HF dataset's schema groups
     sdp.py source configure <name>           Reconfigure existing source (platform-specific)
     sdp.py source add-classifiers <name>     Add ML classifiers for a source
+    sdp.py source settings <name> [--json]   Show the current answers of source configure (never a secret)
     sdp.py source remove <name>              Remove source config
     sdp.py source list                       List configured sources
     sdp.py source status [name]              Show source processing/ingestion status
@@ -5628,6 +5629,77 @@ def cmd_source_configure(args):
     return 0
 
 
+def do_source_configure(
+    *, name, profiles, data_types=None, dumps_path=None, extracted_path=None, parsed_path=None, output_path=None, file_format=None,
+    parquet_row_group_size=None, parse_workers=None, pg_prefer_lingua=None, pg_parallel_index_workers=None, table_tablespaces=None,
+    db_schema=None, input_format=None, csv_delimiter=None, dump_globs=None, compressions=None, fields=None,
+    mongo_collection_strategy=None, mongo_collections=None, mongo_db_name=None, pg_indexes=None, mongo_indexes=None, sr_indexes=None,
+    primary_key=None, sr_prefer_lingua=None, sr_buckets=None, reddit_db_schema=None, reddit_removed_fields=None, reddit_indexes=None,
+    text_columns=None, remove_strings=None, remove_patterns=None, gpu_fields=None,
+    lingua_workers=None, lingua_file_workers=None, lingua_batch_size=None, lingua_low_accuracy=None,
+    gpu_ids=None, ml_file_workers=None, ml_tokenize_workers=None, ml_classifier_batch_size=None, ml_classifiers=None, ml_classifier_data_types=None, hf_token=None,
+):
+    """Reconfigure a source without a terminal: each parameter is the answer to one question of `source configure <name>`, None being the question answered with Enter, whose default is the source's current value where the terminal offers it (`get_source_settings` reads them). Writes the files the terminal writes for the same answers (`setup.source_change.configure_source`; for the source reddit the Reddit answers are applied after the files, see there). Raises ActionError before anything is written for an answer the terminal would not take or not ask and a folder that belongs to another source. Returns the exit code."""
+    from social_data_pipeline.setup.source_add import Refused
+    from social_data_pipeline.setup.source_change import configure_source
+
+    answers = {key: value for key, value in dict(
+        name=name, profiles=profiles, data_types=data_types, dumps_path=dumps_path, extracted_path=extracted_path, parsed_path=parsed_path, output_path=output_path,
+        file_format=file_format, parquet_row_group_size=parquet_row_group_size, parse_workers=parse_workers, pg_prefer_lingua=pg_prefer_lingua,
+        pg_parallel_index_workers=pg_parallel_index_workers, table_tablespaces=table_tablespaces, db_schema=db_schema, input_format=input_format, csv_delimiter=csv_delimiter,
+        dump_globs=dump_globs, compressions=compressions, fields=fields, mongo_collection_strategy=mongo_collection_strategy, mongo_collections=mongo_collections,
+        mongo_db_name=mongo_db_name, pg_indexes=pg_indexes, mongo_indexes=mongo_indexes, sr_indexes=sr_indexes, primary_key=primary_key, sr_prefer_lingua=sr_prefer_lingua,
+        sr_buckets=sr_buckets, reddit_db_schema=reddit_db_schema, reddit_removed_fields=reddit_removed_fields, reddit_indexes=reddit_indexes, text_columns=text_columns,
+        remove_strings=remove_strings, remove_patterns=remove_patterns, gpu_fields=gpu_fields, lingua_workers=lingua_workers, lingua_file_workers=lingua_file_workers,
+        lingua_batch_size=lingua_batch_size, lingua_low_accuracy=lingua_low_accuracy, gpu_ids=gpu_ids, ml_file_workers=ml_file_workers, ml_tokenize_workers=ml_tokenize_workers,
+        ml_classifier_batch_size=ml_classifier_batch_size, ml_classifiers=ml_classifiers, ml_classifier_data_types=ml_classifier_data_types, hf_token=hf_token,
+    ).items() if value is not None}
+    try:
+        code = configure_source(answers)
+    except Refused as refused:
+        raise ActionError(refused.message) from None
+    _warn_mount_drift_after_source_change()
+    return code
+
+
+# ============================================================================
+# sdp source settings
+# ============================================================================
+
+def cmd_source_settings(args):
+    """Show the current answers of `source configure <name>` (never a secret)."""
+    if not args.name or args.name in (".", "..") or "/" in args.name or "\\" in args.name or not (CONFIG_DIR / "sources" / args.name / "platform.yaml").is_file():
+        print(f"\n  Error: Source '{_display_safe(args.name)}' not found in config/sources/\n")
+        return 1
+    data = get_source_settings(name=args.name)
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+        return 1 if data["not_readable"] else 0
+    print()
+    if data["not_readable"]:
+        print(f"  Error: {_display_safe(data['not_readable'])}\n")
+        return 1
+    print(f"  The answers 'source configure {_display_safe(args.name)}' takes as its defaults (Enter keeps each):")
+    print()
+    print(f"    {'profiles':26s} {_display_safe(', '.join(data['profiles']) or 'none')}")
+    for key, value in data["answers"].items():
+        print(f"    {key:26s} {_display_safe(json.dumps(value))}")
+    for dt, spec in data["typed_sr_indexes"].items():
+        print(f"    {'sr_indexes (typed)':26s} {_display_safe(dt)}: {_display_safe(json.dumps(spec))}")
+    print(f"    {'HF_TOKEN in .env':26s} {'set' if data['hf_token_set'] else 'not set'}")
+    for line in data["left_out"]:
+        print(f"    Note: {_display_safe(line)}")
+    print()
+    return 0
+
+
+def get_source_settings(*, name):
+    """The current answers of `source configure <name>` for the source's current profiles, which a reconfigure with them writes again unchanged (`setup.source_change.settings_read`): `name`, `platform`, `hf_dataset`, `data_types`, `profiles`, `answers`, `typed_sr_indexes`, `hf_token_set`, `left_out`, `not_readable`. Never a secret: whether .env has a Hugging Face token is a flag. Prints nothing."""
+    from social_data_pipeline.setup.source_change import settings_read
+
+    return settings_read(name)
+
+
 # ============================================================================
 # sdp source add-classifiers
 # ============================================================================
@@ -5637,6 +5709,27 @@ def cmd_source_add_classifiers(args):
     from social_data_pipeline.setup.classifiers import main as classifiers_main
     classifiers_main(source_name=args.name)
     return 0
+
+
+def do_source_add_classifiers(
+    *, name, text_columns=None, remove_strings=None, remove_patterns=None, gpu_fields=None,
+    lingua_workers=None, lingua_file_workers=None, lingua_batch_size=None, lingua_low_accuracy=None,
+    gpu_ids=None, ml_file_workers=None, ml_tokenize_workers=None, ml_classifier_batch_size=None, ml_classifiers=None, ml_classifier_data_types=None, hf_token=None,
+):
+    """Configure a source's classifiers without a terminal: each parameter is the answer to one question of `source add-classifiers <name>`, None being the question answered with Enter (the source's current value where the terminal offers it). Writes lingua.yaml and ml.yaml for the source's classifier profiles, and HF_TOKEN in .env when a token is given, as the terminal does (`setup.source_change.add_classifiers`). Raises ActionError before anything is written for an answer the terminal would not take or not ask, and for a source with neither lingua nor ml. Returns the exit code."""
+    from social_data_pipeline.setup.source_add import Refused
+    from social_data_pipeline.setup.source_change import add_classifiers
+
+    answers = {key: value for key, value in dict(
+        name=name, text_columns=text_columns, remove_strings=remove_strings, remove_patterns=remove_patterns, gpu_fields=gpu_fields,
+        lingua_workers=lingua_workers, lingua_file_workers=lingua_file_workers, lingua_batch_size=lingua_batch_size, lingua_low_accuracy=lingua_low_accuracy,
+        gpu_ids=gpu_ids, ml_file_workers=ml_file_workers, ml_tokenize_workers=ml_tokenize_workers, ml_classifier_batch_size=ml_classifier_batch_size,
+        ml_classifiers=ml_classifiers, ml_classifier_data_types=ml_classifier_data_types, hf_token=hf_token,
+    ).items() if value is not None}
+    try:
+        return add_classifiers(answers)
+    except Refused as refused:
+        raise ActionError(refused.message) from None
 
 
 # ============================================================================
@@ -7314,6 +7407,11 @@ def build_parser():
     src_classifiers_p = source_sub.add_parser("add-classifiers", help="Add ML classifiers for a source")
     src_classifiers_p.add_argument("name", help="Source name")
     src_classifiers_p.set_defaults(func=cmd_source_add_classifiers)
+
+    src_settings_p = source_sub.add_parser("settings", help="Show the current answers of source configure (never a secret)")
+    src_settings_p.add_argument("name", help="Source name")
+    src_settings_p.add_argument("--json", action="store_true", help="Print the data as JSON instead of the text")
+    src_settings_p.set_defaults(func=cmd_source_settings)
 
     src_remove_p = source_sub.add_parser("remove", help="Remove source configuration")
     src_remove_p.add_argument("name", help="Source name")

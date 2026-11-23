@@ -204,6 +204,17 @@ def _refuse_beside_a_run_of_the_source(root, service_profiles, source):
             raise errors.RunNotStarted(SOURCE_RUN_ACTIVE, "source_run_active")
 
 
+def alive_run_of_source(listing, source):
+    """The first run of `listing` (`runstore.list_runs`, Docker reachable) that is alive and belongs to the source `source`: a recorded run of it, a pipeline run or a task (a download, an index build), that has not ended and is not lost, or a run started in a terminal whose container lives, its source the same or not handed over by Docker (it cannot be told apart). None when there is none. What the broker refuses `source.configure` and `source.add_classifiers` by: a run reads the files they rewrite."""
+    for run in listing["runs"]:
+        if run["kind"] == runstore.KIND_TERMINAL:
+            if run["source"] in (source, None):
+                return run
+        elif run["source"] == source and run["state"] in _ALIVE_STATES:
+            return run
+    return None
+
+
 def start_task(root, verb_name, fields, *, started_by):
     """Start the task `verb_name` (a verb of `control.tasks.TASKS`) for the request `fields` in the deployment `root` and return the id of the recorded run. `started_by` is as for `start_run`.
 

@@ -20,7 +20,7 @@ import posixpath
 import re
 import shlex
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Callable
 
@@ -490,6 +490,45 @@ def source_add_sentence(fields):
     return " ".join(parts)
 
 
+# The inputs of `source.configure` and `source.add_classifiers`, the registry's (`control.verbs.SOURCE_CONFIGURE_QUESTIONS`, `SOURCE_CLASSIFIER_QUESTIONS`): those of `source.add` but the origin and a Hugging Face dataset with its grouping, every one optional (its default the source's current value) but the profiles.
+SOURCE_CONFIGURE_INPUTS = {"name": _SOURCE, **{key: replace(spec, required=key == "profiles") for key, spec in SOURCE_ADD_INPUTS.items() if key not in ("name", "platform", "hf_dataset", "hf_groups")}}
+CLASSIFIER_KEYS = ("text_columns", "remove_strings", "remove_patterns", "gpu_fields", "lingua_workers", "lingua_file_workers", "lingua_batch_size", "lingua_low_accuracy", "gpu_ids", "ml_file_workers", "ml_tokenize_workers", "ml_classifier_batch_size", "ml_classifiers", "ml_classifier_data_types", "hf_token")
+SOURCE_CLASSIFIER_INPUTS = {"name": _SOURCE, **{key: SOURCE_ADD_INPUTS[key] for key in CLASSIFIER_KEYS}}
+_TOKEN_CLAUSE = "It writes the Hugging Face token into .env as HF_TOKEN, in place of the line of HF_TOKEN there (a commented one too), or as a new line."
+_RUN_REFUSAL = "The broker refuses it, before anything is written, while a run of this source is alive (a pipeline run, a download or an index build of it, or a run of it started in a terminal that Docker reports), and when Docker cannot be asked whether one is."
+
+
+def source_configure_sentence(fields):
+    """What `source configure <name>` does with these fields (`sdp.do_source_configure`, `setup.source_change.configure_source`), clause by clause."""
+    name, profiles = fields["name"], fields["profiles"]
+    parts = [f"It writes {', '.join(source_files(profiles))} in config/sources/{name}/ again, from the answers, each file that exists first copied to its .bak beside it (as the terminal does). The files of profiles left out stay as they are: nothing is removed."]
+    if name == "reddit":
+        parts.append("platform.yaml is written again from the Reddit template (config/templates/reddit.yaml) with the folders, the file format, the row-group size and the buckets, as python sdp.py source add reddit answered yes at Reconfigure? writes it; then the Reddit schema, field and index answers are applied to it, as python sdp.py source configure reddit applies them. A Reddit answer left empty is the template's, so a change made before is kept only as an answer here gives it. (In a terminal, source configure reddit asks the Reddit questions first and, when it adds profiles, writes platform.yaml from the template afterwards, which drops them; here they are applied last.)")
+    else:
+        parts.append("For a source of your own files, platform.yaml's field types are written again as the generic ones (text, and integer for a few common names), as the terminal does: types refined there by hand are lost, the .bak copy keeps them. A Hugging Face source keeps its dataset, its grouping of configs into data types, its fields and their types.")
+    if "hf_token" in fields:
+        parts.append(_TOKEN_CLAUSE)
+    folders = [f"{stage} {fields[stage + '_path']}" for stage in ("dumps", "extracted", "parsed", "output") if stage + "_path" in fields]
+    if folders:
+        parts.append(f"The source's folders: {'; '.join(folders)}. It creates, moves or empties none of them: files in a folder no longer named stay there, and the first run of a profile creates each one that is missing.")
+    parts.append("An answer left empty is the terminal's Enter: the source's current value where the terminal offers it; the GPUs default to every GPU found, and the compression of a dump pattern whose extension names none to zst, as in the terminal.")
+    parts.append(_RUN_REFUSAL + " It also refuses a folder that is a folder of another source, lies inside one or holds one (the source's own folders are its own), and an answer the terminal would not ask for these profiles.")
+    parts.append("Nothing is rerun or restarted: each profile reads the new settings at its next run, and the output ends with the commands to run the pipeline, as the terminal prints them. When PostgreSQL or StarRocks is running, the output also says whether it must be restarted (db stop, then db start) to see changed folders.")
+    return " ".join(parts)
+
+
+def source_add_classifiers_sentence(fields):
+    """What `source add-classifiers <name>` does with these fields (`sdp.do_source_add_classifiers`, `setup.source_change.add_classifiers`), clause by clause."""
+    name = fields["name"]
+    parts = [f"It writes lingua.yaml and ml.yaml in config/sources/{name}/ again, for whichever of the profiles lingua and ml the source has, each file that exists first copied to its .bak beside it (as the terminal does)."]
+    if "hf_token" in fields:
+        parts.append(_TOKEN_CLAUSE)
+    parts.append("An answer left empty is the terminal's Enter: the source's current value where the terminal offers it; the GPUs default to every GPU found, as in the terminal.")
+    parts.append(_RUN_REFUSAL + " It also refuses a source with neither the profile lingua nor ml, and an answer the terminal would not ask for its profiles.")
+    parts.append("Nothing is rerun: the next lingua or ml run reads the new settings, and a file a classifier has already finished is skipped, not classified again (delete its output to have it redone). The output ends with the commands to run the pipeline, as the terminal prints them.")
+    return " ".join(parts)
+
+
 def _db_setup_entry():
     """The entry of `db.setup`, kept in its own module (`setup_db_table`), which imports nothing of this one."""
     from social_data_pipeline.webui import setup_db_table
@@ -570,6 +609,7 @@ TABLE = _table(
     Action("db.llm_settings", "read", "The current answers of the MCP servers' and the scheduler's setup", form="python sdp.py db llm-settings"),
     Action("db.index_targets", "read", "The tables, columns and indexes of a source in one database", {"source": _SOURCE, "db": Input("enum", "Database", required=True, choices=DATABASES)}, form="python sdp.py db index-targets --source=<name> --db=<database>"),
     Action("db.settings", "read", "The current answers of the database setup", form="python sdp.py db settings"),
+    Action("source.settings", "read", "The current answers of a source's setup", {"name": _SOURCE}, form="python sdp.py source settings <name>"),
     # ── write ──
     Action(
         "run.start", "write", "Start a pipeline run",
@@ -683,6 +723,16 @@ TABLE = _table(
         also=lambda fields: source_add_sentence(fields),
     ),
     _db_setup_entry(),
+    Action(
+        "source.configure", "step_up", "Reconfigure a source", SOURCE_CONFIGURE_INPUTS,
+        form="python sdp.py source configure <name> (the questions are the wizard's steps)", command=lambda fields: _command("source", "configure", _q(fields["name"])),
+        also=source_configure_sentence,
+    ),
+    Action(
+        "source.add_classifiers", "step_up", "Add classifiers to a source", SOURCE_CLASSIFIER_INPUTS,
+        form="python sdp.py source add-classifiers <name> (the questions are the wizard's Classifiers step)", command=lambda fields: _command("source", "add-classifiers", _q(fields["name"])),
+        also=source_add_classifiers_sentence,
+    ),
 )
 
 # The entries of the scheduler's control socket, by name.

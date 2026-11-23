@@ -63,6 +63,7 @@ def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
         "source.add", "source.hf_inspect", "source.download",
         "db.setup", "db.settings",
         "db.index_targets", "db.create_indexes",
+        "source.configure", "source.add_classifiers", "source.settings",
     }
     for action in verb_entries:
         verb = verbs.VERBS[action.name]
@@ -281,6 +282,8 @@ STEP_UP_IN_THE_DOCS = {
     "session.set_db_password": "keeping the database admin password for the session",
     "source.add": "adding a source",
     "db.setup": "setting up a database",
+    "source.configure": "reconfiguring a source",
+    "source.add_classifiers": "adding classifiers to a source",
 }
 
 
@@ -292,7 +295,7 @@ def test_the_docs_name_every_action_that_needs_the_management_password_and_no_ot
     # `session.check_password` is no action of its own: the Queue asks it before switching auto-accept on or raising its limit, which the guide names apart.
     assert set(STEP_UP_IN_THE_DOCS) == {action.name for action in actions.TABLE.values() if action.cls == "step_up"} - {"session.check_password"}
     assert "Switching auto-accept on for a target, or raising its limit, needs the management password again" in (root / "docs/user-guide/webui.md").read_text()
-    phrase = "a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, setting up a database, setting up the MCP servers or setting up the scheduler, removing a source, adding a source, creating indexes, and keeping the database admin password for the session"
+    phrase = "a database start, a database reset, removing a database, the MCP servers' configuration or the scheduler's configuration, setting up a database, setting up the MCP servers or setting up the scheduler, removing a source, adding a source, reconfiguring a source, adding classifiers to a source, creating indexes, and keeping the database admin password for the session"
     assert all(named in phrase for named in STEP_UP_IN_THE_DOCS.values())
     for path in ("docs/user-guide/webui.md",):
         text = (root / path).read_text()

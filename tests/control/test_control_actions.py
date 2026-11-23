@@ -48,6 +48,9 @@ ACTIONS = {
     "source.hf_inspect": "get_source_hf_inspect",
     "source.download": "do_source_download",
     "db.settings": "get_db_settings",
+    "source.configure": "do_source_configure",
+    "source.add_classifiers": "do_source_add_classifiers",
+    "source.settings": "get_source_settings",
 }
 
 # The private parameter an action has for each thing its command asks on the terminal.

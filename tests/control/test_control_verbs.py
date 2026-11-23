@@ -38,6 +38,9 @@ WIDE_INPUTS = {
     ("db.setup", "data_path"), ("db.setup", "export_path"), ("db.setup", "pgdata_path"), ("db.setup", "mongo_data_path"), ("db.setup", "starrocks_data_path"),
     ("db.setup", "pg_port"), ("db.setup", "mongo_port"), ("db.setup", "starrocks_port"), ("db.setup", "starrocks_fe_http_port"),
     ("db.setup", "tablespaces"), ("db.setup", "starrocks_storage_paths"), ("db.setup", "pgtune"),
+    # `source configure` asks the folders and the classifiers' free text again; `source add-classifiers` the free text (PLAN_WEBUI_MOCK_SETUP, F4c).
+    ("source.configure", "dumps_path"), ("source.configure", "extracted_path"), ("source.configure", "parsed_path"), ("source.configure", "output_path"),
+    ("source.configure", "remove_strings"), ("source.configure", "remove_patterns"), ("source.add_classifiers", "remove_strings"), ("source.add_classifiers", "remove_patterns"),
 }
 
 # The security classification of every verb: (class, accepted over the socket). Changing one is a decision, so it is made in two places.
@@ -67,8 +70,9 @@ CLASSIFICATION = {
     "db.setup_mcp": ("step_up", True),
     "db.setup_jobs": ("step_up", True),
     "source.add": ("step_up", True),
-    "source.configure": ("step_up", False),
-    "source.add_classifiers": ("step_up", False),
+    "source.configure": ("step_up", True),
+    "source.add_classifiers": ("step_up", True),
+    "source.settings": ("read", True),
     "db.create_indexes": ("step_up", True),
     "db.index_targets": ("read", True),
     "db.recover_password": ("step_up", False),

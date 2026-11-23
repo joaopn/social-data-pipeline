@@ -35,6 +35,7 @@ CODE_SENTENCES = {
     "task_active": "The same task for the same source is already running: see Runs.",
     "source_task_active": "A download of this source is running, which writes its files: start the run when it has ended.",
     "source_run_active": "A pipeline run of this source is alive, which reads its files: start the download when it has ended (Runs).",
+    "source_run_alive": "A run of this source is alive, which reads the files this rewrites: change the source's configuration when the run has ended.",
     "not_the_deployment": "The broker's folder is not the deployment the CLI acts on.",
     "store_not_usable": "The run state folder cannot be used.",
     "cli_not_loadable": "The broker could not load the CLI.",

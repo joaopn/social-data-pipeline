@@ -910,6 +910,61 @@ class TestDestructiveVerbs:
         assert rig.lister_calls == []
 
 
+# `source configure` and `source add-classifiers` rewrite the files every run of the source reads (its platform.yaml and profile files), and an index build of it may write its platform.yaml.
+SOURCE_CONFIG = [("source.configure", {"name": "ok", "profiles": ["parse"]}), ("source.add_classifiers", {"name": "ok"})]
+
+
+def _task(state, source="ok"):
+    return {**_run("web", state), "kind": "task", "profile": None, "task": "source.download", "label": f"download \u00b7 {source}", "source": source}
+
+
+class TestSourceConfigurationVerbs:
+    @pytest.mark.parametrize("verb, fields", SOURCE_CONFIG, ids=[entry[0] for entry in SOURCE_CONFIG])
+    @pytest.mark.parametrize("run, label", [
+        (_run("web", "running"), "parse"),
+        (_run("web", "detached"), "parse"),
+        (_task("running"), "download \u00b7 ok"),
+        (_task("unknown"), "download \u00b7 ok"),
+        (_run("terminal", "running"), "parse"),
+        ({**_run("terminal", "running"), "source": None}, "parse"),
+    ], ids=["pipeline-run", "detached-run", "download", "download-unknown", "terminal-run", "terminal-run-of-no-source-docker-tells"])
+    def test_refused_while_a_run_of_the_source_is_alive_and_the_refusal_names_it(self, rig, verb, fields, run, label):
+        """Bug class: a source's configuration rewritten under a run of it (F4 decision 4: a pipeline run, a task such as a download, a terminal run Docker reports), which then reads half-old, half-new files; or a refusal that does not say which run, so the operator cannot find it. The runs are looked for with the write lock held, so none can start between the look and the action."""
+        rig.start()
+        rig.listing = {"docker_available": True, "runs": [_run("web", "finished"), {**_run("web", "running"), "source": "other"}, run]}
+        session = rig.login()
+
+        refused = code_of(lambda: session.call(verb, fields, step_up=PASSWORD))
+
+        assert refused.code == "source_run_alive"
+        assert refused.details == {"run_id": run["id"], "run_label": label}
+        assert run["id"] in refused.message and label in refused.message
+        assert rig.calls() == []
+        assert rig.lister_calls == [True]
+        assert rig.events("call_refused")[-1]["code"] == "source_run_alive"
+
+    @pytest.mark.parametrize("verb, fields", SOURCE_CONFIG, ids=[entry[0] for entry in SOURCE_CONFIG])
+    def test_allowed_beside_runs_of_other_sources_and_ended_runs(self, rig, verb, fields):
+        """Bug class: a refusal that never lifts, or one that counts another source's run (Reconfigure of one source blocked by every run of the deployment)."""
+        rig.start()
+        rig.listing = {"docker_available": True, "runs": [_run("web", "finished"), _run("web", "lost"), _task("cancelled"), {**_run("web", "running"), "source": "other"}, _task("running", "other"), {**_run("terminal", "running"), "source": "other"}]}
+        session = rig.login()
+
+        assert session.call(verb, fields, step_up=PASSWORD)["exit_code"] == 0
+        assert [note["verb"] for note in rig.calls()] == [verb]
+
+    @pytest.mark.parametrize("verb, fields", SOURCE_CONFIG, ids=[entry[0] for entry in SOURCE_CONFIG])
+    @pytest.mark.parametrize("unreachable", ["flag", "raised"])
+    def test_refused_when_docker_cannot_be_asked(self, rig, verb, fields, unreachable):
+        """Bug class: "Docker did not answer" read as "no run of the source is alive", which lets a reconfigure through under a terminal run."""
+        rig.start()
+        rig.listing = {"docker_available": False, "runs": []} if unreachable == "flag" else runstore.DockerUnavailable(runstore.DOCKER_NOT_REACHABLE)
+        session = rig.login()
+
+        assert code_of(lambda: session.call(verb, fields, step_up=PASSWORD)).code == "docker_unreachable"
+        assert rig.calls() == []
+
+
 # ── 6. children ─────────────────────────────────────────────────────────────
 
 

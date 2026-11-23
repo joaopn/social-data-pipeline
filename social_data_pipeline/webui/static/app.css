@@ -1,4 +1,4 @@
-/* The web UI's stylesheet: the approved mock-up's kit (its dark palette, type, top bar, tab bars, buttons, pills, tags, cards, tables, chat), with no CSS framework under it, plus the base rules for unclassed elements and the web UI's own classes on the kit's tokens. Always dark. The content policy (default-src 'self') allows no inline style, so every look is a class here or in a window's own sheet (chat.css, queue.css, manage.css). */
+/* The web UI's stylesheet: the approved mock-up's kit (its dark palette, type, top bar, tab bars, buttons, pills, tags, cards, tables, chat), with no CSS framework under it, plus the base rules for unclassed elements and the web UI's own classes on the kit's tokens. Dark by default; the kit's light palette when theme.js sets `data-theme="light"` on the root (the settings box: dark, light or follow the browser). The content policy (default-src 'self') allows no inline style, so every look is a class here or in a window's own sheet (chat.css, queue.css, manage.css). */
 :root {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --surface-2: #222220; --surface-3: #2a2a28;
@@ -10,6 +10,14 @@
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --r: 8px; --shadow: 0 8px 30px rgba(0,0,0,.45);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ee; --surface-3: #e9e8e2;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #7b7973; --line: #e1e0d9; --line-2: #c3c2b7;
+  --accent: #2a78d6; --accent-soft: rgba(42,120,214,.10);
+  --good-soft: rgba(12,163,12,.10); --warn-soft: rgba(250,178,25,.16); --crit-soft: rgba(208,59,59,.09);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --shadow: 0 8px 30px rgba(0,0,0,.14);
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -180,6 +188,15 @@ img { max-width: 100%; }
 .chat-code { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; margin: 8px 0 2px; color: var(--ink-2); }
 .chat-image { max-width: 100%; height: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; }
 .chat-end, .chat-unknown { font-size: 12px; color: var(--muted); }
+
+/* the settings box of the top bar (_settings.html): a gear, and a small box under it placed here, shown by app.js through the hidden attribute */
+.settings { position: relative; display: inline-flex; }
+.settings .gear { font-size: 15px; padding: 2px 7px; }
+.settings .gear[aria-expanded="true"] { background: var(--surface-2); color: var(--ink); }
+.settings-box { position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; width: 280px; display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r); box-shadow: var(--shadow); white-space: normal; }
+.settings-box[hidden] { display: none; }
+.settings-box label { max-width: none; }
+.settings-box select { width: 100%; }
 
 /* the live indicators of the top bar (filled by GET /status) */
 .status { display: flex; align-items: center; gap: 8px; }

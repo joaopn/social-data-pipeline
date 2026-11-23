@@ -1,4 +1,4 @@
-{#- The Chat window, as the mock-up draws it: three columns at full height, for `/chat` (no chat open: `chat_id` is none) and `/chat/<id>`. Left: a new chat, the chats (a pulsing dot on one whose turn runs, as of the page's load), the data in reach (from `hello`) and the window's note. Middle: the open chat's title and file count, the conversation (it scrolls; `app.js` keeps it at its newest event while the view is at the bottom) and the answer box pinned under it, with `#chat-controls` (the stop button while a turn runs) beside the send form, never inside it: a form inside a form is dropped by the parser, and the stop button would then send the question. Right: the sandbox (from `hello`; its failure is shown here only), the open chat's files (a CSV with its table view), the chat's queries in the queue (a part asked once the page has loaded, `_chat_queries.html`) and the way to delete it. Below 1150 px wide the side columns stack under the conversation (chat.css). Every text of the runner is drawn through `vis` and escaped; nothing of it becomes markup or an attribute but a checked file's address. -#}
+{#- The Chat window, as the mock-up draws it: three columns at full height, for `/chat` (no chat open: `chat_id` is none) and `/chat/<id>`. Left: a new chat, the chats (a pulsing dot on one whose turn runs, as of the page's load), the data in reach (from `hello`) and the window's note. Middle: the open chat's title and file count, the conversation (it scrolls; `app.js` keeps it at its newest event while the view is at the bottom) and the answer box pinned under it, with `#chat-controls` (the stop button while a turn runs) beside the send form, never inside it: a form inside a form is dropped by the parser, and the stop button would then send the question. Right: "This chat" ("Sandbox" with no chat open), which its Hide button hides (the conversation then takes its width; the handle `.panel-handle` beside it shows it again; app.js keeps the choice per browser and theme.js draws it before the page shows): the chat's backend (`_chat_model.html`, the slot of the model picker), its turn totals (a part asked once the page has loaded and again after each new end of a turn, `_chat_totals.html`), the sandbox as one line (from `hello`; its failure is shown here only) that opens on what it can and cannot reach (a `details`, kept open or closed per browser), the open chat's files (a CSV with its table view), the chat's queries in the queue (a part asked once the page has loaded, `_chat_queries.html`) and the way to delete it. Below 1150 px wide the side columns stack under the conversation (chat.css). Every text of the runner is drawn through `vis` and escaped; nothing of it becomes markup or an attribute but a checked file's address. -#}
 {% extends "frame.html" %}
 {% from "_queue_macros.html" import vis %}
 {% import "_chat_macros.html" as m %}
@@ -57,7 +57,7 @@
   <div class="composer">
     <form class="send" method="post" action="/chat/{{ chat_id }}/send">
       <input type="hidden" name="form_token" value="{{ form_token }}">
-      <textarea name="text" rows="1" maxlength="{{ text_max }}" required aria-label="Your question" placeholder="Ask about the data, or ask for a plot…">
+      <textarea name="text" rows="1" maxlength="{{ text_max }}" required aria-label="Your question" placeholder="Ask about the data, or ask for a plot… (Enter to send, Shift+Enter for a new line)">
 {{ draft }}</textarea>
       <button type="submit" class="btn primary">Send</button>
     </form>
@@ -84,28 +84,40 @@
   {%- endif %}
 </section>
 
-<aside class="rightp" aria-label="Sandbox and files">
-  <div>
-    <h4>Sandbox</h4>
-    <div class="card mt sandbox">
-      {%- if hello %}
-      <div class="row"><span class="dot ok"></span><b>{{ hello.backend }}</b><span class="right small muted">up</span></div>
-      <dl class="kv mt">
-        <dt>Can reach</dt><dd>the model{% if hello.databases %}, the read-only MCP servers{% endif %}{% if hello.queue %}, the queue's submit endpoint{% endif %}: only through the chat's gateway</dd>
-        <dt>Cannot</dt><dd>{% if hello.queue %}approve its own queries; {% endif %}reach Docker, the broker, this machine, the pipeline's files or the internet</dd>
-        <dt>Reads</dt><dd>{% if hello.databases %}the databases in reach, as read-only users{% else %}no database{% endif %}{% if hello.queue %}; results of its own queries once they ran{% endif %}</dd>
-        <dt>Writes to</dt><dd>the chats' folders (<code>.sdp/chat/work</code>, every chat's) and <code>.sdp/chat/socket</code> only</dd>
-      </dl>
-      {%- else %}
-      <div class="row"><span class="dot bad"></span><b>The sandbox did not answer</b></div>
-      {%- if hello_failure %}<p class="small ink2">{{ hello_failure }}</p>{% endif %}
-      {%- endif %}
-      <p class="small muted">Restart or stop the sandbox at the terminal: <code>sdp chat stop</code> / <code>sdp chat start</code></p>
-    </div>
+<button type="button" class="btn sm panel-handle" data-chat-panel="open" aria-expanded="true" aria-controls="chat-panel" title="Show the right column"><span aria-hidden="true">‹</span> {{ 'This chat' if chat_id and not failure else 'Sandbox' }}</button>
+<aside class="rightp" id="chat-panel" aria-label="{{ 'This chat' if chat_id and not failure else 'Sandbox' }}">
+  <div class="panel-head row"><h4>{{ 'This chat' if chat_id and not failure else 'Sandbox' }}</h4><button type="button" class="btn ghost sm right" data-chat-panel="close" aria-expanded="true" aria-controls="chat-panel" title="Hide this column: the conversation takes its width">Hide <span aria-hidden="true">›</span></button></div>
+  {%- if chat_id and not failure %}
+  <div class="col">
+    {% include "_chat_model.html" %}
+    {%- if events_failure %}
+    <p class="small muted">The turn totals are not known: the chat's events could not be read.</p>
+    {%- else %}
+    {% with totals = none, trigger = totals_trigger %}{% include "_chat_totals.html" %}{% endwith %}
+    {%- endif %}
   </div>
+  {%- endif %}
+  {%- if hello %}
+  <details class="card sandbox">
+    <summary class="row"><span class="dot ok"></span><span class="grow">{{ hello.backend_name }} · sandbox up · {% if hello.databases %}read-only access to {{ hello.databases | length }} database{{ '' if hello.databases | length == 1 else 's' }}{% else %}no database{% endif %}</span></summary>
+    <dl class="kv">
+      <dt>Can reach</dt><dd>the model{% if hello.databases %}, the read-only MCP servers{% endif %}{% if hello.queue %}, the queue's submit endpoint{% endif %}: only through the chat's gateway</dd>
+      <dt>Cannot</dt><dd>{% if hello.queue %}approve its own queries; {% endif %}reach Docker, the broker, this machine, the pipeline's files or the internet</dd>
+      <dt>Reads</dt><dd>{% if hello.databases %}the databases in reach, as read-only users{% else %}no database{% endif %}{% if hello.queue %}; results of its own queries once they ran{% endif %}</dd>
+      <dt>Writes to</dt><dd>the chats' folders (<code>.sdp/chat/work</code>, every chat's) and <code>.sdp/chat/socket</code> only</dd>
+    </dl>
+    <p class="small muted">Restart or stop the sandbox at the terminal: <code>sdp chat stop</code> / <code>sdp chat start</code></p>
+  </details>
+  {%- else %}
+  <div class="card sandbox">
+    <div class="row"><span class="dot bad"></span><b>The sandbox did not answer</b></div>
+    {%- if hello_failure %}<p class="small ink2">{{ hello_failure }}</p>{% endif %}
+    <p class="small muted">Restart or stop the sandbox at the terminal: <code>sdp chat stop</code> / <code>sdp chat start</code></p>
+  </div>
+  {%- endif %}
   {%- if chat_id and not failure %}
   <div>
-    <h4>This chat's files</h4>
+    <h4>Files</h4>
     <div class="col mt">
       {%- if files_failure %}
       <p class="note">{{ files_failure }}</p>
@@ -121,7 +133,7 @@
     </div>
   </div>
   <div>
-    <h4>This chat's queries in the queue</h4>
+    <h4>Queries in the queue</h4>
     {%- if hello and not hello.queue %}
     <div class="col mt"><p class="small muted">{{ queries_detached }}</p></div>
     {%- else %}

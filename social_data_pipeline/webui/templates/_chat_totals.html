@@ -1,0 +1,15 @@
+{#- The right column's turn totals of the open chat. `totals` none: the placeholder, which asks `/chat/<id>/totals` (`trigger`: once the page has loaded, or five seconds later when the part's bound was full); else that part's answer (`chat.totals_model`): one line instead of the totals, or the turns that ended, their time and their cost as the backend reported them, added up from the chat's end events. Every trigger also listens for `sdp-turn-ended`, which app.js sends when a new end of a turn has come into the conversation. Nothing of the runner's text is shown: only numbers the page wrote. -#}
+<div id="chat-totals" class="totals" hx-get="/chat/{{ chat_id }}/totals" hx-trigger="{{ trigger }}" hx-swap="outerHTML">
+{%- if not totals %}
+<p class="small muted">Adding up this chat's turns…</p>
+{%- elif totals.line %}
+<p class="small muted">{{ totals.line }}</p>
+{%- else %}
+<dl class="kv">
+  {%- for label, text in totals.rows %}
+  <dt>{{ label }}</dt><dd>{{ text }}</dd>
+  {%- endfor %}
+</dl>
+{%- endif %}
+{%- if totals %}{% for note in totals.notes %}<p class="small muted">{{ note }}</p>{% endfor %}{% endif %}
+</div>

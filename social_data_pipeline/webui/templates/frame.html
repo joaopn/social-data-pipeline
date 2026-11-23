@@ -1,4 +1,4 @@
-{#- The frame of a page for a logged-in session, as the mock-up draws it: the top bar (SDP, the windows Chat, Management and Queue, the live indicators, the operator and the logout form), the tab bar of the open window when it has more than one page, and the window's main area (`shell`, which a window may replace with a layout of its own). The indicators are drawn grey here and filled by `GET /status` once the page has loaded, so that a slow service never slows the page. -#}
+{#- The frame of a page for a logged-in session, as the mock-up draws it: the top bar (SDP, the windows Chat, Management and Queue, the live indicators, the settings box (`_settings.html`), the operator and the logout form), the tab bar of the open window when it has more than one page, and the window's main area (`shell`, which a window may replace with a layout of its own). The indicators are drawn grey here and filled by `GET /status` once the page has loaded, so that a slow service never slows the page. -#}
 {% extends "layout.html" %}
 {% block body %}
 <header class="topbar">
@@ -10,6 +10,7 @@
   </nav>
   <span class="right row">
     {%- with indicators = none %}{% include "_status.html" %}{% endwith %}
+    {%- include "_settings.html" %}
     <span class="pill">operator</span>
     <form class="logout" method="post" action="/logout">
       <input type="hidden" name="form_token" value="{{ form_token }}">

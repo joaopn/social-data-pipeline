@@ -43,7 +43,21 @@
 .cw #chat-controls:empty { display: none; }
 .cw #chat-controls .stop { display: flex; align-items: center; gap: 8px; height: 40px; }
 
-/* right: the sandbox, the chat's files, delete */
+/* right: "This chat" (its backend, turn totals, the sandbox's line, files, queries, delete); hidden by its button, the handle beside the conversation shows it again (theme.js and app.js set data-chat-panel on the root) */
+.cw { position: relative; }
+:root[data-chat-panel="closed"] .cw { grid-template-columns: 236px minmax(0, 1fr); }
+:root[data-chat-panel="closed"] .cw .rightp { display: none; }
+.cw .panel-handle { display: none; position: absolute; top: 6px; right: 10px; z-index: 5; }
+:root[data-chat-panel="closed"] .cw .panel-handle { display: inline-flex; }
+:root[data-chat-panel="closed"] .cw .chead { padding-right: max(130px, calc((100% - 820px) / 2)); }
+.cw .panel-head h4 { margin: 0; }
+.cw .panel-head button { margin-right: -6px; }
+.cw .rightp .totals .kv, .cw .rightp .chat-model { grid-template-columns: 64px 1fr; }
+.cw .rightp details.sandbox > summary { list-style: none; font-size: 12.5px; color: var(--ink); }
+.cw .rightp details.sandbox > summary::-webkit-details-marker { display: none; }
+.cw .rightp details.sandbox > summary::after { content: "▸"; color: var(--muted); margin-left: 4px; }
+.cw .rightp details.sandbox[open] > summary::after { content: "▾"; }
+.cw .rightp .sandbox .dot { align-self: center; }
 .cw .rightp { background: var(--surface); border-left: 1px solid var(--line); padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
 .cw .rightp .sandbox { padding: 10px; }
 .cw .rightp .sandbox > * + * { margin-top: 12px; }
@@ -72,4 +86,5 @@ a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-dec
   .cw .mid { order: -1; height: calc(100vh - 46px); }
   .cw .left, .cw .rightp { overflow: visible; border: 0; border-top: 1px solid var(--line); }
   .cw .left .grow { display: none; }
+  :root[data-chat-panel="closed"] .cw { grid-template-columns: minmax(0, 1fr); }
 }

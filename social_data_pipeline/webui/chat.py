@@ -2,13 +2,14 @@
 
 Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule, and nothing of an answer reaches a header or a script.
 
-Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat and the data in reach (the databases the chat can read and whether the assistant can submit to the query queue, from `hello`); in the middle the open chat; on the right the sandbox (`hello`) and the open chat's files. A failure of `hello` is shown in the side columns only.
+Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat and the data in reach (the databases the chat can read and whether the assistant can submit to the query queue, from `hello`); in the middle the open chat; on the right "This chat" (it can be hidden, and the conversation then takes its width): the chat's backend (`_chat_model.html`), its turn totals (a lazy part), the sandbox as one line that opens on the facts of what it can and cannot reach (`hello`), the open chat's files and its queries. A failure of `hello` is shown in the side columns only.
 
 - `GET /chat`: the three columns with no chat open (`chat.list`, `hello`). `POST /chat/new` makes one (`chat.new`) and leads to it.
 - `GET /chat/<id>` (an id of the runner's form, else not found): the chats (the list `chat.list` gave when the chat was looked up: the runner is not asked twice), the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`) with their download links, the sandbox (`hello`), the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
 - `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
 - `GET /chat/<id>/table/<name>` (a name of the runner's rule ending in `.csv`): the first 256 KiB of the file (one `chat.file` piece, the broker asked first and never believed from before) as a table in the frame: decoded as UTF-8 with errors replaced, parsed by `csv` (strict), at most 500 rows under the header row and 50 columns, the cells within the page's units (`Limits.chat_units_max`), every cell through `statements.visible` and the template's escaping; a file that is not CSV (a NUL, a quote that does not close where the file was read whole, a field over `csv`'s limit) is one sentence.
-- `GET /chat/<id>/queries`: the right column's "This chat's queries in the queue", a part the page asks once it has loaded and every 60 seconds after (`queries_model`), on a bound of its own (`Limits.chat_query_workers`; a full bound answers 204 and the part stays as it is). The broker is asked first (`queue.broker_session_error`, a short time limit: an ended session gets `HX-Redirect`, a broker that does not answer is the part's one line and nothing else is asked); then the chat's own events (at most 2,000, read from the start, the runner's pages) give the job ids written in the texts of its tool calls and their results, newest first, at most 20; then the scheduler's `queue.job` for each, with a short time limit and a total one. Only a job whose record says it was submitted by the assistant is listed; an unknown id or another submitter's job is left out without a word, a failure of one job is its row.
+- `GET /chat/<id>/queries`: the right column's "Queries in the queue", a part the page asks once it has loaded and every 60 seconds after (`queries_model`), on a bound of its own (`Limits.chat_query_workers`; a full bound answers 204 and the part stays as it is). The broker is asked first (`queue.broker_session_error`, a short time limit: an ended session gets `HX-Redirect`, a broker that does not answer is the part's one line and nothing else is asked); then the chat's own events (at most 2,000, read from the start, the runner's pages) give the job ids written in the texts of its tool calls and their results, newest first, at most 20; then the scheduler's `queue.job` for each, with a short time limit and a total one. Only a job whose record says it was submitted by the assistant is listed; an unknown id or another submitter's job is left out without a word, a failure of one job is its row.
+- `GET /chat/<id>/totals`: the right column's turn totals of the chat (`totals_model`): the number of turns that ended, their time and their cost as the backend reported them, added up from the chat's "end" events read from the start (at most 2,000; a field that is missing or odd counts as not reported, never as an error). A part the page asks once it has loaded and again whenever `app.js` sees a new end of a turn come into the conversation, on a bound of its own (`Limits.chat_query_workers` places; a full one answers the placeholder, which asks again five seconds later); the broker is asked first, as for the queries.
 - `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. The web UI opens no file for either: the bytes come only through the socket.
 
 Every route answers GET or POST only (a HEAD is 405); every POST passes the guard's origin and form-token rule. Standard library, anyio, FastAPI, Starlette and this package only.
@@ -100,6 +101,19 @@ QUERY_NOT_READ = "could not be read"
 QUERY_PHASES = {"pending": ("warn", "waiting for approval"), "approved": ("run", "approved, waiting to start"), "running": ("run", "running")}
 QUERY_ENDS = {"done": ("ok", "finished"), "failed": ("bad", "failed"), "rejected": ("bad", "rejected"), "cancelled": ("bad", "cancelled")}
 QUERY_ENDED = ("", "ended")
+# The right column's turn totals (`turn_totals`, `totals_model`): the chat's events read from the start, at most TOTALS_EVENTS_MAX in pages of EVENTS_PAGE within TOTALS_SECONDS; one turn's duration counts up to DURATION_MS_MAX.
+TOTALS_EVENTS_MAX = 2000
+TOTALS_SECONDS = 20
+DURATION_MS_MAX = 10 ** 12
+# The part's trigger: asked once the page has loaded, again whenever a new end of a turn came into the conversation (app.js), and five seconds later when its bound was full.
+TOTALS_ASK = "load, sdp-turn-ended from:body"
+TOTALS_AGAIN = "sdp-turn-ended from:body"
+TOTALS_RETRY = "load delay:5s, sdp-turn-ended from:body"
+TOTALS_NONE = "No turn of this chat has ended yet."
+TOTALS_SEARCHED = "Added up from the first 2,000 events of this chat."
+TOTALS_LATE = "Not every event could be read in time: these are the totals of the events read."
+# The names the page gives the back ends `hello` names; any other name is shown as it is.
+BACKEND_NAMES = {"claude-code": "Claude Code", "openai-compatible": "OpenAI-compatible"}
 EVENT_FIELDS = {
     "user": {"text"}, "text": {"text"}, "tool": {"name", "input"}, "tool_result": {"text", "is_error"},
     "file": {"name", "size"}, "end": {"is_error", "cost_usd", "duration_ms", "turns"}, "error": {"message"},
@@ -276,7 +290,7 @@ def chat_rows(chats, current=None):
 
 def hello_model(hello):
     """What the side columns show of an answer of `hello`: the back end, the names of the databases the chat reads, whether the queue is attached and its line."""
-    return {"backend": hello["backend"], "databases": [DATABASE_NAMES.get(name, name) for name in hello["databases"]], "queue": hello["queue"], "queue_line": QUEUE_ON if hello["queue"] else QUEUE_OFF}
+    return {"backend": hello["backend"], "backend_name": BACKEND_NAMES.get(hello["backend"], hello["backend"]), "databases": [DATABASE_NAMES.get(name, name) for name in hello["databases"]], "queue": hello["queue"], "queue_line": QUEUE_ON if hello["queue"] else QUEUE_OFF}
 
 
 def files_count(count, more):
@@ -425,6 +439,87 @@ def queries_model(runner, scheduler, chat_id, clock):
     return model
 
 
+def turn_totals(events, totals=None):
+    """The turn totals of `events` (raw, unchecked; added to `totals` when given): {"turns": ends of a turn, "errors": those that ended with an error, "ms": their durations added up, "ms_missing": turns without a duration the page can use, "cost": their costs added up, "cost_missing": turns without a cost, "unread": events of the type "end" that are not of its shape}. An end counts only as `event_model` reads it; a duration counts only when whole and at most DURATION_MS_MAX, a cost only when a finite number from 0 to COST_MAX, so a NaN, a flag, a huge or a negative number is "not reported" and never an error."""
+    totals = {"turns": 0, "errors": 0, "ms": 0, "ms_missing": 0, "cost": 0.0, "cost_missing": 0, "unread": 0} if totals is None else totals
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "end":
+            continue
+        if event_model(event, None)["kind"] != "end":
+            totals["unread"] += 1
+            continue
+        totals["turns"] += 1
+        totals["errors"] += event["is_error"] is True
+        if assistant.is_whole(event["duration_ms"], 0, DURATION_MS_MAX):
+            totals["ms"] += event["duration_ms"]
+        else:
+            totals["ms_missing"] += 1
+        if assistant.is_number(event["cost_usd"], 0, COST_MAX):
+            totals["cost"] += event["cost_usd"]
+        else:
+            totals["cost_missing"] += 1
+    return totals
+
+
+def duration_text(ms):
+    """A duration of `ms` milliseconds in words: "8.4 s", "1 min 12 s", "3 h 05 min"."""
+    seconds = ms / 1000
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    whole = int(ms // 1000)
+    if whole < 3600:
+        return f"{whole // 60} min {whole % 60} s"
+    return f"{whole // 3600:,} h {whole % 3600 // 60:02d} min"
+
+
+def _missing(count):
+    return f" (not reported for {count} turn{'' if count == 1 else 's'})" if count else ""
+
+
+def totals_rows(totals):
+    """The lines the right column shows of `turn_totals`: (label, text) pairs, or [] when no turn has ended."""
+    turns = totals["turns"]
+    if not turns:
+        return []
+    errors = f", {totals['errors']} ended with an error" if totals["errors"] else ""
+    timed = turns - totals["ms_missing"]
+    costed = turns - totals["cost_missing"]
+    return [
+        ("Turns", f"{turns:,}{errors}"),
+        ("Time", (duration_text(totals["ms"]) + _missing(totals["ms_missing"])) if timed else "not reported"),
+        ("Cost", (f"{totals['cost']:.4f} USD" + _missing(totals["cost_missing"])) if costed else "not reported by the backend"),
+    ]
+
+
+def totals_model(runner, chat_id, clock):
+    """The right column's turn totals of the chat `chat_id`, asked in the calling worker once the broker has confirmed the session: {"line": one sentence instead of the totals, or None; "rows": `totals_rows`; "notes"}. The chat's events are read from the start in pages of the runner, at most TOTALS_EVENTS_MAX, the total time TOTALS_SECONDS looked at before each page; a failure of the runner is the line."""
+    deadline = clock() + TOTALS_SECONDS
+    model = {"line": None, "rows": [], "notes": []}
+    totals, offset = None, 0
+    while True:
+        asked = min(EVENTS_PAGE, TOTALS_EVENTS_MAX - offset)
+        kind, value = _ask(lambda: runner.events(chat_id, offset, asked))
+        if kind == "error":
+            model["line"] = words.chat_sentence(value)
+            return model
+        events, offset, _running = value
+        totals = turn_totals(events, totals)
+        if len(events) < asked:
+            break
+        if offset >= TOTALS_EVENTS_MAX:
+            model["notes"].append(TOTALS_SEARCHED)
+            break
+        if clock() > deadline:
+            model["notes"].append(TOTALS_LATE)
+            break
+    model["rows"] = totals_rows(totals)
+    if not model["rows"]:
+        model["line"] = TOTALS_NONE
+    if totals["unread"]:
+        model["notes"].append(f"{totals['unread']:,} end{'' if totals['unread'] == 1 else 's'} of a turn could not be read and {'is' if totals['unread'] == 1 else 'are'} not counted.")
+    return model
+
+
 class ChatFileStream(Response):
     """The answer that streams a chat's file from the runner's pieces: an attachment of type `application/octet-stream` with a reduced name, `Content-Length` the size the first piece gave. `fetch(offset)` (run in a worker) returns the next piece as `(data, size, end)` or raises; a piece whose size is not the one announced, a piece shorter than a whole piece before the end, the time limit passed on `clock` (`deadline`), or any error ends the answer at once, never past what was announced. `release()` is called when the answer ends, however it ends."""
 
@@ -508,7 +603,7 @@ def install(api, ctx):
 
     def page_model(chat_id=None, **values):
         """Every field `chat.html` reads, for no chat open (`chat_id` None) or for one."""
-        model = {"chat_id": chat_id, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED}
+        model = {"chat_id": chat_id, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED, "totals_trigger": TOTALS_ASK}
         model.update(values)
         return model
 
@@ -727,6 +822,31 @@ def install(api, ctx):
         if isinstance(made, client.BrokerError):
             ending = queue.ended_session(ctx, request, session_id, made)
             return ending or ctx.render("_chat_queries.html", chat_id=chat_id, queries={"line": words.sentence(made), "rows": [], "notes": []}, poll=QUERIES_POLL)
+        return made
+
+    totals_gate = Gate(limits.chat_query_workers)
+
+    @api.get("/chat/{chat_id}/totals")
+    async def totals_part(request: Request, chat_id: str):
+        """The right column's turn totals (`totals_model`), on a bound of its own: a full one answers the placeholder, which asks again five seconds later."""
+        if not assistant.is_chat_id(chat_id):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+
+        def work():
+            error = queue.broker_session_error(ctx, session, timeout=QUERY_SECONDS)
+            if error is not None:
+                return error
+            return ctx.render("_chat_totals.html", chat_id=chat_id, totals=totals_model(runner, chat_id, ctx.clock), trigger=TOTALS_AGAIN)
+
+        made = await totals_gate.run(work)
+        if made is BUSY_GATE:
+            return ctx.render("_chat_totals.html", chat_id=chat_id, totals=None, trigger=TOTALS_RETRY)
+        if isinstance(made, client.BrokerError):
+            ending = queue.ended_session(ctx, request, session_id, made)
+            return ending or ctx.render("_chat_totals.html", chat_id=chat_id, totals={"line": words.sentence(made), "rows": [], "notes": []}, trigger=TOTALS_AGAIN)
         return made
 
     # ── files ──

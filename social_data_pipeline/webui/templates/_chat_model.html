@@ -1,0 +1,7 @@
+{#- The chat's backend and model in the right column ("This chat"). A slot of its own: the model picker of the chat replaces this part. Today it shows the backend `hello` named and, when the context has `chat_model`, the chat's model. -#}
+<dl class="kv chat-model">
+  <dt>Backend</dt><dd>{% if hello %}{{ hello.backend_name }}{% else %}not known: the sandbox did not answer{% endif %}</dd>
+  {%- if chat_model is defined and chat_model %}
+  <dt>Model</dt><dd>{{ chat_model }}</dd>
+  {%- endif %}
+</dl>

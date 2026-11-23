@@ -384,7 +384,8 @@ def test_hostile_text_is_text_everywhere(client, scripted):
 
 
 def nexts(page):
-    return [(html.unescape(href), trigger) for href, trigger in re.findall(r'hx-get="([^"]+)" hx-trigger="([^"]+)"', main_html(page))]
+    # The events' requests only: the right column's turn totals are a part of their own.
+    return [(html.unescape(href), trigger) for href, trigger in re.findall(r'hx-get="([^"]+)" hx-trigger="([^"]+)"', main_html(page)) if not href.endswith("/totals")]
 
 
 def test_the_events_part_pages_by_offset_and_stops_when_the_turn_has_ended(client, scripted):
@@ -952,7 +953,7 @@ def test_the_conversation_page_shows_the_chats_and_the_data_in_reach_from_one_li
     assert re.search(rf'<a class="navi" href="/chat/{other}"><span class="lbl">the busy one</span><span class="dot run"', page)
     assert page.count('class="dot run"') == 1
     text = main_text(page)
-    assert "MongoDB · read-only" in text and "StarRocks · read-only" in text and chat.QUEUE_ON in text and "claude-code" in text
+    assert "MongoDB · read-only" in text and "StarRocks · read-only" in text and chat.QUEUE_ON in text and "Claude Code" in text
     assert scripted.ops().count("chat.list") == 1 and scripted.ops().count("hello") == 1
 
 

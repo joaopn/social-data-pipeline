@@ -1,0 +1,23 @@
+{#- The settings box of the top bar: a gear button that opens a small floating box (a dialog placed by app.css, no inline style). What it holds is kept per browser (localStorage, through app.js and theme.js), never sent to the server: the theme (`sdp.theme`: dark, light or follow the browser) and the default model for new chats (`sdp.defaultModel`: "opus", "sonnet", "haiku", or empty for the backend's default; the new-chat form reads it). Without the browser's storage the box still changes the open page, and the page is dark. -#}
+<span class="settings">
+  <button type="button" class="btn ghost sm gear" id="settings-button" aria-expanded="false" aria-controls="settings-box" aria-haspopup="dialog" aria-label="Settings" title="Settings"><span aria-hidden="true">⚙</span></button>
+  <div class="settings-box" id="settings-box" role="dialog" aria-label="Settings" hidden>
+    <h4>Settings</h4>
+    <label>Theme
+      <select id="setting-theme" data-setting="sdp.theme">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="system">Follow the browser</option>
+      </select>
+    </label>
+    <label>Default model for new chats
+      <select id="setting-model" data-setting="sdp.defaultModel">
+        <option value="">The backend's default</option>
+        <option value="opus">opus</option>
+        <option value="sonnet">sonnet</option>
+        <option value="haiku">haiku</option>
+      </select>
+    </label>
+    <p class="small muted">The model applies to Claude Code; an OpenAI-compatible backend always uses its one configured model. Both settings are kept in this browser only.</p>
+  </div>
+</span>

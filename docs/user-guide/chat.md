@@ -93,7 +93,7 @@ Then it makes the chat's two networks, the gateway and the sandbox (the steps ar
 
 ## What you can ask
 
-Ask about the data in your databases. Each question is one **turn** of the assistant, run in the chat's own folder:
+Ask about the data in your databases. In the Chat window, Enter sends the question and Shift+Enter starts a new line. Each question is one **turn** of the assistant, run in the chat's own folder; the window's right column ("This chat") adds up the turns of the chat, their time and their cost as the backend reported them (see [The Chat window](webui.md#the-chat-window)):
 
 - **The databases.** It reads each attached database through that database's MCP server, read-only.
 - **The shell and files.** It can run shell commands and read and write files in the chat's folder (with `claude-code`: the tools `Bash`, `Read`, `Write`, `Edit`, `Glob` and `Grep`; with `openai-compatible`: `run_shell`).

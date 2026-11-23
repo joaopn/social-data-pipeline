@@ -110,7 +110,7 @@ def test_hostile_text_is_escaped_everywhere_and_never_an_attribute(client, broke
     pages[f"/runs/{RUN_ID}"] = page_of_run
     pages["output"] = client.get(html.unescape(view), headers=HX).text
     pages["outcome"] = outcome_page
-    allowed_values = {token, "", *actions.TABLE, *actions.VALID_PROFILES, *actions.SERVICES, *actions.DATABASES, "demo", "yes", RUN_ID, "live-0123456789ab"}
+    allowed_values = {token, "", *actions.TABLE, *actions.VALID_PROFILES, *actions.SERVICES, *actions.DATABASES, "demo", "yes", RUN_ID, "live-0123456789ab", "dark", "light", "system", "opus", "sonnet", "haiku"}
     for route, page in pages.items():
         assert raw_hostile(page) == [], route
         assert ESCAPED_MARK in page or "&lt;script&gt;" in page, route

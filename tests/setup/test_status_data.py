@@ -25,12 +25,13 @@ import pytest
 
 import sdp
 import test_status_golden as golden
+from test_create_indexes import FakeDatabases
 from social_data_pipeline.control import verbs
 from social_data_pipeline.setup import utils
 
 SCENARIOS_BY_NAME = {scenario.name: scenario for scenario in golden.SCENARIOS}
 
-GETTER_NAMES = ["get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
+GETTER_NAMES = ["get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status"]
 
 NAME_NOT_VALID = "the source name is not a valid name"
 
@@ -282,6 +283,9 @@ def stub_docker_with_secrets(monkeypatch, calls, root=None, running=None):
         if list(argv[:2]) == ["docker", "inspect"]:
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(inspect), stderr="")
         for_a_run_getter = running is not None and running and running[0] in RUN_GETTERS
+        if running is not None and running and running[0] == "get_db_index_targets" and list(argv[:3]) == ["docker", "compose", "exec"]:
+            # The index listing asks the database itself, through `docker compose exec`; the stand-in databases answer.
+            return FakeDatabases().run(argv, **kwargs)
         if for_a_run_getter and list(argv[:2]) == ["docker", "ps"]:
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps([TERMINAL_RUN_CONTAINER, str(root), "parse", ""]) + "\n", stderr="")
         if for_a_run_getter and list(argv[:2]) == ["docker", "logs"]:
@@ -298,6 +302,9 @@ def stub_docker_with_secrets(monkeypatch, calls, root=None, running=None):
 SECRET_CALLS = [
     ("get_db_status", {}, ["print_db_status"]),
     ("get_db_status", {"verbose": True}, ["print_db_status"]),
+    ("get_db_index_targets", {"source": "reddit", "db": "postgres", "admin_password": "made-up-admin-value"}, ["print_db_index_targets"]),
+    ("get_db_index_targets", {"source": "reddit", "db": "mongo", "admin_password": "made-up-admin-value"}, ["print_db_index_targets"]),
+    ("get_db_index_targets", {"source": "reddit", "db": "starrocks", "admin_password": "made-up-admin-value"}, ["print_db_index_targets"]),
     ("get_db_verify", {}, ["print_db_verify", "print_db_verify_json"]),
     ("get_db_verify", {"db": "postgres"}, ["print_db_verify", "print_db_verify_json"]),
     ("get_source_list", {}, ["print_source_list"]),

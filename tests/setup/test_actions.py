@@ -157,12 +157,13 @@ FORBIDDEN_NAMES = {
 }
 
 ACTION_NAMES = [
-    "do_db_reset", "do_db_setup", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_add", "do_source_remove",
-    "get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status",
+    "do_db_create_indexes", "do_db_reset", "do_db_setup", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_add", "do_source_remove",
+    "get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_list", "get_source_progress", "get_source_status",
 ]
 
 # One helper each walk must have reached, so a walk that follows nothing cannot pass.
 KNOWN_DEEP_HELPER = {
+    "do_db_create_indexes": "_sr_execute_index_plan",
     "do_db_reset": "_chown_db_data_for_host",
     "do_db_setup": "_get_configured_db_services",
     "do_db_start": "_resolve_server_data_mounts",
@@ -174,6 +175,7 @@ KNOWN_DEEP_HELPER = {
     "do_run_start": "_container_mounts",
     "do_source_remove": "_running_services",
     "do_source_add": "_warn_mount_drift_after_source_change",
+    "get_db_index_targets": "_mongo_index_collections",
     "get_db_status": "_load_classifier_suffixes",
     "get_db_verify": "_probe_container_state",
     "get_run_list": "_run_display_safe",

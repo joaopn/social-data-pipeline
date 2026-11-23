@@ -40,6 +40,7 @@ SUBCOMMANDS = [
     ["db", "create-indexes", "--help"],
     ["db", "restart-needed", "--help"],
     ["db", "llm-settings", "--help"],
+    ["db", "index-targets", "--help"],
     # source group
     ["source", "--help"],
     ["source", "add", "--help"],

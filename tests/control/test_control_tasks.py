@@ -311,7 +311,7 @@ class TestTheRecordOfATask:
 class TestTheAllowList:
     def test_every_task_is_a_switched_on_verb_with_plain_required_key_fields(self):
         """Bug class: a task whose verb cannot run over the socket (no action, switched off), whose key field is optional (the label would read "None" and two tasks without it would not be told apart) or a secret (written into the record as a key, and into the label); or a verb added to the allow-list unseen. Each unit that switches a task on adds its verb to the pinned set."""
-        assert set(tasks.TASKS) == set()
+        assert set(tasks.TASKS) == {"db.create_indexes"}
         for name, task in tasks.TASKS.items():
             verb = verbs.VERBS[name]
             assert task.verb == name and verb.socket_enabled and verb.action and verb.action.startswith("do_") and callable(getattr(sdp, verb.action, None))

@@ -513,7 +513,14 @@ class TestRecords:
         minimal = runstore.create_run(root, {"profile": "parse"})
         assert runstore.read_record(root, minimal) == {"id": minimal, "profile": "parse", "source": None, "flags": {}, "started_by": None, "state": "starting", "started": "2026-11-21T10:15:00Z", "ended": None, "exit_code": None}
 
-    @pytest.mark.parametrize("changes", [{"id": RUN_B}, {"password": "x"}, {"state": "done"}, {"exit_code": "0"}, {"ended": "soon"}, {"flags": {"a": {"nested": 1}}}, {"flags": {"n": 2 ** 53 + 1}}, {"flags": {"n": -(2 ** 53) - 1}}, {"profile": None}])
+    def test_a_task_record_holds_a_list_of_flat_records(self, root):
+        """Bug class: an index build's request (a list of tables, each with its list of columns) refused by the store, so the task could never start; or read back changed. One level of records only, of text, numbers, booleans and lists of those."""
+        flags = {"database": "starrocks", "indexes": [{"table": "comments", "columns": ["author", "score"], "bitmap": ["score"]}], "save": True}
+        run_id = runstore.create_run(root, {"task": "db.create_indexes", "label": "create indexes \u00b7 starrocks", "flags": flags})
+
+        assert runstore.read_record(root, run_id)["flags"] == flags
+
+    @pytest.mark.parametrize("changes", [{"id": RUN_B}, {"password": "x"}, {"state": "done"}, {"exit_code": "0"}, {"ended": "soon"}, {"flags": {"a": {"nested": 1}}}, {"flags": {"a": [{"b": {"c": 1}}]}}, {"flags": {"a": [{"b": [[1]]}]}}, {"flags": {"a": [{1: "x"}]}}, {"flags": {"n": 2 ** 53 + 1}}, {"flags": {"n": -(2 ** 53) - 1}}, {"profile": None}])
     def test_a_change_a_record_cannot_hold_is_refused(self, root, monkeypatch, changes):
         """Bug class: the store writing a record it would itself call unreadable at the next read (a state it does not know, a field of the wrong type, a second id), which would turn a live run into an unreadable one."""
         run_id = make_run(root, RUN_A, "running")

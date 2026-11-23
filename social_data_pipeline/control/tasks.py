@@ -39,8 +39,10 @@ def _allow_list(*tasks):
     return MappingProxyType(by_verb)
 
 
-# Empty until a verb is switched on as a task (see the module's docstring).
-TASKS = _allow_list()
+TASKS = _allow_list(
+    # One index build per database at a time: a second one would queue behind the first's schema change (StarRocks) or compete for its maintenance memory (PostgreSQL).
+    Task("db.create_indexes", key=("database",), label="create indexes \u00b7 {database}"),
+)
 
 
 def key_values(task, validated):

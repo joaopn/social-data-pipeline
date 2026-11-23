@@ -19,6 +19,7 @@ Usage:
     sdp.py db unsetup-mcp                    Remove MCP configuration
     sdp.py db recover-password               Reset database admin password
     sdp.py db create-indexes [--source <name>] Interactively create database indexes
+    sdp.py db index-targets --source <name> --db <db>  List the tables, columns and indexes create-indexes offers
 
     sdp.py source add <name> [--hf ID]        Add a new source (--hf for HF datasets)
     sdp.py source download <name>            Download HF dataset files
@@ -4174,14 +4175,183 @@ def _sr_poll_alter_job(port, database, job_id, password, poll_interval=10.0,
         time.sleep(poll_interval)
 
 
+def _sr_read_bloom_columns(port, database, table, password):
+    """Current bloom_filter_columns for a table, parsed from SHOW CREATE TABLE.
+
+    Raises on an unreadable result: the ALTER replaces the whole list, so a
+    false "nothing set" would silently drop every existing bloom column.
+    """
+    rows = _sr_query(port, database, f"SHOW CREATE TABLE `{database}`.`{table}`", password)
+    if not rows or len(rows[0]) < 2:
+        raise RuntimeError(f"could not read SHOW CREATE TABLE for {table}")
+    return _sr_bloom_columns_of(rows[0][1])
+
+
+def _sr_bloom_columns_of(create_table):
+    """The bloom_filter_columns property of a SHOW CREATE TABLE text, as a set (empty when it has none)."""
+    import re
+
+    match = re.search(r'"bloom_filter_columns"\s*=\s*"([^"]*)"', create_table, re.IGNORECASE)
+    if not match:
+        return set()
+    return {c.strip() for c in match.group(1).split(",") if c.strip()}
+
+
+def _sr_bloom_statement(database, table, columns):
+    """The ALTER that sets a table's bloom filter columns to `columns` (the whole list: it replaces the property)."""
+    return (f'ALTER TABLE `{database}`.`{table}` '
+            f'SET ("bloom_filter_columns" = "{",".join(columns)}")')
+
+
+def _sr_bitmap_statement(database, table, field):
+    """(index name, the CREATE INDEX statement) of a BITMAP index on one column."""
+    index_name = f"idx_{table}_{field}"
+    return index_name, f"CREATE INDEX `{index_name}` ON `{database}`.`{table}` (`{field}`) USING BITMAP"
+
+
+def _sr_classify_pairs(pairs, column_types, types_for_column):
+    """Split (table, field) pairs by what their column type allows: (unindexable, forced_bitmap, choosable). FLOAT/DOUBLE support neither mechanism, a type without bloom filter support is BITMAP only; the rest default to a bloom filter and may be chosen as BITMAP."""
+    supported = {(t, f): types_for_column(column_types.get((t, f), ''))
+                 for t, f in pairs}
+
+    unindexable = [p for p in pairs if not any(supported[p].values())]
+    forced_bitmap = [p for p in pairs
+                     if p not in unindexable and not supported[p]['bloomfilter']]
+    choosable = [p for p in pairs
+                 if p not in unindexable and p not in forced_bitmap]
+    return unindexable, forced_bitmap, choosable
+
+
+def _sr_execute_index_plan(port, database, plan, password):
+    """Build a StarRocks index plan {table: {'bitmap': [...], 'bloomfilter': [...]}}: parallel across tables, serial within each table, printing progress. Returns {table: {'bitmap': [...], 'bloomfilter': [...]}} of what was built."""
+    import time
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    print_lock = threading.Lock()
+
+    def emit(msg):
+        with print_lock:
+            print(msg, flush=True)
+
+    def _read_bloom_columns(table):
+        return _sr_read_bloom_columns(port, database, table, password)
+
+    def _build_bloom_for_table(table, fields, prefix):
+        """Add bloom filter columns in one ALTER. Returns the columns added."""
+        existing = _read_bloom_columns(table)
+        new_columns = [f for f in fields if f not in existing]
+        if not new_columns:
+            emit(f"    {prefix}bloom filter already covers {', '.join(fields)}")
+            return []
+
+        target = sorted(existing | set(new_columns))
+        emit(f"  {prefix}Setting bloom filter columns: {', '.join(target)}")
+        t_start = time.time()
+
+        _sr_wait_for_active_alter(port, database, table, password,
+                                  line_prefix=prefix, print_fn=emit)
+
+        statement = _sr_bloom_statement(database, table, target)
+        success, stderr = _sr_exec(port, database, statement, password)
+        if not success:
+            emit(f"    {prefix}failed to submit bloom filter change: {stderr}")
+            return []
+
+        # Progress polling is best-effort: it is unverified which SHOW ALTER
+        # view reports a bloom filter change, so an absent job means "no
+        # information", never "done". The property re-read below decides.
+        rows = _sr_alter_column_rows(port, database, password)
+        job_ids = [int(r[0]) for r in rows if len(r) >= 12 and r[1] == table]
+        if job_ids:
+            _sr_poll_alter_job(port, database, max(job_ids), password,
+                               line_prefix=prefix, print_fn=emit)
+        else:
+            _sr_wait_for_active_alter(port, database, table, password,
+                                      line_prefix=prefix, print_fn=emit)
+
+        actual = _read_bloom_columns(table)
+        missing = set(target) - actual
+        if missing:
+            emit(f"    {prefix}bloom filter did NOT take effect for {sorted(missing)}; "
+                 f"table now has {sorted(actual)}")
+            return []
+        emit(f"    {prefix}bloom filter set on {', '.join(new_columns)} "
+             f"({_format_duration(time.time() - t_start)})")
+        return new_columns
+
+    def _build_for_table(table, spec):
+        prefix = f"[{table}] "
+        table_created = {"bitmap": [], "bloomfilter": []}
+
+        if spec.get("bloomfilter"):
+            try:
+                table_created["bloomfilter"] = _build_bloom_for_table(
+                    table, spec["bloomfilter"], prefix)
+            except Exception as e:
+                emit(f"    {prefix}bloom filter step failed: {e}")
+
+        for field in spec.get("bitmap", []):
+            index_name, statement = _sr_bitmap_statement(database, table, field)
+            emit(f"  {prefix}Building {index_name}")
+            t_start = time.time()
+
+            _sr_wait_for_active_alter(port, database, table, password,
+                                      line_prefix=prefix, print_fn=emit)
+
+            success, stderr = _sr_exec(port, database, statement, password)
+            if not success:
+                emit(f"    {prefix}failed to submit: {stderr}")
+                continue
+
+            rows = _sr_alter_column_rows(port, database, password)
+            job_ids = [int(r[0]) for r in rows if len(r) >= 12 and r[1] == table]
+            if not job_ids:
+                emit(f"    {prefix}submitted but no alter job visible; skipping wait")
+                table_created["bitmap"].append(field)
+                continue
+            job_id = max(job_ids)
+
+            state, msg = _sr_poll_alter_job(port, database, job_id, password,
+                                            line_prefix=prefix, print_fn=emit)
+            duration = time.time() - t_start
+            if state == "FINISHED":
+                emit(f"    {prefix}built {index_name} ({_format_duration(duration)})")
+                table_created["bitmap"].append(field)
+            else:
+                emit(f"    {prefix}alter job {job_id} ended in state {state}: {msg}")
+        return table_created
+
+    total_indexes = sum(len(v["bitmap"]) + len(v["bloomfilter"]) for v in plan.values())
+    n_bitmap = sum(len(v["bitmap"]) for v in plan.values())
+    print()
+    print(f"  Building {total_indexes} index(es) across {len(plan)} table(s) "
+          f"({n_bitmap} bitmap, {total_indexes - n_bitmap} bloom filter) — "
+          f"tables run in parallel, indexes within a table serially.")
+    print()
+
+    created = {}
+    with ThreadPoolExecutor(max_workers=len(plan)) as pool:
+        futures = {pool.submit(_build_for_table, t, spec): t for t, spec in plan.items()}
+        for fut in as_completed(futures):
+            table = futures[fut]
+            try:
+                result = fut.result()
+            except Exception as e:
+                emit(f"  [{table}] worker failed: {e}")
+                continue
+            if result["bitmap"] or result["bloomfilter"]:
+                created[table] = result
+
+    return created
+
+
 def _interactive_sr_indexes(source, platform_config, password):
     """Interactive StarRocks index creation (bloom filter by default, BITMAP on request).
 
     Returns {table: {'bitmap': [...], 'bloomfilter': [...]}} for config persistence.
     """
     from social_data_pipeline.setup.utils import ask_multi_select, ask_list, section_header
-    import re
-    import time
 
     section_header("StarRocks Index Creation")
 
@@ -4257,14 +4427,7 @@ def _interactive_sr_indexes(source, platform_config, password):
     from social_data_pipeline.core.config import sr_index_types_for_column
 
     pairs = [(t, f) for t in sorted(plan) for f in plan[t]]
-    supported = {(t, f): sr_index_types_for_column(column_types.get((t, f), ''))
-                 for t, f in pairs}
-
-    unindexable = [p for p in pairs if not any(supported[p].values())]
-    forced_bitmap = [p for p in pairs
-                     if p not in unindexable and not supported[p]['bloomfilter']]
-    choosable = [p for p in pairs
-                 if p not in unindexable and p not in forced_bitmap]
+    unindexable, forced_bitmap, choosable = _sr_classify_pairs(pairs, column_types, sr_index_types_for_column)
 
     section_header("Index Type")
     print("  Indexes default to BLOOM FILTER: small on disk, accelerates = and IN.")
@@ -4307,153 +4470,12 @@ def _interactive_sr_indexes(source, platform_config, password):
         spec["bitmap" if (t, f) in bitmap_pairs else "bloomfilter"].append(f)
     plan = typed_plan
 
-    # --- Execute phase: parallel across tables; serial within each table ---
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    print_lock = threading.Lock()
-
-    def emit(msg):
-        with print_lock:
-            print(msg, flush=True)
-
-    def _read_bloom_columns(table):
-        """Current bloom_filter_columns for a table, parsed from SHOW CREATE TABLE.
-
-        Raises on an unreadable result: the ALTER replaces the whole list, so a
-        false "nothing set" would silently drop every existing bloom column.
-        """
-        rows = _sr_query(port, database, f"SHOW CREATE TABLE `{database}`.`{table}`", password)
-        if not rows or len(rows[0]) < 2:
-            raise RuntimeError(f"could not read SHOW CREATE TABLE for {table}")
-        match = re.search(r'"bloom_filter_columns"\s*=\s*"([^"]*)"', rows[0][1], re.IGNORECASE)
-        if not match:
-            return set()
-        return {c.strip() for c in match.group(1).split(",") if c.strip()}
-
-    def _build_bloom_for_table(table, fields, prefix):
-        """Add bloom filter columns in one ALTER. Returns the columns added."""
-        existing = _read_bloom_columns(table)
-        new_columns = [f for f in fields if f not in existing]
-        if not new_columns:
-            emit(f"    {prefix}bloom filter already covers {', '.join(fields)}")
-            return []
-
-        target = sorted(existing | set(new_columns))
-        emit(f"  {prefix}Setting bloom filter columns: {', '.join(target)}")
-        t_start = time.time()
-
-        _sr_wait_for_active_alter(port, database, table, password,
-                                  line_prefix=prefix, print_fn=emit)
-
-        statement = (f'ALTER TABLE `{database}`.`{table}` '
-                     f'SET ("bloom_filter_columns" = "{",".join(target)}")')
-        success, stderr = _sr_exec(port, database, statement, password)
-        if not success:
-            emit(f"    {prefix}failed to submit bloom filter change: {stderr}")
-            return []
-
-        # Progress polling is best-effort: it is unverified which SHOW ALTER
-        # view reports a bloom filter change, so an absent job means "no
-        # information", never "done". The property re-read below decides.
-        rows = _sr_alter_column_rows(port, database, password)
-        job_ids = [int(r[0]) for r in rows if len(r) >= 12 and r[1] == table]
-        if job_ids:
-            _sr_poll_alter_job(port, database, max(job_ids), password,
-                               line_prefix=prefix, print_fn=emit)
-        else:
-            _sr_wait_for_active_alter(port, database, table, password,
-                                      line_prefix=prefix, print_fn=emit)
-
-        actual = _read_bloom_columns(table)
-        missing = set(target) - actual
-        if missing:
-            emit(f"    {prefix}bloom filter did NOT take effect for {sorted(missing)}; "
-                 f"table now has {sorted(actual)}")
-            return []
-        emit(f"    {prefix}bloom filter set on {', '.join(new_columns)} "
-             f"({_format_duration(time.time() - t_start)})")
-        return new_columns
-
-    def _build_for_table(table, spec):
-        prefix = f"[{table}] "
-        table_created = {"bitmap": [], "bloomfilter": []}
-
-        if spec.get("bloomfilter"):
-            try:
-                table_created["bloomfilter"] = _build_bloom_for_table(
-                    table, spec["bloomfilter"], prefix)
-            except Exception as e:
-                emit(f"    {prefix}bloom filter step failed: {e}")
-
-        for field in spec.get("bitmap", []):
-            index_name = f"idx_{table}_{field}"
-            emit(f"  {prefix}Building {index_name}")
-            t_start = time.time()
-
-            _sr_wait_for_active_alter(port, database, table, password,
-                                      line_prefix=prefix, print_fn=emit)
-
-            statement = f"CREATE INDEX `{index_name}` ON `{database}`.`{table}` (`{field}`) USING BITMAP"
-            success, stderr = _sr_exec(port, database, statement, password)
-            if not success:
-                emit(f"    {prefix}failed to submit: {stderr}")
-                continue
-
-            rows = _sr_alter_column_rows(port, database, password)
-            job_ids = [int(r[0]) for r in rows if len(r) >= 12 and r[1] == table]
-            if not job_ids:
-                emit(f"    {prefix}submitted but no alter job visible; skipping wait")
-                table_created["bitmap"].append(field)
-                continue
-            job_id = max(job_ids)
-
-            state, msg = _sr_poll_alter_job(port, database, job_id, password,
-                                            line_prefix=prefix, print_fn=emit)
-            duration = time.time() - t_start
-            if state == "FINISHED":
-                emit(f"    {prefix}built {index_name} ({_format_duration(duration)})")
-                table_created["bitmap"].append(field)
-            else:
-                emit(f"    {prefix}alter job {job_id} ended in state {state}: {msg}")
-        return table_created
-
-    total_indexes = sum(len(v["bitmap"]) + len(v["bloomfilter"]) for v in plan.values())
-    n_bitmap = sum(len(v["bitmap"]) for v in plan.values())
-    print()
-    print(f"  Building {total_indexes} index(es) across {len(plan)} table(s) "
-          f"({n_bitmap} bitmap, {total_indexes - n_bitmap} bloom filter) — "
-          f"tables run in parallel, indexes within a table serially.")
-    print()
-
-    created = {}
-    with ThreadPoolExecutor(max_workers=len(plan)) as pool:
-        futures = {pool.submit(_build_for_table, t, spec): t for t, spec in plan.items()}
-        for fut in as_completed(futures):
-            table = futures[fut]
-            try:
-                result = fut.result()
-            except Exception as e:
-                emit(f"  [{table}] worker failed: {e}")
-                continue
-            if result["bitmap"] or result["bloomfilter"]:
-                created[table] = result
-
-    return created
+    return _sr_execute_index_plan(port, database, plan, password)
 
 
-def _interactive_pg_indexes(source, platform_config, password):
-    """Interactive PostgreSQL index creation. Returns {table: [new_fields]} for config persistence."""
-    from social_data_pipeline.setup.utils import ask_multi_select, ask_list, section_header
-    import time
+def _pg_parallel_index_workers(source):
+    """`processing.parallel_index_workers` of the source's postgres.yaml, 8 when it has none or cannot be read."""
     import yaml
-
-    section_header("PostgreSQL Index Creation")
-
-    db_yaml = _load_db_yaml("postgres")
-    port = int(db_yaml.get("port", 5432))
-    db_name = db_yaml.get("name", "datasets")
-    schema = platform_config.get("db_schema", source)
 
     # Load parallel_index_workers from source postgres config if available
     source_pg_path = CONFIG_DIR / "sources" / source / "postgres.yaml"
@@ -4464,6 +4486,54 @@ def _interactive_pg_indexes(source, platform_config, password):
             parallel_workers = source_pg.get("processing", {}).get("parallel_index_workers", 8)
         except Exception:
             pass
+    return parallel_workers
+
+
+def _pg_index_statement(schema, table, field, parallel_workers):
+    """(index name, the psql statement) that creates one PostgreSQL index, with the session settings for a parallel build."""
+    index_name = f"idx_{table}_{field}"
+    # Set session params for parallel index builds, then create index
+    statement = (
+        f"SET maintenance_work_mem = '2GB'; "
+        f"SET max_parallel_maintenance_workers = {parallel_workers}; "
+        f"CREATE INDEX IF NOT EXISTS {index_name} ON {schema}.{table} ({field});"
+    )
+    return index_name, statement
+
+
+def _pg_create_table_indexes(port, db_name, schema, table, fields, parallel_workers, password):
+    """Create one PostgreSQL index per field of a table, one after the other, printing a line for each. Returns the fields whose index was created."""
+    import time
+
+    table_created = []
+    for field in fields:
+        index_name, statement = _pg_index_statement(schema, table, field, parallel_workers)
+        print(f"  Creating index: {index_name} ...", end=" ", flush=True)
+        t_start = time.time()
+
+        success, stderr = _psql_exec(port, db_name, statement, password)
+        duration = time.time() - t_start
+
+        if success:
+            print(f"done ({_format_duration(duration)})")
+            table_created.append(field)
+        else:
+            print(f"failed: {stderr}")
+    return table_created
+
+
+def _interactive_pg_indexes(source, platform_config, password):
+    """Interactive PostgreSQL index creation. Returns {table: [new_fields]} for config persistence."""
+    from social_data_pipeline.setup.utils import ask_multi_select, ask_list, section_header
+
+    section_header("PostgreSQL Index Creation")
+
+    db_yaml = _load_db_yaml("postgres")
+    port = int(db_yaml.get("port", 5432))
+    db_name = db_yaml.get("name", "datasets")
+    schema = platform_config.get("db_schema", source)
+
+    parallel_workers = _pg_parallel_index_workers(source)
 
     try:
         rows = _psql_query(port, db_name,
@@ -4518,26 +4588,7 @@ def _interactive_pg_indexes(source, platform_config, password):
         if not fields:
             continue
 
-        table_created = []
-        for field in fields:
-            index_name = f"idx_{table}_{field}"
-            print(f"  Creating index: {index_name} ...", end=" ", flush=True)
-            t_start = time.time()
-
-            # Set session params for parallel index builds, then create index
-            statement = (
-                f"SET maintenance_work_mem = '2GB'; "
-                f"SET max_parallel_maintenance_workers = {parallel_workers}; "
-                f"CREATE INDEX IF NOT EXISTS {index_name} ON {schema}.{table} ({field});"
-            )
-            success, stderr = _psql_exec(port, db_name, statement, password)
-            duration = time.time() - t_start
-
-            if success:
-                print(f"done ({_format_duration(duration)})")
-                table_created.append(field)
-            else:
-                print(f"failed: {stderr}")
+        table_created = _pg_create_table_indexes(port, db_name, schema, table, fields, parallel_workers, password)
 
         if table_created:
             created[table] = table_created
@@ -4545,11 +4596,80 @@ def _interactive_pg_indexes(source, platform_config, password):
     return created
 
 
+def _mongo_index_db_name(source, platform_config, dt):
+    """The MongoDB database of a data type of a source, by the same rule as the orchestrator."""
+    # Determine platform string for db name resolution
+    if source == "reddit":
+        platform = "reddit"
+    else:
+        platform = f"custom/{source}"
+
+    # Resolve db names per data_type using the same logic as the orchestrator
+    if 'mongo_db_name' in platform_config:
+        return platform_config['mongo_db_name']
+    template = platform_config.get('mongo_db_name_template', '{platform}_{data_type}')
+    safe_platform = platform.replace('/', '_')
+    return template.format(platform=safe_platform, data_type=dt)
+
+
+def _mongo_index_collections(db_name, dt, password):
+    """The collections of a data type in its MongoDB database, sorted: from _sdp_metadata when it has entries, else every collection whose name does not start with '_'. Raises when mongosh fails."""
+    import json
+
+    # Query _sdp_metadata for collections belonging to this data_type
+    script = (
+        f"use('{db_name}'); "
+        f"let meta = db.getCollection('_sdp_metadata'); "
+        f"let count = meta.estimatedDocumentCount(); "
+        f"if (count > 0) {{ "
+        f"  let docs = meta.distinct('collection', {{data_type: '{dt}'}}); "
+        f"  print(JSON.stringify(docs)); "
+        f"}} else {{ "
+        f"  let colls = db.getCollectionNames().filter(n => !n.startsWith('_')); "
+        f"  print(JSON.stringify(colls)); "
+        f"}}"
+    )
+    output = _mongosh_eval(0, script, password)  # port unused, goes through docker exec
+    collections = json.loads(output) if output else []
+    collections.sort()
+    return collections
+
+
+def _mongo_index_script(db_name, coll, field):
+    """The mongosh script that creates the ascending index `<field>_1` on one collection."""
+    return (
+        f"use('{db_name}'); "
+        f"db.getCollection('{coll}').createIndex("
+        f"{{'{field}': 1}}, {{name: '{field}_1'}});"
+    )
+
+
+def _mongo_create_data_type_indexes(db_name, collections, fields, password):
+    """Create the index `<field>_1` of each field on every collection of a data type, printing a line per field. Returns the fields, each counted as created whatever its collections answered (the terminal's rule)."""
+    import time
+
+    n_colls = len(collections)
+    dt_created = []
+    for field in fields:
+        print(f"  Creating index {field}_1 on {n_colls} collections...")
+        t_start = time.time()
+        success = 0
+        for coll in collections:
+            try:
+                _mongosh_eval(0, _mongo_index_script(db_name, coll, field), password)
+                success += 1
+            except Exception as e:
+                print(f"    Warning: Failed on {coll}: {e}")
+        duration = time.time() - t_start
+        print(f"  Done: {field}_1 ({success}/{n_colls} collections, {_format_duration(duration)})")
+        dt_created.append(field)
+    return dt_created
+
+
 def _interactive_mongo_indexes(source, platform_config, password):
     """Interactive MongoDB index creation. Returns {data_type: [new_fields]} for config persistence."""
     from social_data_pipeline.setup.utils import ask_multi_select, ask_list, section_header
     import json
-    import time
 
     section_header("MongoDB Index Creation")
 
@@ -4558,19 +4678,8 @@ def _interactive_mongo_indexes(source, platform_config, password):
         print("\n  No data types configured.\n")
         return {}
 
-    # Determine platform string for db name resolution
-    if source == "reddit":
-        platform = "reddit"
-    else:
-        platform = f"custom/{source}"
-
-    # Resolve db names per data_type using the same logic as the orchestrator
     def get_db_name(dt):
-        if 'mongo_db_name' in platform_config:
-            return platform_config['mongo_db_name']
-        template = platform_config.get('mongo_db_name_template', '{platform}_{data_type}')
-        safe_platform = platform.replace('/', '_')
-        return template.format(platform=safe_platform, data_type=dt)
+        return _mongo_index_db_name(source, platform_config, dt)
 
     # Discover collections per data_type via mongosh
     all_dt_collections = {}  # {data_type: {db_name, collections}}
@@ -4578,22 +4687,7 @@ def _interactive_mongo_indexes(source, platform_config, password):
     for dt in data_types:
         db_name = get_db_name(dt)
         try:
-            # Query _sdp_metadata for collections belonging to this data_type
-            script = (
-                f"use('{db_name}'); "
-                f"let meta = db.getCollection('_sdp_metadata'); "
-                f"let count = meta.estimatedDocumentCount(); "
-                f"if (count > 0) {{ "
-                f"  let docs = meta.distinct('collection', {{data_type: '{dt}'}}); "
-                f"  print(JSON.stringify(docs)); "
-                f"}} else {{ "
-                f"  let colls = db.getCollectionNames().filter(n => !n.startsWith('_')); "
-                f"  print(JSON.stringify(colls)); "
-                f"}}"
-            )
-            output = _mongosh_eval(0, script, password)  # port unused, goes through docker exec
-            collections = json.loads(output) if output else []
-            collections.sort()
+            collections = _mongo_index_collections(db_name, dt, password)
         except Exception as e:
             print(f"\n  Could not connect to MongoDB: {e}")
             print("  Is it running? (sdp db start)\n")
@@ -4654,25 +4748,7 @@ def _interactive_mongo_indexes(source, platform_config, password):
         if not fields:
             continue
 
-        dt_created = []
-        for field in fields:
-            print(f"  Creating index {field}_1 on {n_colls} collections...")
-            t_start = time.time()
-            success = 0
-            for coll in collections:
-                try:
-                    script = (
-                        f"use('{db_name}'); "
-                        f"db.getCollection('{coll}').createIndex("
-                        f"{{'{field}': 1}}, {{name: '{field}_1'}});"
-                    )
-                    _mongosh_eval(0, script, password)
-                    success += 1
-                except Exception as e:
-                    print(f"    Warning: Failed on {coll}: {e}")
-            duration = time.time() - t_start
-            print(f"  Done: {field}_1 ({success}/{n_colls} collections, {_format_duration(duration)})")
-            dt_created.append(field)
+        dt_created = _mongo_create_data_type_indexes(db_name, collections, fields, password)
 
         if dt_created:
             created[dt] = dt_created
@@ -4747,6 +4823,18 @@ def _persist_indexes_to_config(source, pg_created, mongo_created, sr_created=Non
     print(f"  Updated: {platform_path}")
 
 
+def _index_databases_of(source_profiles):
+    """The databases a source has profiles for, in the order postgres, mongo, starrocks."""
+    source_dbs = []
+    if any(p in source_profiles for p in ("postgres_ingest", "postgres_ml")):
+        source_dbs.append("postgres")
+    if "mongo_ingest" in source_profiles:
+        source_dbs.append("mongo")
+    if any(p in source_profiles for p in ("sr_ingest", "sr_ml")):
+        source_dbs.append("starrocks")
+    return source_dbs
+
+
 def cmd_db_create_indexes(args):
     """Interactively create database indexes for a source."""
     from social_data_pipeline.setup.utils import resolve_source, load_source_config, ask_choice, ask_bool
@@ -4765,13 +4853,7 @@ def cmd_db_create_indexes(args):
     # Filter to DBs that the source actually uses (has profile config for)
     from social_data_pipeline.setup.utils import get_source_profiles
     source_profiles = get_source_profiles(source)
-    source_dbs = []
-    if any(p in source_profiles for p in ("postgres_ingest", "postgres_ml")):
-        source_dbs.append("postgres")
-    if "mongo_ingest" in source_profiles:
-        source_dbs.append("mongo")
-    if any(p in source_profiles for p in ("sr_ingest", "sr_ml")):
-        source_dbs.append("starrocks")
+    source_dbs = _index_databases_of(source_profiles)
     available = [db for db in configured if db in source_dbs]
 
     if not available:
@@ -4834,6 +4916,419 @@ def cmd_db_create_indexes(args):
         _persist_indexes_to_config(source, pg_created, mongo_created, sr_created)
 
     print()
+    return 0
+
+
+# ============================================================================
+# sdp db index-targets, and create-indexes without a terminal
+# ============================================================================
+
+# How many tables (or MongoDB data types) and columns per table are read and returned at most.
+INDEX_TARGETS_TABLES_MAX = 50
+INDEX_TARGETS_COLUMNS_MAX = 200
+# The longest text kept of a column type or of an existing index's name.
+_INDEX_TEXT_MAX_CHARS = 128
+# A table, column or schema name the web UI can pick: the registry's plain-name pattern, written out here because this module does not import the control package.
+_INDEX_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}"
+_INDEX_DATABASE_LABELS = {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}
+_INDEX_AUTH_FLAGS = {"postgres": "POSTGRES_AUTH_ENABLED", "mongo": "MONGO_AUTH_ENABLED", "starrocks": "STARROCKS_AUTH_ENABLED"}
+
+_INDEX_UNKNOWN_DATABASE = "unknown database"
+_INDEX_CONFIG_NOT_READABLE = "the source's platform.yaml cannot be read"
+_INDEX_DATABASE_NOT_CONFIGURED = "the database is not configured: run python sdp.py db setup"
+_INDEX_DATABASE_NOT_USED = "the source has no profile for this database"
+_INDEX_SCHEMA_NOT_VALID = "the source's db_schema is not a plain name"
+_INDEX_PORT_NOT_VALID = "the database's port in config/db is not a number"
+_INDEX_REQUEST_NOT_VALID = "the index request is not a list of tables with their columns"
+_INDEX_REQUEST_EMPTY = "the index request names no table"
+_INDEX_TABLE_TWICE = "the index request names a table twice"
+_INDEX_NO_TABLE = "a table of the index request is not in the database"
+_INDEX_NO_COLUMN = "a column of the index request is not a column of its table"
+_INDEX_BITMAP_NOT_HERE = "a bitmap choice is accepted only with starrocks"
+_INDEX_BITMAP_NOT_A_COLUMN = "a bitmap column is not one of the columns to index"
+
+
+class _IndexReadError(Exception):
+    """The database could not be asked for its tables: `message` is the line the terminal prints for it."""
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
+
+
+def _is_index_name(value):
+    import re
+
+    return isinstance(value, str) and re.fullmatch(_INDEX_NAME_PATTERN, value) is not None and value.strip(".") != ""
+
+
+def _index_text(value):
+    """A text read from the database, display-safe and at most _INDEX_TEXT_MAX_CHARS characters."""
+    text = _display_safe(str(value))
+    return text if len(text) <= _INDEX_TEXT_MAX_CHARS else text[:_INDEX_TEXT_MAX_CHARS] + "..."
+
+
+def _index_context(source, db, admin_password, _ask_password):
+    """(platform config, password) for an index read or build of `db` for `source`, checked as `db create-indexes` checks it: the source's config readable, the database configured and used by the source. The password is the admin password when the database has authentication on (`_resolve_admin_password`), else None. Raises ActionError."""
+    from social_data_pipeline.setup.utils import get_source_profiles, read_source_config
+
+    if not _is_one_path_component(source):
+        raise ActionError(_SOURCE_NAME_NOT_VALID)
+    if db not in _INDEX_DATABASE_LABELS:
+        raise ActionError(_INDEX_UNKNOWN_DATABASE)
+    try:
+        config, warning = read_source_config(source)
+    except Exception:
+        raise ActionError(_INDEX_CONFIG_NOT_READABLE) from None
+    if warning is not None or not isinstance(config, dict):
+        raise ActionError(_INDEX_CONFIG_NOT_READABLE)
+    if db not in _get_configured_db_services():
+        raise ActionError(_INDEX_DATABASE_NOT_CONFIGURED)
+    if db not in _index_databases_of(get_source_profiles(source)):
+        raise ActionError(_INDEX_DATABASE_NOT_USED)
+    password = None
+    if load_env().get(_INDEX_AUTH_FLAGS[db]) == "true":
+        password = _resolve_admin_password(admin_password, _ask_password)
+    return config, password
+
+
+def _index_port(name, default):
+    try:
+        return int(_load_db_yaml(name).get("port", default))
+    except (TypeError, ValueError, OverflowError):
+        raise ActionError(_INDEX_PORT_NOT_VALID) from None
+
+
+def _index_rows_by_table(rows, width):
+    """Rows of a query whose first value is a table name, grouped by it (rows shorter than `width` dropped)."""
+    grouped = {}
+    for row in rows:
+        if len(row) >= width:
+            grouped.setdefault(row[0], []).append(row)
+    return grouped
+
+
+def _index_table_entry(name, columns, skipped):
+    """One table of the targets: its pickable columns (plain names, at most INDEX_TARGETS_COLUMNS_MAX), counting the others in `skipped`."""
+    picked = []
+    for column_name, column_type in columns:
+        if not _is_index_name(column_name) or len(picked) >= INDEX_TARGETS_COLUMNS_MAX or any(c["name"] == column_name for c in picked):
+            skipped[0] += 1
+            continue
+        picked.append({"name": column_name, "type": column_type})
+    return {"name": name, "columns": picked, "indexes": None, "bloom_filter": None, "collections": None, "db_name": None}
+
+
+def _pickable_tables(names, skipped):
+    """The plain names among `names`, at most INDEX_TARGETS_TABLES_MAX; (names, truncated). The others are counted in `skipped`."""
+    tables, truncated = [], False
+    for name in names:
+        if not _is_index_name(name):
+            skipped[0] += 1
+        elif len(tables) >= INDEX_TARGETS_TABLES_MAX:
+            truncated = True
+        else:
+            tables.append(name)
+    return tables, truncated
+
+
+def _read_index_targets(source, platform_config, db, password):
+    """What `db create-indexes` offers for `db`: the tables (for MongoDB the data types) with their columns and existing indexes. Column types are kept as read (lowercased, for StarRocks's choice of index type); a MongoDB data type keeps its database and collections in `db_name` and `collection_names`. Raises _IndexReadError when the database cannot be asked for its tables, ActionError for a config this cannot use."""
+    skipped_tables, skipped_columns = [0], [0]
+    result = {"scope": None, "tables": [], "truncated": False, "parallel_workers": None}
+
+    if db == "postgres":
+        db_yaml = _load_db_yaml("postgres")
+        port = _index_port("postgres", 5432)
+        db_name = db_yaml.get("name", "datasets")
+        schema = platform_config.get("db_schema", source)
+        if not _is_index_name(schema):
+            raise ActionError(_INDEX_SCHEMA_NOT_VALID)
+        result["scope"] = schema
+        result["parallel_workers"] = _pg_parallel_index_workers(source)
+        try:
+            rows = _psql_query(port, db_name,
+                f"SELECT table_name FROM information_schema.tables "
+                f"WHERE table_schema = '{schema}' AND table_type = 'BASE TABLE' ORDER BY table_name",
+                password)
+        except Exception as e:
+            raise _IndexReadError(f"Could not connect to PostgreSQL: {e}") from None
+        tables, result["truncated"] = _pickable_tables([r[0] for r in rows], skipped_tables)
+        try:
+            columns = _index_rows_by_table(_psql_query(port, db_name,
+                f"SELECT table_name, column_name, data_type FROM information_schema.columns "
+                f"WHERE table_schema = '{schema}' ORDER BY table_name, ordinal_position", password), 3)
+        except Exception:
+            columns = {}
+        try:
+            indexes = _index_rows_by_table(_psql_query(port, db_name,
+                f"SELECT tablename, indexname FROM pg_indexes "
+                f"WHERE schemaname = '{schema}' ORDER BY tablename, indexname", password), 2)
+        except Exception:
+            indexes = None
+        for table in tables:
+            entry = _index_table_entry(table, [(r[1], r[2].strip().lower()) for r in columns.get(table, [])], skipped_columns)
+            entry["indexes"] = None if indexes is None else [_index_text(r[1]) for r in indexes.get(table, [])]
+            result["tables"].append(entry)
+
+    elif db == "starrocks":
+        port = _index_port("starrocks", 9030)
+        database = source  # database-per-source
+        if not _is_index_name(database):
+            raise ActionError(_SOURCE_NAME_NOT_VALID)
+        result["scope"] = database
+        try:
+            rows = _sr_query(port, database,
+                "SELECT table_name FROM information_schema.tables "
+                f"WHERE table_schema = '{database}' AND table_type = 'BASE TABLE' "
+                "ORDER BY table_name",
+                password)
+        except Exception as e:
+            raise _IndexReadError(f"Could not connect to StarRocks: {e}") from None
+        tables, result["truncated"] = _pickable_tables([r[0] for r in rows], skipped_tables)
+        try:
+            columns = _index_rows_by_table(_sr_query(port, database,
+                f"SELECT table_name, column_name, data_type FROM information_schema.columns "
+                f"WHERE table_schema = '{database}' ORDER BY table_name, ordinal_position", password), 3)
+        except Exception:
+            columns = {}
+        indexes = blooms = None
+        if tables:
+            # One mysql call for all tables of each kind: a call through `docker compose exec` takes a moment, and a read has a time limit.
+            try:
+                indexes = _index_rows_by_table(_sr_query(port, database, "; ".join(f"SHOW INDEXES FROM `{database}`.`{t}`" for t in tables), password), 3)
+            except Exception:
+                indexes = None
+            try:
+                blooms = {r[0]: _sr_bloom_columns_of(r[1].replace("\\n", "\n")) for r in _sr_query(port, database, "; ".join(f"SHOW CREATE TABLE `{database}`.`{t}`" for t in tables), password) if len(r) >= 2}
+            except Exception:
+                blooms = None
+        for table in tables:
+            entry = _index_table_entry(table, [(r[1], r[2].strip().lower()) for r in columns.get(table, [])], skipped_columns)
+            entry["indexes"] = None if indexes is None else [_index_text(r[2]) for r in indexes.get(table, [])]
+            entry["bloom_filter"] = None if blooms is None or table not in blooms else sorted(blooms[table])
+            result["tables"].append(entry)
+
+    else:
+        import json
+
+        data_types = platform_config.get("data_types", [])
+        if not isinstance(data_types, list):
+            data_types = []
+        names, result["truncated"] = _pickable_tables([dt for dt in data_types if isinstance(dt, str)], skipped_tables)
+        mandatory = platform_config.get("mandatory_fields", [])
+        configured = platform_config.get("fields", {})
+        for dt in names:
+            try:
+                db_name = _mongo_index_db_name(source, platform_config, dt)
+            except Exception:
+                db_name = None
+            if not _is_index_name(db_name):
+                skipped_tables[0] += 1
+                continue
+            try:
+                collections = _mongo_index_collections(db_name, dt, password)
+            except Exception as e:
+                raise _IndexReadError(f"Could not connect to MongoDB: {e}") from None
+            collections = [c for c in collections if isinstance(c, str)]
+            if not collections:
+                continue
+            # Documents have no fixed columns: the fields offered are the source's configured fields of the data type and the top-level keys of one document of its first collection.
+            fields = [f for f in (mandatory if isinstance(mandatory, list) else []) if isinstance(f, str)]
+            dt_fields = configured.get(dt, []) if isinstance(configured, dict) else []
+            fields += [f for f in (dt_fields if isinstance(dt_fields, list) else []) if isinstance(f, str)]
+            existing = None
+            first = collections[0]
+            if _is_index_name(first):
+                try:
+                    output = _mongosh_eval(0, (
+                        f"use('{db_name}'); "
+                        f"let c = db.getCollection('{first}'); "
+                        f"let names = c.getIndexes().map(i => i.name).filter(n => n !== '_id_'); "
+                        f"let doc = c.findOne(); "
+                        f"print(JSON.stringify({{indexes: names, keys: doc ? Object.keys(doc) : []}}));"
+                    ), password)
+                    sample = json.loads(output) if output else {}
+                    existing = [_index_text(n) for n in sample.get("indexes", []) if isinstance(n, str)]
+                    fields += [k for k in sample.get("keys", []) if isinstance(k, str)]
+                except Exception:
+                    existing = None
+            entry = _index_table_entry(dt, [(f, "") for f in fields], skipped_columns)
+            entry["indexes"] = existing
+            entry["collections"] = len(collections)
+            entry["db_name"] = db_name
+            entry["collection_names"] = collections
+            result["tables"].append(entry)
+
+    result["skipped_tables"] = skipped_tables[0]
+    result["skipped_columns"] = skipped_columns[0]
+    return result
+
+
+def get_db_index_targets(*, source, db, admin_password=None, _ask_password=None):
+    """What `db create-indexes --source <source>` offers for one database, for a page that picks the columns. Prints nothing and returns `source`, `database`, `scope` (the PostgreSQL schema or the StarRocks database; None for MongoDB), `parallel_workers` (PostgreSQL's parallel index workers, else None), `truncated` (more than INDEX_TARGETS_TABLES_MAX tables), `skipped_tables` and `skipped_columns` (those whose name is not a plain name, or past the bounds), and `tables`: for each table (for MongoDB each data type) its `name`, `columns` (each with `name`, `type` as the database names it, `bloom` and `bitmap`: for StarRocks whether the type takes a bloom filter or a BITMAP index, else None), `indexes` (the existing indexes' names; None when they could not be read), `bloom_filter` (StarRocks: the bloom filter columns set now), `collections` and `db_name` (MongoDB: the number of collections of the data type and its database). A MongoDB data type's columns are its configured fields and the top-level keys of one document of its first collection. Every text read from the database is display-safe; no password or config value other than these is returned. Raises ActionError for a malformed source name, an unknown database, a source config that cannot be read, a database not configured or not used by the source, a missing admin password where authentication is on, and when the database cannot be asked (not running)."""
+    from social_data_pipeline.core.config import sr_index_types_for_column
+
+    platform_config, password = _index_context(source, db, admin_password, _ask_password)
+    try:
+        targets = _read_index_targets(source, platform_config, db, password)
+    except _IndexReadError as e:
+        raise ActionError(_index_text(e.message.splitlines()[0] if e.message.splitlines() else e.message)) from None
+    tables = []
+    for table in targets["tables"]:
+        columns = []
+        for column in table["columns"]:
+            types = sr_index_types_for_column(column["type"]) if db == "starrocks" else None
+            columns.append({"name": column["name"], "type": _index_text(column["type"]), "bloom": types["bloomfilter"] if types else None, "bitmap": types["bitmap"] if types else None})
+        tables.append({"name": table["name"], "columns": columns, "indexes": table["indexes"], "bloom_filter": table["bloom_filter"], "collections": table["collections"], "db_name": table["db_name"]})
+    return {
+        "source": source, "database": db, "scope": targets["scope"], "parallel_workers": targets["parallel_workers"] if isinstance(targets["parallel_workers"], int) and not isinstance(targets["parallel_workers"], bool) else None,
+        "truncated": targets["truncated"], "skipped_tables": targets["skipped_tables"], "skipped_columns": targets["skipped_columns"], "tables": tables,
+    }
+
+
+def print_db_index_targets(data):
+    """Print the data of `get_db_index_targets`."""
+    label = _INDEX_DATABASE_LABELS.get(data["database"], data["database"])
+    scope = f" ({'schema' if data['database'] == 'postgres' else 'database'} {data['scope']})" if data["scope"] else ""
+    print(f"\n  {label}{scope}, source {data['source']}")
+    if not data["tables"]:
+        print("\n  No tables found.\n")
+        return
+    for table in data["tables"]:
+        extra = f" ({table['collections']} collections in {table['db_name']})" if table["collections"] is not None else ""
+        print(f"\n  --- {table['name']}{extra} ---")
+        names = [c["name"] + (f" ({c['type']})" if c["type"] else "") for c in table["columns"]]
+        print(f"  Columns: {', '.join(names) if names else '(none)'}")
+        if table["indexes"] is None:
+            print("  Existing indexes: (could not query)")
+        else:
+            print(f"  Existing indexes: {', '.join(table['indexes']) if table['indexes'] else '(none)'}")
+        if table["bloom_filter"]:
+            print(f"  Bloom filter columns: {', '.join(table['bloom_filter'])}")
+    if data["truncated"] or data["skipped_tables"] or data["skipped_columns"]:
+        print(f"\n  Not shown: {data['skipped_tables']} table(s) and {data['skipped_columns']} column(s) whose names cannot be picked"
+              + (f"; only the first {INDEX_TARGETS_TABLES_MAX} tables are listed" if data["truncated"] else "") + ".")
+    print()
+
+
+def cmd_db_index_targets(args):
+    """List what `db create-indexes` offers for one database of a source."""
+    try:
+        data = get_db_index_targets(source=args.source, db=args.db, _ask_password=lambda: _prompt_db_password(tag="sdp_db_password"))
+    except ActionError as e:
+        print(f"\n  Error: {e.message}\n")
+        return e.exit_code
+    print_db_index_targets(data)
+    return 0
+
+
+def _checked_index_request(db, indexes):
+    """The index request as [(table, columns, bitmap columns)], its shape checked as the registry checks it (the action can be called without the registry). Raises ActionError."""
+    if not isinstance(indexes, list):
+        raise ActionError(_INDEX_REQUEST_NOT_VALID)
+    if not indexes:
+        raise ActionError(_INDEX_REQUEST_EMPTY)
+    checked, seen = [], set()
+    for item in indexes:
+        if not isinstance(item, dict) or not set(item) <= {"table", "columns", "bitmap"}:
+            raise ActionError(_INDEX_REQUEST_NOT_VALID)
+        table, columns, bitmap = item.get("table"), item.get("columns"), item.get("bitmap", [])
+        if not _is_index_name(table) or not isinstance(columns, list) or not columns or not all(_is_index_name(c) for c in columns) or len(set(columns)) != len(columns):
+            raise ActionError(_INDEX_REQUEST_NOT_VALID)
+        if not isinstance(bitmap, list) or not all(_is_index_name(c) for c in bitmap):
+            raise ActionError(_INDEX_REQUEST_NOT_VALID)
+        if bitmap and db != "starrocks":
+            raise ActionError(_INDEX_BITMAP_NOT_HERE)
+        if not set(bitmap) <= set(columns):
+            raise ActionError(_INDEX_BITMAP_NOT_A_COLUMN)
+        if table in seen:
+            raise ActionError(_INDEX_TABLE_TWICE)
+        seen.add(table)
+        checked.append((table, list(columns), list(bitmap)))
+    return checked
+
+
+def do_db_create_indexes(*, source, database, indexes, save=None, admin_password=None, _ask_password=None):
+    """Create indexes as `db create-indexes --source <source>` does for the same answers, without a terminal: `database` is the one database chosen, `indexes` the tables picked, each `{"table", "columns", "bitmap"}` (StarRocks only: the columns answered as BITMAP; the others get a bloom filter, as there), `save` the answer to "Save new indexes to platform.yaml?" (absent: no). The tables and columns are read from the database again first, and a table or column that is not there now is refused before anything is built. Then the same statements run through `docker compose exec`, in the same order, with the same progress lines, and the same summary. Returns 0, as the command does whether or not each index was built (its lines say). Raises ActionError for what `get_db_index_targets` refuses, a request of the wrong shape, a bitmap choice outside StarRocks, a table named twice, a table or column not in the database, and a database that cannot be asked."""
+    from social_data_pipeline.core.config import sr_index_types_for_column
+
+    platform_config, password = _index_context(source, database, admin_password, _ask_password)
+    requests = _checked_index_request(database, indexes)
+    label = _INDEX_DATABASE_LABELS[database]
+    print(f"\n  {label}: reading the tables of source {source} again", flush=True)
+    try:
+        targets = _read_index_targets(source, platform_config, database, password)
+    except _IndexReadError as e:
+        print(f"\n  {e.message}", flush=True)
+        print(f"  Is it running? (sdp db start{' starrocks' if database == 'starrocks' else ''})\n", flush=True)
+        raise ActionError(f"{label} could not be asked for its tables") from None
+    by_name = {table["name"]: table for table in targets["tables"]}
+    for table, columns, _bitmap in requests:
+        if table not in by_name:
+            print(f"  {table}: not a table of this database now", flush=True)
+            raise ActionError(_INDEX_NO_TABLE)
+        known = {column["name"] for column in by_name[table]["columns"]}
+        missing = [column for column in columns if column not in known]
+        if missing:
+            print(f"  {table}: {', '.join(missing)} not among its columns", flush=True)
+            raise ActionError(_INDEX_NO_COLUMN)
+
+    pg_created, mongo_created, sr_created = {}, {}, {}
+    if database == "postgres":
+        db_yaml = _load_db_yaml("postgres")
+        port, db_name = _index_port("postgres", 5432), db_yaml.get("name", "datasets")
+        print(f"  Schema: {targets['scope']}", flush=True)
+        for table, columns, _bitmap in requests:
+            print(f"\n  --- {table} ---", flush=True)
+            created = _pg_create_table_indexes(port, db_name, targets["scope"], table, columns, targets["parallel_workers"], password)
+            if created:
+                pg_created[table] = created
+    elif database == "mongo":
+        for table, columns, _bitmap in requests:
+            info = by_name[table]
+            print(f"\n  --- {table} ({info['collections']} collections) ---", flush=True)
+            created = _mongo_create_data_type_indexes(info["db_name"], info["collection_names"], columns, password)
+            if created:
+                mongo_created[table] = created
+    else:
+        port = _index_port("starrocks", 9030)
+        print(f"  Database: {targets['scope']}", flush=True)
+        plan = {table: list(columns) for table, columns, _bitmap in requests}
+        bitmap_of = {table: set(bitmap) for table, _columns, bitmap in requests}
+        column_types = {(table, column["name"]): column["type"] for table in plan for column in by_name[table]["columns"]}
+        pairs = [(t, f) for t in sorted(plan) for f in plan[t]]
+        unindexable, forced_bitmap, choosable = _sr_classify_pairs(pairs, column_types, sr_index_types_for_column)
+        for t, f in unindexable:
+            print(f"  Skipping {t}.{f}: StarRocks cannot index "
+                  f"{column_types.get((t, f), '?').upper()} columns with either mechanism.", flush=True)
+        for t, f in forced_bitmap:
+            print(f"  {t}.{f} is {column_types.get((t, f), '?').upper()} — "
+                  f"not bloom-filterable, using BITMAP.", flush=True)
+        for t, f in unindexable:
+            plan[t].remove(f)
+        pairs = [p for p in pairs if p not in unindexable]
+        if pairs:
+            bitmap_pairs = set(forced_bitmap) | {(t, f) for t, f in choosable if f in bitmap_of[t]}
+            typed_plan = {}
+            for t, f in pairs:
+                spec = typed_plan.setdefault(t, {"bitmap": [], "bloomfilter": []})
+                spec["bitmap" if (t, f) in bitmap_pairs else "bloomfilter"].append(f)
+            sr_created = _sr_execute_index_plan(port, targets["scope"], typed_plan, password)
+        else:
+            print("  Nothing left to index.\n", flush=True)
+
+    total = 0
+    for created in (pg_created, mongo_created, sr_created):
+        for value in created.values():
+            total += sum(len(x) for x in value.values()) if isinstance(value, dict) else len(value)
+    if total == 0:
+        print("\n  No new indexes created.\n", flush=True)
+        return 0
+    print(f"\n  Created {total} new index(es).", flush=True)
+    if save is True:
+        _persist_indexes_to_config(source, pg_created, mongo_created, sr_created)
+    print(flush=True)
     return 0
 
 
@@ -6659,6 +7154,11 @@ def build_parser():
     db_indexes_p.add_argument("--source", "-s", dest="source",
                                help="Source name (auto-selects if only one configured)")
     db_indexes_p.set_defaults(func=cmd_db_create_indexes)
+
+    db_targets_p = db_sub.add_parser("index-targets", help="List the tables, columns and existing indexes create-indexes offers for one database")
+    db_targets_p.add_argument("--source", "-s", dest="source", required=True, help="Source name")
+    db_targets_p.add_argument("--db", dest="db", required=True, choices=["postgres", "mongo", "starrocks"], help="Database")
+    db_targets_p.set_defaults(func=cmd_db_index_targets)
 
     # ---- sdp source ----
     source_parser = subparsers.add_parser("source", help="Source management")

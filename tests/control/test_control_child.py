@@ -116,7 +116,8 @@ class TestArguments:
         """Bug class: a verb whose action the child cannot call at all: the walk over the registry builds the smallest valid request of every verb that has an action and requires one recorded call each, so a new action with a parameter the child does not know how to fill fails here."""
         smallest = {"run.start": {"profile": "parse", "source": "ok"}, "run.logs": {"run_id": RUN_ID}, "run.cancel": {"run_id": RUN_ID}, "db.reset": {"db": "postgres"}, "db.unsetup": {"db": "postgres"}, "source.remove": {"name": "ok"}, "db.setup_jobs": {"port": 8050, "result_root": "./r", "max_concurrent": 1, "history_retention": 1},
                     "source.add": {"name": "new", "platform": "custom", "data_types": ["posts"], "dumps_path": "d", "extracted_path": "e", "parsed_path": "p", "output_path": "o", "file_format": "parquet", "profiles": ["parse"]},
-                    "db.setup": {"databases": ["mongo"]}}
+                    "db.setup": {"databases": ["mongo"]},
+                    "db.index_targets": {"source": "ok", "db": "postgres"}, "db.create_indexes": {"source": "ok", "database": "postgres", "indexes": [{"table": "t", "columns": ["c"]}]}}
         actions.result = {}
         with_action = sorted(name for name, verb in verbs.VERBS.items() if verb.action is not None)
 

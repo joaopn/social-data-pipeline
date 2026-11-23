@@ -484,6 +484,35 @@ def _db_setup_entry():
     return setup_db_table.entry(Input, Action, Refused)
 
 
+# `db create-indexes` (`control.verbs` `_INDEX_REQUEST`): at most 50 tables, each with at most 64 columns, for StarRocks some of them as BITMAP.
+INDEX_TABLES_MAX = 50
+INDEX_COLUMNS_MAX = 64
+_INDEX_REQUEST = Input("list", "Indexes", required=True, max_items=INDEX_TABLES_MAX, item=Input("record", "Table", fields={
+    "table": Input("name", "Table", required=True),
+    "columns": Input("list", "Columns", required=True, max_items=INDEX_COLUMNS_MAX, unique=True, item=Input("name", "Column")),
+    "bitmap": Input("list", "BITMAP", max_items=INDEX_COLUMNS_MAX, unique=True, item=Input("name", "Column")),
+}))
+# What the pending page says of an index build (`sdp.py` `do_db_create_indexes`, run by the broker as a task: `control.runs.start_task`, `control.supervise`).
+INDEXES_RUN_SENTENCE = "It runs as a run, listed in Runs and on the Overview with its output and Cancel. It first reads the tables and their columns from the database again and refuses a table or column the database does not have. A cancel stops the command, but does not undo what the database already did: an index being built may go on inside the database."
+INDEXES_SAVE_SENTENCE = "When the build has made new indexes, it adds them to the source's config/sources/<name>/platform.yaml (indexes and ml_indexes for PostgreSQL, mongo_indexes for MongoDB, sr_indexes and sr_ml_indexes for StarRocks)."
+
+
+def _check_create_indexes(fields):
+    """The cross-field rules of `db.create_indexes`, the registry's: each table once, BITMAP columns only with StarRocks and only among the table's columns."""
+    tables = [item["table"] for item in fields["indexes"]]
+    if len(set(tables)) != len(tables):
+        raise Refused("indexes")
+    for item in fields["indexes"]:
+        if item.get("bitmap") and fields["database"] != "starrocks":
+            raise Refused("indexes")
+        if not set(item.get("bitmap", ())) <= set(item["columns"]):
+            raise Refused("indexes")
+
+
+def _indexes_also(fields):
+    return INDEXES_RUN_SENTENCE + (" " + INDEXES_SAVE_SENTENCE.replace("<name>", fields["source"]) if fields.get("save") is True else "")
+
+
 def _table(*actions):
     by_name = {}
     for action in actions:
@@ -507,6 +536,7 @@ TABLE = _table(
     Action("audit.list", "read", "The newest lines of the audit log", {"limit": Input("int", "Limit", lo=1, hi=1000)}, form="python sdp.py broker audit --limit=<n>"),
     Action("db.restart_needed", "read", "The running services whose settings changed after they started", form="python sdp.py db restart-needed"),
     Action("db.llm_settings", "read", "The current answers of the MCP servers' and the scheduler's setup", form="python sdp.py db llm-settings"),
+    Action("db.index_targets", "read", "The tables, columns and indexes of a source in one database", {"source": _SOURCE, "db": Input("enum", "Database", required=True, choices=DATABASES)}, form="python sdp.py db index-targets --source=<name> --db=<database>"),
     # ── write ──
     Action(
         "run.start", "write", "Start a pipeline run",
@@ -584,6 +614,13 @@ TABLE = _table(
         form="python sdp.py db setup-jobs", command=lambda fields: _command("db", "setup-jobs"),
         terminal_asks=_ASKS_QUESTIONS, also=_setup_jobs_sentence, check=_check_setup_jobs,
     ),
+    Action(
+        "db.create_indexes", "step_up", "Create indexes",
+        {"source": _SOURCE, "database": Input("enum", "Database", required=True, choices=DATABASES), "indexes": _INDEX_REQUEST, "save": Input("bool", "Save the new indexes to platform.yaml"), "admin_password": Input("secret", "Database admin password")},
+        form="python sdp.py db create-indexes --source=<name>", command=lambda fields: _command("db", "create-indexes", "--source=" + _q(fields["source"])),
+        terminal_asks="In a terminal this command asks which database, the tables, the fields of each, BITMAP or bloom filter for StarRocks, whether to save them, and the database admin password where it needs one; the command shown holds none of these answers.",
+        check=_check_create_indexes, also=_indexes_also,
+    ),
     Action("session.check_password", "step_up", "Check the management password again", form="(no command: asked before the Queue's auto-accept is switched on or its limit raised)", op=True),
     # ── the scheduler's control socket ──
     Action("queue.counts", "read", "The numbers of the Queue's tabs", form="(the scheduler's page: the tabs)", door="counts"),
@@ -609,6 +646,9 @@ TABLE = _table(
     ),
     _db_setup_entry(),
 )
+
+# The entries whose outcome is a recorded run (the broker answers its id), linked to the run's page.
+RUN_STARTERS = ("run.start", "db.create_indexes")
 
 # The entries of the scheduler's control socket, by name.
 QUEUE_ENTRIES = tuple(name for name, action in TABLE.items() if action.door is not None)

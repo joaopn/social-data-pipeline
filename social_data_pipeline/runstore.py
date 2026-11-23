@@ -320,9 +320,15 @@ def _is_flag_scalar(item):
     return _is_whole_number(item) and -_FLAG_NUMBER_MAX <= item <= _FLAG_NUMBER_MAX
 
 
-def _is_flag_value(item):
-    """Whether a flag of a record holds text, a boolean, nothing, a whole number that every reader of the JSON gets back exactly, or a list of those (the columns of an index, for a task)."""
+def _is_flat_flag(item):
     return _is_flag_scalar(item) or (isinstance(item, list) and all(_is_flag_scalar(element) for element in item))
+
+
+def _is_flag_value(item):
+    """Whether a flag of a record holds text, a boolean, nothing, a whole number that every reader of the JSON gets back exactly, or a list of those or of flat records (for a task's index build, each table with its columns: a mapping of text to such a value or a list of them, one level only)."""
+    if _is_flag_scalar(item):
+        return True
+    return isinstance(item, list) and all(_is_flag_scalar(element) or (isinstance(element, dict) and all(isinstance(key, str) and _is_flat_flag(value) for key, value in element.items())) for element in item)
 
 
 def _is_task_record(value):
@@ -439,7 +445,7 @@ def _create_run(root, fields, locked):
 
 
 def create_run(root, fields):
-    """Create the folder and the record of a new run, in state `starting`, and return its id. `fields` holds `profile` (or, for a task, `task` and `label` and no profile), and may hold `source`, `flags` (the request's fields that are not secret: text, whole numbers up to 2**53, booleans and lists of those, by name) and `started_by`. Raises ValueError, before anything is created, for fields a record cannot hold and for a record that would be larger than 64 KiB once the run's end is written into it."""
+    """Create the folder and the record of a new run, in state `starting`, and return its id. `fields` holds `profile` (or, for a task, `task` and `label` and no profile), and may hold `source`, `flags` (the request's fields that are not secret: text, whole numbers up to 2**53, booleans and lists of those or of flat records, by name) and `started_by`. Raises ValueError, before anything is created, for fields a record cannot hold and for a record that would be larger than 64 KiB once the run's end is written into it."""
     return _create_run(root, fields, False)[0]
 
 

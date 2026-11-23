@@ -88,7 +88,7 @@ SHARED_LOCK_VERBS = frozenset({"run.start"})
 # What is refused once a stop was asked; a request that is already being answered finishes.
 REFUSED_WHILE_STOPPING = frozenset({"login", "call", "session.set_db_password", "session.clear_db_password", "session.check_password"})
 # The verbs to which the session's database password is added when the request has none.
-DB_PASSWORD_VERBS = frozenset({"run.start", "db.start"})
+DB_PASSWORD_VERBS = frozenset({"run.start", "db.start", "db.index_targets", "db.create_indexes"})
 DB_PASSWORD_FIELD = "admin_password"
 # The services a `db.start` pastes the password into a shell line for (with no service, every configured one), and the characters such a line cannot take.
 SHELL_LINE_SERVICES = (None, "postgres", "postgres-mcp")

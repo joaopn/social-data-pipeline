@@ -43,6 +43,8 @@ ACTIONS = {
     "db.llm_settings": "get_db_llm_settings",
     "source.add": "do_source_add",
     "db.setup": "do_db_setup",
+    "db.create_indexes": "do_db_create_indexes",
+    "db.index_targets": "get_db_index_targets",
 }
 
 # The private parameter an action has for each thing its command asks on the terminal.

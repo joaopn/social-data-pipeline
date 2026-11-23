@@ -244,6 +244,29 @@ DB_SETUP_INPUTS = {
 }
 
 
+def _check_create_indexes(fields):
+    """Cross-field rules of `db create-indexes`: each table named once, BITMAP choices only with StarRocks and only among the table's columns. Whether a table or column exists is the action's check, and so is an empty list (refused there): only the database knows."""
+    indexes = fields["indexes"]
+    tables = [item["table"] for item in indexes]
+    if len(set(tables)) != len(tables):
+        raise FieldRefused("indexes", "names a table twice")
+    for item in indexes:
+        if item.get("bitmap") and fields["database"] != "starrocks":
+            raise FieldRefused("indexes", "takes bitmap columns only with the database starrocks")
+        if not set(item.get("bitmap", ())) <= set(item["columns"]):
+            raise FieldRefused("indexes", "takes as bitmap columns only columns it indexes")
+
+
+# The tables and columns of one index build, as `db create-indexes` asks them: per table its columns (index fields), and for StarRocks which of them get a BITMAP index (the others a bloom filter).
+INDEX_TABLES_MAX = 50
+INDEX_COLUMNS_MAX = 64
+_INDEX_REQUEST = ListOf(Record({
+    "table": Field(Name(), required=True),
+    "columns": Field(ListOf(Name(), max_items=INDEX_COLUMNS_MAX, unique=True), required=True),
+    "bitmap": Field(ListOf(Name(), max_items=INDEX_COLUMNS_MAX, unique=True)),
+}), max_items=INDEX_TABLES_MAX)
+
+
 def _registry(*verbs):
     by_name = {}
     for verb in verbs:
@@ -463,8 +486,27 @@ VERBS = _registry(
     Verb(
         name="db.create_indexes", cls="step_up", cli=("db", "create-indexes"),
         cli_inputs={"source"},
-        prompted_inputs={"questionnaire", "admin_password"},
-        note="Not available until index fields are validated against the database.",
+        # What the command asks: which database, the tables and their fields, BITMAP or bloom filter (StarRocks), whether to save them to platform.yaml, and the admin password.
+        prompted_inputs={"database", "indexes", "save", "admin_password"},
+        socket_inputs={
+            "source": Field(ConfiguredSource(), required=True),
+            "database": Field(Enum(DATABASES), required=True),
+            "indexes": Field(_INDEX_REQUEST, required=True),
+            "save": Field(Bool()),
+            "admin_password": Field(Secret()),
+        },
+        socket_enabled=True,
+        check=_check_create_indexes,
+        note="Runs as a recorded run (a task): the action reads the tables and columns from the database again and refuses any it does not have.",
+        action="do_db_create_indexes",
+    ),
+    Verb(
+        name="db.index_targets", cls="read", cli=("db", "index-targets"),
+        cli_inputs={"source", "db"},
+        prompted_inputs={"admin_password"},
+        socket_inputs={"source": Field(ConfiguredSource(), required=True), "db": Field(Enum(DATABASES), required=True), "admin_password": Field(Secret())},
+        socket_enabled=True,
+        action="get_db_index_targets",
     ),
     Verb(
         name="db.recover_password", cls="step_up", cli=("db", "recover-password"),

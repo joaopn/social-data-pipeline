@@ -36,7 +36,7 @@ Supported compression: `.zst`, `.gz`, `.json.gz`, `.xz`, `.tar.gz`. For Hugging 
 python sdp.py source add mydata
 ```
 
-The same questions are asked in the browser by the web UI's **Add source** (Reddit dumps and your own files; see [Adding a source](webui.md#adding-a-source)); both write the same files. A Hugging Face dataset is added in a terminal.
+The same questions are asked in the browser by the web UI's **Add source** (Reddit dumps, Hugging Face datasets and your own files; see [Adding a source](webui.md#adding-a-source)); both write the same files.
 
 The setup walks you through:
 
@@ -177,6 +177,10 @@ python sdp.py source download idrama
 python sdp.py source download idrama --data-type comments    # organize only one data type
 python sdp.py source download idrama --token <token>         # private dataset (or set HF_TOKEN)
 ```
+
+`python sdp.py source hf-inspect <owner>/<name> [--token <token>]` prints the schema groups `--hf` will offer (configs, fields, their SQL mappings) without adding anything.
+
+In the web UI, **Add source** → **Hugging Face dataset** asks the same grouping and can start the download as a run right after the add (**Download now**); a source not downloaded yet has **Download** on its page. From the browser the token is used for that add's schema read and its download and stored nowhere, `--data-type` is not offered (every data type is downloaded), and the Hub's list of files is checked before anything is written: every config, split and file name must be a plain name and every address an https address on `huggingface.co`. See [Adding a source](webui.md#adding-a-source).
 
 **3. Parse and ingest.**
 

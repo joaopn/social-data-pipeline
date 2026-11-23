@@ -246,6 +246,20 @@ def test_a_failed_step_stops_the_rest_and_a_wrong_password_stops_everything(app,
     assert changing_requests(broker) == ["session.check_password", "db.stop"]
 
 
+def test_the_restarts_outcome_shows_every_step_and_the_ones_not_started(app, client, broker):
+    """Bug class: a chain of steps (`Pending.then`, shared by the restart and the Add source wizard's download) whose outcome shows only the first step or a merged exit code, so a stop that worked and a start that failed look alike, or that does not say which steps were never run."""
+    token, path = _restart(client)
+    broker.answers["db.start"] = {"exit_code": 1, "output": "", "errors": "made-up start failure\n"}
+    done = confirm(client, path, token, PASSWORD)
+    wait_until(lambda: "under way" not in client.get(done.headers["location"]).text)
+    page = html.unescape(" ".join(client.get(done.headers["location"]).text.split()))
+    assert "Restart to apply" in page and "The command ended with exit code 0." in page
+    assert "Then: <code>python sdp.py db start postgres</code>" in page and "The command ended with exit code 1." in page and "made-up start failure" in page
+    assert "Then: <code>python sdp.py db stop jobs</code></h3> <p class=\"notice\">It was not started, because the action above did not end with exit code 0.</p>" in page
+    assert "Then: <code>python sdp.py db start jobs</code></h3> <p class=\"notice\">It was not started, because the action above did not end with exit code 0.</p>" in page
+    assert changing_requests(broker)[-2:] == ["db.stop", "db.start"]
+
+
 @pytest.mark.parametrize("services", ["", "postgres,postgres", "postgres,../x", "nginx", ",".join(["postgres"] * 9)])
 def test_a_restart_of_anything_but_the_services_is_refused(client, services):
     """Bug class: a restart page or a pending restart made from a list the web UI does not know (a service twice, a name of another kind), which would send the broker a verb with fields of the author's choosing."""

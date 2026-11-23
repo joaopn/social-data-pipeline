@@ -39,8 +39,13 @@ OUTPUT_BUSY = "The web UI is busy: trying again in a moment."
 NOT_FOUND = "Not found.\n"
 OFFSET_PATTERN = r"[0-9]{1,16}"
 RETRY_CODES = ("step_up_failed", "step_up_required")
-# The title of a pending restart (a db.stop with the steps that follow it).
+# The title of a pending restart and of its outcome (a db.stop with the steps that follow it).
 RESTART_TITLE = "Restart to apply"
+
+
+def _title(action, then):
+    """The title of a pending action or an outcome: a restart's own, else the table entry's."""
+    return RESTART_TITLE if action.name == "db.stop" and then else action.title
 RUN_PAGE_LIST_LIMIT = 1000
 AUDIT_LINES = 200
 # The tabs of a source's page, of the Databases page and of the System page (`?tab=`); the first is the one shown without one.
@@ -82,7 +87,7 @@ def pending_model(pending, now, seconds):
     fields = pending.fields or {}
     return {
         "id": pending.id,
-        "title": RESTART_TITLE if pending.then else action.title,
+        "title": _title(action, pending.then),
         "verb": action.name,
         "command": action.command(fields) if action.command else None,
         "no_command": action.form if action.command is None else None,
@@ -93,7 +98,7 @@ def pending_model(pending, now, seconds):
         "note": action.note,
         "also": action.also(fields) if action.also else None,
         "warns": action.warns(fields) if action.warns else None,
-        "then": [{"command": actions.TABLE[name].command(step), "also": actions.TABLE[name].also(step) if actions.TABLE[name].also else None} for name, step in pending.then] if pending.then else None,
+        "then": _then_model(pending),
         "writes": action.writes(fields) if action.writes else None,
         # The statements a page worked out when it kept the action (a tuple of lines; the index build's), shown as they are.
         "preview": pending.shown if isinstance(pending.shown, tuple) else None,
@@ -102,12 +107,23 @@ def pending_model(pending, now, seconds):
     }
 
 
+def _then_model(pending):
+    """What the pending page says of the steps that follow (`Pending.then`), in order: each one's command and what else it does, or None."""
+    if not pending.then:
+        return None
+    steps = []
+    for name, fields in pending.then:
+        action = actions.TABLE[name]
+        steps.append({"title": action.title, "command": action.command(fields), "also": action.also(fields) if action.also else None})
+    return steps
+
+
 def outcome_model(outcome):
     """What the outcome page shows of an outcome."""
     action = actions.TABLE[outcome.action]
     return {
         "id": outcome.id,
-        "title": action.title,
+        "title": _title(action, outcome.then),
         "command": outcome.command,
         "running": not outcome.done,
         "kind": outcome.kind,
@@ -124,6 +140,7 @@ def outcome_model(outcome):
         "verb": action.name,
         "door": outcome.door,
         "back": outcome.back,
+        "then": [dict(step, run_href="/runs/" + step["run_id"] if step["run_id"] and actions.is_run_id(step["run_id"]) else None) for step in outcome.then] if outcome.then else None,
     }
 
 
@@ -417,22 +434,32 @@ def install(api, ctx, queue_hooks):
             places_of(name).release()
 
     def start_action(session, name, fields, step_up, outcome, then=None):
-        """Run the call in a thread of its own, through a client without a time limit; the thread writes the outcome and gives the place back. With `then` (a restart) the management password is checked first and the steps follow the call, each only after an exit code 0 (`run_steps`)."""
+        """Run the call in a thread of its own, through a client without a time limit; the thread writes the outcome and gives the place back. With `then` (the steps of `Pending.then`) the call and its steps run as one chain (`run_chain`)."""
         token, work = session.token, session.work
         places = places_of(name)
+        if then:
+            outcome.expect_then([(step, actions.TABLE[step].command(step_fields)) for step, step_fields in then])
+        # The chain's own copy of the steps: each one's fields are let go once its request was sent; the pending action keeps `then` only until the confirm has answered (or keeps it whole when it is put back for a retry).
+        chain = [[name, fields], *([step, step_fields] for step, step_fields in then or ())]
 
         def run():
             try:
+                def ask(call):
+                    return call_broker(lambda: ctx.broker(token=token, timeout=None), call)
+
                 if then:
-                    kind, value = run_steps(lambda call: call_broker(lambda: ctx.broker(token=token, timeout=None), call), [(name, fields), *then], step_up)
-                else:
-                    kind, value = call_broker(lambda: ctx.broker(token=token, timeout=None), lambda made: actions.call(made, name, fields, step_up))
+                    run_chain(ask, outcome, chain, step_up, limits.outcome_text_bytes)
+                    return
+                kind, value = ask(lambda made: actions.call(made, name, fields, step_up))
                 outcome.finish(kind, value, limits.outcome_text_bytes)
                 if kind == "ok" and name == "session.set_db_password":
                     work.db_password_kept = True
                 elif kind == "ok" and name == "session.clear_db_password":
                     work.db_password_kept = False
             finally:
+                chain.clear()
+                if outcome.then is not None and not outcome.done:
+                    outcome.end_steps()
                 places.release()
 
         threading.Thread(target=run, name="sdp-webui-action", daemon=True).start()
@@ -477,8 +504,6 @@ def install(api, ctx, queue_hooks):
                 return await queue_busy(request, session_id, session, taken, queue.QUEUE_BUSY)
             return await pending_page(session, taken, 503, ACTIONS_BUSY)
         command = actions.TABLE[taken.action].command(taken.fields) if actions.TABLE[taken.action].command else None
-        if taken.then:
-            command = " && ".join([command, *(actions.TABLE[step].command(step_fields) for step, step_fields in taken.then)])
         outcome = Outcome(new_id(), taken.action, command, ctx.clock())
         work.add_outcome(outcome)
         try:
@@ -545,24 +570,28 @@ def install(api, ctx, queue_hooks):
         return ctx.frame("outcome.html", active_of(outcome.action), session, title=model["title"], outcome=model)
 
 
-def run_steps(ask, steps, step_up):
-    """Run a restart's steps through `ask(call)` (`calls.call_broker` with a client): the management password checked first (`session.check_password`), then each (action, fields) of `steps`, a step-up one with the password, each only after the one before ended with exit code 0. Returns (kind, value) for the outcome: the first refusal as it came, else a result whose exit code is the last step's and whose output and errors are those of every step that ran, in order."""
-    kind, value = ask(lambda made: actions.call(made, "session.check_password", {}, step_up))
-    if kind != "ok":
-        return kind, value
-    output, errors, exit_code = [], [], None
-    for name, fields in steps:
-        kind, value = ask(lambda made, name=name, fields=fields: actions.call(made, name, fields, step_up if actions.TABLE[name].cls == "step_up" else None))
-        if kind != "ok":
-            return kind, value
-        if not isinstance(value, dict):
-            return kind, value
-        output.append(value.get("output") if isinstance(value.get("output"), str) else "")
-        errors.append(value.get("errors") if isinstance(value.get("errors"), str) else "")
-        exit_code = value.get("exit_code")
-        if exit_code != 0:
-            break
-    return "ok", {"exit_code": exit_code, "output": "".join(output), "errors": "".join(errors)}
+def run_chain(ask, outcome, chain, password, text_max_bytes):
+    """Run an action and the steps that follow it (`chain`: [action, fields] lists, the action first) through `ask(call)` (`calls.call_broker` with a client), writing `outcome`: the action's answer with `finish`, each step's with `finish_step`. With a management password, when a step-up step follows an action that is not step-up itself (a restart: db.stop, then db.start), the password is checked first (`session.check_password`) so that nothing runs with a wrong one; when the action is step-up, its own call checks it before it does anything. A step-up step gets the password, the others none. Each step runs only when the one before ended with exit code 0 (or started its run); a step's fields are let go once its request was sent. Ends with `end_steps`, which says each step not run was not started."""
+    try:
+        if password is not None and actions.TABLE[chain[0][0]].cls != "step_up":
+            kind, value = ask(lambda made: actions.call(made, "session.check_password", {}, password))
+            if kind != "ok":
+                outcome.finish(kind, value, text_max_bytes)
+                return
+        for index, step in enumerate(chain):
+            name, fields = step
+            given = password if actions.TABLE[name].cls == "step_up" else None
+            kind, value = ask(lambda made, name=name, fields=fields, given=given: actions.call(made, name, fields, given))
+            step[1] = fields = None
+            if index == 0:
+                outcome.finish(kind, value, text_max_bytes)
+                carry_on = outcome.succeeded
+            else:
+                carry_on = outcome.finish_step(index - 1, kind, value, text_max_bytes)
+            if not carry_on:
+                return
+    finally:
+        outcome.end_steps()
 
 
 def _number(value):

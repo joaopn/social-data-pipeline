@@ -36,7 +36,7 @@
   <p class="notice notice-bad"><strong>Warning</strong>: {{ warning }}</p>
   {%- endfor %}
   {%- if pending.then %}
-  <h4>Then, each only after the one before ended with exit code 0</h4>
+  <h4>{% if pending.then | length == 1 %}Then, when it has ended with exit code 0{% else %}Then, each only after the one before ended with exit code 0{% endif %}</h4>
   {%- for step in pending.then %}
   <pre class="cli wrap"><code>{{ step.command }}</code></pre>
   {%- if step.also %}<p class="notice">{{ step.also }}</p>{% endif %}

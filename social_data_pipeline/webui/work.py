@@ -72,11 +72,12 @@ class Pending:
         self.action = action
         self.fields = fields
         self.created = created
-        self.step_up = actions.TABLE[action].cls == "step_up" if step_up is None else step_up
+        # The steps run after this one, in order, each only when the one before ended with exit code 0 (or started its run): a list of (action, fields) of the table, or None. A restart (`llm_setup`: db.stop, then db.start and db.stop of each service) and the Add source wizard's download (`source.download` with the token) are the two today; a step's fields, its secrets included, are let go once its request was sent (`management.start_action`).
+        self.then = then
+        # The confirmation needs the management password again when any step is step-up.
+        self.step_up = any(actions.TABLE[name].cls == "step_up" for name, _ in [(action, None), *(then or ())]) if step_up is None else step_up
         self.shown = shown
         self.weight = weight
-        # The steps run after this one, each only when the one before ended with exit code 0: a list of (action, fields), or None (a restart: db.stop then db.start).
-        self.then = then
 
     def __repr__(self):
         return f"<pending {self.action}>"
@@ -107,6 +108,8 @@ class Outcome:
         self.back = None
         # What the scheduler answered (its entries only): `was_running`, `plan`, `plan_cut`, `auto_accept`, `phase`, `detail`.
         self.door = {}
+        # The steps that follow this one (`Pending.then`), in order, or None: each {"action", "command", "state", "exit_code", "output", "errors", "run_id", "sentence"}, its state "waiting", "skipped" (the one before did not end with exit code 0), "result" (it ended, with its exit code), "started" (its run, `run_id`) or "refused" (`sentence`). It holds no field of a step.
+        self.then = None
 
     def __repr__(self):
         return f"<outcome {self.action} {'done' if self.done else 'running'}>"
@@ -121,6 +124,41 @@ class Outcome:
 
     def wait(self, seconds):
         return self._done.wait(seconds)
+
+    def expect_then(self, steps):
+        """Say that steps follow this one (`steps`: (action, command) each, in order): the outcome is done only once `end_steps` was called."""
+        self.then = [{"action": action, "command": command, "state": "waiting", "exit_code": None, "output": "", "errors": "", "run_id": None, "sentence": None} for action, command in steps]
+
+    def finish_step(self, index, kind, value, text_max_bytes=TEXT_MAX_BYTES):
+        """Write the answer of the step at `index` of `then` (as `calls.call_broker` gives them); returns whether it ended with exit code 0 or started its run, which lets the next step run."""
+        step = self.then[index]
+        try:
+            if kind != "ok":
+                step["state"], step["sentence"] = "refused", words.sentence(value)
+            elif not isinstance(value, dict):
+                step["state"], step["sentence"] = "refused", SHAPE_SENTENCE
+            elif step["action"] in actions.RUN_STARTERS:
+                if actions.is_run_id(value.get("run_id")):
+                    step["state"], step["run_id"] = "started", value["run_id"]
+                else:
+                    step["state"], step["sentence"] = "refused", SHAPE_SENTENCE
+            else:
+                exit_code, output, errors = value.get("exit_code"), value.get("output", ""), value.get("errors", "")
+                if not isinstance(exit_code, int) or isinstance(exit_code, bool) or not isinstance(output, str) or not isinstance(errors, str):
+                    step["state"], step["sentence"] = "refused", SHAPE_SENTENCE
+                else:
+                    step["state"], step["exit_code"] = "result", exit_code
+                    step["output"], step["errors"] = text_end(output, text_max_bytes), text_end(errors, text_max_bytes)
+        except Exception:
+            step["state"], step["sentence"] = "refused", SHAPE_SENTENCE
+        return step["state"] == "started" or (step["state"] == "result" and step["exit_code"] == 0)
+
+    def end_steps(self):
+        """The steps are over: each one still waiting was not started (the one before did not end with exit code 0); the outcome is then done."""
+        for step in self.then or ():
+            if step["state"] == "waiting":
+                step["state"] = "skipped"
+        self._done.set()
 
     def finish(self, kind, value, text_max_bytes=TEXT_MAX_BYTES, from_door=False, sent=False):
         """Write the answer of the call: `kind` "ok" with the result, or "error" with the `BrokerError` (as `calls.call_broker` gives them); `from_door` when the scheduler's control socket gave it (or could not be asked, or the web UI refused before it); `sent` when it is the answer of the changing request itself, the only one whose lost reply may mean the change was made."""
@@ -138,7 +176,13 @@ class Outcome:
         except Exception:
             self.kind, self.code = "refusal", "bad_reply"
             self.sentence = words.DOOR_CODE_SENTENCES["bad_reply"] if from_door else SHAPE_SENTENCE
-        self._done.set()
+        if self.then is None:
+            self._done.set()
+
+    @property
+    def succeeded(self):
+        """Whether the action ended with exit code 0 or started its run (what starts the step that follows it)."""
+        return self.kind == "result" and (self.exit_code == 0 or self.run_id is not None)
 
     def _door_result(self, result, text_max_bytes):
         if not isinstance(result, dict):

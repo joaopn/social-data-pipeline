@@ -72,7 +72,7 @@ def _one_source(result):
 
 
 def source_status_block(result):
-    """`found`, `warnings`, `platform`, `data_types`, `profiles` (as shown), `run_profiles` (the source's profiles that can be run, in the registry's order), `paths` and `ingestion` (per database view: `name`, `has_state_files`, `entries`) from a `source.status` answer for one source. Raises ShapeError."""
+    """`found`, `warnings`, `platform`, `data_types`, `profiles` (as shown), `run_profiles` (the source's profiles that can be run, in the registry's order), `paths`, `hf_dataset` (None for a source without one) and `hf_downloaded`, and `ingestion` (per database view: `name`, `has_state_files`, `entries`) from a `source.status` answer for one source. Raises ShapeError."""
     entry, warnings = _one_source(result)
     block = {"found": entry["found"], "warnings": warnings}
     if not entry["found"]:
@@ -83,6 +83,9 @@ def source_status_block(result):
     block["platform"] = value_text(entry.get("platform"))
     block["data_types"] = [value_text(item) for item in _list(entry.get("data_types", []))]
     block["paths"] = [(text(_string(key)), value_text(value)) for key, value in _dict(entry.get("paths", {})).items()]
+    # A Hugging Face source's dataset, and whether it was downloaded (its page offers Download until it was).
+    block["hf_dataset"] = value_text(entry["hf_dataset"]) if isinstance(entry.get("hf_dataset"), str) else None
+    block["hf_downloaded"] = entry.get("hf_downloaded") is True
     block["ingestion"] = []
     for view in _list(entry.get("ingestion", [])):
         _dict(view)

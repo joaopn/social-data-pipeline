@@ -12,6 +12,7 @@
 {% macro number(key, label, hint="", default="") -%}
 <label class="f">{{ label }}<input type="number" name="{{ key }}" value="{{ val(key, default) }}" step="1" min="0" inputmode="numeric">{% if hint %}<span class="muted small">{{ hint }}</span>{% endif %}</label>
 {%- endmacro %}
+{% macro cli_line(line) -%}<div class="cli">{{ line[0] }} <b>{{ line[1] }}</b>{% if line | length > 2 %} {{ line[2] }} <b>{{ line[3] }}</b>{% endif %}</div>{%- endmacro %}
 {% macro choice(key, label, options, default) -%}
 <label class="f">{{ label }}<select name="{{ key }}">{% for value, words in options %}<option value="{{ value }}"{% if val(key, default) == value %} selected{% endif %}>{{ words }}</option>{% endfor %}</select></label>
 {%- endmacro %}
@@ -42,11 +43,11 @@
   {%- if wizard_id %}<input type="hidden" name="nav" value="next">{% endif %}
   <div class="pick mt narrow">{% for key, title, words in origins %}<button type="submit" name="platform" value="{{ key }}"{% if key == platform %} class="on"{% endif %}><b>{{ title }}</b><span>{{ words }}</span></button>{% endfor %}</div>
 </form>
-<p class="muted small mt">A Hugging Face dataset is added in a terminal for now: <code>python sdp.py source add &lt;name&gt; --hf &lt;dataset&gt;</code>.</p>
-<div class="col mt add-cli">{% for words, value in cli %}<div class="cli">{{ words }} <b>{{ value }}</b></div>{% endfor %}</div>
+<div class="col mt add-cli">{% for line in cli %}{{ cli_line(line) }}{% endfor %}</div>
 <div class="row mt add-nav"><span class="tag step">step-up verb · source.add</span><span class="right row"><a class="btn" href="/sources">Cancel</a></span></div>
 {%- else %}
 {%- set reddit = platform == "reddit" %}
+{%- set is_hf = platform == "hf" %}
 {%- set data_types = answers.get("data_types", []) %}
 {%- set profiles = answers.get("profiles", []) %}
 <form method="post" action="/add-source/{{ wizard_id }}/{{ step }}">
@@ -58,6 +59,11 @@
     {%- if reddit %}
     <label class="f">Source name<input type="text" value="reddit" disabled><span class="muted small">Reddit dumps are always the source reddit.</span></label>
     {{ text("data_types", "Data types", "submissions, comments", "Comma-separated.") }}
+    {%- elif is_hf %}
+    {{ text("name", "Source name", "", "A letter or digit, then letters, digits, _ . -") }}
+    {{ text("dataset", "Dataset on Hugging Face", "", "<owner>/<name>, such as org-name/bluesky-posts. Next reads its schema from the Hub.", mono=True) }}
+    <label class="f">Access token <span class="muted">(private datasets only; used to read the schema and for the download, never stored or logged)</span><input type="password" name="dataset_token" autocomplete="off" maxlength="1024" placeholder="{{ 'kept: type a new one to replace it' if dataset_token_kept else 'optional' }}"></label>
+    {%- if dataset_token_kept %}<div class="f">{{ box("dataset_token_forget", "Forget the token typed before") }}</div>{% endif %}
     {%- else %}
     {{ text("name", "Source name", "", "A letter or digit, then letters, digits, _ . -") }}
     {{ text("data_types", "Data types", "", "Comma-separated, at most 8 (for example posts, replies).") }}
@@ -67,7 +73,7 @@
     {%- endfor %}
     {{ choice("file_format", "Intermediate file format", (("parquet", "parquet"), ("csv", "csv")), "parquet") }}
     {{ number("parquet_row_group_size", "Parquet row-group size", "Larger: better compression, more memory. Parquet only.", "1000000") }}
-    {%- if not reddit %}
+    {%- if not reddit and not is_hf %}
     {{ choice("input_format", "Raw input file format", (("ndjson", "NDJSON, one JSON object per line"), ("csv", "CSV with a header")), "ndjson") }}
     {{ choice("csv_delimiter", "CSV delimiter", (("comma", "comma ,"), ("tab", "tab"), ("pipe", "pipe |"), ("semicolon", "semicolon ;")), "comma") }}
     {%- endif %}
@@ -81,7 +87,41 @@
 
 {%- elif step == "fields" %}
   <h4 class="mt-l">Fields</h4>
-  {%- if reddit %}
+  {%- if is_hf and hf %}
+  <p class="muted small mt">The dataset's configs grouped by their fields, as <code>source add --hf</code> groups them: each group becomes one data type. Choose its configs (empty: all), its name (empty: the suggestion), the fields to keep, and a SQL type for each field the Hub's type does not map to (or skip it). The fields left out are also kept out of MongoDB's documents.</p>
+  {%- for group in hf.groups %}
+  {%- set n = loop.index0 %}
+  {%- set names = group.configs | map(attribute="name") | list %}
+  <h4 class="mt-l">Group {{ "ABCDEFGH"[n] }} · {{ names | length }} config{{ "s" if names | length != 1 }}</h4>
+  <p class="small mt">{% for config in group.configs %}<code>{{ config.name }}</code>{% if config.rows %} ({{ "{:,}".format(config.rows) }} rows){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  <div class="form mt">
+    {{ text("configs[" ~ n ~ "]", "Configs to include", "", "Comma-separated; empty: all of them.", wide=True) }}
+    {{ text("dt[" ~ n ~ "]", "Data type name", "", "Empty: " ~ (names[0] if names | length == 1 else "the configs' common prefix") ~ ", as the terminal suggests.") }}
+  </div>
+  {%- set mapped = group.fields | selectattr("sql_type") | list %}
+  {%- set unmapped = group.fields | rejectattr("sql_type") | list %}
+  {%- if mapped %}
+  {%- if hf.boxes %}
+  <fieldset class="f-group wide mt">
+    <legend>Fields with a SQL type</legend>
+    <div class="row wrap">{% for field in mapped %}{{ box("field[" ~ n ~ "][" ~ field.name ~ "]", field.name ~ " · " ~ field.sql_type, True) }}{% endfor %}</div>
+  </fieldset>
+  {%- else %}
+  <div class="form mt">
+    {{ text("fields[" ~ n ~ "]", "Fields with a SQL type", "", "Comma-separated; empty: all of them: " ~ (mapped | map(attribute="name") | join(", ")) ~ ".", wide=True) }}
+  </div>
+  {%- endif %}
+  {%- endif %}
+  {%- if unmapped %}
+  {%- set cast_options = [("skip", "skip it")] + sql_choices %}
+  <div class="form mt">
+    {%- for field in unmapped %}
+    {{ choice("cast[" ~ n ~ "][" ~ field.name ~ "]", field.name ~ " (" ~ field.hf_type ~ ": no SQL mapping)", cast_options, "skip") }}
+    {%- endfor %}
+  </div>
+  {%- endif %}
+  {%- endfor %}
+  {%- elif reddit %}
   <p class="muted small mt">The fields of the Reddit template (config/templates/reddit.yaml) are kept; name the ones to leave out, as <code>source configure reddit</code> asks. Empty: keep them all.</p>
   <div class="form mt">
     {%- for kind in reddit_kinds %}
@@ -189,6 +229,10 @@
 
 {%- elif step == "review" %}
   <h4 class="mt-l">Review</h4>
+  {%- if is_hf %}
+  <div class="mt">{{ box("download", "Download now: when the add has ended, start the download as a run (its log and Cancel in Runs and on the Overview)", download) }}</div>
+  <p class="muted small">The access token, if one was typed, is sent with that download only and is not stored. Without Download now, download later with Download on the source's page.</p>
+  {%- endif %}
   {%- if review %}
   <dl class="kv mt">
     {%- for label, value in review.inputs %}
@@ -209,8 +253,8 @@
 {%- endif %}
 
   <h4 class="mt-l">What this will do</h4>
-  <div class="col mt add-cli">{% for words, value in (review.cli if review else cli) %}<div class="cli">{{ words }} <b>{{ value }}</b></div>{% endfor %}</div>
-  <div class="row mt add-nav"><span class="tag step">step-up verb · source.add</span><span class="right row">
+  <div class="col mt add-cli">{% for line in (review.cli if review else cli) %}{{ cli_line(line) }}{% endfor %}</div>
+  <div class="row mt add-nav"><span class="tag step">step-up verb · source.add{% if is_hf and download %}, then source.download{% endif %}</span><span class="right row">
     {#- Next comes first in the page, so that Enter in a field means Next; the row draws it last. #}
     {%- if step == "review" %}
     <button type="submit" class="btn primary" name="nav" value="confirm"{% if not review %} disabled{% endif %}>Confirm…</button>

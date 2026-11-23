@@ -1,8 +1,10 @@
-"""The Add source wizard (`sdp source add` for Reddit dumps and your own files): the mock-up's six steps, Origin, Files, Fields, Classifiers, Databases and Review, each a page with Back, Next and Cancel, then the existing pending action and confirm page (`source.add`, step-up). `install(api, ctx)` adds the routes; `app.create_app` calls it.
+"""The Add source wizard (`sdp source add` for Reddit dumps, a Hugging Face dataset and your own files): the mock-up's six steps, Origin, Files, Fields, Classifiers, Databases and Review, each a page with Back, Next and Cancel, then the existing pending action and confirm page (`source.add`, step-up). `install(api, ctx)` adds the routes; `app.create_app` calls it.
 
-- `GET /add-source` shows Origin (two cards; `ORIGINS` is the list, so another origin is one entry more); a card posts to `POST /add-source`, which reads the configured databases (`db.status`) and the sources (`source.list`) in a worker of the pages' bound and keeps a new wizard in the session.
+- `GET /add-source` shows Origin (three cards; `ORIGINS` is the list, so another origin is one entry more); a card posts to `POST /add-source`, which reads the configured databases (`db.status`) and the sources (`source.list`) in a worker of the pages' bound and keeps a new wizard in the session.
 - `GET /add-source/<id>/<step>` shows a step with the answers kept; `POST /add-source/<id>/<step>` keeps what the step posted (its texts as posted, a token in `actions.Hidden`) and goes to the step before (`nav=back`) or checks the step and goes to the next one needed (`nav=next`; Classifiers only with lingua or ml, Databases only with a database profile or a Reddit source). `POST /add-source/<id>/cancel` forgets the wizard. A refused answer shows the step again with the line naming it.
 - Review shows what will be done and posts `nav=confirm`: the answers are made into the fields of `source.add`, checked by the table (`actions.check_fields`), kept as a pending action and the wizard is forgotten; the confirm page then asks for the management password. Nothing is written before that confirmation.
+
+A Hugging Face dataset (`hf`): Files asks the dataset id and its token (a password field, never drawn back, kept in the wizard as `actions.Hidden`); its Next reads the schema from the Hub through the broker (`source.hf_inspect`, `read_dataset`) and keeps it in the wizard. Fields shows the terminal's grouping (per group its configs, the data type's name, the fields and a type for each field without a SQL mapping). Review has Download now, ticked by default: the pending action of `source.add` then carries `source.download` with the token as the step that follows (`work.Pending.then`), which the confirm starts when the add has ended with exit code 0, and the token is dropped with it once it was sent.
 
 The wizard lives in the session's pending actions (`work.SessionWork`, `wizard=True`): it counts against their cap of sixteen and their weight, and expires five minutes after its last step, like a pending action. Each step posts far fewer than the guard's 64 fields: lists of names are typed comma-separated as in the terminal, and the wizard takes at most eight data types. Empty answers are the terminal's Enter: the action computes those defaults on the host.
 """
@@ -13,14 +15,17 @@ import re
 from fastapi import Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 
-from social_data_pipeline.webui import actions, overview, pages
+from social_data_pipeline.webui import actions, overview, pages, words
 from social_data_pipeline.webui.calls import BUSY_GATE, call_broker, session_ends, why
 from social_data_pipeline.webui.work import ID_PATTERN
 
 STEPS = (("origin", "Origin"), ("files", "Files"), ("fields", "Fields"), ("classifiers", "Classifiers"), ("databases", "Databases"), ("review", "Review"))
 STEP_KEYS = tuple(key for key, _ in STEPS)
-# The origins the wizard offers: (platform, title, line).
-ORIGINS = (("reddit", "Reddit dumps", "Arctic Shift monthly submissions and comments"), ("custom", "Your own files", "JSON or CSV, one record per line or row"))
+# The origins the wizard offers: (platform, title, line). `hf` is a source of the platform custom with a Hugging Face dataset.
+ORIGINS = (("reddit", "Reddit dumps", "Arctic Shift monthly submissions and comments"), ("hf", "Hugging Face dataset", "downloaded for you from the Hub, as Parquet"), ("custom", "Your own files", "JSON or CSV, one record per line or row"))
+HF_SQL_TYPES = actions.HF_SQL_TYPES
+# How many fields a step may post (the guard's limit is 64; the form token and the button take two): the Fields step of a Hugging Face dataset draws its fields as boxes only when they fit.
+STEP_FIELDS_MAX = 60
 STAGES = ("dumps", "extracted", "parsed", "output")
 DATA_TYPES_MAX = 8
 # The most bytes the fields of the request may take (the broker's frame is 64 KiB, and the audit log's line holds them too).
@@ -45,11 +50,54 @@ LINES = {
     "too_large": "The answers are too large for one request: use fewer or shorter names.",
     "compression": "Choose a compression only for a pattern whose extension does not name one (such as .zst, .gz, .xz, .tar.gz).",
     "scope": "Choose the data types of each classifier below (empty: all of them), then Next again.",
+    "dataset": "Give the Hugging Face dataset as <owner>/<name>: letters, digits, '_', '.' and '-', each part at most 96 characters.",
+    "inspect": "Read the dataset from the Hub first: Next on the Files step reads it.",
+    "hf_configs": "Each group's configs must be some of its own, comma-separated (empty: all of them).",
+    "hf_fields": "Choose at least one field for every group (a field without a SQL mapping counts once it has a type).",
+    "hf_unknown_field": "Each group's fields must be some of its own fields with a SQL mapping, comma-separated (empty: all of them).",
+    "hf_cast": "Choose skip or one of the SQL types for a field without a mapping.",
+    "hf_too_many": "This dataset has more fields without a SQL mapping than one page of the browser can post: add it in a terminal with python sdp.py source add <name> --hf <dataset>.",
+    "hf_shape": "The broker's answer about the dataset did not have the expected shape.",
 }
 
 
 def _q(value):
     return actions._q(value)
+
+
+def suggest_data_type_name(config_names):
+    """The name `source add --hf` suggests for a group of configs: a literal copy of `setup.source._suggest_data_type_name` (the web UI's image holds no setup module; a test compares them)."""
+    if len(config_names) == 1:
+        return config_names[0]
+    first = config_names[0]
+    for sep in ("-", "_", "."):
+        prefix = first.split(sep)[0]
+        if prefix and all(c.startswith(prefix) for c in config_names):
+            return prefix
+    return config_names[0]
+
+
+def checked_schema(data):
+    """The broker's answer of `source.hf_inspect` as the wizard keeps it, its shape checked: {"dataset", "groups": [{"configs": [{"name", "rows"}], "fields": [{"name", "sql_type", "hf_type"}]}], "boxes"} (`boxes`: whether the Fields step draws each field as a box, which it does when they fit in one post). Raises StepError ("hf_shape", or "hf_too_many" when even the comma-separated form cannot be posted)."""
+    try:
+        if not isinstance(data, dict) or not actions.is_hf_dataset(data.get("dataset")) or not isinstance(data.get("groups"), list) or not 1 <= len(data["groups"]) <= 8:
+            raise ValueError
+        groups = []
+        for group in data["groups"]:
+            configs = [{"name": c["name"], "rows": c.get("rows") if isinstance(c.get("rows"), int) and not isinstance(c.get("rows"), bool) and c.get("rows") >= 0 else None} for c in group["configs"]]
+            fields = [{"name": f["name"], "sql_type": f["sql_type"], "hf_type": f["hf_type"]} for f in group["fields"]]
+            if not 1 <= len(configs) <= 256 or len(fields) > 256 or not all(actions.is_plain_name(c["name"]) for c in configs) or len({c["name"] for c in configs}) != len(configs):
+                raise ValueError
+            if not all(actions.is_plain_name(f["name"]) and (f["sql_type"] is None or f["sql_type"] in HF_SQL_TYPES) and isinstance(f["hf_type"], str) and len(f["hf_type"]) <= 64 and not actions.has_control_character(f["hf_type"]) for f in fields) or len({f["name"] for f in fields}) != len(fields):
+                raise ValueError
+            groups.append({"configs": configs, "fields": fields})
+    except (ValueError, KeyError, TypeError):
+        raise StepError("files", "hf_shape") from None
+    unmappable = sum(1 for g in groups for f in g["fields"] if f["sql_type"] is None)
+    boxes = 2 + sum(2 + len(g["fields"]) for g in groups) <= STEP_FIELDS_MAX
+    if not boxes and 2 + 3 * len(groups) + unmappable > STEP_FIELDS_MAX:
+        raise StepError("files", "hf_too_many")
+    return {"dataset": data["dataset"], "groups": groups, "boxes": boxes}
 
 
 # A literal copy of `setup.utils.detect_compression_from_glob` (the web UI's image holds no setup module): the extensions that name a compression, in its order. A test compares them.
@@ -113,7 +161,7 @@ class Answers:
         self.state = state
         self.raw = state["raw"]
         self.upto = STEP_KEYS.index(upto)
-        self.fields = {"platform": state["platform"]}
+        self.fields = {"platform": "custom" if state["platform"] == "hf" else state["platform"]}
 
     def get(self, step, key, default=""):
         return self.raw.get(step, {}).get(key, default)
@@ -124,6 +172,10 @@ class Answers:
     @property
     def reddit(self):
         return self.state["platform"] == "reddit"
+
+    @property
+    def hf(self):
+        return self.state["platform"] == "hf"
 
     def build(self):
         self._files()
@@ -145,10 +197,17 @@ class Answers:
         if name in self.state["existing"]:
             raise StepError("files", "exists")
         f["name"] = name
-        data_types = _split(self.get("files", "data_types", "submissions, comments" if self.reddit else ""))
-        if not 1 <= len(data_types) <= DATA_TYPES_MAX or not all(actions.is_plain_name(dt) for dt in data_types) or len(set(data_types)) != len(data_types):
-            raise StepError("files", "data_types")
-        f["data_types"] = data_types
+        if self.hf:
+            # The data types are the groups' names, given on the Fields step (the terminal asks them in its grouping).
+            dataset = self.get("files", "dataset").strip()
+            if not actions.is_hf_dataset(dataset):
+                raise StepError("files", "dataset")
+            f["hf_dataset"] = dataset
+        else:
+            data_types = _split(self.get("files", "data_types", "submissions, comments" if self.reddit else ""))
+            if not 1 <= len(data_types) <= DATA_TYPES_MAX or not all(actions.is_plain_name(dt) for dt in data_types) or len(set(data_types)) != len(data_types):
+                raise StepError("files", "data_types")
+            f["data_types"] = data_types
         for stage in STAGES:
             path = self.get("files", f"{stage}_path").strip() or f"data/{stage}/{name}"
             spec = actions.SOURCE_ADD_INPUTS[f"{stage}_path"]
@@ -175,7 +234,7 @@ class Answers:
             workers = _int("files", self.get("files", "parse_workers"), actions.SOURCE_ADD_INPUTS["parse_workers"])
             if workers is not None:
                 f["parse_workers"] = workers
-        if not self.reddit:
+        if not self.reddit and not self.hf:
             f["input_format"] = self.get("files", "input_format", "ndjson") if self.get("files", "input_format", "ndjson") in ("ndjson", "csv") else "ndjson"
             if f["input_format"] == "csv":
                 delimiter = self.get("files", "csv_delimiter", "comma")
@@ -196,6 +255,9 @@ class Answers:
     # ── fields ──
 
     def _fields_step(self):
+        if self.hf:
+            self._hf_fields()
+            return
         f, data_types = self.fields, self.fields["data_types"]
         if self.reddit:
             removed = {kind: _names("fields", self.get("fields", f"removed[{kind}]")) for kind in REDDIT_KINDS}
@@ -222,6 +284,57 @@ class Answers:
         f["dump_globs"], f["fields"] = globs, fields
         if compressions:
             f["compressions"] = compressions
+
+    def _hf_fields(self):
+        """The grouping of `source add --hf`: per group of the schema read from the Hub, its configs (empty: all, the terminal's Enter), the data type's name (empty: the terminal's suggestion), the fields with a SQL mapping (boxes, or a comma-separated list when they do not fit in one post; empty: all) and a type or skip for each field without one. Configs and fields are kept in the Hub's order."""
+        f, step = self.fields, "fields"
+        schema = self.state.get("hf")
+        if not schema or schema["dataset"] != f["hf_dataset"]:
+            raise StepError("files", "inspect")
+        visited = step in self.raw
+        groups, data_types = [], []
+        for number, group in enumerate(schema["groups"]):
+            every_config = [config["name"] for config in group["configs"]]
+            chosen = _names(step, self.get(step, f"configs[{number}]"))
+            if any(config not in every_config for config in chosen):
+                raise StepError(step, "hf_configs")
+            configs = [config for config in every_config if config in chosen] if chosen else every_config
+            data_type = self.get(step, f"dt[{number}]").strip() or suggest_data_type_name(configs)
+            if not actions.is_plain_name(data_type):
+                raise StepError(step, "names")
+            mapped = {field["name"]: field["sql_type"] for field in group["fields"] if field["sql_type"]}
+            if schema["boxes"]:
+                kept = [name for name in mapped if not visited or self.get(step, f"field[{number}][{name}]") == actions.CHECKED]
+            else:
+                typed = _names(step, self.get(step, f"fields[{number}]"))
+                if any(name not in mapped for name in typed):
+                    raise StepError(step, "hf_unknown_field")
+                kept = [name for name in mapped if name in typed] if typed else list(mapped)
+            chosen_fields = [{"name": name, "sql_type": mapped[name]} for name in kept]
+            for field in group["fields"]:
+                if field["sql_type"] is None:
+                    cast = self.get(step, f"cast[{number}][{field['name']}]", "skip")
+                    if cast != "skip" and cast not in HF_SQL_TYPES:
+                        raise StepError(step, "hf_cast")
+                    if cast != "skip":
+                        chosen_fields.append({"name": field["name"], "sql_type": cast})
+            if not chosen_fields:
+                raise StepError(step, "hf_fields")
+            names = {field["name"] for field in chosen_fields}
+            entry = {"configs": configs, "data_type": data_type, "fields": chosen_fields}
+            excluded = [field["name"] for field in group["fields"] if field["name"] not in names]
+            if excluded:
+                entry["excluded"] = excluded
+            groups.append(entry)
+            data_types.append(data_type)
+        if len(set(data_types)) != len(data_types):
+            raise StepError(step, "names")
+        f["data_types"], f["hf_groups"] = data_types, groups
+
+    @property
+    def download(self):
+        """Whether Download now is ticked: by default, until Review was posted without it."""
+        return "review" not in self.raw or self.get("review", "download") == actions.CHECKED
 
     # ── classifiers ──
 
@@ -412,9 +525,14 @@ def defaults_left(fields):
     return left
 
 
-def cli_lines(fields_or_state):
-    """The `sdp` commands the wizard stands for, as (words, bold value) pairs for the `.cli` lines."""
+def cli_lines(fields_or_state, download=True):
+    """The `sdp` commands the wizard stands for, as (words, bold value) pairs, or (words, bold value, words, bold value), for the `.cli` lines."""
     name = fields_or_state.get("name")
+    if "hf_dataset" in fields_or_state:
+        lines = [("python sdp.py source add", name or "<name>", "--hf", fields_or_state["hf_dataset"])]
+        if download:
+            lines.append(("python sdp.py source download", name or "<name>"))
+        return lines
     lines = [("python sdp.py source add", name or "<name>")]
     if fields_or_state.get("platform") == "reddit" and any(key in fields_or_state for key in ("reddit_db_schema", "reddit_removed_fields", "reddit_indexes")):
         lines.append(("python sdp.py source configure", "reddit"))
@@ -449,8 +567,9 @@ def install(api, ctx):
             "wizard_id": wizard.id, "step": step, "platform": state["platform"], "stepper": stepper(step, needed), "line": line,
             "raw": state["raw"].get(step, {}), "visited": step in state["raw"], "answers": answers.fields, "offered": offered_profiles(state["databases"]),
             "databases": state["databases"], "reddit_kinds": REDDIT_KINDS, "default_pattern": DEFAULT_REMOVE_PATTERN, "token_kept": isinstance(state["raw"].get("classifiers", {}).get("hf_token"), actions.Hidden),
-            "cli": cli_lines(answers.fields), "scope_names": _split(state["raw"].get("classifiers", {}).get("ml_classifiers", "")),
+            "cli": cli_lines(answers.fields, answers.download), "scope_names": _split(state["raw"].get("classifiers", {}).get("ml_classifiers", "")),
             "review": None, "rail": rail(state["existing"]),
+            "hf": state.get("hf"), "dataset_token_kept": isinstance(state["raw"].get("files", {}).get("dataset_token"), actions.Hidden), "download": answers.download, "sql_choices": [(name, name) for name in HF_SQL_TYPES],
         }
         if step == "review":
             try:
@@ -460,7 +579,7 @@ def install(api, ctx):
                 model["review_error_step"] = refused.step
             else:
                 action = actions.TABLE["source.add"]
-                model["review"] = {"inputs": actions.shown_inputs(action, fields), "files": actions.source_files(fields["profiles"]), "folders": [(stage, fields[f"{stage}_path"]) for stage in STAGES], "defaults": defaults_left(fields), "cli": cli_lines(fields)}
+                model["review"] = {"inputs": actions.shown_inputs(action, fields), "files": actions.source_files(fields["profiles"]), "folders": [(stage, fields[f"{stage}_path"]) for stage in STAGES], "defaults": defaults_left(fields), "cli": cli_lines(fields, answers.download)}
         elif error is not None and error.step != step and STEP_KEYS.index(error.step) < STEP_KEYS.index(step):
             model["line"] = model["line"] or error.line
         return frame(session, status, **model)
@@ -494,6 +613,37 @@ def install(api, ctx):
         databases = blocks["status"]["configured"]
         names = [row["name"] for row in blocks["list"]["rows"]]
         return databases, names
+
+    async def read_dataset(request, session_id, session, wizard, dataset):
+        """Read the dataset's schema from the Hub through the broker (`source.hf_inspect`, with the token typed on Files) when the wizard has none for this dataset or a new token was typed, in a worker of the pages' bound; keep it in the wizard (the Fields step's answers of another dataset are dropped). None when it was read or kept, else the response to send: the Files step with the line of the refusal, or the login page for an ended session."""
+        state = wizard.fields
+        token = state["raw"]["files"].get("dataset_token")
+        kept = state.get("hf")
+        if kept is not None and kept["dataset"] == dataset and state.get("hf_token_used") is token:
+            return None
+        fields = {"dataset": dataset, **({"token": token} if isinstance(token, actions.Hidden) else {})}
+        answer = await ctx.pages.run(lambda: call_broker(lambda: ctx.broker(token=session.token, timeout=limits.read_seconds), lambda made: actions.call(made, "source.hf_inspect", fields)))
+        if answer is BUSY_GATE:
+            return show(session, wizard, "files", 503, "The web UI is busy with other requests: try again in a moment.")
+        kind, value = answer
+        if kind == "error":
+            if session_ends(value):
+                ctx.sessions.forget(session_id)
+                return ctx.to_login(request, why(value), clear_cookie=True)
+            return show(session, wizard, "files", 400, "The dataset could not be read from the Hub: " + _refusal_text(value))
+        try:
+            schema = checked_schema(value.get("data") if isinstance(value, dict) else None)
+            if schema["dataset"] != dataset:
+                raise StepError("files", "hf_shape")
+        except StepError as refused:
+            return show(session, wizard, "files", 400, refused.line)
+        if kept is None or kept["dataset"] != dataset:
+            state["raw"].pop("fields", None)
+        state["hf"] = schema
+        # Which token read it (the object, never its text): a new token typed reads the dataset again.
+        state["hf_token_used"] = token
+        session.work.wizard(wizard.id, ctx.clock(), touch=True, weight=_weight(state))
+        return None
 
     @api.get("/add-source")
     async def origin_page(request: Request):
@@ -567,8 +717,24 @@ def install(api, ctx):
             if platform != state["platform"]:
                 state["platform"] = platform
                 state["raw"] = {}
-        elif step != "review":
+                state.pop("hf", None)
+                state.pop("hf_token_used", None)
+        elif step == "review":
+            # Download now (a Hugging Face dataset's): ticked, or posted without it.
+            state["raw"]["review"] = {"download": form["download"]} if form.get("download") == actions.CHECKED else {}
+        else:
             kept = dict(form)
+            if step == "files" and state["platform"] == "hf":
+                previous = state["raw"].get("files", {}).get("dataset_token")
+                token = kept.pop("dataset_token", "")
+                if kept.pop("dataset_token_forget", None) == actions.CHECKED:
+                    previous = None
+                if token:
+                    if token != token.strip() or actions.has_control_character(token) or len(token) > actions.SECRET_MAX_CHARS:
+                        return show(session, wizard, step, 400, LINES["token"])
+                    previous = actions.Hidden(token)
+                if previous is not None:
+                    kept["dataset_token"] = previous
             if step == "classifiers":
                 previous = state["raw"].get("classifiers", {}).get("hf_token")
                 token = kept.pop("hf_token", "")
@@ -590,6 +756,11 @@ def install(api, ctx):
                     return show(session, wizard, step, 200, LINES["scope"])
         session.work.wizard(wizard_id, ctx.clock(), touch=True, weight=_weight(state))
         answers, error = try_answers(state, step)
+        if step == "files" and nav == "next" and state["platform"] == "hf" and error is None:
+            read = await read_dataset(request, session_id, session, wizard, answers.fields["hf_dataset"])
+            if read is not None:
+                return read
+            answers, error = try_answers(state, step)
         needed = needed_steps(answers)
         if nav == "back":
             earlier = [key for key in needed if STEP_KEYS.index(key) < STEP_KEYS.index(step)]
@@ -605,9 +776,29 @@ def install(api, ctx):
             fields = final_fields(state)
         except StepError as refused:
             return show(session, wizard, refused.step if refused.step != "review" else "review", 400, refused.line)
-        pending = session.work.add_pending("source.add", fields, ctx.clock())
+        then = None
+        if "hf_dataset" in fields and Answers(state).download:
+            # The download follows the add; the dataset token goes with it and is dropped with the pending action once it was sent.
+            token = state["raw"].get("files", {}).get("dataset_token")
+            download = {"source": fields["name"], **({"token": token} if isinstance(token, actions.Hidden) else {})}
+            actions.check_fields(actions.TABLE["source.download"], download)
+            then = [("source.download", download)]
+        pending = session.work.add_pending("source.add", fields, ctx.clock(), then=then)
         session.work.drop_wizard(wizard_id)
         return RedirectResponse(f"/pending/{pending.id}", status_code=303)
+
+
+def _refusal_text(error):
+    """The line of a refused read: the action's own line when the broker sent one (its first line, without the `Error: ` the child prints, at most 300 characters, control characters dropped), else the broker's sentence."""
+    details = getattr(error, "details", None) or {}
+    text = details.get("errors") if isinstance(details, dict) else None
+    if isinstance(text, str) and text.strip():
+        line = next((part for part in text.splitlines() if part.strip()), "").strip()
+        line = line[len("Error: "):] if line.startswith("Error: ") else line
+        line = "".join(character for character in line if not actions.has_control_character(character))[:300]
+        if line:
+            return line[0].upper() + line[1:] + ("" if line.endswith(".") else ".")
+    return words.sentence(error)
 
 
 def _weight(state):

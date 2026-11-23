@@ -64,7 +64,19 @@
 </nav>
 
 <div class="mt-l"{% if tab != "pipeline" %} hidden{% endif %}>
-  <h4>Prepare</h4>
+  {%- if known and status.hf_dataset and not status.hf_downloaded %}
+  <form method="post" action="/pending" class="action-form card hf-download">
+    {{ forms.token() }}
+    <input type="hidden" name="action" value="source.download">
+    <input type="hidden" name="source" value="{{ source_name }}">
+    <p class="small">The Hugging Face dataset <code>{{ status.hf_dataset }}</code> is not downloaded yet: <code>python sdp.py source download {{ source_name }}</code> runs as a run, with its log and Cancel.</p>
+    <div class="row wrap">
+      <label class="f">Access token <span class="muted">(private datasets only; used for this download, never stored)</span><input type="password" name="token" autocomplete="off" maxlength="1024" placeholder="optional"></label>
+      <button type="submit" class="btn sm primary right">Download</button>
+    </div>
+  </form>
+  {%- endif %}
+  <h4{% if known and status.hf_dataset and not status.hf_downloaded %} class="mt-l"{% endif %}>Prepare</h4>
   <div class="flow mt">
     <div class="node static"><span class="nm">dumps</span><span class="dir">{{ pipeline.dumps or "–" }}</span><span class="small ink2">the source's files</span></div><span class="arrow" aria-hidden="true">→</span>
     {%- for n in pipeline.prepare %}

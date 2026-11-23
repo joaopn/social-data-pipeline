@@ -59,6 +59,7 @@ With a `pipx` install (see [Install](install.md)) the same commands are `sdp <gr
 | `python sdp.py source add <name>` | Add a new data source (interactive setup) |
 | `python sdp.py source add <name> --hf <dataset_id>` | Add from a Hugging Face dataset (fetches metadata as defaults) |
 | `python sdp.py source download <name> [--token <token>] [--data-type <type>]` | Download Hugging Face dataset files (mirrors to `data/dumps/`, organizes to `data/extracted/`). `--token` for private datasets (falls back to the `HF_TOKEN` environment variable); `--data-type` downloads only that data type |
+| `python sdp.py source hf-inspect <owner>/<name> [--token <token>]` | Show a Hugging Face dataset's schema groups, as `--hf` will offer them |
 | `python sdp.py source configure <name>` | Reconfigure an existing source (platform-specific) |
 | `python sdp.py source add-classifiers <name>` | Add ML classifiers for a source |
 | `python sdp.py source remove <name>` | Remove a source's configuration |

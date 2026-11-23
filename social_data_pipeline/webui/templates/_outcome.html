@@ -45,6 +45,25 @@
   <pre class="output">{{ outcome.errors }}</pre>
   {%- endif %}
   {%- endif %}
+  {%- for step in outcome.then or [] %}
+  {#- Each step that followed (`Pending.then`), in order: its run, its exit code and output, its refusal, or that it was not started. #}
+  <h3>Then: <code>{{ step.command }}</code></h3>
+  {%- if step.state == "started" %}
+  <p class="notice">{% if step.action == "source.download" %}The download was started as a run{% else %}It was started as a run{% endif %}: <a href="{{ step.run_href }}"><code>{{ step.run_id }}</code></a> (its log and Cancel are on its page, in Runs and on the Overview).</p>
+  {%- elif step.state == "result" %}
+  <p class="notice {{ '' if step.exit_code == 0 else 'notice-bad' }}">The command ended with exit code {{ step.exit_code }}.</p>
+  {%- if step.output %}
+  <pre class="output">{{ step.output }}</pre>
+  {%- endif %}
+  {%- if step.errors %}
+  <pre class="output">{{ step.errors }}</pre>
+  {%- endif %}
+  {%- elif step.state == "refused" %}
+  <p class="notice notice-bad" role="alert">It was not started: {{ step.sentence }}{% if step.action == "source.download" %} Start it later with Download on the source's page.{% endif %}</p>
+  {%- else %}
+  <p class="notice">It was not started, because the action above did not end with exit code 0.</p>
+  {%- endif %}
+  {%- endfor %}
   {%- if outcome.queue and outcome.back %}
   <p><a href="{{ outcome.back[0] }}">{{ outcome.back[1] }}</a></p>
   {%- endif %}

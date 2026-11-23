@@ -1,10 +1,10 @@
-"""The data of the Overview page, made from the answers of three read verbs: `db.status`, `source.list` and `run.list`; and its live figures (`read_live`, for `GET /overview/live`): the number of queries that wait for approval and the finished files of each source's stages.
+"""The data of the Overview page, made from the answers of three read verbs: `db.status`, `source.list` and `run.list`; and its live figures (`read_live`, for `GET /overview/live`): the number of queries that wait for approval, the finished files of each source's stages, its loads and its size on disk.
 
 Each block is made on its own: a failed read, or an answer of a shape this module does not expect, becomes that block's sentence and leaves the other blocks as they are. Every text that came from the broker is passed through `cleaning.clean_log_text` (with line breaks made spaces) before it is shown, and is escaped by the template; a name becomes a link only when it is a plain name (`PLAIN_NAME`, the registry's pattern), and then its URL-encoded form is used.
 
 The page draws "Needs attention" (the notices, a failed read, Docker that cannot be asked), "Right now" (the runs alive, the state of the databases, the MCP servers and the scheduler) and the grid of sources and pipeline profiles (`grid`): one row per source, one cell per profile of `GRID_PROFILES`, each "running" when a run of that profile on that source is alive, "configured" when the source has the profile, "–" otherwise. What a configured cell has produced comes with the live figures (`live_cell`): no state the reads do not give is drawn.
 
-The live figures are asked after the page has loaded, so that a slow scheduler or a source with many files never slows the page: `read_live` runs in a worker of a bound of its own, asks the broker first whether it still knows the session (as `status` does), then the scheduler's `queue.counts`, `source.list`, `run.list` and, for at most `LIVE_SOURCES_MAX` sources and `LIVE_TOTAL_SECONDS` in all, `source.progress` and `source.status` per source, each call with the time limit `LIVE_SECONDS`, each failure confined to its own line or row. `source.progress` counts the finished files of the parse and lingua stages and of each classifier folder (the `ml` profile); it gives no total, so a cell shows the finished count alone, never a fraction or a bar. `source.status` gives the files each database profile loaded and failed, as the source's page shows them in its lanes (`pages.load_figure`). A stage's unfinished files (`.temp`) are "being written" only while a run that may write them is alive (`writing_of`); otherwise they were left by a run that ended.
+The live figures are asked after the page has loaded, so that a slow scheduler or a source with many files never slows the page: `read_live` runs in a worker of a bound of its own, asks the broker first whether it still knows the session (as `status` does), then the scheduler's `queue.counts`, `source.list`, `run.list` and, for at most `LIVE_SOURCES_MAX` sources and `LIVE_TOTAL_SECONDS` in all, `source.progress`, `source.status` and `source.size` per source, each call with the time limit `LIVE_SECONDS`, each failure confined to its own line or row. `source.progress` counts the finished files of the parse and lingua stages and of each classifier folder (the `ml` profile); it gives no total, so a cell shows the finished count alone, never a fraction or a bar. `source.status` gives the files each database profile loaded and failed, as the source's page shows them in its lanes (`pages.load_figure`). `source.size` gives the bytes on disk of the source's dumps, extracted, parsed and output folders, shown beside its name in the grid (`size_figure`, `bytes_text`: decimal units as `sdp source size` writes them, "≥ " before a total of which a folder could not be read whole). A stage's unfinished files (`.temp`) are "being written" only while a run that may write them is alive (`writing_of`); otherwise they were left by a run that ended.
 
 Two notices are made from `db.status`. Databases without authentication: authentication is set once for every database of a setup, and the status names the databases with an admin user; a database counts as without authentication when authentication is off, or when the status names no admin user for it. Ports open beyond this machine: `docker-compose.yml` publishes the ports of the databases, the MCP servers and the scheduler without an address, which Docker opens on every address of the machine, so the notice lists the services that run now with their ports. Standard library and this package only.
 """
@@ -39,6 +39,11 @@ LIVE_TIME_OUT = "Not asked: the time for the figures ran out."
 STAGE_PROFILES = {"parse": "parse", "lingua": "lingua", "classifier": "ml"}
 # The grid's profiles whose figures are files in a folder (`source.progress`); the others are loads into a database (`source.status`).
 FILE_PROFILES = ("parse", "lingua", "ml")
+# A source's size on disk (`source.size`): the units above bytes, each 1000 times the one before (a literal copy of the CLI's, `sdp source size`), and the size from which the text no longer counts (a million million PB: no disk holds it, and the digits of a larger whole number could raise when written).
+SIZE_UNITS = ("kB", "MB", "GB", "TB", "PB")
+SIZE_SHOWN_MAX = 10 ** 27
+SIZE_TITLE = "On disk: the source's dumps, extracted, parsed and output folders"
+SIZE_AT_LEAST = "at least: a folder of the source could not be read whole"
 
 
 class ShapeError(Exception):
@@ -344,6 +349,42 @@ def live_cell(profile, running, figure, load):
     return {"state": state, "parts": parts, "note": note, "text": shown}
 
 
+def bytes_text(size):
+    """A number of bytes as `sdp source size` writes it: `999 B`, then one decimal place in powers of 1000 (`1.0 kB`, `12.3 MB`, up to PB), rounded half up, in whole numbers only. Total over every int: from `SIZE_SHOWN_MAX` on, the text is "more than" that many PB."""
+    if size < 1000:
+        return f"{size} B"
+    if size >= SIZE_SHOWN_MAX:
+        return f"more than {SIZE_SHOWN_MAX // 1000 ** len(SIZE_UNITS)} PB"
+    scale = 1
+    for unit in SIZE_UNITS:
+        scale *= 1000
+        tenths = (size * 10 + scale // 2) // scale
+        if tenths < 10000 or unit == SIZE_UNITS[-1]:
+            return f"{tenths // 10}.{tenths % 10} {unit}"
+
+
+def size_view(total, complete):
+    """What the page shows of a source's size: {"text", "title"}; a total that is not complete (a folder could not be read whole) is "≥ " the bytes counted."""
+    if complete:
+        return {"text": bytes_text(total), "title": SIZE_TITLE + (f": {total} bytes" if total < SIZE_SHOWN_MAX else "")}
+    return {"text": "≥ " + bytes_text(total), "title": SIZE_AT_LEAST}
+
+
+def size_figure(result):
+    """The size of one source from its `source.size` answer (`size_view`), or None when the source has no readable configuration (`found` false, or `not_readable` set). Reads only `found`, `total_bytes` (a whole number from 0 on, not a boolean) and `complete` (a boolean); raises ShapeError for an answer of another shape."""
+    data = _data(result)
+    sources = data.get("sources")
+    _need(isinstance(sources, list) and len(sources) == 1 and isinstance(sources[0], dict))
+    entry = sources[0]
+    _need(isinstance(entry.get("found"), bool))
+    # A config that was found but cannot be used (not a mapping, `paths` not a mapping) measures nothing: no size, rather than "≥ 0 B".
+    if not entry["found"] or entry.get("not_readable"):
+        return None
+    total, complete = entry.get("total_bytes"), entry.get("complete")
+    _need(isinstance(total, int) and not isinstance(total, bool) and total >= 0 and isinstance(complete, bool))
+    return size_view(total, complete)
+
+
 class LiveSessionEnded:
     """What `read_live` returns when the broker has ended the session: the broker's error."""
 
@@ -352,7 +393,7 @@ class LiveSessionEnded:
 
 
 def read_live(session_error, scheduler, ask, clock=time.monotonic):
-    """The live figures of the Overview: {"broker": None or the sentence of a broker that did not confirm the session (then nothing else is asked), "queue": None (not set up, or nothing asked) or {"pending"} or {"failed"}, "sources": None or the sentence of a failed `source.list`, "runs": None or the sentence of a failed `run.list` (then no cell says running, and unfinished files are not called "being written"), "rows": per source asked {"key", "cells": {profile: the cell (`live_cell`) with its `href`, `title` and `id`}, "failed"}, "cut": None or (asked, listed)}, or `LiveSessionEnded`. `session_error()` is the broker's check of the session, `scheduler` the way to the scheduler, `ask(verb, fields)` a read of the broker with the live time limit."""
+    """The live figures of the Overview: {"broker": None or the sentence of a broker that did not confirm the session (then nothing else is asked), "queue": None (not set up, or nothing asked) or {"pending"} or {"failed"}, "sources": None or the sentence of a failed `source.list`, "runs": None or the sentence of a failed `run.list` (then no cell says running, and unfinished files are not called "being written"), "rows": per source asked {"key", "cells": {profile: the cell (`live_cell`) with its `href`, `title` and `id`}, "size": None or its size on disk (`size_figure`), "failed": None or the line of its reads that failed}, "cut": None or (asked, listed)}, or `LiveSessionEnded`. `session_error()` is the broker's check of the session, `scheduler` the way to the scheduler, `ask(verb, fields)` a read of the broker with the live time limit. Per source it asks `source.progress`, `source.status` and `source.size`, in that order, each only while the time of all the calls lasts."""
     from social_data_pipeline.webui import pages  # here, not at the top: `pages` imports this module
     from social_data_pipeline.webui.scheduler import SchedulerUnavailable  # here, not at the top: `scheduler` imports `actions`, which imports this module
 
@@ -400,10 +441,10 @@ def read_live(session_error, scheduler, ask, clock=time.monotonic):
     running = {(row["source"], row["profile"]) for row in runs["rows"]} if runs["ok"] else set()
 
     for row in listed[:LIVE_SOURCES_MAX]:
-        entry = {"key": cell_key(row["name"]), "cells": {}, "failed": None}
+        entry = {"key": cell_key(row["name"]), "cells": {}, "failed": None, "size": None}
         model["rows"].append(entry)
         failed, figures, loads = [], None, None
-        for verb, label in (("source.progress", "Finished files"), ("source.status", "Loads")):
+        for verb, label in (("source.progress", "Finished files"), ("source.status", "Loads"), ("source.size", "Size")):
             if clock() >= deadline:
                 failed.append(f"{label} not read: {LIVE_TIME_OUT}")
                 continue
@@ -416,6 +457,10 @@ def read_live(session_error, scheduler, ask, clock=time.monotonic):
             try:
                 if verb == "source.progress":
                     figures = progress_cells(value, writing_of(runs, row["name"]))
+                elif verb == "source.size":
+                    entry["size"] = size_figure(value)
+                    if entry["size"] is None:
+                        failed.append(f"{label} not read: the source has no readable configuration.")
                 else:
                     status = pages.source_status_block(value)
                     loads = status if status["found"] else None

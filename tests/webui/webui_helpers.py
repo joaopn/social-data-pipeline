@@ -66,6 +66,14 @@ def source_progress(name="demo", **entry):
     return {"data": {"sources": [data]}}
 
 
+def source_size(name="demo", total_bytes=1_400_000_000, complete=True, found=True, **entry):
+    """A `source.size` answer for one source, shaped as `get_source_size` gives it (paths included, which the web UI never shows)."""
+    stages = [{"stage": stage, "path": f"./data/{stage}/{name}", "exists": True, "not_readable": None, "files": 1, "bytes": total_bytes if stage == "dumps" else 0} for stage in ("dumps", "extracted", "parsed", "output")] if found else []
+    data = {"name": name, "found": found, "warnings": [], "not_readable": None, "stages": stages, "total_bytes": total_bytes if found else 0, "complete": complete if found else False}
+    data.update(entry)
+    return {"data": {"sources": [data]}}
+
+
 def error_logs(profile, files=(), sections=(), name="demo"):
     return {"data": {"name": name, "sources": [{"name": name, "found": True, "warnings": [], "profiles": [{"profile": profile, "files": list(files), "mongoimport_sections": list(sections)}]}]}}
 
@@ -120,7 +128,7 @@ class StandInBroker:
         self.lock = threading.Lock()
         self.answers = {
             "db.status": db_status(), "db.verify": db_verify(), "source.list": source_list(), "run.list": run_list(), "hello": {"protocol": 1, "password_set": True}, "audit.list": {"data": []},
-            "source.status": lambda fields: source_status(fields["name"]), "source.progress": lambda fields: source_progress(fields["name"]), "source.error_logs": lambda fields: error_logs(fields["profile"], name=fields["name"]),
+            "source.status": lambda fields: source_status(fields["name"]), "source.progress": lambda fields: source_progress(fields["name"]), "source.size": lambda fields: source_size(fields["name"]), "source.error_logs": lambda fields: error_logs(fields["profile"], name=fields["name"]),
             "db.restart_needed": restart_needed(), "db.llm_settings": llm_settings(),
             "run.logs": lambda fields: {"data": {"id": fields["run_id"], "kind": "web", "state": "finished", "text": "", "next_offset": fields.get("offset", 0), "complete": True}},
         }

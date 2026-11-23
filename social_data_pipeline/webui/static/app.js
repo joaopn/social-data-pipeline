@@ -281,7 +281,7 @@ var sdpStore = {
   });
 })();
 
-// The Chat window's right column ("This chat", chat.html): its button and the handle beside the conversation hide and show it (the grid then has two columns; the state is kept as sdp.chatPanel and drawn by theme.js before the page shows); the sandbox's facts (details.sandbox) stay open or closed as last left (sdp.sandboxOpen). Once a new end of a turn has come into the conversation, the turn totals are asked again (the event sdp-turn-ended on the body, which their part listens for).
+// The Chat window's right column ("This chat", chat.html): its button and the handle beside the conversation hide and show it (the grid then has two columns; the state is kept as sdp.chatPanel and drawn by theme.js before the page shows); the sandbox's facts (details.sandbox) stay open or closed as last left (sdp.sandboxOpen), and so does the left column's data in reach (details.reach-box, sdp.reachOpen), which is open unless this browser closed it last. Once a new end of a turn has come into the conversation, the turn totals are asked again (the event sdp-turn-ended on the body, which their part listens for).
 (function () {
   function panelButtons() {
     return document.querySelectorAll("[data-chat-panel]");
@@ -320,6 +320,13 @@ var sdpStore = {
       facts.open = sdpStore.get("sdp.sandboxOpen") === "1";
       facts.addEventListener("toggle", function () {
         sdpStore.set("sdp.sandboxOpen", facts.open ? "1" : "0");
+      });
+    }
+    var reachBox = document.querySelector(".cw details.reach-box");
+    if (reachBox) {
+      reachBox.open = sdpStore.get("sdp.reachOpen") !== "0";
+      reachBox.addEventListener("toggle", function () {
+        sdpStore.set("sdp.reachOpen", reachBox.open ? "1" : "0");
       });
     }
     seen = ends();

@@ -1,15 +1,15 @@
-"""The Chat window's "Data in reach" (`GET /chat/reach`): per database, the sources whose data the chat's assistant can query, e.g. "StarRocks: reddit" and "MongoDB: voat, 4chan".
+"""The Chat window's "Data in reach" (`GET /chat/reach`): per database, the sources whose data the chat's assistant can query, one per line with its size on disk, e.g. "StarRocks" over "reddit (1.4 GB)" and "MongoDB" over "voat (12.3 MB)" and "4chan (≥ 2.0 TB)".
 
-A database is in reach only when all of these hold: the chat's runner says the gateway attaches it (`hello`'s `databases`, fixed when `sdp chat start` ran), the broker's `db.status` says it runs, and its MCP server is set up, runs and is read-only (`db.status`'s `mcp` entry: PostgreSQL's access mode `restricted`, MongoDB's read-only setting, StarRocks's read-only user). A source is listed under it when that database holds data loaded from the source: the files the source's database profiles loaded there (`source.status`, read per source as the Overview's live figures read it, `pages.load_figure`), more than none. Each database attached but out of reach is one line that says why (stopped, MCP server down, no data loaded); a database set up but not attached says that.
+A database is in reach only when all of these hold: the chat's runner says the gateway attaches it (`hello`'s `databases`, fixed when `sdp chat start` ran), the broker's `db.status` says it runs, and its MCP server is set up, runs and is read-only (`db.status`'s `mcp` entry: PostgreSQL's access mode `restricted`, MongoDB's read-only setting, StarRocks's read-only user). A source is listed under it when that database holds data loaded from the source: the files the source's database profiles loaded there (`source.status`, read per source as the Overview's live figures read it, `pages.load_figure`), more than none. Each source listed is shown with its size on disk (`source.size`, the bytes of its dumps, extracted, parsed and output folders, `overview.size_figure`), asked once however many databases list it, and without a size when that read failed. Each database attached but out of reach is one line that says why (stopped, MCP server down, no data loaded); a database set up but not attached says that.
 
-`read_reach` runs in a worker of its own bound, never on the event loop; the Chat window keeps its model for the login and draws it at once on later pages, asking again in the background once it is older than `chat.REACH_FRESH_SECONDS` (a whole-block failure is not kept). It asks the broker first whether it still knows the session (`queue.broker_session_error`): a session it has ended ends the web session; a broker that does not answer is the block's one line, and nothing else is asked. Then the runner's `hello`, `db.status`, `source.list` and, only when a database is in reach and only for the sources with one of its profiles, `source.status` per source: at most `overview.LIVE_SOURCES_MAX` sources and `overview.LIVE_TOTAL_SECONDS` in all, each call with the time limit `overview.LIVE_SECONDS`. Every failure is confined to the block (a line, or a note under the databases). Names come from `source.list` and are shown only when they are plain names (`overview.link`), cleaned and escaped by the template. Standard library and this package only.
+`read_reach` runs in a worker of its own bound, never on the event loop; the Chat window keeps its model for the login and draws it at once on later pages, asking again in the background once it is older than `chat.REACH_FRESH_SECONDS` (a whole-block failure is not kept). It asks the broker first whether it still knows the session (`queue.broker_session_error`): a session it has ended ends the web session; a broker that does not answer is the block's one line, and nothing else is asked. Then the runner's `hello`, `db.status`, `source.list` and, only when a database is in reach and only for the sources with one of its profiles, `source.status` per source, followed by `source.size` for each source that has data in a database in reach: at most `overview.LIVE_SOURCES_MAX` sources and `overview.LIVE_TOTAL_SECONDS` in all, each call with the time limit `overview.LIVE_SECONDS`. Every failure is confined to the block (a line, or a note under the databases). Names come from `source.list` and are shown only when they are plain names (`overview.link`), cleaned and escaped by the template. Standard library and this package only.
 """
 
 import time
 
 from social_data_pipeline.webui import words
 from social_data_pipeline.webui.calls import SESSION_ENDING_CODES
-from social_data_pipeline.webui.overview import DATABASE_TITLES, LIVE_SECONDS, LIVE_SOURCES_MAX, LIVE_TOTAL_SECONDS, SHAPE_SENTENCE, sources_block, text
+from social_data_pipeline.webui.overview import DATABASE_TITLES, LIVE_SECONDS, LIVE_SOURCES_MAX, LIVE_TOTAL_SECONDS, SHAPE_SENTENCE, size_figure, sources_block, text
 
 # The time limit of each call of the block: the Overview's live figures' own.
 CALL_SECONDS = LIVE_SECONDS
@@ -90,7 +90,7 @@ def _ordered(names):
 
 
 def read_reach(session_error, hello, ask, clock=time.monotonic):
-    """The block's model: {"line": None or the one sentence that replaces the block (the broker, the runner or `db.status` did not answer), "rows": [{"title", "ok", "text"}] (one per database), "notes": [sentences under them]}, or `ReachSessionEnded`. `session_error()` is the broker's check of the session, `hello()` the runner's `hello` as ("ok", answer) or ("error", error), `ask(verb, fields)` a read of the broker with the live time limit."""
+    """The block's model: {"line": None or the one sentence that replaces the block (the broker, the runner or `db.status` did not answer), "rows": one per database, {"title", "ok": True, "sources": [{"name", "size": None or {"text", "title"}}]} for one in reach with data, else {"title", "ok": False, "text": why not}, "notes": [sentences under them]}, or `ReachSessionEnded`. Per source it asks `source.status` and, when the source has data in a database in reach, `source.size`, each only while the time of all the calls lasts; a size that could not be read leaves the source shown without one, with a note. `session_error()` is the broker's check of the session, `hello()` the runner's `hello` as ("ok", answer) or ("error", error), `ask(verb, fields)` a read of the broker with the live time limit."""
     from social_data_pipeline.webui import pages  # here, not at the top: `pages` imports `overview`, which this module imports
 
     model = {"line": None, "rows": [], "notes": []}
@@ -144,6 +144,7 @@ def read_reach(session_error, hello, ask, clock=time.monotonic):
             model["notes"].append(f"Only the first {LIVE_SOURCES_MAX} of {len(listed)} sources were read.")
         deadline = clock() + LIVE_TOTAL_SECONDS
         failed = late = 0
+        sizes_failed = sizes_late = 0
         for row in listed[:LIVE_SOURCES_MAX]:
             databases = [name for name in reachable if set(PROFILES[name]) & set(row["profiles"])]
             if clock() >= deadline:
@@ -161,19 +162,39 @@ def read_reach(session_error, hello, ask, clock=time.monotonic):
                 failed += 1
                 unread.update(databases)
                 continue
-            for name in databases:
-                if loaded_into(status, name):
-                    found[name].append(text(row["name"]))
+            shown = {"name": text(row["name"]), "size": None}
+            under = [name for name in databases if loaded_into(status, name)]
+            for name in under:
+                found[name].append(shown)
+            if not under:
+                continue
+            # The size of a source listed under any database: asked once, the same entry under each.
+            if clock() >= deadline:
+                sizes_late += 1
+                continue
+            kind, value = ask("source.size", {"name": row["name"]})
+            if _ends(kind, value):
+                return ReachSessionEnded(value)
+            try:
+                shown["size"] = size_figure(value) if kind == "ok" else None
+            except Exception:
+                shown["size"] = None
+            if shown["size"] is None:
+                sizes_failed += 1
         if failed:
             model["notes"].append(f"The loads of {failed} source{'' if failed == 1 else 's'} could not be read.")
         if late:
             model["notes"].append(f"The loads of {late} source{'' if late == 1 else 's'} were not read: the time for them ran out.")
+        if sizes_failed:
+            model["notes"].append(f"The size{'' if sizes_failed == 1 else 's'} of {sizes_failed} source{'' if sizes_failed == 1 else 's'} could not be read.")
+        if sizes_late:
+            model["notes"].append(f"The size{'' if sizes_late == 1 else 's'} of {sizes_late} source{'' if sizes_late == 1 else 's'} {'was' if sizes_late == 1 else 'were'} not read: the time for {'it' if sizes_late == 1 else 'them'} ran out.")
 
     for name in _ordered(attached):
         if reasons[name] is not None:
             model["rows"].append({"title": _title(name), "ok": False, "text": reasons[name]})
         elif found[name]:
-            model["rows"].append({"title": _title(name), "ok": True, "text": ", ".join(found[name])})
+            model["rows"].append({"title": _title(name), "ok": True, "sources": found[name]})
         else:
             model["rows"].append({"title": _title(name), "ok": False, "text": LOADS_NOT_READ if name in unread else NO_DATA})
     for name in _ordered(set(facts) - set(attached)):

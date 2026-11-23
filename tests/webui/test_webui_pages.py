@@ -22,7 +22,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
 from markupsafe import escape
-from webui_helpers import ORIGIN, a_job, a_run, db_status, form_token, log_in, main_html, run_list, session_cookie, source_list, source_progress, source_status, with_cookie
+from webui_helpers import ORIGIN, a_job, a_run, db_status, form_token, log_in, main_html, run_list, session_cookie, source_list, source_progress, source_size, source_status, with_cookie
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.control import verbs
@@ -292,7 +292,7 @@ def live_cells(part, key):
 
 
 def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_only(client, broker, door, monkeypatch):
-    """Bug class: a cell that claims a state or a count the reads do not give (a profile not configured shown with files, a running profile not shown running, a load without its failures), "set up" where the reads say what the stage produced, a wrong number of waiting queries, one source's failed read taking the other sources' figures or the queue's line with it, a call outside the table or without the short time limit, every source asked however many there are."""
+    """Bug class: a cell that claims a state or a count the reads do not give (a profile not configured shown with files, a running profile not shown running, a load without its failures), "set up" where the reads say what the stage produced, a wrong number of waiting queries, one source's failed read taking the other sources' figures or the queue's line with it, a source's size on disk missing from its name cell, a failed size read taking the row's other figures, a call outside the table or without the short time limit, every source asked however many there are."""
     broker.answers["source.list"] = source_list({"name": "demo", "profiles": ["parse", "lingua", "ml", "sr_ingest", "mongo_ingest"]}, {"name": "b.2", "profiles": ["parse", "sr_ingest"]}, {"name": "third", "profiles": ["parse"]})
     broker.answers["run.list"] = run_list(a_run(profile="lingua", source="demo"))
     stage = {"not_readable": None, "path": "x", "data_types": [{"data_type": "submissions", "exists": True, "not_readable": None, "finished": 3, "being_written": 1, "newest": None}, {"data_type": "comments", "exists": True, "not_readable": None, "finished": 4, "being_written": 0, "newest": None}]}
@@ -300,8 +300,10 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
     broker.answers["source.progress"] = lambda fields: broker_client.BrokerError("timeout", "x") if fields["name"] == "b.2" else source_progress(fields["name"], stages=stages)
     loads = [{"db_type": "sr_ingest", "has_state_files": True, "entries": [{"label": "comments", "count": 40, "latest": "RC_2024-02", "in_progress": None, "failed_count": 2, "last_updated": None}, {"label": "submissions", "count": 8, "latest": "RS_2024-02", "in_progress": None, "failed_count": 0, "last_updated": None}]}]
     broker.answers["source.status"] = lambda fields: source_status(fields["name"], profiles=["parse", "sr_ingest"], ingestion=loads if fields["name"] == "demo" else [{**loads[0], "entries": [{**loads[0]["entries"][1]}]}])
+    broker.answers["source.size"] = lambda fields: broker_client.BrokerError("failed", "x") if fields["name"] == "b.2" else source_size(fields["name"], total_bytes=1_449_950_000, complete=False)
     page = client.get("/").text
     demo, other = overview.cell_key("demo"), overview.cell_key("b.2")
+    assert f'</a></b> <span class="small muted src-size" id="s-{demo}"></span>' in page and f'id="s-{other}"></span>' in page
     cells = dict(re.findall(r'<a class="stage (\w+)"(?: id="[^"]*")? title="(\w+) on demo: [^"]*" href="/sources/demo(?:#run-\w+)?"', page)[i][::-1] for i in range(8))
     assert cells == {"parse": "setup", "lingua": "run", "ml": "setup", "sr_ingest": "setup", "sr_ml": "none", "mongo_ingest": "setup", "postgres_ingest": "none", "postgres_ml": "none"}
     assert f'id="c-{demo}-parse"' in page and f'id="c-{demo}-sr_ml"' not in page
@@ -323,11 +325,13 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
         "mongo_ingest": ("setup", "○ configured · nothing yet", None),
     }
     assert live_cells(part.text, other) == {"sr_ingest": ("done", "✓ 8 loaded", None)}
-    assert f'id="m-{other}" hx-swap-oob="true">Finished files not read: {html.escape(words.CODE_SENTENCES["timeout"], quote=True)}' in part.text and f'id="c-{other}-parse"' not in part.text
+    assert f'id="m-{other}" hx-swap-oob="true">Finished files not read: {html.escape(words.CODE_SENTENCES["timeout"], quote=True)} · Size not read: ' in part.text and f'id="c-{other}-parse"' not in part.text
+    assert f'<span class="small muted src-size" id="s-{demo}" hx-swap-oob="true" title="{overview.SIZE_AT_LEAST}">≥ 1.4 GB</span>' in part.text
+    assert f'id="s-{other}"' not in part.text and f'id="m-{demo}"' not in part.text
     assert "for the first 2 of 3 sources only" in part.text
     asked = [(call[2], call[3]) for call in broker.calls if call[0] == "call"]
-    assert asked == [("audit.list", {"limit": 1}), ("source.list", {}), ("run.list", {}), ("source.progress", {"name": "demo"}), ("source.status", {"name": "demo"}), ("source.progress", {"name": "b.2"}), ("source.status", {"name": "b.2"})]
-    assert {timeout for kind, verb, timeout in broker.timeouts[-6:]} == {overview.LIVE_SECONDS}
+    assert asked == [("audit.list", {"limit": 1}), ("source.list", {}), ("run.list", {}), ("source.progress", {"name": "demo"}), ("source.status", {"name": "demo"}), ("source.size", {"name": "demo"}), ("source.progress", {"name": "b.2"}), ("source.status", {"name": "b.2"}), ("source.size", {"name": "b.2"})]
+    assert {timeout for kind, verb, timeout in broker.timeouts[-8:]} == {overview.LIVE_SECONDS}
     assert door.ops() == ["counts"] and door.timeouts == [("counts", overview.LIVE_SECONDS)]
 
     door.jobs.clear()
@@ -341,6 +345,56 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
     part = client.get("/overview/live", headers=HX).text
     assert "the runs could not be read, so no cell says running" in part
     assert live_cells(part, demo)["lingua"] == ("done", "✓ 7 files 1 unfinished file: whether a run still writes them cannot be told", "unfinished")
+
+
+SIZES = [(0, "0 B"), (999, "999 B"), (1000, "1.0 kB"), (999_949, "999.9 kB"), (999_950, "1.0 MB"), (12_345_678, "12.3 MB"), (1_449_999_999, "1.4 GB"), (1_450_000_000, "1.5 GB"), (2 * 10 ** 12, "2.0 TB"), (999_950 * 10 ** 12, "1000.0 PB"), (10 ** 27 - 1, "1000000000000.0 PB"), (10 ** 27, "more than 1000000000000 PB"), (10 ** 5000, "more than 1000000000000 PB")]
+
+
+@pytest.mark.parametrize("size, shown", SIZES, ids=[f"{index}-{shown}" for index, (_, shown) in enumerate(SIZES)])
+def test_a_size_is_written_as_the_cli_writes_it_and_never_raises(size, shown):
+    """Bug class: the web UI's size of a source differing from `sdp source size` (another unit, base or rounding: 999,950 bytes is 1.0 MB, rounded half up, not 999.9 kB or 1000.0 kB), or a huge whole number raising while it is written (`str` of more than 4300 digits raises)."""
+    import sdp
+
+    assert overview.bytes_text(size) == shown
+    if size < overview.SIZE_SHOWN_MAX:
+        assert sdp._format_size(size) == shown
+
+
+def test_a_size_not_read_whole_is_at_least_and_says_why():
+    """Bug class: a lower bound shown as the size (a folder that could not be read counted as empty), or a source with no readable configuration shown as 0 B."""
+    assert overview.size_figure(source_size(total_bytes=1_400_000_000, complete=False)) == {"text": "≥ 1.4 GB", "title": "at least: a folder of the source could not be read whole"}
+    assert overview.size_figure(source_size(total_bytes=1_400_000_000))["text"] == "1.4 GB"
+    assert overview.size_figure(source_size(found=False)) is None
+
+
+MALFORMED_SIZES = [
+    ("a boolean total", {"total_bytes": True}),
+    ("a negative total", {"total_bytes": -1}),
+    ("a float total", {"total_bytes": 1.5}),
+    ("a text total", {"total_bytes": "12"}),
+    ("no total", {"total_bytes": None}),
+    ("complete not a boolean", {"complete": 1}),
+    ("found not a boolean", {"found": "yes"}),
+]
+
+
+@pytest.mark.parametrize("name, fields", MALFORMED_SIZES, ids=[m[0] for m in MALFORMED_SIZES])
+def test_a_malformed_size_answer_is_a_shape_failure_of_its_row_only(client, broker, name, fields):
+    """Bug class: a broker answer of another shape drawn as a size (True as "1 B", a negative), or its exception escaping and failing the whole live part."""
+    answer = source_size()
+    entry = answer["data"]["sources"][0]
+    entry.update(fields)
+    for key, value in fields.items():
+        if value is None:
+            del entry[key]
+    with pytest.raises(overview.ShapeError):
+        overview.size_figure(answer)
+    broker.answers["source.size"] = answer
+    part = client.get("/overview/live", headers=HX)
+    key = overview.cell_key("demo")
+    assert part.status_code == 200 and f'id="s-{key}"' not in part.text
+    assert f'id="m-{key}" hx-swap-oob="true">Size not read: {escape(overview.SHAPE_SENTENCE)}</div>' in part.text
+    assert f'id="c-{key}-parse" hx-swap-oob="true"' in part.text
 
 
 def test_the_overview_legend_says_what_the_counts_are(client):

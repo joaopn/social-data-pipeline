@@ -2,16 +2,27 @@
 .cw { display: grid; grid-template-columns: 236px minmax(0, 1fr) 330px; flex: 1; min-height: 0; }
 .cw > * { min-height: 0; min-width: 0; }
 
-/* left: new chat, the chats, the data in reach, the note */
+/* left: new chat, the chats, the data in reach docked at the bottom */
 .cw .left { background: var(--surface); border-right: 1px solid var(--line); padding: 12px 8px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .cw .left > h4 { padding: 14px 10px 4px; }
 .cw .new-chat button { width: 100%; justify-content: center; }
 .cw .chat-list { display: flex; flex-direction: column; gap: 2px; }
 .cw .chat-list .navi .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cw .side-line { padding: 4px 10px; }
-.cw .reach { padding: 0 10px; }
+.cw .left .chat-list { flex: 1 1 auto; min-height: 0; overflow: auto; }
+/* the data in reach: docked at the bottom of the column (the chat list above takes the height left and scrolls by itself), a box that opens and closes (app.js keeps it per browser); a long list scrolls inside it */
+.cw .reach-box { margin-top: auto; flex: none; border-top: 1px solid var(--line); padding-top: 2px; }
+.cw .reach-box > summary { list-style: none; padding: 14px 10px 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.cw .reach-box > summary::-webkit-details-marker { display: none; }
+.cw .reach-box > summary::after { content: "▸"; margin-left: 6px; }
+.cw .reach-box[open] > summary::after { content: "▾"; }
+.cw .reach-box > summary:hover { color: var(--ink-2); }
+.cw .reach { padding: 0 10px 4px; max-height: 40vh; overflow: auto; }
 .cw .reach .row { align-items: baseline; }
 .cw .reach .dot { transform: translateY(-1px); }
+.cw .reach .reach-list { list-style: disc; margin: 0 0 4px; padding-left: 30px; }
+.cw .reach .reach-list li { overflow-wrap: anywhere; }
+.cw .reach .reach-list li::marker { color: var(--muted); }
 
 /* middle: the header, the conversation, the answer box */
 .cw .mid { display: flex; flex-direction: column; }
@@ -84,6 +95,8 @@ a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-dec
   .cw > * { min-height: auto; }
   .cw .mid { order: -1; height: calc(100vh - 46px); }
   .cw .left, .cw .rightp { overflow: visible; border: 0; border-top: 1px solid var(--line); }
+  .cw .left .chat-list { flex: none; overflow: visible; }
+  .cw .reach-box { margin-top: 8px; }
   :root[data-chat-panel="closed"] .cw { grid-template-columns: minmax(0, 1fr); }
 }
 

@@ -18,6 +18,7 @@
 .matrix td { padding: 10px 10px; }
 .matrix td.cellc { padding: 6px 4px; }
 .matrix td.src { min-width: 150px; }
+.matrix td.src .src-size { white-space: nowrap; }
 .matrix tbody tr:hover td { background: none; }
 .stage .cnt:empty { display: none; }
 .stage.setup .top > span:first-child { color: var(--ink-2); }

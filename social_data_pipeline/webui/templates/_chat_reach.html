@@ -1,10 +1,19 @@
-{#- The left column's data in reach (`GET /chat/reach`, `reach.read_reach`): per database the sources the assistant can query, or one muted line saying why the database is out of reach; a failure of the whole block is its one line, a partial one a note under the databases. The answer of `/chat/reach` takes the place of the placeholder (or of the kept read) in `chat.html` and asks nothing again; `chat.html` also draws the login's kept read with it, and with `reach_stale` the block carries the request that refreshes it in place. Every text is escaped. -#}
+{#- The left column's data in reach (`GET /chat/reach`, `reach.read_reach`): per database in reach its title, then its sources one per line (`ul.reach-list`), each with its size on disk in parentheses when it was read (the span's title says what it counts, or that it is a lower bound); per database out of reach one muted line saying why; a failure of the whole block is its one line, a partial one a note under the databases. The answer of `/chat/reach` takes the place of the placeholder (or of the kept read) in `chat.html` and asks nothing again; `chat.html` also draws the login's kept read with it, and with `reach_stale` the block carries the request that refreshes it in place. Every text is escaped. -#}
 <div class="col" id="chat-reach"{% if reach_stale %} hx-get="/chat/reach" hx-trigger="load" hx-swap="outerHTML"{% endif %}>
   {%- if reach.line %}
   <span class="row"><span class="dot bad"></span>{{ reach.line }}</span>
   {%- else %}
   {%- for row in reach.rows %}
-  <span class="row{{ '' if row.ok else ' muted' }}"><span class="dot{{ ' ok' if row.ok else '' }}"></span>{{ row.title }}: {{ row.text }}</span>
+  {%- if row.ok %}
+  <span class="row"><span class="dot ok"></span>{{ row.title }}</span>
+  <ul class="reach-list">
+    {%- for source in row.sources %}
+    <li>{{ source.name }}{% if source.size %} <span class="reach-size muted" title="{{ source.size.title }}">({{ source.size.text }})</span>{% endif %}</li>
+    {%- endfor %}
+  </ul>
+  {%- else %}
+  <span class="row muted"><span class="dot"></span>{{ row.title }}: {{ row.text }}</span>
+  {%- endif %}
   {%- else %}
   <span class="row"><span class="dot"></span>No database</span>
   {%- endfor %}

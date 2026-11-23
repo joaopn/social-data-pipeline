@@ -611,6 +611,7 @@ TABLE = _table(
     Action("source.list", "read", "List the sources", form="python sdp.py source list"),
     Action("source.status", "read", "Ingestion state of a source", {"name": _SOURCE}, form="python sdp.py source status <name>"),
     Action("source.progress", "read", "Finished files of a source", {"name": _SOURCE}, form="python sdp.py source progress <name>"),
+    Action("source.size", "read", "Disk size of a source", {"name": _SOURCE}, form="python sdp.py source size <name>"),
     Action("source.error_logs", "read", "Error logs of a source", {"name": _SOURCE, "profile": Input("enum", "Profile", required=True, choices=ERROR_LOG_PROFILES)}, form="python sdp.py source error-logs <name> --profile=<profile>"),
     Action("run.list", "read", "List the runs", {"limit": Input("int", "Limit", lo=1, hi=1000)}, form="python sdp.py runs list --limit=<n>"),
     Action("run.logs", "read", "Read a run's output", {"run_id": Input("run_id", "Run", required=True), "offset": Input("int", "Offset", lo=0, hi=LOG_OFFSET_MAX), "limit": Input("int", "Limit", lo=RUN_LOGS_MIN_LIMIT, hi=RUN_LOGS_MAX_LIMIT)}, form="python sdp.py runs logs <run> --offset=<bytes> --limit=<bytes>"),
@@ -750,7 +751,7 @@ TABLE = _table(
 QUEUE_ENTRIES = tuple(name for name, action in TABLE.items() if action.door is not None)
 
 # The source verbs, for which a source name is required (the first of the web side's two stricter places).
-SOURCE_VERBS = ("source.status", "source.progress", "source.error_logs", "run.start", "source.remove")
+SOURCE_VERBS = ("source.status", "source.progress", "source.size", "source.error_logs", "run.start", "source.remove")
 
 
 def run_form_inputs(profile):

@@ -57,7 +57,7 @@ def test_every_entry_is_a_verb_of_the_registry_with_its_class_and_inputs():
     """Bug class: a table that drifts from the registry: a verb the broker does not know or does not take over the socket, a class that asks for no management password where the broker wants one (or the reverse), an input the broker refuses, a choice the broker refuses or one it takes that the page does not offer."""
     verb_entries = [action for action in actions.TABLE.values() if not action.op and action.door is None]
     assert {action.name for action in verb_entries} == {
-        "db.status", "db.verify", "source.list", "source.status", "source.progress", "source.error_logs", "run.list", "run.logs", "audit.list",
+        "db.status", "db.verify", "source.list", "source.status", "source.progress", "source.size", "source.error_logs", "run.list", "run.logs", "audit.list",
         "run.start", "db.stop", "run.cancel", "db.start", "db.reset", "db.unsetup", "db.unsetup_mcp", "db.unsetup_jobs", "source.remove",
         "db.restart_needed", "db.llm_settings", "db.setup_mcp", "db.setup_jobs",
         "source.add", "source.hf_inspect", "source.download",
@@ -92,7 +92,7 @@ def test_the_two_places_where_the_web_side_is_stricter_on_purpose():
     for name in actions.SOURCE_VERBS:
         field_name = "source" if name == "run.start" else "name"
         assert actions.TABLE[name].inputs[field_name].required
-    assert not verbs.VERBS["source.status"].socket_inputs["name"].required and not verbs.VERBS["source.progress"].socket_inputs["name"].required
+    assert not verbs.VERBS["source.status"].socket_inputs["name"].required and not verbs.VERBS["source.progress"].socket_inputs["name"].required and not verbs.VERBS["source.size"].socket_inputs["name"].required
     assert actions.TABLE["run.logs"].inputs["limit"].lo == 4096 > verbs.VERBS["run.logs"].socket_inputs["limit"].type.lo
     narrower = []
     for action in (action for action in actions.TABLE.values() if not action.op and action.door is None):
@@ -102,7 +102,7 @@ def test_the_two_places_where_the_web_side_is_stricter_on_purpose():
                 narrower.append((action.name, name))
             if spec.kind == "int" and (spec.lo, spec.hi) != (registered.type.lo, registered.type.hi):
                 narrower.append((action.name, name))
-    assert sorted(narrower) == [("run.logs", "limit"), ("source.error_logs", "name"), ("source.error_logs", "profile"), ("source.progress", "name"), ("source.status", "name")]
+    assert sorted(narrower) == [("run.logs", "limit"), ("source.error_logs", "name"), ("source.error_logs", "profile"), ("source.progress", "name"), ("source.size", "name"), ("source.status", "name")]
 
 
 def test_the_patterns_and_choices_are_the_registrys():

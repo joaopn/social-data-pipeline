@@ -13,10 +13,10 @@ import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("starlette.testclient")
 
-from webui_helpers import CHAT_ID, ORIGIN, db_status, form_token, log_in, refuse, source_list, source_status
+from webui_helpers import CHAT_ID, ORIGIN, db_status, form_token, log_in, refuse, source_list, source_size, source_status
 
 from social_data_pipeline.control import client as broker_client
-from social_data_pipeline.webui import assistant, chat, queue, reach, words
+from social_data_pipeline.webui import assistant, chat, overview, queue, reach, words
 
 MARK = "made-up-hostile-mark-5c1e"
 HX = {"hx-request": "true"}
@@ -72,10 +72,18 @@ def with_sources(broker, sources):
     broker.answers["source.status"] = lambda fields: source_status(fields["name"], profiles=[profile for profile, _ in sources[fields["name"]]], ingestion=[loads(profile, count) for profile, count in sources[fields["name"]]])
 
 
+ROW = r'<span class="row[^"]*"><span class="dot[^"]*"></span>(.*?)</span>(?:\s*<ul class="reach-list">(.*?)</ul>)?'
+
+
+def rows_of(part):
+    """Each database's line as text: an out-of-reach one as drawn ("MongoDB: stopped"), one in reach as its title and its list's items, one per `<li>` ("MongoDB: voat (1.4 GB), 4chan (1.4 GB)")."""
+    return [text_of(title) + (": " + ", ".join(text_of(item) for item in re.findall(r"<li>(.*?)</li>", items, re.DOTALL)) if items else "") for title, items in re.findall(ROW, part, re.DOTALL)]
+
+
 def reach_rows(client):
     answer = client.get("/chat/reach", headers=HX)
     assert answer.status_code == 200
-    return [text_of(row) for row in re.findall(r'<span class="row[^"]*"><span class="dot[^"]*"></span>(.*?)</span>', answer.text)], answer.text
+    return rows_of(answer.text), answer.text
 
 
 def asked(broker, verb):
@@ -91,8 +99,34 @@ def test_each_database_lists_the_sources_whose_data_it_holds(client, scripted, b
     broker.answers["db.status"] = status()
     with_sources(broker, {"reddit": [("sr_ingest", 40)], "voat": [("mongo_ingest", 12)], "4chan": [("mongo_ingest", 3), ("sr_ingest", 0)], "empty": [("sr_ingest", 0)], "fresh": [("postgres_ingest", 0)]})
     rows, part = reach_rows(client)
-    assert rows == ["StarRocks: reddit", "MongoDB: voat, 4chan", "PostgreSQL: no data loaded"]
+    assert rows == ["StarRocks: reddit (1.4 GB)", "MongoDB: voat (1.4 GB), 4chan (1.4 GB)", "PostgreSQL: no data loaded"]
     assert part.count('<span class="dot ok">') == 2 and 'id="chat-reach"' in part and "hx-get" not in part
+    assert part.count('<ul class="reach-list">') == 2 and part.count("<li>") == 3
+
+
+def test_a_source_under_two_databases_is_sized_once_and_shown_under_both(client, scripted, broker):
+    """Bug class: one source's folders measured once per database it loaded into (each `source.size` walks every file of the source), or the two lines showing different sizes; a source with no data in reach measured at all."""
+    scripted.answers["hello"] = HELLO
+    broker.answers["db.status"] = status()
+    with_sources(broker, {"reddit": [("sr_ingest", 40), ("mongo_ingest", 2)], "voat": [("mongo_ingest", 12)], "empty": [("sr_ingest", 0)]})
+    broker.answers["source.size"] = lambda fields: source_size(fields["name"], total_bytes={"reddit": 999_950, "voat": 12_345_678}[fields["name"]], complete=fields["name"] == "reddit")
+    rows, part = reach_rows(client)
+    assert rows[:2] == ["StarRocks: reddit (1.0 MB)", "MongoDB: reddit (1.0 MB), voat (≥ 12.3 MB)"]
+    assert [fields["name"] for fields in asked(broker, "source.size")] == ["reddit", "voat"]
+    assert f'<span class="reach-size muted" title="{overview.SIZE_AT_LEAST}">(≥ 12.3 MB)</span>' in part and "./data/" not in part
+
+
+@pytest.mark.parametrize("how", ["failed", "shape", "not found"])
+def test_a_size_that_cannot_be_read_leaves_the_source_without_one_and_a_note(client, scripted, broker, how):
+    """Bug class: a failed or malformed size read hiding the source (it is in reach, its loads were read), shown as "0 B", or raising out of the part."""
+    scripted.answers["hello"] = HELLO
+    broker.answers["db.status"] = status()
+    with_sources(broker, {"reddit": [("sr_ingest", 40)], "voat": [("mongo_ingest", 12)]})
+    bad = {"failed": broker_client.BrokerError("failed", MARK), "shape": source_size("reddit", total_bytes=True), "not found": source_size("reddit", found=False)}[how]
+    broker.answers["source.size"] = lambda fields: bad if fields["name"] == "reddit" else source_size(fields["name"])
+    rows, part = reach_rows(client)
+    assert rows[:2] == ["StarRocks: reddit", "MongoDB: voat (1.4 GB)"] and MARK not in part
+    assert "The size of 1 source could not be read." in part
 
 
 CONDITIONS = [
@@ -112,7 +146,7 @@ def test_each_condition_alone_takes_a_database_out_of_reach_with_its_line(client
     broker.answers["db.status"] = status(**{"configured": ("starrocks", "mongo"), "running": ("starrocks", "mongo"), "mcp": ("starrocks", "mongo"), "mcp_running": ("starrocks", "mongo"), "read_only": ("starrocks", "mongo"), **facts})
     with_sources(broker, {"reddit": [("sr_ingest", 40)], "voat": [("mongo_ingest", 12)]})
     rows, part = reach_rows(client)
-    assert line in rows and "MongoDB: voat" in rows and "reddit" not in part
+    assert line in rows and "MongoDB: voat (1.4 GB)" in rows and "reddit" not in part
     assert [fields["name"] for fields in asked(broker, "source.status")] == ["voat"]
 
 
@@ -163,7 +197,7 @@ def test_a_failure_is_confined_to_the_block(client, scripted, broker, where):
     elif where == "source.list":
         assert rows[:3] == ["StarRocks: " + reach.LOADS_NOT_READ, "MongoDB: " + reach.LOADS_NOT_READ, "PostgreSQL: " + reach.LOADS_NOT_READ] and "The sources could not be read" in part
     else:
-        assert rows[:2] == ["StarRocks: " + reach.LOADS_NOT_READ, "MongoDB: voat"] and "The loads of 1 source could not be read." in part
+        assert rows[:2] == ["StarRocks: " + reach.LOADS_NOT_READ, "MongoDB: voat (1.4 GB)"] and "The loads of 1 source could not be read." in part
 
 
 def test_a_source_name_that_is_not_plain_is_never_asked_or_shown(client, scripted, broker):
@@ -173,7 +207,7 @@ def test_a_source_name_that_is_not_plain_is_never_asked_or_shown(client, scripte
     broker.answers["source.list"] = source_list({"name": hostile, "profiles": ["sr_ingest"]}, {"name": "reddit", "profiles": ["sr_ingest"]})
     broker.answers["source.status"] = lambda fields: source_status(fields["name"], profiles=["sr_ingest"], ingestion=[loads("sr_ingest", 5)])
     rows, part = reach_rows(client)
-    assert rows[0] == "StarRocks: reddit" and MARK not in part and [fields["name"] for fields in asked(broker, "source.status")] == ["reddit"]
+    assert rows[0] == "StarRocks: reddit (1.4 GB)" and MARK not in part and [fields["name"] for fields in asked(broker, "source.status")] == ["reddit"] and [fields["name"] for fields in asked(broker, "source.size")] == ["reddit"]
 
 
 def test_the_reads_are_bounded_in_sources_and_time():
@@ -191,14 +225,21 @@ def test_the_reads_are_bounded_in_sources_and_time():
             return "ok", status()
         if verb == "source.list":
             return "ok", source_list(*({"name": f"s{index}", "profiles": ["sr_ingest"]} for index in range(60)))
-        now[0] += 1
+        # A status read takes half a second, a size read one: the time runs out between the 14th source's status and its size.
+        if verb == "source.size":
+            now[0] += 1
+            return "ok", source_size(fields["name"])
+        now[0] += 0.5
         return "ok", source_status(fields["name"], profiles=["sr_ingest"], ingestion=[loads("sr_ingest", 1)])
 
     model = reach.read_reach(lambda: None, lambda: ("ok", HELLO), ask, clock=clock)
-    assert calls.count("source.status") == reach.LIVE_TOTAL_SECONDS
+    assert reach.LIVE_TOTAL_SECONDS == 20 and calls.count("source.status") == 14 and calls.count("source.size") == 13
     assert f"Only the first {reach.LIVE_SOURCES_MAX} of 60 sources were read." in model["notes"]
-    assert f"The loads of {reach.LIVE_SOURCES_MAX - reach.LIVE_TOTAL_SECONDS} sources were not read: the time for them ran out." in model["notes"]
-    assert model["rows"][0]["text"].startswith("s0, s1,")
+    assert f"The loads of {reach.LIVE_SOURCES_MAX - 14} sources were not read: the time for them ran out." in model["notes"]
+    assert "The size of 1 source was not read: the time for it ran out." in model["notes"]
+    shown = model["rows"][0]["sources"]
+    assert [source["name"] for source in shown[:2]] == ["s0", "s1"] and len(shown) == 14
+    assert shown[0]["size"]["text"] == "1.4 GB" and shown[13] == {"name": "s13", "size": None}
 
 
 def test_the_page_draws_a_placeholder_that_asks_the_part_once(client, scripted):
@@ -208,7 +249,7 @@ def test_the_page_draws_a_placeholder_that_asks_the_part_once(client, scripted):
     assert "StarRocks: checking" in text_of(page)
 
 
-READ_VERBS = ("db.status", "source.list", "source.status")
+READ_VERBS = ("db.status", "source.list", "source.status", "source.size")
 PLACEHOLDER = '<div class="col" id="chat-reach" hx-get="/chat/reach" hx-trigger="load" hx-swap="outerHTML">'
 
 
@@ -228,7 +269,7 @@ def kept(client, scripted, broker):
     scripted.answers["hello"] = HELLO
     broker.answers["db.status"] = status()
     with_sources(broker, {"reddit": [("sr_ingest", 40)]})
-    assert reach_rows(client)[0][0] == "StarRocks: reddit"
+    assert reach_rows(client)[0][0] == "StarRocks: reddit (1.4 GB)"
     return reads(broker)
 
 
@@ -237,15 +278,25 @@ def test_a_kept_read_is_drawn_at_once_and_not_asked_again_within_a_minute(client
     clock.now += chat.REACH_FRESH_SECONDS - 1
     for page in (client.get("/chat").text, client.get(f"/chat/{CHAT_ID}").text):
         tag, rows = block_of(page)
-        assert tag == '<div class="col" id="chat-reach">' and rows.startswith("StarRocks: reddit") and "checking" not in text_of(page)
+        assert tag == '<div class="col" id="chat-reach">' and rows.startswith("StarRocks reddit (1.4 GB)") and "checking" not in text_of(page)
     assert reads(broker) == kept
+
+
+def test_the_data_in_reach_is_a_box_that_opens_and_closes_at_the_bottom_of_the_left_column(client, kept):
+    """Bug class: the block outside its box (it would not collapse, or the docking rules miss it), the box closed by default, the queue's line left out of it, or the sources joined on one line again."""
+    page = client.get("/chat").text
+    left = page.split('<aside class="left"', 1)[1].split("</aside>", 1)[0]
+    box = re.search(r'<details class="reach-box" open>\s*<summary>Data in reach</summary>(.*?)</details>', left, re.DOTALL)
+    assert box and left.rstrip().endswith("</details>") and "<h4>Data in reach</h4>" not in page
+    assert '<div class="col" id="chat-reach">' in box[1] and '<ul class="reach-list">' in box[1] and "Queue · " in text_of(box[1])
+    assert rows_of(box[1])[0] == "StarRocks: reddit (1.4 GB)"
 
 
 def test_a_stale_kept_read_is_drawn_and_refreshed_in_place(client, broker, clock, kept):
     """Bug class: a kept read shown for the whole login however old (a database started or stopped never showing), or a stale one hidden behind "checking…"."""
     clock.now += chat.REACH_FRESH_SECONDS + 1
     tag, rows = block_of(client.get("/chat").text)
-    assert tag == PLACEHOLDER and rows.startswith("StarRocks: reddit")
+    assert tag == PLACEHOLDER and rows.startswith("StarRocks reddit (1.4 GB)")
     assert reads(broker) == kept
     reach_rows(client)
     assert block_of(client.get("/chat").text)[0] == '<div class="col" id="chat-reach">'

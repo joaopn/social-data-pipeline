@@ -1,4 +1,4 @@
-{#- The Overview's live figures (`GET /overview/live`, `overview.read_live`): the queue's line in the place of its placeholder in "Needs attention", then the grid's cells that were read and a source's failed read out of band. Every text is escaped; no element here asks again. -#}
+{#- The Overview's live figures (`GET /overview/live`, `overview.read_live`): the queue's line in the place of its placeholder in "Needs attention", then the grid's cells that were read, a source's size on disk beside its name and a source's failed read out of band (each only for a row of the grid, whose name cell has the target). Every text is escaped; no element here asks again. -#}
 {% from "_overview_cell.html" import cell with context %}
 {%- if live.broker %}
 <div class="att"><span class="dot bad"></span><p><b>Live figures:</b> {{ live.broker }}</p></div>
@@ -19,6 +19,9 @@
 {%- for profile, c in row.cells.items() %}
 {{ cell(c, oob=True) }}
 {%- endfor %}
+{%- if row.size %}
+<span class="small muted src-size" id="s-{{ row.key }}" hx-swap-oob="true" title="{{ row.size.title }}">{{ row.size.text }}</span>
+{%- endif %}
 {%- if row.failed %}
 <div class="small muted" id="m-{{ row.key }}" hx-swap-oob="true">{{ row.failed }}</div>
 {%- endif %}

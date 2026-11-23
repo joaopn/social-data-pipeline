@@ -131,6 +131,7 @@
       {%- endfor %}
       {%- endif %}
       {%- if left_out %}<p class="small muted">{{ left_out }} names are not listed: the sandbox lists only names of letters, digits, spaces, dots, dashes and underscores.</p>{% endif %}
+      {%- if unlisted %}<p class="small muted">{{ unlisted }} files in subfolders are not listed: only .py, .png, .jpg, .svg, .json, .csv, .txt and .md files are listed there.</p>{% endif %}
       {%- if more %}<p class="small muted">The folder holds more files than are listed.</p>{% endif %}
     </div>
   </div>

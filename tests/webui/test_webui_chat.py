@@ -12,6 +12,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - h. Files and images: the fixed headers and the reduced name; the image's type from its signature, anything else not found; a file that changes size; the size cap; two downloads at a time; no file opened by the web UI.
 - k. The plot card's buttons and the table view: a button only for a file of the chat's own list with the image's stem; a CSV's cells text, its rows, columns and bytes capped, a file that is not CSV a sentence.
 - m. Chart specs: the card draws a `.vl.json` of the chat's list once (in the image's card, or its own when no image has its stem) and only then; the spec route sends the checked spec as JSON with the fixed headers, a refused one its reason, reads at most 2 MiB, never on the broker's earlier yes, and only for a `.vl.json` name of the runner's rule.
+- n. Files in subfolders: listed by their path with links that keep the `/`, the note of the files left out by type, every file route taking a path, and an encoded `..`, an empty part or a too deep path not found with nothing sent.
 - l. The right column's queries: the broker asked before the runner and the scheduler; the ids only from this chat's tool calls and results, newest first, at most 20; only the assistant's jobs; a failure confined to its row.
 - j. The scans: no inline code in any page or part of the window, the guard's headers on every answer, HEAD refused, the navigation's first entry.
 - The real runner: a turn's events, its file downloaded byte for byte.
@@ -412,7 +413,7 @@ def test_an_offset_that_is_not_a_whole_number_in_bounds_is_refused(client, scrip
     assert client.get(f"/chat/{CHAT_ID}/events{query}", headers=HX).status_code == 404 and scripted.requests == []
 
 
-@pytest.mark.parametrize("path", ["/chat/c_0123", "/chat/C_0123456789AB", "/chat/c_0123456789ab0", "/chat/new", "/chat/c_0123456789ab/file/%2E%2E", "/chat/c_0123456789ab/image/a%2Fb.png", "/chat/c_0123456789ab/file/a%00.png"])
+@pytest.mark.parametrize("path", ["/chat/c_0123", "/chat/C_0123456789AB", "/chat/c_0123456789ab0", "/chat/new", "/chat/c_0123456789ab/file/%2E%2E", "/chat/c_0123456789ab/image/..%2Fb.png", "/chat/c_0123456789ab/file/a%00.png"])
 def test_a_malformed_id_or_name_is_not_found_and_sends_nothing(client, scripted, path):
     """Bug class: an id or a file name of another form passed to the runner."""
     assert client.get(path).status_code == 404 and scripted.requests == []
@@ -779,6 +780,7 @@ NUMERIC = [
     ("chat.events", ("events", 2, "duration_ms"), "GET", f"/chat/{CHAT_ID}"),
     ("chat.events", ("events", 2, "turns"), "GET", f"/chat/{CHAT_ID}"),
     ("chat.files", ("left_out",), "GET", f"/chat/{CHAT_ID}"),
+    ("chat.files", ("unlisted",), "GET", f"/chat/{CHAT_ID}"),
     ("chat.files", ("files", 0, "size"), "GET", f"/chat/{CHAT_ID}"),
     ("chat.files", ("files", 0, "mtime"), "GET", f"/chat/{CHAT_ID}"),
     ("chat.send", ("offset",), "POST", f"/chat/{CHAT_ID}/send"),
@@ -1065,7 +1067,7 @@ def test_a_file_that_is_not_csv_is_a_sentence(client, scripted, data, line):
 
 def test_the_table_view_is_only_for_a_csv_name_of_the_runners_rule(client, scripted):
     """Bug class: the table view reading any file of the sandbox, or a name outside the runner's rule sent to it."""
-    for path in ("table/a.png", "table/a%2Fb.csv", "table/%2E%2E", "table/%E2%80%AEa.csv"):
+    for path in ("table/a.png", "table/..%2Fb.csv", "table/%2E%2E", "table/%E2%80%AEa.csv"):
         assert client.get(f"/chat/{CHAT_ID}/{path}").status_code == 404
     assert scripted.requests == []
 
@@ -1131,8 +1133,8 @@ def test_a_refused_spec_is_its_reason_and_a_large_one_is_not_read_whole(client, 
 
 
 def test_the_spec_route_takes_only_a_spec_name_of_the_runners_rule_and_asks_the_broker_each_time(client, scripted, broker):
-    """Bug class: the spec route reading any file of the sandbox (a CSV, a name with a slash), or let through on an earlier answer of the broker."""
-    for path in ("spec/a.json", "spec/a.png", "spec/a%2Fb.vl.json", "spec/%2E%2E", "spec/%E2%80%AEa.vl.json"):
+    """Bug class: the spec route reading any file of the sandbox (a CSV, a path that climbs out), or let through on an earlier answer of the broker."""
+    for path in ("spec/a.json", "spec/a.png", "spec/a%2F..%2Fb.vl.json", "spec/%2E%2E", "spec/%E2%80%AEa.vl.json"):
         assert client.get(f"/chat/{CHAT_ID}/{path}").status_code == 404
     assert scripted.requests == []
     assert client.get(f"/chat/{CHAT_ID}/spec/missing.vl.json").status_code == 404
@@ -1141,6 +1143,39 @@ def test_the_spec_route_takes_only_a_spec_name_of_the_runners_rule_and_asks_the_
     for _ in range(2):
         assert client.get(f"/chat/{CHAT_ID}/spec/a.vl.json").status_code == 200
     assert len([request for request in broker.requests if request["verb"] == "audit.list"]) == before + 2
+
+
+# ── n. files in subfolders ──────────────────────────────────────────────────
+
+
+def test_a_file_in_a_subfolder_is_listed_by_its_path_with_its_link_and_the_unlisted_note(client, scripted):
+    """Bug class: a file the assistant wrote to a subfolder (a chart's script) missing from the Files list, its link quoting the slash away, or the files the runner left out of subfolders by type not said."""
+    scripted.files = {"charts/vol.png": PNG, "charts/vol.py": b"print(1)", "charts/my data.csv": b"a\n1\n"}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    found = hrefs(page)
+    assert f"/chat/{CHAT_ID}/file/charts/vol.py" in found and f"/chat/{CHAT_ID}/file/charts/my%20data.csv" in found and f"/chat/{CHAT_ID}/table/charts/my%20data.csv" in found
+    assert ">charts/vol.py<" in page and "not listed" not in page
+    labels = [(button["label"], button["href"]) for button in chat.file_buttons(CHAT_ID, "charts/vol.png", chat.stems_of(scripted.files))]
+    assert ("Code", f"/chat/{CHAT_ID}/file/charts/vol.py") in labels
+    scripted.answers["chat.files"] = {"files": [], "left_out": 0, "unlisted": 3, "more": False}
+    assert "3 files in subfolders are not listed: only .py, .png, .jpg, .svg, .json, .csv, .txt and .md files are listed there." in client.get(f"/chat/{CHAT_ID}").text
+
+
+def test_the_file_routes_take_a_path_in_a_subfolder(client, scripted):
+    """Bug class: the download, image, spec and table routes refusing a file the Files list links in a subfolder, or the download named by its whole path."""
+    scripted.files = {"out/my plot.bin": b"made-up bytes", "charts/a.png": PNG, "charts/a.vl.json": ALTAIR, "data/t.csv": b"a,b\n1,2\n"}
+    answer = client.get(f"/chat/{CHAT_ID}/file/out/my%20plot.bin")
+    assert answer.status_code == 200 and answer.content == b"made-up bytes" and answer.headers["content-disposition"] == 'attachment; filename="my_plot.bin"'
+    assert client.get(f"/chat/{CHAT_ID}/image/charts/a.png").content == PNG
+    assert client.get(f"/chat/{CHAT_ID}/spec/charts/a.vl.json").json() == json.loads(ALTAIR)
+    assert client.get(f"/chat/{CHAT_ID}/table/data/t.csv").text.count("<tr>") == 2
+    assert [request["name"] for request in scripted.requests if request["op"] == "chat.file"] == ["out/my plot.bin", "charts/a.png", "charts/a.vl.json", "data/t.csv"]
+
+
+@pytest.mark.parametrize("path", ["file/a%2F..%2Fb.png", "file/..%2Fx", "file/%2E%2E%2Fx", "file/%2Fetc%2Fpasswd", "image/a%2F%2Fb.png", "image/a//b.png", "spec/..%2Fa.vl.json", "table/x%2F%2E%2E%2Ft.csv", "file/a/b/c/d/e.py", "file/a/"])
+def test_a_path_that_climbs_out_or_breaks_the_rule_is_not_found_and_sends_nothing(client, scripted, path):
+    """Bug class (security): an encoded `..` or slash, decoded before routing, taking a file route out of the chat's folder or passing an empty or too deep path to the runner."""
+    assert client.get(f"/chat/{CHAT_ID}/{path}").status_code == 404 and scripted.requests == []
 
 
 # ── l. the right column's queries ───────────────────────────────────────────

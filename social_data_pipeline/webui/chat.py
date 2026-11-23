@@ -1,18 +1,18 @@
 """The Chat window: the operator asks questions about the data and an assistant in the chat's sandbox answers, through the chat's runner (`assistant.Assistant`).
 
-Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule, and nothing of an answer reaches a header or a script.
+Every route first asks the broker whether the session still lives (`queue.broker_checked`: `audit.list` with a limit of 1, its yes believed 5 seconds for a page or a part, never for a change, a download or an image), in a worker of the window's bound (`Limits.chat_workers`, four places; "busy" when full), and the runner only then, in the same worker; pages are rendered in a worker too. Everything the runner sends is hostile: each answer is checked whole by `assistant`, each event by `event_model` (an event of another type or shape is one line saying so, nothing of it shown), every text goes through `statements.visible` and the template's escaping, the assistant's text through `prose` (data, never markup), a file's name becomes a link only when it follows the runner's rule (`assistant.is_file_name`: a path under the chat's folder of at most three folders and the file, its parts joined by `/`, each of letters, digits, spaces, dots, dashes and underscores and none `.` or `..`), and nothing of an answer reaches a header or a script.
 
 Both pages are the mock-up's three columns (`chat.html`): on the left the chats, newest first (title, a dot while a turn runs), a button for a new chat (with the browser's default model, filled by `app.js` from the models `hello` offers) and the data in reach (per database the sources the assistant can query, a part asked once the page has loaded, `GET /chat/reach`; whether the assistant can submit to the query queue, from `hello`); in the middle the open chat, its header with the chat's model picker (`hello`'s `models`, part of the send form); on the right "This chat" (it can be hidden, and the conversation then takes its width): the chat's backend and model as text (`_chat_model_line.html`), its turn totals (a lazy part), the sandbox as one line that opens on the facts of what it can and cannot reach (`hello`), the open chat's files and its queries. A failure of `hello` is shown in the side columns only.
 
 - `GET /chat`: the three columns with no chat open (`chat.list`, `hello`). `POST /chat/new` makes one (`chat.new`, with the form's `model` when it is not empty) and leads to it.
 - `GET /chat/reach`: the left column's data in reach (`reach.read_reach`), on a bound of its own (`Limits.chat_reach_workers`; a full bound answers 204 and the placeholder stays): the broker asked first (an ended session gets `HX-Redirect`), then `hello`, `db.status`, `source.list` and `source.status` per source, bounded as the Overview's live figures.
-- `GET /chat/<id>` (an id of the runner's form, else not found): the chats (the list `chat.list` gave when the chat was looked up: the runner is not asked twice), the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`) with their download links, the sandbox (`hello`), the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
+- `GET /chat/<id>` (an id of the runner's form, else not found): the chats (the list `chat.list` gave when the chat was looked up: the runner is not asked twice), the first 200 events rendered here, a box to send a question, a stop button while a turn runs, the chat's files (`chat.files`: names are paths, a file of a subfolder shown as `scripts/vol.py`; a line says how many names the runner left out by its rule and how many files of subfolders by their type) with their download links, the sandbox (`hello`), the way to delete it. `GET /chat/<id>?from=N` starts the view at the event N. `GET /chat/<id>/events?offset=N&from=F` is the htmx part that appends the events from N on and carries the next request: every 2 seconds while a turn runs, at once after an answer that brought events, none once the turn has ended and nothing more came (`HX-Redirect` to the login for a session that ended); a view appends at most 2,000 events, then offers to continue from there. A page of events is at most 512 KiB of text (`assistant`) and its model at most `Limits.chat_units_max` units (runs of text, blocks and items): an event beyond them is a line with a link to a view that starts at it, the first event of a page is always shown (cut when it alone is too long), and the model is built and rendered in the worker that asked.
 - `POST /chat/<id>/send` (`text`, 1 to 32,000 characters once its line ends are `\\n`; a refused text is shown again in the box with its sentence; `model` from the header's picker, "" for the back end's default, sent to the runner as it is, which keeps it for the chat), `POST /chat/<id>/stop`, `GET /chat/<id>/delete` (a page that changes nothing) and `POST /chat/<id>/delete`; each change leads back with a redirect to a GET.
 - `GET /chat/<id>/table/<name>` (a name of the runner's rule ending in `.csv`): the first 256 KiB of the file (one `chat.file` piece, the broker asked first and never believed from before) as a table in the frame: decoded as UTF-8 with errors replaced, parsed by `csv` (strict), at most 500 rows under the header row and 50 columns, the cells within the page's units (`Limits.chat_units_max`), every cell through `statements.visible` and the template's escaping; a file that is not CSV (a NUL, a quote that does not close where the file was read whole, a field over `csv`'s limit) is one sentence.
 - `GET /chat/<id>/queries`: the right column's "Queries in the queue", a part the page asks once it has loaded and every 60 seconds after (`queries_model`), on a bound of its own (`Limits.chat_query_workers`; a full bound answers 204 and the part stays as it is). The broker is asked first (`queue.broker_session_error`, a short time limit: an ended session gets `HX-Redirect`, a broker that does not answer is the part's one line and nothing else is asked); then the chat's own events (at most 2,000, read from the start, the runner's pages) give the job ids written in the texts of its tool calls and their results, newest first, at most 20; then the scheduler's `queue.job` for each, with a short time limit and a total one. Only a job whose record says it was submitted by the assistant is listed; an unknown id or another submitter's job is left out without a word, a failure of one job is its row.
 - `GET /chat/<id>/totals`: the right column's turn totals of the chat (`totals_model`): the number of turns that ended, their time and their cost as the backend reported them, added up from the chat's "end" events read from the start (at most 2,000; a field that is missing or odd counts as not reported, never as an error). A part the page asks once it has loaded and again whenever `app.js` sees a new end of a turn come into the conversation, on a bound of its own (`Limits.chat_query_workers` places; a full one answers the placeholder, which asks again five seconds later); the broker is asked first, as for the queries.
 - `GET /chat/<id>/export`: the whole chat as one JSON document, an attachment `chat-<id>.json` under `Content-Security-Policy: sandbox` (`chat_export`): the chat's entry of `chat.list` and `hello`'s back end, every event from the start, the back end's own transcript (`chat.transcript`), bounded by `Limits.chat_export_events`, `chat_export_bytes` and `chat_export_seconds`, a `stopped` sentence when a bound or a failure ended it. The broker is asked every time (never believed from before) in a worker of the window's bound, then the document is written in workers while it is sent, on one of the downloads' places.
-- `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. `GET /chat/<id>/spec/<name>` (a name ending in `.vl.json`): the whole file (at most 2 MiB, on the images' bound and time limit) checked by `vlspec` and sent as `application/json` written by Python, or its refusal's reason with 422; the plot card draws it with Vega-Lite (`static/plots.js`), the image of its stem staying as the fallback. The web UI opens no file for either: the bytes come only through the socket.
+- `<name>` in the file routes below is a path of the runner's rule, each part quoted and `/` between them (the routes take the rest of the address, which Starlette has decoded, `%2F` included, and check it whole: an encoded `..` or an empty part is not found and nothing is sent). `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the last part of the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. `GET /chat/<id>/spec/<name>` (a name ending in `.vl.json`): the whole file (at most 2 MiB, on the images' bound and time limit) checked by `vlspec` and sent as `application/json` written by Python, or its refusal's reason with 422; the plot card draws it with Vega-Lite (`static/plots.js`), the image of its stem staying as the fallback. The web UI opens no file for either: the bytes come only through the socket.
 
 Every route answers GET or POST only (a HEAD is 405); every POST passes the guard's origin and form-token rule. Standard library, anyio, FastAPI, Starlette and this package only.
 """
@@ -144,8 +144,8 @@ def _optional_whole(value):
 
 
 def file_href(chat_id, name, route="file"):
-    """The address of a file of a chat whose name follows the runner's rule (checked by the caller), the name quoted."""
-    return f"/chat/{chat_id}/{route}/{urllib.parse.quote(name, safe='')}"
+    """The address of a file of a chat whose name follows the runner's rule (checked by the caller): each part of its path quoted, `/` between them."""
+    return f"/chat/{chat_id}/{route}/" + "/".join(urllib.parse.quote(part, safe="") for part in name.split("/"))
 
 
 def stems_of(names):
@@ -562,12 +562,12 @@ def totals_model(runner, chat_id, clock):
 
 
 class ChatFileStream(Response):
-    """The answer that streams a chat's file from the runner's pieces: an attachment of type `application/octet-stream` with a reduced name, `Content-Length` the size the first piece gave. `fetch(offset)` (run in a worker) returns the next piece as `(data, size, end)` or raises; a piece whose size is not the one announced, a piece shorter than a whole piece before the end, the time limit passed on `clock` (`deadline`), or any error ends the answer at once, never past what was announced. `release()` is called when the answer ends, however it ends."""
+    """The answer that streams a chat's file from the runner's pieces: an attachment of type `application/octet-stream` named by the last part of its path, reduced, `Content-Length` the size the first piece gave. `fetch(offset)` (run in a worker) returns the next piece as `(data, size, end)` or raises; a piece whose size is not the one announced, a piece shorter than a whole piece before the end, the time limit passed on `clock` (`deadline`), or any error ends the answer at once, never past what was announced. `release()` is called when the answer ends, however it ends."""
 
     media_type = "application/octet-stream"
 
     def __init__(self, first, size, name, fetch, release, clock, deadline):
-        super().__init__(content=None, status_code=200, headers={"content-disposition": f'attachment; filename="{results.download_name(name)}"', "content-length": str(size), "content-security-policy": SANDBOX_POLICY}, media_type=self.media_type)
+        super().__init__(content=None, status_code=200, headers={"content-disposition": f'attachment; filename="{results.download_name(name.rsplit("/", 1)[-1])}"', "content-length": str(size), "content-security-policy": SANDBOX_POLICY}, media_type=self.media_type)
         self.first, self.size, self.fetch, self.release, self.clock, self.deadline = first[:size], size, fetch, release, clock, deadline
 
     async def __call__(self, scope, receive, send):
@@ -645,7 +645,7 @@ def install(api, ctx):
 
     def page_model(chat_id=None, **values):
         """Every field `chat.html` reads, for no chat open (`chat_id` None) or for one."""
-        model = {"chat_id": chat_id, "chat_model": None, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED, "totals_trigger": TOTALS_ASK}
+        model = {"chat_id": chat_id, "chat_model": None, "failure": None, "hello": None, "hello_failure": None, "chats": None, "start": 0, "draft": "", "line": None, "text_max": assistant.TEXT_MAX, "events": [], "events_failure": None, "trigger": None, "next_href": None, "continue_href": None, "running": False, "files": None, "files_failure": None, "files_count": None, "left_out": 0, "unlisted": 0, "more": False, "chat_title": None, "queries_detached": QUERIES_DETACHED, "totals_trigger": TOTALS_ASK}
         model.update(values)
         return model
 
@@ -749,7 +749,7 @@ def install(api, ctx):
             if kind == "error":
                 model["files_failure"] = words.chat_sentence(value)
             else:
-                files, model["left_out"], model["more"] = value
+                files, model["left_out"], model["unlisted"], model["more"] = value
                 stems = stems_of(entry["name"] for entry in files)
                 model["files"] = [{"name": statements.visible(entry["name"])[0], "size": queue.size_text(entry["size"]), "href": file_href(chat_id, entry["name"]), "table": file_href(chat_id, entry["name"], "table") if entry["name"].lower().endswith(TABLE_ENDING) else None, "glyph": glyph_of(entry["name"])} for entry in files]
                 model["files_count"] = files_count(len(files), model["more"])
@@ -921,7 +921,7 @@ def install(api, ctx):
     def _name_ok(chat_id, name):
         return assistant.is_chat_id(chat_id) and assistant.is_file_name(name)
 
-    @api.get("/chat/{chat_id}/table/{name}")
+    @api.get("/chat/{chat_id}/table/{name:path}")
     async def table_page(request: Request, chat_id: str, name: str):
         if not _name_ok(chat_id, name) or not name.lower().endswith(TABLE_ENDING):
             return _not_found()
@@ -941,7 +941,7 @@ def install(api, ctx):
         # Like a download, the broker is asked every time: a file's content is never shown on an earlier answer.
         return (await checked_run(request, work, cached=False, page=shown("chat_table.html", "Table view")))[1]
 
-    @api.get("/chat/{chat_id}/file/{name}")
+    @api.get("/chat/{chat_id}/file/{name:path}")
     async def download(request: Request, chat_id: str, name: str):
         if not _name_ok(chat_id, name):
             return _not_found()
@@ -1012,7 +1012,7 @@ def install(api, ctx):
             if not handed_over:
                 downloads.release()
 
-    @api.get("/chat/{chat_id}/image/{name}")
+    @api.get("/chat/{chat_id}/image/{name:path}")
     async def image(request: Request, chat_id: str, name: str):
         if not _name_ok(chat_id, name):
             return _not_found()
@@ -1052,7 +1052,7 @@ def install(api, ctx):
             return _not_found()
         return Response(content=made[1], media_type=made[0], headers={"content-security-policy": SANDBOX_POLICY})
 
-    @api.get("/chat/{chat_id}/spec/{name}")
+    @api.get("/chat/{chat_id}/spec/{name:path}")
     async def spec(request: Request, chat_id: str, name: str):
         """A chart spec of the chat (`<name>.vl.json`) for `static/plots.js`: read whole through `chat.file` (at most `vlspec.BYTES_MAX`, within the images' time limit, on the images' bound, the broker asked first and never believed from before), checked by `vlspec.check` and sent as the JSON Python writes of it; a refused spec is 422 with the reason (text), a file that cannot be read whole is not found."""
         if not _name_ok(chat_id, name) or not name.lower().endswith(SPEC_ENDING):

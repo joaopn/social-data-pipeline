@@ -580,7 +580,7 @@ class ScriptedRunner:
         if op == "chat.delete":
             return {}
         if op == "chat.files":
-            return {"files": [{"name": name, "size": len(data), "mtime": 1795000000.0} for name, data in sorted(self.files.items())], "left_out": 0, "more": False}
+            return {"files": [{"name": name, "size": len(data), "mtime": 1795000000.0} for name, data in sorted(self.files.items())], "left_out": 0, "unlisted": 0, "more": False}
         if op == "chat.file":
             data = self.files.get(request["name"])
             if data is None:

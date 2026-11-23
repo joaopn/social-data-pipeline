@@ -3,7 +3,7 @@
 - Where: `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), mode 0600; a leftover socket in its place is removed, anything else there refuses the start.
 - How much: at most 8 connections at a time (the rest closed at once); one request and one reply per connection, each a `control.framing` frame; a request of at most 64 KiB within 10 seconds; a reply of at most 1 MiB (else `too_large`). A reply is `{"ok": true, "result": ...}` or `{"ok": false, "error": {"code", "message"}}` with a constant message. An unexpected exception is logged by the name of its kind only and answered `internal`.
 - The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `session`, `turns`, `resume`, `model`: the chat's model, null for the back end's default). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
-- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "more"}`; `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}`; `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
+- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "unlisted", "more"}` (a name is a path relative to `files/`, its parts joined by `/`: every regular file directly in `files/`, and those of its subfolders up to three folders down whose names end in one of `LISTED_ENDINGS`, folders whose names start with `.` not looked into; `left_out`: the names that are not of the rule; `unlisted`: the files of subfolders left out by their ending); `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}` (`name` a path of the same rule, of any ending); `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
 - The events (one JSON object per line, each at most 64 KiB, the log at most 16 MiB and 1 line per 32 bytes of that, then one `error` event says the chat is full and the turn's `end` follows): `user {text}`, `text {text}`, `tool {name, input}`, `tool_result {text, is_error}`, `file {name, size}`, `end {is_error, cost_usd, duration_ms, turns}`, `error {message}`; each has `n` (its index) and `t` (seconds since the epoch). Every turn ends with exactly one `end`.
 
 Standard library and `control.framing`/`errors` only. The runner is not a security boundary: it keeps itself useful and bounded against what the sandbox may do to its folders.
@@ -37,6 +37,10 @@ SOCKET_MODE = 0o600
 FOLDER_MODE = 0o700
 CHAT_ID = re.compile(r"c_[0-9a-f]{12}")
 FILE_NAME = re.compile(r"[A-Za-z0-9._ -]{1,128}")
+# A file of a chat is named by its path under `files/`: at most this many folders, then the file, each part of `FILE_NAME` and none `.` or `..`.
+FOLDERS_MAX = 3
+# The endings (lower-cased) of the files of subfolders that are listed; a file directly in `files/` is listed whatever its ending.
+LISTED_ENDINGS = (".py", ".png", ".jpg", ".jpeg", ".svg", ".json", ".csv", ".txt", ".md")
 EVENTS_NAME = "events.jsonl"
 META_NAME = "meta.json"
 META_MAX_BYTES = 64 * 1024
@@ -359,25 +363,54 @@ def _empty(fd, identity, passes, budget):
         os.close(fd)
 
 
+def is_file_path(name):
+    """Whether `name` is a path of a chat's file: 1 to FOLDERS_MAX + 1 parts joined by `/`, each of `FILE_NAME` and none `.` or `..` (so no leading, trailing or double `/`)."""
+    if not isinstance(name, str):
+        return False
+    parts = name.split("/")
+    return len(parts) <= FOLDERS_MAX + 1 and all(FILE_NAME.fullmatch(part) and part not in (".", "..") for part in parts)
+
+
 def listing(files_fd, limits):
-    """The regular files directly in the folder `files_fd` whose names are plain: ({name: stat}, how many names were left out, whether more entries were there than looked at). Links and anything else that is not a regular file are never listed."""
-    found, left_out, more = {}, 0, False
-    with os.scandir(files_fd) as entries:
-        for count, entry in enumerate(entries):
-            if count >= limits.listing_max:
-                more = True
-                break
-            name = entry.name
+    """The regular files under the folder `files_fd` whose paths are of the rule (`is_file_path`): ({path: stat}, how many names were left out by the rule, how many files of subfolders were left out by their ending, whether more entries were there than looked at). Every regular file directly in the folder is listed; a subfolder's only when its name ends in one of LISTED_ENDINGS. Subfolders are walked up to FOLDERS_MAX folders down, never one whose name starts with `.`; each is opened without following a link and checked to be the one looked at, and one descriptor is held per folder level. Links and anything else that is not a regular file are never listed. At most `limits.listing_max` entries are looked at across the whole tree."""
+    found, counts, budget = {}, [0, 0], [limits.listing_max]
+
+    def walk(fd, prefix, depth):
+        names, more = scan(fd, budget[0])
+        budget[0] -= len(names)
+        folders = []
+        for name in names:
             if not FILE_NAME.fullmatch(name) or name in (".", ".."):
-                left_out += 1
+                counts[0] += 1
                 continue
             try:
-                info = os.stat(name, dir_fd=files_fd, follow_symlinks=False)
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             except OSError:
                 continue
             if stat.S_ISREG(info.st_mode):
-                found[name] = info
-    return found, left_out, more
+                if depth == 0 or name.lower().endswith(LISTED_ENDINGS):
+                    found[prefix + name] = info
+                else:
+                    counts[1] += 1
+            elif stat.S_ISDIR(info.st_mode) and depth < FOLDERS_MAX and not name.startswith("."):
+                folders.append((name, info))
+        for name, info in sorted(folders):
+            try:
+                child = _open_folder(fd, name)
+            except OSError:
+                continue
+            try:
+                opened = os.fstat(child)
+                if (opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino):
+                    more = walk(child, f"{prefix}{name}/", depth + 1) or more
+            except OSError:
+                continue
+            finally:
+                os.close(child)
+        return more
+
+    more = walk(files_fd, "", 0)
+    return found, counts[0], counts[1], more
 
 
 # ── the chats ─────────────────────────────────────────────────────────────
@@ -676,7 +709,7 @@ class Runner:
         except OSError:
             return {}
         try:
-            found, _, _ = listing(files_fd, self.limits)
+            found = listing(files_fd, self.limits)[0]
         finally:
             os.close(files_fd)
         return {name: (info.st_size, info.st_mtime_ns, info.st_ino) for name, info in found.items()}
@@ -1035,23 +1068,34 @@ class Runner:
     def _op_chat_files(self, request):
         chat = self._chat_of(request)
         with self._files_fd(chat) as files_fd:
-            found, left_out, more = listing(files_fd, self.limits)
+            found, left_out, unlisted, more = listing(files_fd, self.limits)
         names = sorted(found)
         more = more or len(names) > self.limits.files_max
-        return {"files": [{"name": n, "size": found[n].st_size, "mtime": round(found[n].st_mtime, 3)} for n in names[: self.limits.files_max]], "left_out": left_out, "more": more}
+        return {"files": [{"name": n, "size": found[n].st_size, "mtime": round(found[n].st_mtime, 3)} for n in names[: self.limits.files_max]], "left_out": left_out, "unlisted": unlisted, "more": more}
 
     def _op_chat_file(self, request):
         chat = self._chat_of(request)
         name = request["name"]
-        if not isinstance(name, str) or not FILE_NAME.fullmatch(name) or name in (".", ".."):
+        if not is_file_path(name):
             raise _Refusal("bad_request")
         offset = self._whole(request, "offset", 0, 1 << 50)
         limit = self._whole(request, "limit", 1, self.limits.piece_bytes)
+        *folders, last = name.split("/")
         with self._files_fd(chat) as files_fd:
+            folder_fd = files_fd
             try:
-                fd = _open_regular(files_fd, name, os.O_RDONLY)
+                # Folder by folder, no link followed; each descriptor closed once the next is open.
+                for folder in folders:
+                    child = _open_folder(folder_fd, folder)
+                    if folder_fd != files_fd:
+                        os.close(folder_fd)
+                    folder_fd = child
+                fd = _open_regular(folder_fd, last, os.O_RDONLY)
             except OSError:
                 raise _Refusal("no_such_file") from None
+            finally:
+                if folder_fd != files_fd:
+                    os.close(folder_fd)
             try:
                 size = os.fstat(fd).st_size
                 data = _read_at_most(fd, limit, offset)

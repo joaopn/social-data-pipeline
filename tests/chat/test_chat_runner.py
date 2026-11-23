@@ -443,6 +443,72 @@ def test_new_and_changed_files_are_reported_and_links_and_other_files_never_list
     assert piece == {"data": base64.b64encode(b"ne").decode(), "size": 9, "next": 8, "end": False}
 
 
+def test_files_in_subfolders_are_listed_by_their_path_and_type_up_to_three_folders_down(chat_runner, tmp_path):
+    """Bug class: a chart's script written to a subfolder missing from the Files list (and from the turn's file events), or the walk following a link out of the chat's folder, looking into hidden folders or going down without end."""
+    r = chat_runner()
+    chat = r.new()
+    files = r.work / chat / "files"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "out.py").write_text("OUTSIDE-MARKER")
+    (files / "top.bin").write_text("x")
+    (files / "scripts").mkdir()
+    (files / "scripts" / "data.bin").write_text("x")
+    (files / "scripts" / "Plot.PNG").write_text("x")
+    (files / "a" / "b" / "c" / "d").mkdir(parents=True)
+    (files / "a" / "b" / "c" / "three.csv").write_text("x")
+    (files / "a" / "b" / "c" / "d" / "four.py").write_text("x")
+    (files / ".hidden").mkdir()
+    (files / ".hidden" / "x.py").write_text("x")
+    (files / "scripts" / "linïk.py").write_text("x")
+    (files / "linked").symlink_to(outside)
+    (files / "scripts" / "link.py").symlink_to(outside / "out.py")
+    r.plan([INIT, ["write", ["scripts/vol.py", "print(1)"]], result()])
+    r.call("chat.send", chat=chat, text="hi")
+    assert [(e["name"], e["size"]) for e in r.wait(chat) if e["type"] == "file"] == [("scripts/vol.py", 8)]
+    listed = r.call("chat.files", chat=chat)["result"]
+    assert [f["name"] for f in listed["files"]] == ["a/b/c/three.csv", "scripts/Plot.PNG", "scripts/vol.py", "top.bin"]
+    assert listed["left_out"] == 1 and listed["unlisted"] == 1 and listed["more"] is False
+    assert r.call("chat.file", chat=chat, name="scripts/vol.py", offset=0, limit=100)["result"]["data"] == base64.b64encode(b"print(1)").decode()
+
+
+@pytest.mark.parametrize("name", ["../x", "/etc/passwd", "a//b", "a/../b", "a/./b", "scripts/", "a/b/c/d/e.py", "a\\b"])
+def test_a_file_path_outside_the_rule_is_bad_request(chat_runner, name):
+    """Bug class: a path from the web UI that climbs out of the chat's folder, starts at the root or is deeper than any listed file."""
+    r = chat_runner()
+    assert error_of(r.call("chat.file", chat=r.new(), name=name, offset=0, limit=1)) == "bad_request"
+
+
+def test_a_file_path_through_a_linked_folder_is_not_followed(chat_runner, tmp_path):
+    """Bug class (security): a link to a folder outside planted in the chat's folder, its files read through a path."""
+    r = chat_runner()
+    chat = r.new()
+    outside = tmp_path / "outside"
+    (outside / "in").mkdir(parents=True)
+    (outside / "in" / "secret.txt").write_text("OUTSIDE-MARKER")
+    (r.work / chat / "files" / "linked").symlink_to(outside)
+    (r.work / chat / "files" / "real").mkdir()
+    (r.work / chat / "files" / "real" / "in").symlink_to(outside / "in")
+    replies = [r.call("chat.file", chat=chat, name=name, offset=0, limit=100) for name in ("linked/in/secret.txt", "real/in/secret.txt", "real")]
+    assert [error_of(reply) for reply in replies] == ["no_such_file"] * 3 and "OUTSIDE-MARKER" not in json.dumps(replies)
+
+
+def test_the_listing_bound_counts_the_entries_of_the_whole_tree(tmp_path):
+    """Bug class: a chat's folder of many subfolders listed without end, each within the bound but the whole tree not."""
+    for folder in ("s1", "s2", "s3"):
+        (tmp_path / folder).mkdir()
+        for index in range(4):
+            (tmp_path / folder / f"f{index}.txt").write_text("x")
+    folder_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        found, left_out, unlisted, more = runner.listing(folder_fd, runner.Limits(listing_max=10))
+        assert len(found) == 7 and more is True and (left_out, unlisted) == (0, 0)
+        found, _, _, more = runner.listing(folder_fd, runner.Limits(listing_max=15))
+        assert len(found) == 12 and more is False
+    finally:
+        os.close(folder_fd)
+
+
 def test_delete_follows_no_link_and_removes_a_deep_tree(chat_runner, tmp_path):
     r = chat_runner()
     chat = r.new()

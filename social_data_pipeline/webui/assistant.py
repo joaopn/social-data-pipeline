@@ -17,8 +17,9 @@ from social_data_pipeline.webui import scheduler
 READ_SECONDS = 10
 CHANGE_SECONDS = 30
 CHAT_ID = re.compile(r"c_[0-9a-f]{12}")
-# The runner's own rule for the names of a chat's files (`runner.FILE_NAME`), "." and ".." besides.
+# The runner's own rule for the names of a chat's files (`runner.is_file_path`): a path of at most FOLDERS_MAX folders and the file, its parts joined by `/`, each of FILE_NAME and none "." or "..".
 FILE_NAME = re.compile(r"[A-Za-z0-9._ -]{1,128}")
+FOLDERS_MAX = 3
 NAME = re.compile(r"[a-z0-9_-]{1,40}")
 # The runner's bounds.
 TITLE_MAX = 80
@@ -67,7 +68,11 @@ def is_chat_id(value):
 
 
 def is_file_name(value):
-    return isinstance(value, str) and FILE_NAME.fullmatch(value) is not None and value not in (".", "..")
+    """Whether `value` is the name of a chat's file by the runner's rule: a path of 1 to FOLDERS_MAX + 1 parts joined by `/` (no leading, trailing or double `/`), each of FILE_NAME and none "." or ".."."""
+    if not isinstance(value, str):
+        return False
+    parts = value.split("/")
+    return len(parts) <= FOLDERS_MAX + 1 and all(FILE_NAME.fullmatch(part) is not None and part not in (".", "..") for part in parts)
 
 
 def is_text(value, most):
@@ -309,14 +314,14 @@ class Assistant:
         _exactly(self._ask("chat.delete", {"chat": chat}, CHANGE_SECONDS), ())
 
     def files(self, chat):
-        """([{"name", "size"}] of `chat.files`, how many names were left out, whether there are more)."""
-        found = _exactly(self._ask("chat.files", {"chat": chat}), ("files", "left_out", "more"))
+        """([{"name", "size"}] of `chat.files`, how many names were left out, how many files of subfolders were left out by their type, whether there are more)."""
+        found = _exactly(self._ask("chat.files", {"chat": chat}), ("files", "left_out", "unlisted", "more"))
         files = found["files"]
-        _require(isinstance(files, list) and len(files) <= FILES_MAX and is_whole(found["left_out"]) and isinstance(found["more"], bool))
+        _require(isinstance(files, list) and len(files) <= FILES_MAX and is_whole(found["left_out"]) and is_whole(found["unlisted"]) and isinstance(found["more"], bool))
         for entry in files:
             _exactly(entry, ("name", "size", "mtime"))
             _require(is_file_name(entry["name"]) and is_whole(entry["size"]) and is_time(entry["mtime"]))
-        return [{"name": entry["name"], "size": entry["size"]} for entry in files], found["left_out"], found["more"]
+        return [{"name": entry["name"], "size": entry["size"]} for entry in files], found["left_out"], found["unlisted"], found["more"]
 
     def piece(self, chat, name, offset, limit=PIECE_BYTES):
         """(the bytes of the file `name` from `offset` on, at most `limit`; the file's size; whether that is its end)."""

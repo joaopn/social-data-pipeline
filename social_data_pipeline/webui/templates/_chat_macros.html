@@ -1,4 +1,4 @@
-{#- Macros of the Chat window: `runs` draws the inline runs of `prose`, `event` one event of `chat.event_model` as the mock-up draws it (a question is a bubble on the right, the assistant's text prose, a tool call a slim row whose input opens from it, a result a row under it, a file the plot card, with its buttons: for an image its download and the files of the chat's list with the same stem, its data, its code and the table view of its CSV). Every text is drawn from its runs of `statements.visible` through `vis` and escaped by the template; nothing of the runner becomes markup or an attribute but a checked file's address. -#}
+{#- Macros of the Chat window: `runs` draws the inline runs of `prose`, `event` one event of `chat.event_model` as the mock-up draws it (a question is a bubble on the right, the assistant's text prose, a tool call a slim row whose input opens from it, a result a row under it, a file the plot card, with its buttons: for an image its download and the files of the chat's list with the same stem, its data, its chart spec, its code and the table view of its CSV; when the card has a chart spec (`spec`, a `.vl.json` of the same stem), an empty `.vl-chart` whose `data-vl-spec` is the spec's address, where `static/plots.js` draws the chart, the image staying as the fallback). Every text is drawn from its runs of `statements.visible` through `vis` and escaped by the template; nothing of the runner becomes markup or an attribute but a checked file's address. -#}
 {% from "_queue_macros.html" import vis %}
 {% macro runs(items) -%}
 {%- for run in items -%}
@@ -29,6 +29,7 @@
 {{ vis(item.parts) }}</pre></details>
 {%- elif item.kind == "file" %}
 <div class="plot chat-file"><h3>{{ vis(item.name) }}</h3><div class="sub">{{ item.size }}{% if not item.href %} · its name is not one the page links to{% endif %}</div>
+{%- if item.get("spec") %}<div class="vl-chart" data-vl-spec="{{ item.spec }}"></div><p class="vl-note small muted" hidden></p>{% endif %}
 {%- if item.image %}<img class="chat-image" src="{{ item.image }}" alt="an image the assistant made">{% endif %}
 {%- if item.buttons %}<div class="row wrap mt">{% for button in item.buttons %}<a class="btn sm" href="{{ button.href }}">{{ button.label }}</a>{% endfor %}</div>{% endif %}</div>
 {%- elif item.kind == "end" %}

@@ -88,3 +88,27 @@ a.thumb { color: inherit; } a.thumb:hover { border-color: var(--muted); text-dec
   .cw .left .grow { display: none; }
   :root[data-chat-panel="closed"] .cw { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* the plot card's interactive chart (plots.js draws it with vega-embed, whose own style element is turned off: its rules, and the tooltip's, are here on the kit's tokens); a drawn chart hides the card's image, which stays the fallback */
+.vl-chart { width: 100%; }
+.vl-chart:not([data-vl-state]) { display: none; }
+.plot.vl-drawn .chat-image, .cw .chat .plot.vl-drawn .chat-image { display: none; }
+.vl-note { margin-top: 6px; }
+.vega-embed { position: relative; display: block; box-sizing: border-box; width: 100%; margin-top: 6px; }
+.vega-embed .chart-wrapper { max-width: 100%; overflow-x: auto; }
+.vega-embed .chart-wrapper.fit-x { width: 100%; }
+.vega-embed .chart-wrapper.fit-y { height: 100%; }
+.vega-embed svg { display: block; }
+.vega-embed .vega-bindings { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 6px; font-size: 12px; color: var(--ink-2); }
+.vega-embed .vega-bindings:empty { display: none; }
+.vega-embed .vega-bind { display: flex; align-items: center; gap: 6px; }
+.vega-embed .vega-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.vega-embed .vega-actions a { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--ink); font-size: 12px; white-space: nowrap; }
+.vega-embed .vega-actions a:hover { border-color: var(--muted); text-decoration: none; }
+#vg-tooltip-element { visibility: hidden; position: fixed; z-index: 1000; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--ink); box-shadow: var(--shadow); font: 12px/1.4 var(--sans); white-space: pre-line; pointer-events: none; }
+#vg-tooltip-element.visible { visibility: visible; }
+#vg-tooltip-element h2 { margin: 0 0 6px; font-size: 13px; }
+#vg-tooltip-element table { border-spacing: 0; }
+#vg-tooltip-element td { padding: 1px 0; vertical-align: text-top; overflow: hidden; text-overflow: ellipsis; }
+#vg-tooltip-element td.key { color: var(--muted); max-width: 150px; text-align: right; padding-right: 6px; }
+#vg-tooltip-element td.value { display: block; max-width: 300px; max-height: 7em; text-align: left; }

@@ -18,12 +18,21 @@ COPY social_data_pipeline/__init__.py ./social_data_pipeline/
 COPY social_data_pipeline/control/__init__.py social_data_pipeline/control/errors.py social_data_pipeline/control/framing.py social_data_pipeline/control/client.py ./social_data_pipeline/control/
 COPY social_data_pipeline/webui/ ./social_data_pipeline/webui/
 
-# htmx, pinned by version and checked against the sum written here (measured when it was pinned).
+# htmx, and the Chat window's chart library (Vega 6.4.0, Vega-Lite 6.5.0, vega-embed 7.3.0, which bundles vega-tooltip and Vega's expression interpreter; BSD-3-Clause), each pinned by version and checked against the sum written here (measured when it was pinned; unpkg and jsdelivr served the same bytes).
 RUN mkdir -p social_data_pipeline/webui/static/vendor \
     && cd social_data_pipeline/webui/static/vendor \
-    && python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js htmx.min.js \
+    && for pair in \
+        https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js=htmx.min.js \
+        https://unpkg.com/vega@6.4.0/build/vega.min.js=vega.min.js \
+        https://unpkg.com/vega-lite@6.5.0/build/vega-lite.min.js=vega-lite.min.js \
+        https://unpkg.com/vega-embed@7.3.0/build/vega-embed.min.js=vega-embed.min.js; do \
+        python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" "${pair%=*}" "${pair##*=}" || exit 1; \
+    done \
     && printf '%s  %s\n' \
         e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447 htmx.min.js \
+        8f6a3587cf8d4f42c7e08120e3eb05d067e746d554e39d2dcf52acc0bd5ba28f vega.min.js \
+        83e215e84e308ee8688fa6503ba0f1cf8a3c05c0d61df2841a0b92bf86809e00 vega-lite.min.js \
+        b1455caba2fb1a72fb46025ba0ba1316e2dbc7f0dd40a3f6040172bf9c08ba91 vega-embed.min.js \
        | sha256sum -c - \
     && chmod -R a+rX /app
 

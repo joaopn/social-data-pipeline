@@ -6,5 +6,8 @@ pandas>=2.2.0
 numpy>=2.0.0
 matplotlib>=3.9.0
 pyarrow>=17.0.0
+# Charts the Chat window draws interactively (a Vega-Lite spec, `<name>.vl.json`) and their PNG; vl-convert renders the PNG offline, without a browser
+altair==6.3.0
+vl-convert-python==1.9.0.post1
 # The MCP client of the OpenAI-compatible back end's agent (chat/agent.py): its streamable-HTTP and SSE clients
 mcp>=2.3.0

@@ -87,9 +87,9 @@ The databases restart only on request (`restart: "no"`) and get long stop grace 
 | `Dockerfile.postgres` | `postgres:18` | none | `pg_parquet`, the first-start scripts in `config/postgres/initdb.d/` |
 | `Dockerfile.mcp-mongo` | `oven/bun:1` build, `node:22-slim` runtime | none | `mcp-mongo-server` at a pinned commit with three patches from `config/mcp/` |
 | `Dockerfile.mcp-starrocks` | `python:3.13-slim` | `mcp-server-starrocks==0.3.0` | none |
-| `Dockerfile.webui` | `python:3.13-slim` | `requirements-webui.txt`: FastAPI, uvicorn, Jinja2 | `openssl`; htmx 2.0.4 checked against a SHA-256 sum |
+| `Dockerfile.webui` | `python:3.13-slim` | `requirements-webui.txt`: FastAPI, uvicorn, Jinja2 | `openssl`; htmx 2.0.4, Vega 6.4.0, Vega-Lite 6.5.0 and vega-embed 7.3.0, each checked against a SHA-256 sum |
 | `Dockerfile.gateway` | `python:3.13-slim` | none | The gateway package only |
-| `Dockerfile.sandbox` | `python:3.13-slim` | `requirements-sandbox.txt`: pandas, NumPy, Matplotlib, PyArrow, the `mcp` SDK | Claude Code at a pinned version, checked against a SHA-256 sum |
+| `Dockerfile.sandbox` | `python:3.13-slim` | `requirements-sandbox.txt`: pandas, NumPy, Matplotlib, PyArrow, Altair and vl-convert (pinned), the `mcp` SDK | Claude Code at a pinned version, checked against a SHA-256 sum |
 
 `requirements-test.txt` is for the test suite only. The Python images copy the package code (and a copy of `config/`) in at build time. Configuration is not baked in for use: `./config` is mounted read-only into every pipeline container and the scheduler, so YAML edits apply at the next run. The web UI, gateway and sandbox images copy only the modules they import, each from a build context cut down by its ignore file where it has one.
 

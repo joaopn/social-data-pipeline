@@ -1,4 +1,4 @@
-{#- The document around every page: no inline script, no inline style, no style or on... attribute (a test scans for them). htmx reads its settings from the meta tag. The look is the mock-up's kit (app.css, dark or light) and each window's own sheet; every page loads all of them. `theme.js` runs before the page is drawn (no defer) and sets the theme and the Chat window's hidden column this browser keeps; `app.js` does everything else. -#}
+{#- The document around every page: no inline script, no inline style, no style or on... attribute (a test scans for them). htmx reads its settings from the meta tag. A page adds its own script files in the block `scripts` (the Chat window: Vega, Vega-Lite, vega-embed and plots.js). The look is the mock-up's kit (app.css, dark or light) and each window's own sheet; every page loads all of them. `theme.js` runs before the page is drawn (no defer) and sets the theme and the Chat window's hidden column this browser keeps; `app.js` does everything else. -#}
 <!doctype html>
 <html lang="en">
 <head>
@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/static/manage.css">
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
+  {%- block scripts %}{% endblock %}
 </head>
 <body>
 {% block body %}{% endblock %}

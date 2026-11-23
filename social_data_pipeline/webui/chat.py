@@ -10,7 +10,7 @@ Both pages are the mock-up's three columns (`chat.html`): on the left the chats,
 - `GET /chat/<id>/table/<name>` (a name of the runner's rule ending in `.csv`): the first 256 KiB of the file (one `chat.file` piece, the broker asked first and never believed from before) as a table in the frame: decoded as UTF-8 with errors replaced, parsed by `csv` (strict), at most 500 rows under the header row and 50 columns, the cells within the page's units (`Limits.chat_units_max`), every cell through `statements.visible` and the template's escaping; a file that is not CSV (a NUL, a quote that does not close where the file was read whole, a field over `csv`'s limit) is one sentence.
 - `GET /chat/<id>/queries`: the right column's "Queries in the queue", a part the page asks once it has loaded and every 60 seconds after (`queries_model`), on a bound of its own (`Limits.chat_query_workers`; a full bound answers 204 and the part stays as it is). The broker is asked first (`queue.broker_session_error`, a short time limit: an ended session gets `HX-Redirect`, a broker that does not answer is the part's one line and nothing else is asked); then the chat's own events (at most 2,000, read from the start, the runner's pages) give the job ids written in the texts of its tool calls and their results, newest first, at most 20; then the scheduler's `queue.job` for each, with a short time limit and a total one. Only a job whose record says it was submitted by the assistant is listed; an unknown id or another submitter's job is left out without a word, a failure of one job is its row.
 - `GET /chat/<id>/totals`: the right column's turn totals of the chat (`totals_model`): the number of turns that ended, their time and their cost as the backend reported them, added up from the chat's "end" events read from the start (at most 2,000; a field that is missing or odd counts as not reported, never as an error). A part the page asks once it has loaded and again whenever `app.js` sees a new end of a turn come into the conversation, on a bound of its own (`Limits.chat_query_workers` places; a full one answers the placeholder, which asks again five seconds later); the broker is asked first, as for the queries.
-- `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. The web UI opens no file for either: the bytes come only through the socket.
+- `GET /chat/<id>/file/<name>`: the file streamed from `chat.file` pieces as an attachment (`application/octet-stream`, the name reduced as `results.download_name` does, `Content-Security-Policy: sandbox` besides the guard's headers), its length the size the first piece gave, every later piece checked against it (a file that changes size ends the answer without sending more than announced), at most 1 GiB, two at a time, every piece but the last a whole piece, within 30 minutes. `GET /chat/<id>/image/<name>`: the whole file (at most 8 MiB, read within 30 seconds) served inline only when its first bytes are a PNG or JPEG signature, with the type of that signature, never of the name; anything else is not found. `GET /chat/<id>/spec/<name>` (a name ending in `.vl.json`): the whole file (at most 2 MiB, on the images' bound and time limit) checked by `vlspec` and sent as `application/json` written by Python, or its refusal's reason with 422; the plot card draws it with Vega-Lite (`static/plots.js`), the image of its stem staying as the fallback. The web UI opens no file for either: the bytes come only through the socket.
 
 Every route answers GET or POST only (a HEAD is 405); every POST passes the guard's origin and form-token rule. Standard library, anyio, FastAPI, Starlette and this package only.
 """
@@ -30,7 +30,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from starlette.responses import Response
 
 from social_data_pipeline.control import client
-from social_data_pipeline.webui import actions, assistant, prose, queue, results, statements, words
+from social_data_pipeline.webui import actions, assistant, prose, queue, results, statements, vlspec, words
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker
 from social_data_pipeline.webui.scheduler import SchedulerUnavailable
 
@@ -76,6 +76,9 @@ COST_MAX = 10 ** 9
 IMAGE_LABELS = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG"}
 DATA_ENDINGS = ((".csv", "Data (CSV)"), (".tsv", "Data (TSV)"), (".parquet", "Data (Parquet)"), (".json", "Data (JSON)"))
 CODE_ENDING = ".py"
+# A chart spec of Vega-Lite (`vlspec`), drawn in the plot card by `static/plots.js` from `GET /chat/<id>/spec/<name>`.
+SPEC_ENDING = ".vl.json"
+SPEC_LABEL = "Spec (JSON)"
 TABLE_ENDING = ".csv"
 # The table view: the bytes read (one piece), the rows under the header row and the columns shown.
 TABLE_BYTES = 256 * 1024
@@ -145,15 +148,35 @@ def stems_of(names):
     """{stem: {lower-cased ending: name}} of the names of a chat's files as `chat.files` listed them (each already of the runner's rule), the first name in sorted order kept for each ending: what the plot card's buttons are made from."""
     index = {}
     for name in sorted(names):
-        stem, ending = os.path.splitext(name)
-        index.setdefault(stem, {}).setdefault(ending.lower(), name)
+        stem, ending = split_name(name)
+        index.setdefault(stem, {}).setdefault(ending, name)
     return index
 
 
-def file_buttons(chat_id, name, stems):
-    """The buttons of a file's card, [{"label", "href"}], for a name of the runner's rule. An image: its own download ("PNG"), then the files of `stems` (the chat's list, `stems_of`; None when it could not be read) with the same stem: the data ("Data (CSV)", by its ending), the code ("Code", `.py`) and "Table view" of the `.csv`. Any other file: "Download", and "Table view" when it is a `.csv` itself. No other name becomes a link."""
+def split_name(name):
+    """(stem, lower-cased ending) of a file's name; a chart spec's ending is the whole `.vl.json`."""
+    if name.lower().endswith(SPEC_ENDING):
+        return name[:-len(SPEC_ENDING)], SPEC_ENDING
     stem, ending = os.path.splitext(name)
-    ending = ending.lower()
+    return stem, ending.lower()
+
+
+def spec_href(chat_id, name, stems):
+    """The address of the chart spec a file's card draws, or None. An image's card draws the `.vl.json` of its stem when the chat's list holds one; a `.vl.json`'s own card draws it only when the list holds no image of its stem (that image's card draws it), or when the list could not be read."""
+    stem, ending = split_name(name)
+    same = (stems or {}).get(stem, {})
+    if ending in IMAGE_LABELS:
+        return file_href(chat_id, same[SPEC_ENDING], "spec") if SPEC_ENDING in same else None
+    if ending == SPEC_ENDING and not any(found in same for found in IMAGE_LABELS):
+        return file_href(chat_id, name, "spec")
+    return None
+
+
+def file_buttons(chat_id, name, stems):
+    """The buttons of a file's card, [{"label", "href"}], for a name of the runner's rule. An image: its own download ("PNG"), then the files of `stems` (the chat's list, `stems_of`; None when it could not be read) with the same stem: the data ("Data (CSV)", by its ending), the chart's spec ("Spec (JSON)", `.vl.json`), the code ("Code", `.py`) and "Table view" of the `.csv`. A chart spec: "Spec (JSON)". Any other file: "Download", and "Table view" when it is a `.csv` itself. No other name becomes a link."""
+    stem, ending = split_name(name)
+    if ending == SPEC_ENDING:
+        return [{"label": SPEC_LABEL, "href": file_href(chat_id, name)}]
     if ending not in IMAGE_LABELS:
         buttons = [{"label": "Download", "href": file_href(chat_id, name)}]
         if ending == TABLE_ENDING:
@@ -162,6 +185,8 @@ def file_buttons(chat_id, name, stems):
     same = (stems or {}).get(stem, {})
     buttons = [{"label": IMAGE_LABELS[ending], "href": file_href(chat_id, name)}]
     buttons += [{"label": label, "href": file_href(chat_id, same[found])} for found, label in DATA_ENDINGS if found in same]
+    if SPEC_ENDING in same:
+        buttons.append({"label": SPEC_LABEL, "href": file_href(chat_id, same[SPEC_ENDING])})
     if CODE_ENDING in same:
         buttons.append({"label": "Code", "href": file_href(chat_id, same[CODE_ENDING])})
     if TABLE_ENDING in same:
@@ -196,7 +221,7 @@ def event_model(event, chat_id, stems=None):
             if not assistant.is_whole(event["size"]):
                 raise ValueError("not a size")
             usable = assistant.is_file_name(name)
-            return {"kind": kind, "name": statements.visible(name)[0], "size": queue.size_text(event["size"]), "href": file_href(chat_id, name) if usable else None, "image": file_href(chat_id, name, "image") if usable and name.lower().endswith(IMAGE_SUFFIXES) else None, "buttons": file_buttons(chat_id, name, stems) if usable else []}
+            return {"kind": kind, "name": statements.visible(name)[0], "size": queue.size_text(event["size"]), "href": file_href(chat_id, name) if usable else None, "image": file_href(chat_id, name, "image") if usable and name.lower().endswith(IMAGE_SUFFIXES) else None, "buttons": file_buttons(chat_id, name, stems) if usable else [], "spec": spec_href(chat_id, name, stems) if usable else None}
         if kind == "end":
             cost, duration, turns = event["cost_usd"], _optional_whole(event["duration_ms"]), _optional_whole(event["turns"])
             if not isinstance(event["is_error"], bool) or (cost is not None and (isinstance(cost, bool) or not isinstance(cost, (int, float)))):
@@ -948,3 +973,46 @@ def install(api, ctx):
         if made is None:
             return _not_found()
         return Response(content=made[1], media_type=made[0], headers={"content-security-policy": SANDBOX_POLICY})
+
+    @api.get("/chat/{chat_id}/spec/{name}")
+    async def spec(request: Request, chat_id: str, name: str):
+        """A chart spec of the chat (`<name>.vl.json`) for `static/plots.js`: read whole through `chat.file` (at most `vlspec.BYTES_MAX`, within the images' time limit, on the images' bound, the broker asked first and never believed from before), checked by `vlspec.check` and sent as the JSON Python writes of it; a refused spec is 422 with the reason (text), a file that cannot be read whole is not found."""
+        if not _name_ok(chat_id, name) or not name.lower().endswith(SPEC_ENDING):
+            return _not_found()
+        session_id, session = ctx.current(request)
+        if session is None:
+            return ctx.to_login(request, clear_cookie=bool(session_id))
+
+        def whole(_session):
+            """(the checked JSON text, None), (None, the reason it is refused), or None: a file that could not be read, that changed while it was read, came in a piece shorter than a whole piece before its end, or took longer than the time limit."""
+            deadline = ctx.clock() + limits.chat_image_seconds
+            kind, value = _ask(lambda: runner.piece(chat_id, name, 0))
+            if kind == "error":
+                return None
+            data, size, end = value
+            if size > vlspec.BYTES_MAX:
+                return None, vlspec.TOO_LARGE
+            parts, held = [data], len(data)
+            while held < size and not end:
+                if len(parts[-1]) < assistant.PIECE_BYTES or ctx.clock() > deadline:
+                    return None
+                kind, value = _ask(lambda: runner.piece(chat_id, name, held))
+                if kind == "error" or value[1] != size or not value[0]:
+                    return None
+                parts.append(value[0])
+                held += len(value[0])
+                end = value[2]
+            return vlspec.check(b"".join(parts)) if held == size else None
+
+        made = await ctx.chat_images.run(lambda: queue.broker_checked(ctx, session, whole, cached=False), wait_seconds=limits.chat_image_wait_seconds)
+        if made is BUSY_GATE:
+            return PlainTextResponse(BUSY + "\n", status_code=503)
+        if queue.is_refused(made):
+            ending = queue.ended_session(ctx, request, session_id, made.error)
+            return ending or PlainTextResponse(words.sentence(made.error) + "\n", status_code=503)
+        if made is None:
+            return _not_found()
+        text, reason = made
+        if text is None:
+            return PlainTextResponse(reason, status_code=422)
+        return Response(content=text, media_type="application/json", headers={"content-security-policy": SANDBOX_POLICY})

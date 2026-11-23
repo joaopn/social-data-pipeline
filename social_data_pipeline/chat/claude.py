@@ -28,7 +28,7 @@ DATABASES = {"postgres": (8001, "sse", "/sse"), "mongo": (8002, "http", "/mcp"),
 PATH = "/usr/local/bin:/usr/bin:/bin"
 BUILTIN_PLUGINS = ("cc-plugin-agents-md@builtin", "cc-plugin-privacy@builtin", "cc-plugin-plugin-authoring@builtin")
 SETTINGS = json.dumps({"disableAllHooks": True, "enabledPlugins": {name: False for name in BUILTIN_PLUGINS}}, separators=(",", ":"))
-ROLE = "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only. When you make a plot, save it as a PNG file in the current folder and name the file in your answer. You cannot reach the internet."
+ROLE = "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only. When you make a plot, make it with Altair and save it twice in the current folder, as `<name>.vl.json` (`chart.save(\"<name>.vl.json\")`, which the web UI draws as an interactive chart) and as `<name>.png` (`chart.save(\"<name>.png\")`), and name both files in your answer. Keep the chart's data inside the chart (at most 50,000 rows; above 5,000 call `alt.data_transformers.disable_max_rows()` first; never loaded from an address or a file, no images or links) and leave its colours and background to the page. You cannot reach the internet."
 # The query queue (`SDP_CHAT_QUEUE=1`): the scheduler's assistant endpoint, reached through the gateway's port for it, as the MCP server of this name; its results under QUEUE_RESULTS.
 QUEUE_SERVER = "jobs"
 QUEUE_PORT = 8004

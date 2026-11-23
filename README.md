@@ -126,6 +126,7 @@ python sdp.py webui start
 | [postgres-mcp](https://github.com/crystaldba/postgres-mcp), [mcp-mongo-server](https://github.com/kiliczsh/mcp-mongo-server) (patched), [mcp-server-starrocks](https://pypi.org/project/mcp-server-starrocks/) 0.3.0 | The read-only MCP servers |
 | [FastAPI](https://fastapi.tiangolo.com/), Jinja2, [htmx](https://htmx.org/) 2.0.4 | The query scheduler's page and the web UI |
 | [Pico CSS](https://picocss.com/) 2 | The query scheduler's page |
+| [Vega](https://vega.github.io/vega/) 6.4.0, [Vega-Lite](https://vega.github.io/vega-lite/) 6.5.0 and [vega-embed](https://github.com/vega/vega-embed) 7.3.0 (BSD-3-Clause), [Altair](https://altair-viz.github.io/) and vl-convert | The Chat window's interactive charts (Altair and vl-convert in the chat's sandbox) |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or an OpenAI-compatible endpoint | The chat's assistant |
 
 ## Documentation

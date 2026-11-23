@@ -21,7 +21,7 @@ MODEL = "vendor/model-1:free"
 SESSION = "5f6cec57-5f0d-4a8c-a927-8480b9f00bb1"
 HOME = "/work/c_0123456789ab/home"
 # The role text, pinned whole: a change of it is a change of what the assistant is told.
-ROLE = "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only. When you make a plot, save it as a PNG file in the current folder and name the file in your answer. You cannot reach the internet."
+ROLE = "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only. When you make a plot, make it with Altair and save it twice in the current folder, as `<name>.vl.json` (`chart.save(\"<name>.vl.json\")`, which the web UI draws as an interactive chart) and as `<name>.png` (`chart.save(\"<name>.png\")`), and name both files in your answer. Keep the chart's data inside the chart (at most 50,000 rows; above 5,000 call `alt.data_transformers.disable_max_rows()` first; never loaded from an address or a file, no images or links) and leave its colours and background to the page. You cannot reach the internet."
 QUEUE_PARAGRAPH = (
     "The operator's query scheduler is attached as the MCP server `jobs`. Send long or heavy queries to it with its submit tools rather than through the databases' own tools; `list_targets` names its targets. "
     "A person approves each submitted query in the Queue window of the web UI before it runs, and you cannot approve it: after a submission, tell the operator the job id and that the query waits for their approval in the Queue window, and end your turn instead of waiting for it. "

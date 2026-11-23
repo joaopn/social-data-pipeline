@@ -11,6 +11,7 @@ The contracts pinned here, each test naming the bug class it catches:
 - g. New, send, stop, delete: the exact requests; refused texts keep the text; the refusals' sentences; the delete page changes nothing; the guard refuses a POST without the form token or from another origin.
 - h. Files and images: the fixed headers and the reduced name; the image's type from its signature, anything else not found; a file that changes size; the size cap; two downloads at a time; no file opened by the web UI.
 - k. The plot card's buttons and the table view: a button only for a file of the chat's own list with the image's stem; a CSV's cells text, its rows, columns and bytes capped, a file that is not CSV a sentence.
+- m. Chart specs: the card draws a `.vl.json` of the chat's list once (in the image's card, or its own when no image has its stem) and only then; the spec route sends the checked spec as JSON with the fixed headers, a refused one its reason, reads at most 2 MiB, never on the broker's earlier yes, and only for a `.vl.json` name of the runner's rule.
 - l. The right column's queries: the broker asked before the runner and the scheduler; the ids only from this chat's tool calls and results, newest first, at most 20; only the assistant's jobs; a failure confined to its row.
 - j. The scans: no inline code in any page or part of the window, the guard's headers on every answer, HEAD refused, the navigation's first entry.
 - The real runner: a turn's events, its file downloaded byte for byte.
@@ -166,6 +167,7 @@ def test_every_refusal_code_of_the_runner_has_a_sentence_and_shows_it(client, to
 ROUTES = [
     ("GET", "/chat"), ("GET", f"/chat/{CHAT_ID}"), ("GET", f"/chat/{CHAT_ID}/events?offset=0"), ("GET", f"/chat/{CHAT_ID}/delete"),
     ("GET", f"/chat/{CHAT_ID}/file/a.png"), ("GET", f"/chat/{CHAT_ID}/image/a.png"), ("GET", f"/chat/{CHAT_ID}/table/a.csv"), ("GET", f"/chat/{CHAT_ID}/queries"),
+    ("GET", f"/chat/{CHAT_ID}/spec/a.vl.json"),
     ("POST", "/chat/new"), ("POST", f"/chat/{CHAT_ID}/send"), ("POST", f"/chat/{CHAT_ID}/stop"), ("POST", f"/chat/{CHAT_ID}/delete"),
 ]
 
@@ -1066,6 +1068,79 @@ def test_the_table_view_is_only_for_a_csv_name_of_the_runners_rule(client, scrip
     for path in ("table/a.png", "table/a%2Fb.csv", "table/%2E%2E", "table/%E2%80%AEa.csv"):
         assert client.get(f"/chat/{CHAT_ID}/{path}").status_code == 404
     assert scripted.requests == []
+
+
+# ── m. chart specs ──────────────────────────────────────────────────────────
+
+ALTAIR = (Path(__file__).resolve().parents[1] / "fixtures" / "webui" / "altair_line.vl.json").read_bytes()
+
+
+def spec_boxes(page):
+    return re.findall(r'<div class="vl-chart" data-vl-spec="([^"]*)"></div>', page)
+
+
+def test_a_cards_chart_is_the_spec_of_its_stem_in_the_chats_list_and_drawn_once():
+    """Bug class: a chart guessed from the image's name (a spec the folder does not hold), the same chart drawn twice (in the image's card and in the spec's own), or a spec without an image of its stem never drawn."""
+    stems = chat.stems_of(["plot.png", "plot.vl.json", "plot.json", "alone.vl.json", "plotx.vl.json"])
+    assert chat.spec_href(CHAT_ID, "plot.png", stems) == f"/chat/{CHAT_ID}/spec/plot.vl.json"
+    assert chat.spec_href(CHAT_ID, "plot.vl.json", stems) is None and chat.spec_href(CHAT_ID, "alone.vl.json", stems) == f"/chat/{CHAT_ID}/spec/alone.vl.json"
+    assert chat.spec_href(CHAT_ID, "plotx.png", stems) == f"/chat/{CHAT_ID}/spec/plotx.vl.json" and chat.spec_href(CHAT_ID, "other.png", stems) is None
+    assert chat.spec_href(CHAT_ID, "plot.png", None) is None and chat.spec_href(CHAT_ID, "plot.vl.json", None) == f"/chat/{CHAT_ID}/spec/plot.vl.json"
+    assert [button["label"] for button in chat.file_buttons(CHAT_ID, "plot.png", stems)] == ["PNG", "Data (JSON)", "Spec (JSON)"]
+    assert [button["label"] for button in chat.file_buttons(CHAT_ID, "plot.vl.json", stems)] == ["Spec (JSON)"]
+
+
+def test_the_page_and_the_events_part_draw_the_spec_container_only_for_a_listed_spec(client, scripted):
+    """Bug class: a chart container (and a request for a spec) on a card whose chat holds no spec, or a spec's address made from text the assistant wrote."""
+    scripted.events = [an_event("text", n=0, text="see b.vl.json"), an_event("file", n=1, name="a.png", size=3), an_event("file", n=2, name="a.vl.json", size=3), an_event("file", n=3, name="b.png", size=3)]
+    scripted.files = {"a.png": PNG, "a.vl.json": ALTAIR, "b.png": PNG}
+    page = client.get(f"/chat/{CHAT_ID}").text
+    part = client.get(f"/chat/{CHAT_ID}/events?offset=1", headers=HX).text
+    for found in (page, part):
+        assert spec_boxes(found) == [f"/chat/{CHAT_ID}/spec/a.vl.json"]
+        assert f'<a class="btn sm" href="/chat/{CHAT_ID}/file/a.vl.json">Spec (JSON)</a>' in found
+    del scripted.files["a.vl.json"]
+    assert spec_boxes(client.get(f"/chat/{CHAT_ID}").text) == []
+    assert '<script src="/static/plots.js" defer></script>' in page and '<script src="/static/vendor/vega-embed.min.js" defer></script>' in page
+    assert "plots.js" not in client.get("/").text
+
+
+def test_the_spec_route_sends_the_checked_spec_with_the_fixed_headers(client, scripted):
+    """Bug class: the sandbox's bytes passed on as they were (not the spec the check accepted), served with a type the browser would render, or without the sandbox policy."""
+    scripted.files = {"a.vl.json": ALTAIR}
+    answer = client.get(f"/chat/{CHAT_ID}/spec/a.vl.json")
+    assert answer.status_code == 200 and answer.headers["content-type"] == "application/json; charset=utf-8" and answer.json() == json.loads(ALTAIR)
+    assert answer.headers.get_list("content-security-policy") == ["sandbox", CSP] and answer.headers["x-content-type-options"] == "nosniff" and answer.headers["cache-control"] == "no-store"
+    assert answer.content.isascii() and answer.content != ALTAIR
+
+
+def test_a_refused_spec_is_its_reason_and_a_large_one_is_not_read_whole(client, scripted):
+    """Bug class: a spec that loads data from an address handed to the browser, or a spec file of any size read into memory before it is refused."""
+    spec = json.loads(ALTAIR)
+    spec["layer"][1]["data"] = {"url": f"/chat/{CHAT_ID}/file/secret.csv"}
+    scripted.files = {"a.vl.json": json.dumps(spec).encode(), "big.vl.json": b" " * (3 * assistant.PIECE_BYTES + 1) + ALTAIR}
+    answer = client.get(f"/chat/{CHAT_ID}/spec/a.vl.json")
+    assert answer.status_code == 422 and answer.text == "it loads data from an address" and answer.headers["content-type"].startswith("text/plain")
+    scripted.requests.clear()
+    answer = client.get(f"/chat/{CHAT_ID}/spec/big.vl.json")
+    assert answer.status_code == 200 and answer.json() == json.loads(ALTAIR)
+    scripted.files["big.vl.json"] = b" " * (4 * assistant.PIECE_BYTES + 1) + ALTAIR
+    scripted.requests.clear()
+    answer = client.get(f"/chat/{CHAT_ID}/spec/big.vl.json")
+    assert answer.status_code == 422 and answer.text == "its file is larger than 2 MiB" and scripted.ops() == ["chat.file"]
+
+
+def test_the_spec_route_takes_only_a_spec_name_of_the_runners_rule_and_asks_the_broker_each_time(client, scripted, broker):
+    """Bug class: the spec route reading any file of the sandbox (a CSV, a name with a slash), or let through on an earlier answer of the broker."""
+    for path in ("spec/a.json", "spec/a.png", "spec/a%2Fb.vl.json", "spec/%2E%2E", "spec/%E2%80%AEa.vl.json"):
+        assert client.get(f"/chat/{CHAT_ID}/{path}").status_code == 404
+    assert scripted.requests == []
+    assert client.get(f"/chat/{CHAT_ID}/spec/missing.vl.json").status_code == 404
+    scripted.files = {"a.vl.json": ALTAIR}
+    before = len([request for request in broker.requests if request["verb"] == "audit.list"])
+    for _ in range(2):
+        assert client.get(f"/chat/{CHAT_ID}/spec/a.vl.json").status_code == 200
+    assert len([request for request in broker.requests if request["verb"] == "audit.list"]) == before + 2
 
 
 # ── l. the right column's queries ───────────────────────────────────────────

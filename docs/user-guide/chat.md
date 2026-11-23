@@ -97,11 +97,11 @@ Ask about the data in your databases. In the Chat window, Enter sends the questi
 
 - **The databases.** It reads each attached database through that database's MCP server, read-only.
 - **The shell and files.** It can run shell commands and read and write files in the chat's folder (with `claude-code`: the tools `Bash`, `Read`, `Write`, `Edit`, `Glob` and `Grep`; with `openai-compatible`: `run_shell`).
-- **Plots.** It saves plots as PNG files in its folder and names them in its answer; the Chat window shows them.
+- **Plots.** It makes plots with Altair and saves each one twice in its folder, as `<name>.vl.json` (the chart's Vega-Lite spec, with its data inside) and as `<name>.png`, and names both in its answer. The Chat window draws the spec as an interactive chart (hover tooltips, zoom and pan, a legend that picks a series, in the page's colours), with the PNG as the fallback and the download; see [Files and plots](webui.md#files-and-plots).
 - **No internet.** It cannot reach the internet.
 - **Memory.** The assistant remembers the chat: each later question continues the same conversation. A new chat starts from nothing.
 
-The sandbox image has Python 3.13 with pandas, numpy, matplotlib and pyarrow. How each back end runs a turn is in [What the sandbox runs](../architecture/control-plane.md#what-the-sandbox-runs).
+The sandbox image has Python 3.13 with pandas, numpy, matplotlib, pyarrow, Altair 6.3.0 and vl-convert 1.9.0 (which writes Altair's PNG inside the sandbox, without a browser or the network). How each back end runs a turn is in [What the sandbox runs](../architecture/control-plane.md#what-the-sandbox-runs).
 
 ### The limits
 

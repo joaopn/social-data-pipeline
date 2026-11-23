@@ -2,7 +2,7 @@
 
 What it keeps, in `<root>/.sdp/chat/` (0700): `config.json` (0600: the back end, for an OpenAI-compatible one its address and model, the soft cap of the work folder in GiB, the Claude Code version of the sandbox image), `credential/` (0700) with `model.token` (0600: the model's secret, asked without echo, never printed, logged, put on a command line or in an environment), `work/` (0700: one folder per chat, later) and `socket/` (0700). Every folder is opened relative to the one above it without following a link, must be a real folder of the operator and is given mode 0700 whatever the umask; files are written by the broker's file rules (`control.files`: a temporary file made exclusively with mode 0600, then renamed).
 
-`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which, for each database whose MCP server runs on a read-only user, an MCP container is attached under an alias (for MongoDB and StarRocks the chat's own copy of the server, the compose service `chat-<db>-mcp`, which `start` starts and `stop` removes, with the query time limit `CHAT_QUERY_TIMEOUT_SECONDS` of the deployment's `.env` that the database enforces; for PostgreSQL, whose server ignores that limit, the shared server itself), and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`); `rebuild` builds both images again from the saved settings, then stops and starts the chat. Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
+`setup` builds two images, `sdp-gateway` (the sandbox's only network peer, which holds the credential) and `sdp-sandbox` (where the assistant works). `start` runs them as two containers of the same names: the sandbox on the internal network `sdp-chat` only, the gateway on it (listening on its address there only) and on the ordinary bridge `sdp-chat-up`, to which, for each database whose MCP server runs on a read-only user, an MCP container is attached under an alias (for MongoDB and StarRocks the chat's own copy of the server, the compose service `chat-<db>-mcp`, which `start` starts and `stop` removes, with the query time limit `CHAT_QUERY_TIMEOUT_SECONDS` of the deployment's `.env` that the database enforces; for PostgreSQL, whose server ignores that limit, the shared server itself), and the query scheduler's container when it runs with a control folder of the operator (the assistant's endpoint, behind a secret: see `_find_queue` and `_queue_secret`); `stop` removes all of it (see `_start`); `rebuild` builds both images again from the saved settings, then stops and starts the chat. `apply_query_limit` (`chat query-limit <seconds>`, after `sdp` wrote the value to `.env`) starts the copies that run now again with the new limit and attaches them again, leaving the gateway and the sandbox running. Every Docker call goes through `_docker` (a test replaces it), with an argument list and never a shell. Standard library and this package only; the prompts come from `social_data_pipeline.setup.utils` and `getpass`, imported when `setup` runs.
 """
 
 import contextlib
@@ -984,12 +984,35 @@ def jobs_port(root):
 
 def query_seconds(root):
     """The query time limit of the chat's copies of the MongoDB and StarRocks MCP servers: `CHAT_QUERY_TIMEOUT_SECONDS` of the deployment's `.env` (`env_value`), 90 when there is no file, no such line or an empty value (as the compose file's `${CHAT_QUERY_TIMEOUT_SECONDS:-90}`). Raises Refused, naming the key, for a value that is not a whole number of seconds from 1 to 3600."""
-    value = env_value(root, QUERY_KEY)
+    return _query_from_value(env_value(root, QUERY_KEY))
+
+
+def _query_from_value(value):
     if not value:
         return DEFAULT_QUERY_SECONDS
     if not re.fullmatch(r"[0-9]{1,4}", value) or not 1 <= int(value) <= QUERY_SECONDS_MAX:
-        raise Refused(f"{QUERY_KEY} in the deployment's .env is not a whole number of seconds from 1 to {QUERY_SECONDS_MAX}")
+        raise Refused(f"{QUERY_KEY} in the deployment's .env is not a whole number of seconds from 1 to {QUERY_SECONDS_MAX}. Set it again: python sdp.py chat query-limit <seconds>")
     return int(value)
+
+
+def parse_query_seconds(text):
+    """The query time limit typed at `chat query-limit`: a whole number of seconds from 1 to 3600, written in digits only, else None."""
+    if not isinstance(text, str) or not re.fullmatch(r"[0-9]{1,4}", text) or not 1 <= int(text) <= QUERY_SECONDS_MAX:
+        return None
+    return int(text)
+
+
+def query_setting(root):
+    """The query time limit as `chat settings` and `chat query-limit` show it: {"seconds": the limit the chat's copies get at their next start (None when it cannot be told), "default": whether `.env` sets none (the default then applies), "default_seconds", "max_seconds", "problem": why there is no limit to show (a value that is not a whole number of seconds from 1 to 3600, a `.env` that cannot be read), else None}. Only that one value of `.env` is read. Never raises."""
+    data = {"seconds": None, "default": False, "default_seconds": DEFAULT_QUERY_SECONDS, "max_seconds": QUERY_SECONDS_MAX, "problem": None}
+    try:
+        value = env_value(root, QUERY_KEY)
+        data["seconds"], data["default"] = _query_from_value(value), not value
+    except Refused as refusal:
+        data["problem"] = refusal.message
+    except Exception as error:
+        data["problem"] = f"the deployment's .env cannot be read ({type(error).__name__})"
+    return data
 
 
 def _find_queue(root):
@@ -1055,12 +1078,17 @@ def label_arguments(db):
     return ["docker", "image", "inspect", "--format", '{{index .Config.Labels "%s"}}' % QUERY_LABEL, db.image]
 
 
-def _start_copy(root, db, seconds):
-    """Start the chat's copy of the MCP server of `db` with the query time limit `seconds` (given to Compose as `CHAT_QUERY_TIMEOUT_SECONDS`, so that the value checked here is the one the copy gets, whatever the shell exports) and return its container id. Raises Refused when the image is missing or was built before the limit (no `QUERY_LABEL`: it would ignore the limit silently), naming the build command, or when the copy did not start or its container cannot be found."""
+def _check_copy_image(db):
+    """Raise Refused when the image of the chat's copy of `db`'s server is missing or was built before the limit (no `QUERY_LABEL`: it would ignore the limit silently), naming the build command."""
     labelled = _docker(label_arguments(db))
     if labelled.returncode != 0 or labelled.stdout.strip() != "1":
         what = "is missing" if labelled.returncode != 0 else "was built before the query time limit and would ignore it"
         raise Refused(f"the image {db.image} of the MCP server of {db.name} {what}. Build it: docker compose --profile {db.name} --profile {db.name}_mcp build {db.service}, then run python sdp.py chat start again")
+
+
+def _start_copy(root, db, seconds):
+    """Start the chat's copy of the MCP server of `db` with the query time limit `seconds` (given to Compose as `CHAT_QUERY_TIMEOUT_SECONDS`, so that the value checked here is the one the copy gets, whatever the shell exports) and return its container id. Raises Refused when the image is missing or was built before the limit (`_check_copy_image`), or when the copy did not start or its container cannot be found."""
+    _check_copy_image(db)
     result = _docker(copy_arguments(root, db), env={**os.environ, QUERY_KEY: str(seconds)})
     if result.returncode != 0:
         raise Refused(f"the chat's copy of the MCP server of {db.name} ({db.chat_service}) did not start: {_last_line(result)}")
@@ -1086,6 +1114,65 @@ def _remove_copy(root, db):
         elif not _gone(result):
             problems.append(f"the chat's copy of the MCP server of {db.name} could not be removed: {_last_line(result)}")
     return removed, problems
+
+
+def _running_copies(root):
+    """The databases whose chat copy of the MCP server runs now for this deployment, in the order of DATABASES. Raises Refused when Docker cannot list them."""
+    running = []
+    for db in DATABASES:
+        if not db.chat_service:
+            continue
+        listing = _step(compose_listing(db.chat_service), f"Docker cannot list the chat's copy of the MCP server of {db.name}")
+        if any(service == db.chat_service for _, service in compose_containers(listing.stdout, root)):
+            running.append(db)
+    return running
+
+
+def _recreate_copies(root, seconds):
+    """When the chat of this deployment runs (its gateway runs), start each of its copies of the MCP servers that runs now again with the query time limit `seconds` and attach it again under its alias; the gateway, the sandbox and the networks are left as they are. Every image is checked before any copy is removed. Returns (whether the chat runs, the names of the databases done, the lines of what failed)."""
+    state = _state(GATEWAY_CONTAINER)
+    if not (_ours(state, root) and state[0] == "running"):
+        return False, [], []
+    running = _running_copies(root)
+    for db in running:
+        _check_copy_image(db)
+    done, problems = [], []
+    for db in running:
+        lost = f"The chat cannot read {db.name} until it is started again: python sdp.py chat stop, then python sdp.py chat start"
+        failed = _remove_copy(root, db)[1]
+        if failed:
+            problems += [f"{line}. It keeps its old limit until: python sdp.py chat stop, then python sdp.py chat start" for line in failed]
+            continue
+        try:
+            container = _start_copy(root, db, seconds)
+            _step(["docker", "network", "connect", "--alias", db.alias, UP_NETWORK, container], f"the chat's copy of the MCP server of {db.name} could not be attached again")
+        except Refused as refusal:
+            problems.append(f"{refusal.message}. {lost}")
+            continue
+        done.append(db.name)
+    return True, done, problems
+
+
+def apply_query_limit(root, seconds):
+    """The part of `sdp chat query-limit <seconds>` after `.env` was written: when the chat runs, its copies of the MongoDB and StarRocks MCP servers that run now are started again with the new limit and attached again (`_recreate_copies`); the gateway and the sandbox are not stopped, so a running turn goes on, and the sandbox's own waits follow at the next `chat start`. Prints what it did. Exit code 0 when nothing failed, 1 with the reason and the recovery otherwise."""
+    root = os.fspath(root)
+    try:
+        runs, done, problems = _recreate_copies(root, seconds)
+    except Refused as refusal:
+        print(f"  Error: {refusal.message}")
+        print(f"  The new limit is written to .env; it takes effect on the chat's databases at the next start: python sdp.py chat stop, then python sdp.py chat start (or run python sdp.py chat query-limit {seconds} again).")
+        return 1
+    if not runs:
+        print("  The chat is not running: the new limit takes effect at the next python sdp.py chat start.")
+        return 0
+    for name in done:
+        print(f"  {name}: the chat's MCP server was started again with the new limit.")
+    if not done and not problems:
+        print("  The chat runs without its own MongoDB or StarRocks MCP server: nothing was restarted.")
+    for line in problems:
+        print(f"  Error: {line}")
+    print("  The gateway and the sandbox were not restarted: running chats go on, and keep their own client-side waits until python sdp.py chat stop, then python sdp.py chat start.")
+    return 1 if problems else 0
 
 
 def _step(arguments, what):

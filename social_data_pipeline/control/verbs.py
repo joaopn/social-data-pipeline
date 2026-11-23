@@ -64,6 +64,8 @@ VALID_PROFILES = ("parse", "lingua", "ml", "postgres_ingest", "postgres_ml", "mo
 DATABASES = ("postgres", "mongo", "starrocks")
 SERVICES = ("postgres", "mongo", "starrocks", "postgres-mcp", "mongo-mcp", "starrocks-mcp", "jobs")
 ERROR_LOG_PROFILES = ("postgres_ingest", "postgres_ml", "mongo_ingest")
+# The largest query time limit of the chat's MCP servers, in seconds (`chat_host.QUERY_SECONDS_MAX`; a test compares them).
+CHAT_QUERY_SECONDS_MAX = 3600
 
 
 class FieldRefused(ValueError):
@@ -571,6 +573,20 @@ VERBS = _registry(
         socket_inputs={"source": Field(ConfiguredSource(), required=True), "db": Field(Enum(DATABASES), required=True), "admin_password": Field(Secret())},
         socket_enabled=True,
         action="get_db_index_targets",
+    ),
+    Verb(
+        name="chat.settings", cls="read", cli=("chat", "settings"),
+        socket_enabled=True,
+        action="get_chat_settings",
+    ),
+    Verb(
+        name="chat.query_limit", cls="step_up", cli=("chat", "query-limit"),
+        # Without `seconds` the command only shows the limit, which `chat.settings` reads: the socket always sets one.
+        cli_inputs={"seconds"},
+        socket_inputs={"seconds": Field(IntRange(1, CHAT_QUERY_SECONDS_MAX), required=True)},
+        socket_enabled=True,
+        note="Writes CHAT_QUERY_TIMEOUT_SECONDS to .env and, when the chat runs, starts its MongoDB and StarRocks MCP servers again with it; the gateway and the sandbox go on.",
+        action="do_chat_query_limit",
     ),
     Verb(
         name="db.recover_password", cls="step_up", cli=("db", "recover-password"),

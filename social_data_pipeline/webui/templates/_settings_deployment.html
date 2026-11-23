@@ -1,0 +1,17 @@
+{#- The settings box's section "This deployment" (`GET /settings/deployment`, model `pages.query_limit_model`): the read-only query limit for chats in force, and a form that posts `chat.query_limit` to /pending, whose page asks for the management password before anything changes. A failed read says why and offers no form. -#}
+{%- if limit.failure %}
+<p class="small muted">The read-only query limit for chats could not be read: {{ limit.failure }}</p>
+{%- else %}
+<form class="col" method="post" action="/pending">
+  <input type="hidden" name="form_token" value="{{ form_token }}">
+  <input type="hidden" name="action" value="chat.query_limit">
+  <label for="setting-query-limit">Read-only query limit for chats (seconds)</label>
+  <span class="row"><input class="grow" type="number" id="setting-query-limit" name="seconds" min="1" max="{{ limit.max_seconds }}" step="1" required{% if limit.seconds is not none %} value="{{ limit.seconds }}"{% endif %}><button type="submit" class="btn">Save…</button></span>
+  {%- if limit.problem %}
+  <p class="small muted">Now: {{ limit.problem }}</p>
+  {%- else %}
+  <p class="small muted">Now: {{ limit.seconds }} s{% if limit.default %} (the default){% endif %}.</p>
+  {%- endif %}
+</form>
+{%- endif %}
+<p class="small muted">MongoDB and StarRocks stop a chat's query after this many seconds. PostgreSQL ignores it (its MCP server keeps its own limit). Running chats keep their own waits until restarted.</p>

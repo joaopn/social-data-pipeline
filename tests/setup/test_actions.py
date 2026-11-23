@@ -157,12 +157,15 @@ FORBIDDEN_NAMES = {
 }
 
 ACTION_NAMES = [
-    "do_db_create_indexes", "do_db_reset", "do_db_setup", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_add", "do_source_add_classifiers", "do_source_configure", "do_source_download", "do_source_remove",
-    "get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_settings", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_hf_inspect", "get_source_list", "get_source_progress", "get_source_settings", "get_source_size", "get_source_status",
+    "do_chat_query_limit", "do_db_create_indexes", "do_db_reset", "do_db_setup", "do_db_setup_jobs", "do_db_setup_mcp", "do_db_start", "do_db_stop", "do_db_unsetup", "do_db_unsetup_jobs", "do_db_unsetup_mcp", "do_run_cancel", "do_run_start", "do_source_add", "do_source_add_classifiers", "do_source_configure", "do_source_download", "do_source_remove",
+    "get_chat_settings", "get_db_index_targets", "get_db_llm_settings", "get_db_restart_needed", "get_db_settings", "get_db_status", "get_db_verify", "get_run_list", "get_run_logs", "get_source_error_logs", "get_source_hf_inspect", "get_source_list", "get_source_progress", "get_source_settings", "get_source_size", "get_source_status",
 ]
 
 # One helper each walk must have reached, so a walk that follows nothing cannot pass.
 KNOWN_DEEP_HELPER = {
+    # The chat's host module does the work (`chat_host.apply_query_limit`, `query_setting`), which prompts nothing and never exits.
+    "do_chat_query_limit": "_chat_host",
+    "get_chat_settings": "_chat_host",
     "do_db_create_indexes": "_sr_execute_index_plan",
     "do_db_reset": "_chown_db_data_for_host",
     "do_db_setup": "_get_configured_db_services",

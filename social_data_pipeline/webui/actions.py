@@ -41,6 +41,8 @@ SECRET_MAX_CHARS = 1024
 RUN_LOGS_MIN_LIMIT = 4096
 RUN_LOGS_MAX_LIMIT = 1048576
 LOG_OFFSET_MAX = 2 ** 53
+# The largest read-only query limit for chats, in seconds (`control.verbs.CHAT_QUERY_SECONDS_MAX`).
+CHAT_QUERY_SECONDS_MAX = 3600
 
 # Literal copies of the scheduler's control socket's rules (`jobs/door.py`: `JOB_ID`, `DIGEST`, `BY_LABEL`, `PHASES`, `JOBS_LIMIT_MAX`, `JOBS_OFFSET_MAX`, `REASON_MAX`): a test compares them.
 JOB_ID_PATTERN = r"(pg|sr|mg|job)_[0-9a-f]{8}"
@@ -594,6 +596,13 @@ def source_download_sentence(fields):
     return " ".join(parts)
 
 
+# What `chat query-limit <seconds>` does besides writing the value (`sdp.py` `do_chat_query_limit`, `chat_host.apply_query_limit`).
+QUERY_LIMIT_SENTENCE = (
+    "It writes CHAT_QUERY_TIMEOUT_SECONDS to .env, one value for the whole deployment. When the chat runs, it starts the chat's own MongoDB and StarRocks MCP servers that run now again with the new limit and attaches them again, so the databases hold queries to it within seconds; a query of those two servers that is running at that moment is cut off. "
+    "The gateway and the sandbox are not restarted: running chats go on, and keep their own client-side waits until the chat is stopped and started again (python sdp.py chat stop, then python sdp.py chat start). PostgreSQL ignores the limit (its MCP server keeps its own)."
+)
+
+
 def _table(*actions):
     by_name = {}
     for action in actions:
@@ -622,6 +631,7 @@ TABLE = _table(
     Action("db.index_targets", "read", "The tables, columns and indexes of a source in one database", {"source": _SOURCE, "db": Input("enum", "Database", required=True, choices=DATABASES)}, form="python sdp.py db index-targets --source=<name> --db=<database>"),
     Action("db.settings", "read", "The current answers of the database setup", form="python sdp.py db settings"),
     Action("source.settings", "read", "The current answers of a source's setup", {"name": _SOURCE}, form="python sdp.py source settings <name>"),
+    Action("chat.settings", "read", "The chat's settings for the whole deployment (the read-only query limit)", form="python sdp.py chat settings"),
     # ── write ──
     Action(
         "run.start", "write", "Start a pipeline run",
@@ -710,6 +720,12 @@ TABLE = _table(
         form="python sdp.py db create-indexes --source=<name>", command=lambda fields: _command("db", "create-indexes", "--source=" + _q(fields["source"])),
         terminal_asks="In a terminal this command asks which database, the tables, the fields of each, BITMAP or bloom filter for StarRocks, whether to save them, and the database admin password where it needs one; the command shown holds none of these answers.",
         check=_check_create_indexes, also=_indexes_also,
+    ),
+    Action(
+        "chat.query_limit", "step_up", "Change the read-only query limit for chats",
+        {"seconds": Input("int", "Read-only query limit for chats (seconds)", required=True, lo=1, hi=CHAT_QUERY_SECONDS_MAX)},
+        form="python sdp.py chat query-limit <seconds>", command=lambda fields: _command("chat", "query-limit", str(fields["seconds"])),
+        also=lambda fields: QUERY_LIMIT_SENTENCE,
     ),
     Action("session.check_password", "step_up", "Check the management password again", form="(no command: asked before the Queue's auto-accept is switched on or its limit raised)", op=True),
     # ── the scheduler's control socket ──

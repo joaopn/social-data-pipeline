@@ -79,6 +79,8 @@ CLASSIFICATION = {
     "db.recover_password": ("step_up", False),
     "db.restart_needed": ("read", True),
     "db.llm_settings": ("read", True),
+    "chat.settings": ("read", True),
+    "chat.query_limit": ("step_up", True),
 }
 
 ALL_VERBS = sorted(verbs.VERBS)
@@ -604,3 +606,29 @@ class TestImports:
         result = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True)
 
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ── the chat's query limit ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("value, accepted", [(1, True), (90, True), (3600, True), (0, False), (3601, False), (-1, False), (10 ** 30, False), ("90", False), (90.0, False), (True, False), (None, False), ([90], False)])
+def test_the_chat_query_limit_takes_a_whole_number_of_seconds_from_1_to_3600(value, accepted):
+    """Bug class: a limit the compose file and `chat start` refuse (outside 1 to 3600, or not a whole number) written to .env from a browser, after which the chat no longer starts; a bool taken as 1; a request that changes nothing taken as one that sets the limit."""
+    if accepted:
+        assert verbs.validate_request("chat.query_limit", {"seconds": value}) == {"seconds": value}
+        return
+    with pytest.raises(errors.InputError) as exc:
+        verbs.validate_request("chat.query_limit", {"seconds": value})
+    assert exc.value.field == "seconds"
+
+
+def test_the_chat_query_limit_needs_its_value_and_the_management_password_and_shares_its_bound():
+    """Bug class: a request without the value reaching the action (which only shows the limit at the terminal), the verb reclassified below step-up, or the registry's bound drifting from the host module's and the web UI's."""
+    from social_data_pipeline import chat_host
+    from social_data_pipeline.webui import actions
+
+    with pytest.raises(errors.InputError) as exc:
+        verbs.validate_request("chat.query_limit", {})
+    assert exc.value.field == "seconds"
+    assert verbs.VERBS["chat.query_limit"].cls == "step_up"
+    assert verbs.CHAT_QUERY_SECONDS_MAX == chat_host.QUERY_SECONDS_MAX == actions.CHAT_QUERY_SECONDS_MAX == 3600

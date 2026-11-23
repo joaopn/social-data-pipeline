@@ -58,6 +58,8 @@ Usage:
     sdp.py chat stop                         Stop and remove the chat's containers and networks, and detach the databases
     sdp.py chat rebuild                      Rebuild the chat's images from the saved settings and restart it (no questions)
     sdp.py chat status                       Say whether the chat runs, which databases it can read now and the size of its work folder
+    sdp.py chat settings                     Show the chat's settings for the whole deployment (the read-only query limit)
+    sdp.py chat query-limit [<seconds>]      Show or set the read-only query limit of the chat's MongoDB and StarRocks MCP servers
     sdp.py chat unsetup                      Remove the chat's images, settings and credential (and, if asked, all chats)
 
     sdp.py setup                             Legacy: full interactive setup (core + classifiers + platform)
@@ -7433,6 +7435,64 @@ def cmd_chat_status(args):
     return _chat_host().cmd_status(ROOT)
 
 
+def cmd_chat_settings(args):
+    """Show the chat's settings for the whole deployment that the web UI can change: the read-only query limit."""
+    data = get_chat_settings()
+    print_chat_settings(data)
+    return 1 if data["query_limit"]["problem"] else 0
+
+
+def get_chat_settings():
+    """The chat's settings for the whole deployment: `query_limit`, the query time limit of the chat's MongoDB and StarRocks MCP servers (`chat_host.query_setting`: `seconds`, `default`, `default_seconds`, `max_seconds`, `problem`). Only that one value of .env is read. Prints nothing; never raises."""
+    return {"query_limit": _chat_host().query_setting(str(ROOT))}
+
+
+def print_chat_settings(data):
+    """Print the text of `chat settings` (and of `chat query-limit` without a value) from the data of `get_chat_settings`."""
+    limit = data["query_limit"]
+    print()
+    if limit["problem"]:
+        print(f"  Error: {limit['problem']}.")
+    else:
+        source = f"the default: {_chat_host().QUERY_KEY} is not set in .env" if limit["default"] else f"{_chat_host().QUERY_KEY} in .env"
+        print(f"  Read-only query limit for chats: {limit['seconds']} s ({source})")
+    print("  MongoDB and StarRocks stop a chat's query after this many seconds. PostgreSQL ignores it (its MCP server keeps its own limit: 30 s in restricted mode, the default).")
+    print(f"  Change it: python sdp.py chat query-limit <seconds> (a whole number from 1 to {limit['max_seconds']}; {limit['default_seconds']} when it is not set)")
+    print()
+
+
+def cmd_chat_query_limit(args):
+    """Without a value, show the chat's read-only query limit; with one, set it (`do_chat_query_limit`)."""
+    if args.seconds is None:
+        return cmd_chat_settings(args)
+    host = _chat_host()
+    seconds = host.parse_query_seconds(args.seconds)
+    if seconds is None:
+        print(f"  Error: the limit must be a whole number of seconds from 1 to {host.QUERY_SECONDS_MAX}. Nothing was changed.")
+        return 1
+    try:
+        return do_chat_query_limit(seconds=seconds)
+    except ActionError as error:
+        print(f"  Error: {error.message}.")
+        return error.exit_code
+
+
+def do_chat_query_limit(*, seconds):
+    """`chat query-limit <seconds>` with its value given: write CHAT_QUERY_TIMEOUT_SECONDS to .env (`update_env_file`, every other line kept), then, when the chat runs, start its copies of the MongoDB and StarRocks MCP servers that run now again with the new limit and attach them again (`chat_host.apply_query_limit`); the gateway and the sandbox are not stopped. The value stays written when a copy cannot be started again. Asks nothing; returns the exit code. Raises ActionError, before anything is written, for a limit that is not a whole number of seconds from 1 to 3600."""
+    host = _chat_host()
+    if type(seconds) is not int or not 1 <= seconds <= host.QUERY_SECONDS_MAX:
+        raise ActionError(f"the limit must be a whole number of seconds from 1 to {host.QUERY_SECONDS_MAX}")
+    from social_data_pipeline.setup.utils import update_env_file
+
+    try:
+        update_env_file({host.QUERY_KEY: str(seconds)})
+    except OSError as error:
+        print(f"  Error: .env could not be written ({error.strerror or type(error).__name__}). Check the file and run the command again.")
+        return 1
+    print(f"  Updated:   .env ({host.QUERY_KEY}={seconds})")
+    return host.apply_query_limit(str(ROOT), seconds)
+
+
 def cmd_chat_unsetup(args):
     """Remove the chat's images, settings and credential after a confirmation; all chats and their files only after a second one."""
     from social_data_pipeline.setup.utils import ask_bool
@@ -7743,6 +7803,13 @@ def build_parser():
 
     chat_status_p = chat_sub.add_parser("status", help="Say whether the chat runs, which databases it can read now and the size of its work folder (exit code 0 when it runs, 1 when not)")
     chat_status_p.set_defaults(func=cmd_chat_status)
+
+    chat_settings_p = chat_sub.add_parser("settings", help="Show the chat's settings for the whole deployment: the read-only query limit of its MongoDB and StarRocks MCP servers")
+    chat_settings_p.set_defaults(func=cmd_chat_settings)
+
+    chat_query_limit_p = chat_sub.add_parser("query-limit", help="Show or set the read-only query limit of the chat's MongoDB and StarRocks MCP servers (whole seconds, 1 to 3600; 90 when not set); setting it restarts those two servers when the chat runs, not the chat itself")
+    chat_query_limit_p.add_argument("seconds", nargs="?", default=None, help="The new limit in seconds; without it, the limit in force is shown")
+    chat_query_limit_p.set_defaults(func=cmd_chat_query_limit)
 
     chat_unsetup_p = chat_sub.add_parser("unsetup", help="Remove the chat's images, settings and credential (and, if asked, all chats)")
     chat_unsetup_p.set_defaults(func=cmd_chat_unsetup)

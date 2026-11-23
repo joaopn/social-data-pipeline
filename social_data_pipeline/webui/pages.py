@@ -5,11 +5,13 @@ As in `overview`, each block is made on its own from one answer: a failed read, 
 
 import json
 
-from social_data_pipeline.webui import actions
+from social_data_pipeline.webui import actions, words
 from social_data_pipeline.webui.cleaning import clean_log_text
 from social_data_pipeline.webui.overview import ALIVE_STATES, SHAPE_SENTENCE, STAGE_PROFILES, ShapeError, failure, link, text, unfinished_words
 
 VALUE_MAX_CHARS = 300
+# The line of the settings box's "This deployment" when the page could not ask the broker (its bound was full).
+QUERY_LIMIT_BUSY = "The current limit could not be asked now: close the box and open it on the next page."
 ERROR_TEXT_MAX_CHARS = 4000
 DATABASE_NAMES = {"postgres": "PostgreSQL", "mongo": "MongoDB", "starrocks": "StarRocks"}
 INGESTION_NAMES = {"postgres": "PostgreSQL", "mongo": "MongoDB", "sr_ingest": "StarRocks", "sr_ml": "StarRocks classifiers"}
@@ -319,3 +321,27 @@ def build(answers, makers):
         blocks[key] = {"ok": False, "code": getattr(value, "code", None), **failure(value)}
     return blocks
 
+
+
+def query_limit_model(kind, value):
+    """The settings box's section "This deployment" from the answer of `chat.settings` (`kind`, `value` as `call_broker` gives them): `seconds` (the limit in force, or None), `default` (whether .env sets none), `default_seconds`, `max_seconds` (the form's bound, the web side's own copy), `problem` (the CLI's sentence why there is no limit to show, cleaned) and `failure` (the sentence of a failed read or of an answer of another shape). Without a failure the form is shown, with the limit in force as its value when there is one."""
+    model = {"seconds": None, "default": False, "default_seconds": None, "max_seconds": actions.CHAT_QUERY_SECONDS_MAX, "problem": None, "failure": None}
+    if kind != "ok":
+        model["failure"] = words.sentence(value)
+        return model
+    try:
+        _need(isinstance(value, dict))
+        limit = value.get("query_limit")
+        _need(isinstance(limit, dict))
+        seconds, default, default_seconds, problem = limit.get("seconds"), limit.get("default"), limit.get("default_seconds"), limit.get("problem")
+        _need(isinstance(default, bool) and _is_seconds(default_seconds))
+        _need((seconds is None and isinstance(problem, str)) or (_is_seconds(seconds) and problem is None))
+    except ShapeError:
+        model["failure"] = SHAPE_SENTENCE
+        return model
+    model.update(seconds=seconds, default=default, default_seconds=default_seconds, problem=None if problem is None else text(problem[:ERROR_TEXT_MAX_CHARS]))
+    return model
+
+
+def _is_seconds(value):
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= actions.CHAT_QUERY_SECONDS_MAX

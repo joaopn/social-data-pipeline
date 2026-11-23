@@ -55,7 +55,7 @@ SYSTEM_TABS = ("broker", "audit")
 # The "Load into databases" lanes of a source's pipeline: each database and its profiles, and which view of the ingestion state (`pages.INGESTION_NAMES`) holds each profile's state files, with the start of their labels when the view holds two profiles.
 LANES = (("StarRocks", ("sr_ingest", "sr_ml")), ("MongoDB", ("mongo_ingest",)), ("PostgreSQL", ("postgres_ingest", "postgres_ml")))
 # The Management page each action belongs to.
-ACTIVE = {"run.start": "sources", "source.remove": "sources", "run.cancel": "runs", "source.add": "sources", "source.configure": "sources", "source.add_classifiers": "sources"}
+ACTIVE = {"run.start": "sources", "source.remove": "sources", "run.cancel": "runs", "source.add": "sources", "source.configure": "sources", "source.add_classifiers": "sources", "chat.query_limit": "chat:list"}
 
 log = logging.getLogger("social_data_pipeline.webui")
 

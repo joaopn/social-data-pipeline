@@ -52,6 +52,8 @@ ACTIONS = {
     "source.configure": "do_source_configure",
     "source.add_classifiers": "do_source_add_classifiers",
     "source.settings": "get_source_settings",
+    "chat.settings": "get_chat_settings",
+    "chat.query_limit": "do_chat_query_limit",
 }
 
 # The private parameter an action has for each thing its command asks on the terminal.

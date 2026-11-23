@@ -13,6 +13,7 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
 - The Chat window (`/chat`, `/chat/new`, `/chat/reach`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
+- `GET /settings/deployment`: the settings box's section "This deployment" (the read-only query limit for chats, `chat.settings`, and its form, which goes through `POST /pending` like every action), a part the box asks the first time it is opened.
 - `GET /status`: the top bar's live indicators (the broker, scheduler and sandbox pills, the number of queries waiting on the Queue window's tab), a part of the page that the frame asks once the page has loaded and every 30 seconds after, so that a slow or dead service never slows a page: see `status`.
 - `/static/...`: the stylesheets (`app.css`, the mock-up's kit; `chat.css`, `queue.css`, `manage.css`), the scripts (`theme.js`, run before the page is drawn, and `app.js`) and, in the image, htmx.
 
@@ -35,6 +36,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from social_data_pipeline.control import client as broker_client
 from social_data_pipeline.webui import actions, chat, config, guard, indexes, llm_setup, management, overview, queue, setup_db, setup_source, setup_source_change, status, words
+from social_data_pipeline.webui import pages as pages_data
 from social_data_pipeline.webui.assistant import Assistant
 from social_data_pipeline.webui.calls import BUSY_GATE, Gate, call_broker, session_ends, why
 from social_data_pipeline.webui.limiter import LOCAL_KEY, LoginLimiter
@@ -336,6 +338,23 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
             sessions.forget(session_id)
             return to_login(request, why(made.error), clear_cookie=True)
         return render("_status.html", indicators=made)
+
+    @api.get("/settings/deployment")
+    async def deployment_settings(request: Request):
+        """The settings box's section "This deployment" (`_settings_deployment.html`): the read-only query limit for chats from `chat.settings`, and the form that changes it through the pending page (the management password asked there, as for every step-up action). A part the box asks the first time it is opened, so that no page waits for it; a full bound answers the part with a line, a session the broker has ended the usual way to the login."""
+        session_id, session = current(request)
+        if session is None:
+            return to_login(request, clear_cookie=bool(session_id))
+        answer = await indicators.run(lambda: call_broker(lambda: read_client(session.token), lambda made: actions.call(made, "chat.settings", {})))
+        if answer is BUSY_GATE:
+            model = {**pages_data.query_limit_model("ok", None), "failure": pages_data.QUERY_LIMIT_BUSY}
+        else:
+            kind, value = answer
+            if kind == "error" and session_ends(value):
+                sessions.forget(session_id)
+                return to_login(request, why(value), clear_cookie=True)
+            model = pages_data.query_limit_model(kind, value)
+        return render("_settings_deployment.html", limit=model, form_token=session.form_token)
 
     @api.get("/overview/live")
     async def overview_live(request: Request):

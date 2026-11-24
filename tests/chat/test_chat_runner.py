@@ -343,7 +343,7 @@ def test_the_command_lines_of_a_first_and_a_resumed_turn_are_pinned():
         "--mcp-config", "/work/c_0123456789ab/home/mcp.json", "--strict-mcp-config", "--tools", "Bash,Read,Write,Edit,Glob,Grep",
         "--permission-mode", "dontAsk", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,mcp__postgres,mcp__mongo",
         "--setting-sources", "", "--settings", '{"disableAllHooks":true,"enabledPlugins":{"cc-plugin-agents-md@builtin":false,"cc-plugin-privacy@builtin":false,"cc-plugin-plugin-authoring@builtin":false}}',
-        "--append-system-prompt", claude.ROLE, "--session-id", "5f6cec57-5f0d-4a8c-a927-8480b9f00bb1",
+        "--append-system-prompt", claude.role(False), "--session-id", "5f6cec57-5f0d-4a8c-a927-8480b9f00bb1",
     ]
     resumed = claude.command("/usr/local/bin/claude", "/work/c_0123456789ab/home", "5f6cec57-5f0d-4a8c-a927-8480b9f00bb1", True, ["postgres", "mongo"])
     assert resumed == first[:-2] + ["--resume", "5f6cec57-5f0d-4a8c-a927-8480b9f00bb1"]

@@ -77,7 +77,7 @@ def test_the_loop_runs_each_tool_call_and_answers_it(endpoint, tmp_path, script,
     assert [(fields["text"], fields["is_error"]) for kind, fields in found if kind == "tool_result"] == results
     assert result["result"] == ("done" if len(script) > 1 else "hello")
     sent = [entry["doc"] for entry in endpoint.seen]
-    assert all(doc["model"] == MODEL and doc["stream"] is False and doc["messages"][0] == {"role": "system", "content": claude.ROLE} for doc in sent)
+    assert all(doc["model"] == MODEL and doc["stream"] is False and doc["messages"][0] == {"role": "system", "content": claude.role(False)} for doc in sent)
     assert [tool["function"]["name"] for tool in sent[0]["tools"]] == ["run_shell"]
     if len(sent) > 1:
         assert [m["tool_call_id"] for m in sent[1]["messages"] if m["role"] == "tool"] == [c["id"] for c in sent[1]["messages"][2]["tool_calls"]]

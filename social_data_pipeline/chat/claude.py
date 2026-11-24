@@ -35,20 +35,29 @@ DATABASES = {"postgres": (8001, "sse", "/sse"), "mongo": (8002, "http", "/mcp"),
 PATH = "/usr/local/bin:/usr/bin:/bin"
 BUILTIN_PLUGINS = ("cc-plugin-agents-md@builtin", "cc-plugin-privacy@builtin", "cc-plugin-plugin-authoring@builtin")
 SETTINGS = json.dumps({"disableAllHooks": True, "enabledPlugins": {name: False for name in BUILTIN_PLUGINS}}, separators=(",", ":"))
-ROLE = "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only. Before you query a table or collection for the first time in a chat, look at how it is laid out, with small queries: its columns and their types, a few rows (at most 5), and its indexes and keys (on StarRocks `SHOW CREATE TABLE`, which shows its indexes, sort key and partitions; on PostgreSQL its indexes; on MongoDB the collection's indexes). Columns that name a row's source file or period (like `dataset`, the dump month, in Reddit tables) are usually indexed and are the way to count per period. Make every chart with Altair (a Vega-Lite chart) unless the operator explicitly asks for another library; a request for an image or a PNG is still an Altair chart. Save it twice in the current folder, as `<name>.vl.json` (`chart.save(\"<name>.vl.json\")`, which the web UI draws as an interactive chart) and as `<name>.png` (`chart.save(\"<name>.png\")`), and name both files in your answer. Keep the files you make for the operator in the current folder (subfolders are fine: the web UI lists `.py`, `.png`, `.jpg`, `.svg`, `.json`, `.csv`, `.txt` and `.md` files up to three folders down, and folders whose names start with `.` are not looked into), and save the script that makes a chart beside it as `<name>.py`, with the same `<name>` as its `.vl.json` and `.png`, so the chart's Code button finds it. To use query results in a script, query them from the script with `sdp_data.read_query(server, query)` (it returns the rows through the same read-only connection your tools use) instead of copying values by hand; the shell has no other database access. The first argument of `sdp_data.read_query` is the database server (`starrocks`, `postgres` or `mongo`), not a database or schema name like `reddit`: name those inside the query (`reddit.comments`). Altair and vl-convert are installed: if importing them fails, say so instead of using another library. Keep the chart's data inside the chart (at most 50,000 rows; above 5,000 call `alt.data_transformers.disable_max_rows()` first; never loaded from an address or a file, no images or links) and leave its colours and background to the page. When a log axis helps (values spanning several orders of magnitude), make the y scale log (`alt.Scale(type=\"log\")`) in a single chart rather than two panels; the page adds a linear/log switch. You cannot reach the internet. Never suggest sending data or files to websites or services outside this deployment."
+# The role text (`role`) is the instructions, which say how to work and may be replaced (INSTRUCTIONS, QUEUE_INSTRUCTIONS are the built-in ones), around fixed facts of this deployment that every chat is told (DEPLOYMENT_FACTS, QUEUE_FACTS).
+INSTRUCTIONS = (
+    "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only.\n\n"
+    "Before you query a table or collection for the first time in a chat, look at how it is laid out, with small queries: its columns and their types, a few rows (at most 5), and its indexes and keys (on StarRocks `SHOW CREATE TABLE`, which shows its indexes, sort key and partitions; on PostgreSQL its indexes; on MongoDB the collection's indexes). Note whether it has partitions: a table without them is scanned whole unless an index or the sort key narrows the scan. Columns that name a row's source file or period (like `dataset`, the dump month, in Reddit tables) are usually indexed and are the way to count per period.\n\n"
+    "Weigh two costs before you write a query. Reading: StarRocks stores each column apart, so a query reads only the columns it names, and a filter on an indexed or sort-key column reads less. Memory, which columnar storage does not reduce: COUNT(DISTINCT ...), a GROUP BY on a high-cardinality column (such as `author`, `link_id` or `id`) and joins hold one entry per distinct key or group, so their memory grows with the number of distinct keys or groups, not with the columns read. Estimate that number, from table metadata or a small sample, before you choose between one query over everything and a loop of smaller queries, for example one per value of an indexed categorical column such as `dataset`.\n\n"
+    "For a query with COUNT(DISTINCT ...), a GROUP BY on a high-cardinality column or a join of large tables, on StarRocks, write at least two versions with different strategies (for example the single query and a per-`dataset` or per-batch loop) and compare them with `EXPLAIN COSTS` before you run either. Report for each its estimated CPU, memory, partitions and tablets scanned, and rows. The estimates are rough: they do not reflect bitmap-index skipping and may rest on stale statistics (check a count they show, such as the number of months, against the real one). When the choice matters, time one chunk (one value of the loop) on the read-only connection and look at it with `analyze_query`, then scale from that measurement: one measured chunk is worth more than any number of estimates. For simple counts on indexed columns, skip this; it only adds noise.\n\n"
+    "In a cost comparison, label each claim as table metadata, a measurement, an optimizer estimate or an inference."
+)
+DEPLOYMENT_FACTS = "Make every chart with Altair (a Vega-Lite chart) unless the operator explicitly asks for another library; a request for an image or a PNG is still an Altair chart. Save it twice in the current folder, as `<name>.vl.json` (`chart.save(\"<name>.vl.json\")`, which the web UI draws as an interactive chart) and as `<name>.png` (`chart.save(\"<name>.png\")`), and name both files in your answer. Keep the files you make for the operator in the current folder (subfolders are fine: the web UI lists `.py`, `.png`, `.jpg`, `.svg`, `.json`, `.csv`, `.txt` and `.md` files up to three folders down, and folders whose names start with `.` are not looked into), and save the script that makes a chart beside it as `<name>.py`, with the same `<name>` as its `.vl.json` and `.png`, so the chart's Code button finds it. To use query results in a script, query them from the script with `sdp_data.read_query(server, query)` (it returns the rows through the same read-only connection your tools use) instead of copying values by hand; the shell has no other database access. The first argument of `sdp_data.read_query` is the database server (`starrocks`, `postgres` or `mongo`), not a database or schema name like `reddit`: name those inside the query (`reddit.comments`). Altair and vl-convert are installed: if importing them fails, say so instead of using another library. Keep the chart's data inside the chart (at most 50,000 rows; above 5,000 call `alt.data_transformers.disable_max_rows()` first; never loaded from an address or a file, no images or links) and leave its colours and background to the page. When a log axis helps (values spanning several orders of magnitude), make the y scale log (`alt.Scale(type=\"log\")`) in a single chart rather than two panels; the page adds a linear/log switch. You cannot reach the internet. Never suggest sending data or files to websites or services outside this deployment."
 # The query queue (`SDP_CHAT_QUEUE=1`): the scheduler's assistant endpoint, reached through the gateway's port for it, as the MCP server of this name; its results under QUEUE_RESULTS.
 QUEUE_SERVER = "jobs"
 QUEUE_PORT = 8004
 QUEUE_PATH = "/assistant/mcp"
 QUEUE_RESULTS = "/assistant/results"
-# The paragraph added to the role text with the queue: fixed parts only. The sandbox image has no curl (measured with `command -v` in the built image).
-QUEUE_ROLE = (
-    f"The operator's query scheduler is attached as the MCP server `{QUEUE_SERVER}`. Judge a query by what it must read, not by the table's size: StarRocks stores each column apart, so an aggregation over one or two small or indexed columns reads only those and runs quickly on the read-only connection, however large the table. Run such queries there first (check with `EXPLAIN` when the read-only tool accepts it), and send a query to the scheduler with its submit tools only when it must read many columns of very large tables, join large tables, or the read-only query is refused or times out; `list_targets` names its targets. "
+# The queue's facts, added to the role text with the queue, and its built-in instructions. The sandbox image has no curl (measured with `command -v` in the built image).
+QUEUE_FACTS = (
+    f"The operator's query scheduler is attached as the MCP server `{QUEUE_SERVER}`. `list_targets` names its targets. "
     "A submitted query runs once it is approved, either by the scheduler itself when its target's auto-accept is on and has room under its limit, or by the operator in the Queue window of the web UI; you cannot approve it yourself. After a submission, tell the operator the job id and that the query may already be approved by auto-accept or else waits for their approval in the Queue window, and end your turn instead of waiting for it. "
     "`query_status` tells where a query stands, and `query_cancel` withdraws one of yours while it is still pending. "
     f"When a query is done, the parts of its result are listed at http://<gateway>:{QUEUE_PORT}{QUEUE_RESULTS}/<job id> (JSON) and each part is at http://<gateway>:{QUEUE_PORT}{QUEUE_RESULTS}/<job id>/<part number>, where <gateway> is the address in the environment variable SDP_CHAT_GATEWAY: "
     "fetch them from the shell with Python's urllib (curl is not installed) and save them in the current folder. Only your own queries are visible there."
 )
+QUEUE_INSTRUCTIONS = "Send a query to the scheduler with its submit tools when it must read many columns of very large tables, hold many distinct keys or groups, join large tables, or when the read-only query is refused or times out; run the others on the read-only connection. Before you submit a query, compare at least two versions with `EXPLAIN COSTS` as above, among them a single-query version and a per-dataset (or per-batch) version, report the figures for each, and submit the one you chose, saying why."
 # The query time limit (`SDP_CHAT_QUERY_SECONDS`, whole seconds from 1 to QUERY_SECONDS_MAX): the database stops a read-only query on MongoDB or StarRocks after it (PostgreSQL's MCP server ignores it); the waits for an answer (the agent's tool calls, `sdp_data.read_query`) are that plus QUERY_MARGIN_SECONDS. The sentences the role text gets with it.
 QUERY_ENV = "SDP_CHAT_QUERY_SECONDS"
 QUERY_SECONDS_MAX = 3600
@@ -72,7 +81,7 @@ MODEL_NOT_REACHED = "the model could not be reached"
 
 # A generated title (`ClaudeCode.title`, and `openai.OpenAICompatible.title` with the same instruction): the model, the instruction, the time limit, the most bytes of output read.
 TITLE_MODEL = "haiku"
-TITLE_INSTRUCTION = "Write a title of at most six words for a chat that starts with the question below, in the question's language. Answer with the title only, no quotes."
+TITLE_INSTRUCTION = "Write a title of at most six words for a chat that starts with the question below, in the question's language. Leave out words about plotting or charts (plot, plotting, chart, graph, visualize, figure and the like): every chat here makes charts, so they waste the title's few words. Answer with the title only, no quotes."
 TITLE_SECONDS = 30.0
 TITLE_OUTPUT_MAX = 64 * 1024
 
@@ -81,12 +90,15 @@ class TitleFailed(Exception):
     """A title could not be made; the text names the kind of failure only, never what the back end said."""
 
 
-def role(queue, query_seconds=None):
-    """The role text: ROLE, with the query queue its paragraph, and with the query time limit `query_seconds` a sentence naming it after each (the one after the queue's paragraph says that a longer query goes to the scheduler)."""
-    text = ROLE if query_seconds is None else f"{ROLE} {QUERY_LIMIT_ROLE.format(seconds=query_seconds)}"
+def role(queue, query_seconds=None, prompt=None):
+    """The role text: the instructions, then DEPLOYMENT_FACTS, and with the query queue QUEUE_FACTS, then the queue's instructions; with the query time limit `query_seconds` a sentence naming it after the facts and one after the queue's instructions (that a longer query goes to the scheduler). `prompt` is None (INSTRUCTIONS and QUEUE_INSTRUCTIONS) or the pair (instructions, queue instructions); each part is stripped, and an empty one is left out with its separator, so the text has no doubled blank lines and no whitespace at either end."""
+    instructions, queue_instructions = (INSTRUCTIONS, QUEUE_INSTRUCTIONS) if prompt is None else prompt
+    facts = DEPLOYMENT_FACTS if query_seconds is None else f"{DEPLOYMENT_FACTS} {QUERY_LIMIT_ROLE.format(seconds=query_seconds)}"
+    parts = [instructions.strip(), facts]
     if queue:
-        text += f"\n\n{QUEUE_ROLE}" if query_seconds is None else f"\n\n{QUEUE_ROLE} {QUERY_LIMIT_QUEUE_ROLE.format(seconds=query_seconds)}"
-    return text
+        queue_text = "\n\n".join(part for part in (QUEUE_FACTS, queue_instructions.strip()) if part)
+        parts.append(queue_text if query_seconds is None else f"{queue_text} {QUERY_LIMIT_QUEUE_ROLE.format(seconds=query_seconds)}")
+    return "\n\n".join(part for part in parts if part)
 
 
 def query_seconds(environ):
@@ -115,7 +127,7 @@ def mcp_config(databases, gateway, queue=False):
 
 
 def command(executable, home, session, resume, databases, queue=False, model=None, query_seconds=None):
-    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has its paragraph; with `model` (one of MODELS, checked by the runner) `--model` and its name, else none (Claude Code's default); with `query_seconds` the role text names the query time limit."""
+    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has the queue's facts and instructions; with `model` (one of MODELS, checked by the runner) `--model` and its name, else none (Claude Code's default); with `query_seconds` the role text names the query time limit."""
     allowed = ",".join([*TOOLS, *(f"mcp__{name}" for name in databases), *([f"mcp__{QUEUE_SERVER}"] if queue else [])])
     return [
         executable, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
@@ -187,7 +199,7 @@ def title_of(data):
 
 
 def environment(home, config, tmp, gateway, queue=False, databases=(), query_seconds=None):
-    """The whole environment of the process, built from scratch: `home` is the turn's fresh `HOME`, `config` the chat's `home/` (Claude Code's settings and session files); `SDP_CHAT_GATEWAY` and `SDP_CHAT_DATABASES` (the attached `databases`), which `sdp_data` in the shell reads and the queue's paragraph of the role text names, and with `query_seconds` `SDP_CHAT_QUERY_SECONDS`, which `sdp_data` bounds its waits by. `queue` changes nothing here."""
+    """The whole environment of the process, built from scratch: `home` is the turn's fresh `HOME`, `config` the chat's `home/` (Claude Code's settings and session files); `SDP_CHAT_GATEWAY` and `SDP_CHAT_DATABASES` (the attached `databases`), which `sdp_data` in the shell reads and the queue's facts in the role text name, and with `query_seconds` `SDP_CHAT_QUERY_SECONDS`, which `sdp_data` bounds its waits by. `queue` changes nothing here."""
     return {
         "SDP_CHAT_GATEWAY": gateway, "SDP_CHAT_DATABASES": ",".join(databases),
         **({QUERY_ENV: str(query_seconds)} if query_seconds is not None else {}),

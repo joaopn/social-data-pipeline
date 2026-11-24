@@ -1,4 +1,4 @@
-"""The query queue in the chat's runner and both back ends (`SDP_CHAT_QUEUE=1`): the setting, the MCP server `jobs` in Claude Code's command line and `mcp.json` and in the agent's servers and tools (through the real gateway's `mcp` listener), the role text with and without its paragraph, and `hello`.
+"""The query queue in the chat's runner and both back ends (`SDP_CHAT_QUEUE=1`): the setting, the MCP server `jobs` in Claude Code's command line and `mcp.json` and in the agent's servers and tools (through the real gateway's `mcp` listener), the role text (its instructions and fixed facts) with and without the queue's parts, and `hello`.
 
 Every special character in this file is written as an escape.
 """
@@ -20,15 +20,27 @@ HAS_MCP = importlib.util.find_spec("mcp") is not None
 MODEL = "vendor/model-1:free"
 SESSION = "5f6cec57-5f0d-4a8c-a927-8480b9f00bb1"
 HOME = "/work/c_0123456789ab/home"
-# The role text, pinned whole: a change of it is a change of what the assistant is told.
-ROLE = "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only. Before you query a table or collection for the first time in a chat, look at how it is laid out, with small queries: its columns and their types, a few rows (at most 5), and its indexes and keys (on StarRocks `SHOW CREATE TABLE`, which shows its indexes, sort key and partitions; on PostgreSQL its indexes; on MongoDB the collection's indexes). Columns that name a row's source file or period (like `dataset`, the dump month, in Reddit tables) are usually indexed and are the way to count per period. Make every chart with Altair (a Vega-Lite chart) unless the operator explicitly asks for another library; a request for an image or a PNG is still an Altair chart. Save it twice in the current folder, as `<name>.vl.json` (`chart.save(\"<name>.vl.json\")`, which the web UI draws as an interactive chart) and as `<name>.png` (`chart.save(\"<name>.png\")`), and name both files in your answer. Keep the files you make for the operator in the current folder (subfolders are fine: the web UI lists `.py`, `.png`, `.jpg`, `.svg`, `.json`, `.csv`, `.txt` and `.md` files up to three folders down, and folders whose names start with `.` are not looked into), and save the script that makes a chart beside it as `<name>.py`, with the same `<name>` as its `.vl.json` and `.png`, so the chart's Code button finds it. To use query results in a script, query them from the script with `sdp_data.read_query(server, query)` (it returns the rows through the same read-only connection your tools use) instead of copying values by hand; the shell has no other database access. The first argument of `sdp_data.read_query` is the database server (`starrocks`, `postgres` or `mongo`), not a database or schema name like `reddit`: name those inside the query (`reddit.comments`). Altair and vl-convert are installed: if importing them fails, say so instead of using another library. Keep the chart's data inside the chart (at most 50,000 rows; above 5,000 call `alt.data_transformers.disable_max_rows()` first; never loaded from an address or a file, no images or links) and leave its colours and background to the page. When a log axis helps (values spanning several orders of magnitude), make the y scale log (`alt.Scale(type=\"log\")`) in a single chart rather than two panels; the page adds a linear/log switch. You cannot reach the internet. Never suggest sending data or files to websites or services outside this deployment."
-QUEUE_PARAGRAPH = (
-    "The operator's query scheduler is attached as the MCP server `jobs`. Judge a query by what it must read, not by the table's size: StarRocks stores each column apart, so an aggregation over one or two small or indexed columns reads only those and runs quickly on the read-only connection, however large the table. Run such queries there first (check with `EXPLAIN` when the read-only tool accepts it), and send a query to the scheduler with its submit tools only when it must read many columns of very large tables, join large tables, or the read-only query is refused or times out; `list_targets` names its targets. "
+# The role text's parts, pinned whole: a change of one is a change of what the assistant is told. The instructions are the built-in editable ones; the facts are fixed.
+INSTRUCTIONS = (
+    "You are the assistant of a research data deployment. You answer questions about the operator's databases through the MCP tools of those databases, which are read-only.\n\n"
+    "Before you query a table or collection for the first time in a chat, look at how it is laid out, with small queries: its columns and their types, a few rows (at most 5), and its indexes and keys (on StarRocks `SHOW CREATE TABLE`, which shows its indexes, sort key and partitions; on PostgreSQL its indexes; on MongoDB the collection's indexes). Note whether it has partitions: a table without them is scanned whole unless an index or the sort key narrows the scan. Columns that name a row's source file or period (like `dataset`, the dump month, in Reddit tables) are usually indexed and are the way to count per period.\n\n"
+    "Weigh two costs before you write a query. Reading: StarRocks stores each column apart, so a query reads only the columns it names, and a filter on an indexed or sort-key column reads less. Memory, which columnar storage does not reduce: COUNT(DISTINCT ...), a GROUP BY on a high-cardinality column (such as `author`, `link_id` or `id`) and joins hold one entry per distinct key or group, so their memory grows with the number of distinct keys or groups, not with the columns read. Estimate that number, from table metadata or a small sample, before you choose between one query over everything and a loop of smaller queries, for example one per value of an indexed categorical column such as `dataset`.\n\n"
+    "For a query with COUNT(DISTINCT ...), a GROUP BY on a high-cardinality column or a join of large tables, on StarRocks, write at least two versions with different strategies (for example the single query and a per-`dataset` or per-batch loop) and compare them with `EXPLAIN COSTS` before you run either. Report for each its estimated CPU, memory, partitions and tablets scanned, and rows. The estimates are rough: they do not reflect bitmap-index skipping and may rest on stale statistics (check a count they show, such as the number of months, against the real one). When the choice matters, time one chunk (one value of the loop) on the read-only connection and look at it with `analyze_query`, then scale from that measurement: one measured chunk is worth more than any number of estimates. For simple counts on indexed columns, skip this; it only adds noise.\n\n"
+    "In a cost comparison, label each claim as table metadata, a measurement, an optimizer estimate or an inference."
+)
+QUEUE_INSTRUCTIONS = "Send a query to the scheduler with its submit tools when it must read many columns of very large tables, hold many distinct keys or groups, join large tables, or when the read-only query is refused or times out; run the others on the read-only connection. Before you submit a query, compare at least two versions with `EXPLAIN COSTS` as above, among them a single-query version and a per-dataset (or per-batch) version, report the figures for each, and submit the one you chose, saying why."
+# The old role text's sentences from the charts on, unchanged.
+DEPLOYMENT_FACTS = "Make every chart with Altair (a Vega-Lite chart) unless the operator explicitly asks for another library; a request for an image or a PNG is still an Altair chart. Save it twice in the current folder, as `<name>.vl.json` (`chart.save(\"<name>.vl.json\")`, which the web UI draws as an interactive chart) and as `<name>.png` (`chart.save(\"<name>.png\")`), and name both files in your answer. Keep the files you make for the operator in the current folder (subfolders are fine: the web UI lists `.py`, `.png`, `.jpg`, `.svg`, `.json`, `.csv`, `.txt` and `.md` files up to three folders down, and folders whose names start with `.` are not looked into), and save the script that makes a chart beside it as `<name>.py`, with the same `<name>` as its `.vl.json` and `.png`, so the chart's Code button finds it. To use query results in a script, query them from the script with `sdp_data.read_query(server, query)` (it returns the rows through the same read-only connection your tools use) instead of copying values by hand; the shell has no other database access. The first argument of `sdp_data.read_query` is the database server (`starrocks`, `postgres` or `mongo`), not a database or schema name like `reddit`: name those inside the query (`reddit.comments`). Altair and vl-convert are installed: if importing them fails, say so instead of using another library. Keep the chart's data inside the chart (at most 50,000 rows; above 5,000 call `alt.data_transformers.disable_max_rows()` first; never loaded from an address or a file, no images or links) and leave its colours and background to the page. When a log axis helps (values spanning several orders of magnitude), make the y scale log (`alt.Scale(type=\"log\")`) in a single chart rather than two panels; the page adds a linear/log switch. You cannot reach the internet. Never suggest sending data or files to websites or services outside this deployment."
+# The old queue paragraph without its advice on where a query runs: the scheduler's mechanics only.
+QUEUE_FACTS = (
+    "The operator's query scheduler is attached as the MCP server `jobs`. `list_targets` names its targets. "
     "A submitted query runs once it is approved, either by the scheduler itself when its target's auto-accept is on and has room under its limit, or by the operator in the Queue window of the web UI; you cannot approve it yourself. After a submission, tell the operator the job id and that the query may already be approved by auto-accept or else waits for their approval in the Queue window, and end your turn instead of waiting for it. "
     "`query_status` tells where a query stands, and `query_cancel` withdraws one of yours while it is still pending. "
     "When a query is done, the parts of its result are listed at http://<gateway>:8004/assistant/results/<job id> (JSON) and each part is at http://<gateway>:8004/assistant/results/<job id>/<part number>, where <gateway> is the address in the environment variable SDP_CHAT_GATEWAY: "
     "fetch them from the shell with Python's urllib (curl is not installed) and save them in the current folder. Only your own queries are visible there."
 )
+ROLE = INSTRUCTIONS + "\n\n" + DEPLOYMENT_FACTS
+QUEUE_PARAGRAPH = QUEUE_FACTS + "\n\n" + QUEUE_INSTRUCTIONS
 BASE = {"SDP_CHAT_BACKEND": "claude-code", "SDP_CHAT_CAP_GIB": "10", "SDP_CHAT_GATEWAY": "10.0.0.2", "SDP_CHAT_MODELS": "opus,sonnet,haiku"}
 
 
@@ -62,8 +74,43 @@ def test_the_agent_reads_the_setting_by_the_same_rule(value, queue):
 
 def test_the_role_text_is_pinned_with_and_without_the_queue_paragraph():
     """Bug class: the assistant told of a queue it cannot reach, or not told that a query waits for auto-accept or a person (it would wait on one in its turn), or the text changed unnoticed."""
-    assert claude.ROLE == ROLE and claude.role(False) == ROLE
-    assert claude.QUEUE_ROLE == QUEUE_PARAGRAPH and claude.role(True) == ROLE + "\n\n" + QUEUE_PARAGRAPH
+    assert claude.INSTRUCTIONS == INSTRUCTIONS and claude.DEPLOYMENT_FACTS == DEPLOYMENT_FACTS and claude.role(False) == ROLE
+    assert claude.QUEUE_INSTRUCTIONS == QUEUE_INSTRUCTIONS and claude.QUEUE_FACTS == QUEUE_FACTS and claude.role(True) == ROLE + "\n\n" + QUEUE_PARAGRAPH
+
+
+def test_the_texts_are_ascii_and_the_queue_facts_keep_the_mechanics_but_not_the_advice():
+    """Bug class: a typographic character slipped into what the assistant is told, or the split moving a mechanic of the queue (where results are, how to follow or withdraw a query, its targets) into the editable part, or leaving the old advice on where a query runs in the fixed part."""
+    assert all(text.isascii() for text in (claude.INSTRUCTIONS, claude.QUEUE_INSTRUCTIONS, claude.DEPLOYMENT_FACTS, claude.QUEUE_FACTS, claude.TITLE_INSTRUCTION))
+    assert all(part in claude.QUEUE_FACTS for part in ("`list_targets`", "`query_status`", "`query_cancel`", "http://<gateway>:8004/assistant/results/<job id>", "SDP_CHAT_GATEWAY", "urllib"))
+    assert "Judge a query" not in claude.QUEUE_FACTS and "submit tools" not in claude.QUEUE_FACTS and "EXPLAIN" not in claude.QUEUE_FACTS
+    assert claude.DEPLOYMENT_FACTS.startswith("Make every chart with Altair") and "You are the assistant" not in claude.DEPLOYMENT_FACTS
+
+
+def test_given_instructions_replace_the_built_in_ones_around_the_fixed_facts():
+    """Bug class: an operator's instructions dropped, put after the facts or in the queue's place, or the fixed facts or the limit sentences lost when instructions are given."""
+    prompt = ("Be brief.\n\nCount first.", "Queue big ones.")
+    assert claude.role(False, prompt=prompt) == "Be brief.\n\nCount first.\n\n" + DEPLOYMENT_FACTS
+    assert claude.role(False, 45, prompt) == "Be brief.\n\nCount first.\n\n" + DEPLOYMENT_FACTS + " " + LIMIT_SENTENCE
+    assert claude.role(True, prompt=prompt) == "Be brief.\n\nCount first.\n\n" + DEPLOYMENT_FACTS + "\n\n" + QUEUE_FACTS + "\n\nQueue big ones."
+    assert claude.role(True, 45, prompt) == "Be brief.\n\nCount first.\n\n" + DEPLOYMENT_FACTS + " " + LIMIT_SENTENCE + "\n\n" + QUEUE_FACTS + "\n\nQueue big ones. " + LIMIT_QUEUE_SENTENCE
+    assert claude.role(True, 45, None) == claude.role(True, 45)
+
+
+def test_without_the_queue_its_instructions_are_left_out():
+    """Bug class: the assistant told to send queries to a scheduler that is not attached."""
+    assert "Queue big ones" not in claude.role(False, 45, ("Be brief.", "Queue big ones."))
+    assert QUEUE_INSTRUCTIONS not in claude.role(False) and QUEUE_FACTS not in claude.role(False, 45)
+
+
+@pytest.mark.parametrize("empty", ["", "  ", "\n\n"])
+def test_empty_instructions_leave_no_stray_separators(empty):
+    """Bug class: an operator who cleared the instructions sending the model a text that starts with blank lines or holds doubled ones."""
+    assert claude.role(False, prompt=(empty, empty)) == DEPLOYMENT_FACTS
+    assert claude.role(True, prompt=(empty, empty)) == DEPLOYMENT_FACTS + "\n\n" + QUEUE_FACTS
+    assert claude.role(True, 45, (empty, empty)) == DEPLOYMENT_FACTS + " " + LIMIT_SENTENCE + "\n\n" + QUEUE_FACTS + " " + LIMIT_QUEUE_SENTENCE
+    assert claude.role(True, 45, ("  Be brief.\n", empty)) == "Be brief.\n\n" + DEPLOYMENT_FACTS + " " + LIMIT_SENTENCE + "\n\n" + QUEUE_FACTS + " " + LIMIT_QUEUE_SENTENCE
+    for text in (claude.role(True, 45, (empty, "Queue.")), claude.role(True, None, ("A.", empty))):
+        assert "\n\n\n" not in text and text == text.strip()
 
 
 # ── Claude Code ───────────────────────────────────────────────────────────

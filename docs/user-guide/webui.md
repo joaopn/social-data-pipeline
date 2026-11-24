@@ -315,6 +315,7 @@ When the sandbox does not answer its `hello`, the side columns say so and the co
 The chat's queries are found in the chat itself: every job id written in its tool calls and their results (at most the first 2,000 events are searched, the 20 newest ids kept), each looked up in the scheduler and shown only when the scheduler says the assistant submitted it; an id the scheduler does not know is left out, and one it could not read is a row that says so. With no queue attached to the chat, or the scheduler not given to the web UI, the section says so in one line.
 
 - **Send.** A question is 1 to 32,000 characters. Send makes the sandbox start a turn and leads back to the chat, where the answer comes in as it is written; one turn runs per chat, and at most two in the whole sandbox.
+- **An unsent question** is kept in this browser tab, for each chat, until you send it: switching to the Management or Queue window and back, Stop and a reload do not lose it. Sending it forgets it, and logging out forgets every chat's. A browser that blocks the page's storage does not keep it.
 - **A refused question** stays in the box with the reason: a turn of this chat still runs, two turns run already, the work folder is over its soft cap, or the chat's log is full (start a new chat).
 - **Stop** ends the turn that runs; the conversation then says the turn was stopped.
 - **Delete** asks first on a page of its own (which changes nothing) and then removes the chat and every file in its folder; a chat whose turn runs cannot be deleted until the turn has ended.

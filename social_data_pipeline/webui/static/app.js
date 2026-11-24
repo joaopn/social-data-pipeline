@@ -1,4 +1,4 @@
-// The web UI's own script, and all of it but theme.js (which runs before the page is drawn; no inline script, no eval: the content policy allows neither). htmx's own settings are in the meta tag htmx-config. What it keeps per browser is in localStorage, each access wrapped: without it the page works and forgets.
+// The web UI's own script, and all of it but theme.js (which runs before the page is drawn; no inline script, no eval: the content policy allows neither). htmx's own settings are in the meta tag htmx-config. What it keeps per browser is in localStorage, and the Chat window's unsent questions per browser tab in sessionStorage, each access wrapped: without them the page works and forgets.
 
 // htmx sends the session's form token (from the page's meta tag) with every request that is not a GET.
 document.addEventListener("htmx:configRequest", function (event) {
@@ -78,6 +78,42 @@ var sdpStore = {
     } catch (error) {
       // Not forgotten: the open page still shows the change.
     }
+  }
+};
+
+// The browser tab's storage (sessionStorage), wrapped the same way: without it every read is null, every write a no-op and the list of keys empty, and the page forgets.
+var sdpTabStore = {
+  get: function (key) {
+    try {
+      return window.sessionStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  },
+  set: function (key, value) {
+    try {
+      window.sessionStorage.setItem(key, value);
+    } catch (error) {
+      // Not kept: the open page still shows the text.
+    }
+  },
+  remove: function (key) {
+    try {
+      window.sessionStorage.removeItem(key);
+    } catch (error) {
+      // Not forgotten: nothing else can read it.
+    }
+  },
+  keys: function () {
+    var names = [];
+    try {
+      for (var index = 0; index < window.sessionStorage.length; index += 1) {
+        names.push(window.sessionStorage.key(index));
+      }
+    } catch (error) {
+      return [];
+    }
+    return names;
   }
 };
 
@@ -284,6 +320,76 @@ var sdpStore = {
         return;
       }
       form.dataset.sending = "1";
+    }
+  });
+})();
+
+// The Chat window's unsent question (.cw form#chat-send textarea) is kept in this browser tab (sessionStorage, sdp.draft.<chat id>, the id read from the form's action /chat/<id>/send and taken only in the runner's form) while it is typed, so that another window, Stop (a form whose answer reloads the page) or a reload does not lose it; an empty box forgets it. On load an empty box takes it back, the cursor at its end and nothing focused; a question the server drew into the box (a refused one) wins and is kept instead. Sending the form forgets the chat's draft; logging out (form.logout) forgets every chat's.
+(function () {
+  var PREFIX = "sdp.draft.";
+  var ACTION = /^\/chat\/(c_[0-9a-f]{12})\/send$/;
+
+  function keyOf(form) {
+    var match = form ? ACTION.exec(form.getAttribute("action") || "") : null;
+    return match ? PREFIX + match[1] : null;
+  }
+
+  function boxOf(target) {
+    return target && target.matches && target.matches(".cw form#chat-send textarea") ? target : null;
+  }
+
+  function keep(box) {
+    var key = keyOf(box.form);
+    if (!key) {
+      return;
+    }
+    if (box.value === "") {
+      sdpTabStore.remove(key);
+    } else {
+      sdpTabStore.set(key, box.value);
+    }
+  }
+
+  document.addEventListener("input", function (event) {
+    var box = boxOf(event.target);
+    if (box) {
+      keep(box);
+    }
+  });
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var box = document.querySelector(".cw form#chat-send textarea");
+    var key = box ? keyOf(box.form) : null;
+    if (!key) {
+      return;
+    }
+    if (box.value !== "") {
+      keep(box);
+      return;
+    }
+    var kept = sdpTabStore.get(key);
+    if (kept) {
+      box.value = kept;
+      box.setSelectionRange(box.value.length, box.value.length);
+    }
+  });
+
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    if (!form || !form.matches) {
+      return;
+    }
+    if (form.matches(".cw form#chat-send")) {
+      var key = keyOf(form);
+      if (key) {
+        sdpTabStore.remove(key);
+      }
+    } else if (form.matches("form.logout")) {
+      sdpTabStore.keys().forEach(function (name) {
+        if (name && name.indexOf(PREFIX) === 0) {
+          sdpTabStore.remove(name);
+        }
+      });
     }
   });
 })();

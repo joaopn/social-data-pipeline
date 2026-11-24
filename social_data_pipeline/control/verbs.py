@@ -68,6 +68,8 @@ ERROR_LOG_PROFILES = ("postgres_ingest", "postgres_ml", "mongo_ingest")
 CHAT_QUERY_SECONDS_MAX = 3600
 # The two values of the switch of generated chat titles (`chat_host.AUTO_TITLE_VALUES`, the parser's choices of `chat auto-title`).
 AUTO_TITLE_CHOICES = ("on", "off")
+# The most bytes of each part of the chat's starting prompt (`chat.prompt.TEXT_MAX_BYTES`; a test compares them).
+CHAT_PROMPT_MAX_BYTES = 10000
 
 
 class FieldRefused(ValueError):
@@ -275,6 +277,17 @@ DB_SETUP_INPUTS = {
     "ro_password": Field(Secret()),
     "ro_password_confirm": Field(Secret()),
 }
+
+
+def _check_chat_prompt(fields):
+    """`chat prompt` over the socket is one of two forms: a reset (`reset` true and no text), or both texts (the web UI always sends both; a part left out would be kept from the saved file, which the page did not show)."""
+    texts = [name for name in ("instructions", "queue") if name in fields]
+    if fields.get("reset") is True:
+        if texts:
+            raise FieldRefused(texts[0], "is not accepted with reset")
+        return
+    if len(texts) != 2:
+        raise FieldRefused("queue" if "instructions" in fields else "instructions", "is required (both texts, or reset true and no text)")
 
 
 def _check_create_indexes(fields):
@@ -578,6 +591,7 @@ VERBS = _registry(
     ),
     Verb(
         name="chat.settings", cls="read", cli=("chat", "settings"),
+        # What it holds: the read-only query limit, generated chat titles and the starting prompt of new chats (`sdp.py` `get_chat_settings`).
         socket_enabled=True,
         action="get_chat_settings",
     ),
@@ -598,6 +612,16 @@ VERBS = _registry(
         socket_enabled=True,
         note="Writes CHAT_AUTO_TITLE to .env; the chat's sandbox takes it at its next start, nothing is restarted.",
         action="do_chat_auto_title",
+    ),
+    Verb(
+        name="chat.prompt", cls="write", cli=("chat", "prompt"),
+        # The terminal reads each text from a file (`--instructions-file`, `--queue-file`, whose destinations are the texts' names); without a flag it only shows the prompt, which `chat.settings` reads. A write, not a step-up, although free text is a wide input: the maintainer's one exception to that rule (2026-11-24), because the text reaches only the sandbox's prompt file, never the host's config, .env or a command (see the rule in the registry's tests).
+        cli_inputs={"instructions", "queue", "reset"},
+        socket_inputs={"instructions": Field(Text(CHAT_PROMPT_MAX_BYTES, multiline=True)), "queue": Field(Text(CHAT_PROMPT_MAX_BYTES, multiline=True)), "reset": Field(Bool())},
+        socket_enabled=True,
+        check=_check_chat_prompt,
+        note="Writes .sdp/chat/prompt/prompt.json (or removes it with reset); chats made afterwards start with it, each chat keeps the prompt it was made with, nothing is restarted.",
+        action="do_chat_prompt",
     ),
     Verb(
         name="db.recover_password", cls="step_up", cli=("db", "recover-password"),

@@ -9,7 +9,7 @@
 - `SDP_CHAT_QUERY_SECONDS`: the query time limit of the chat's MongoDB and StarRocks servers, whole seconds from 1 to 3600 (`sdp chat start` gives it); missing or empty: none is named to the assistant.
 - `SDP_CHAT_AUTO_TITLE`: `on` or `off`, whether a chat's first question gets a generated title (`runner`'s title job); missing or empty: on. `sdp chat start` checks the value before it gives it; any other value is said in one line and taken as off.
 - `SDP_CHAT_MODELS` (required): the models a chat may be given. For `claude-code` a comma list of `opus`, `sonnet`, `haiku`, each at most once; for `openai-compatible` exactly `SDP_CHAT_MODEL`.
-- `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), `SDP_CHAT_WORK` (default `/work`), `SDP_CHAT_TURN_SECONDS` (default 1800).
+- `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), `SDP_CHAT_WORK` (default `/work`), `SDP_CHAT_PROMPT_DIR` (default `/run/sdp-chat-prompt`: the folder of the deployment's saved starting prompt, which `sdp chat start` mounts read-only), `SDP_CHAT_TURN_SECONDS` (default 1800).
 """
 
 import ipaddress
@@ -72,7 +72,7 @@ def settings(environ):
         query_seconds = claude.query_seconds(environ)
     except ValueError as error:
         raise SettingError(str(error)) from None
-    return {"backend": backend, "databases": names, "queue": queue == "1", "query_seconds": query_seconds, "auto_title": auto_title in ("", "on"), "model": model, "models": models, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT)}
+    return {"backend": backend, "databases": names, "queue": queue == "1", "query_seconds": query_seconds, "auto_title": auto_title in ("", "on"), "model": model, "models": models, "cap_bytes": int(cap) << 30, "turn_seconds": int(seconds), "gateway": gateway, "socket": environ.get("SDP_CHAT_SOCKET", runner.SOCKET_DEFAULT), "work": environ.get("SDP_CHAT_WORK", runner.WORK_DEFAULT), "prompt_folder": environ.get("SDP_CHAT_PROMPT_DIR", runner.PROMPT_DEFAULT)}
 
 
 def main(environ=None):
@@ -88,7 +88,7 @@ def main(environ=None):
         backend = openai.OpenAICompatible(found["gateway"], found["model"], found["databases"], queue=found["queue"], query_seconds=found["query_seconds"])
     limits = runner.Limits(turn_seconds=found["turn_seconds"])
     try:
-        chats = runner.Runner(found["work"], backend, found["backend"], found["databases"], found["cap_bytes"], queue=found["queue"], limits=limits, auto_title=found["auto_title"])
+        chats = runner.Runner(found["work"], backend, found["backend"], found["databases"], found["cap_bytes"], queue=found["queue"], limits=limits, auto_title=found["auto_title"], prompt_folder=found["prompt_folder"])
     except OSError:
         print("runner: refusing to start: the work folder cannot be opened", file=sys.stderr)
         return 2

@@ -25,6 +25,7 @@ import pytest
 
 import sdp
 from social_data_pipeline import chat_host as host
+from social_data_pipeline.chat import runner
 from social_data_pipeline.gateway import table as gateway_table
 
 UID, GID = 1000, 1000
@@ -278,7 +279,8 @@ def test_the_gateway_argument_list_is_pinned():
 
 @pytest.mark.parametrize("backend, model, extra", [("claude-code", None, ["-e", "SDP_CHAT_MODELS=opus,sonnet,haiku"]), ("openai-compatible", "vendor/model-1:free", ["-e", "SDP_CHAT_MODEL=vendor/model-1:free", "-e", "SDP_CHAT_MODELS=vendor/model-1:free"])])
 def test_the_sandbox_argument_list_is_pinned(backend, model, extra):
-    """Bug class: the sandbox given the credential, the broker's or Docker's socket, the data folder, a second network, a published port, or a secret in its environment; the OpenAI-compatible agent not told its model."""
+    """Bug class: the sandbox given the credential, the broker's or Docker's socket, the data folder, a second network, a published port, or a secret in its environment; the OpenAI-compatible agent not told its model; the saved starting prompt mounted writable (the sandbox could change the prompt of every new chat) or as its file (a replaced file would not be seen), or at another place than the runner reads."""
+    assert host.PROMPT_MOUNT == runner.PROMPT_DEFAULT
     assert host.sandbox_arguments("/srv/d", UID, GID, "10.201.0.2", backend, ["mongo", "starrocks"], 7, model) == [
         "docker", "create", "--name", "sdp-sandbox", "--label", "sdp.chat.root=/srv/d", "--restart", "no",
         "--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -286,6 +288,7 @@ def test_the_sandbox_argument_list_is_pinned(backend, model, extra):
         "--network", "sdp-chat",
         "--mount", "type=bind,source=/srv/d/.sdp/chat/work,target=/work",
         "--mount", "type=bind,source=/srv/d/.sdp/chat/socket,target=/run/sdp-chat",
+        "--mount", "type=bind,source=/srv/d/.sdp/chat/prompt,target=/run/sdp-chat-prompt,readonly",
         "-e", "SDP_CHAT_GATEWAY=10.201.0.2", "-e", "HOME=/work",
         "-e", f"SDP_CHAT_BACKEND={backend}", "-e", "SDP_CHAT_DATABASES=mongo,starrocks", "-e", "SDP_CHAT_CAP_GIB=7", *extra,
         "-e", "SDP_CHAT_AUTO_TITLE=on",

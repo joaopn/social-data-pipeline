@@ -11,7 +11,8 @@ from standins import gone, reply, tool_call
 
 from social_data_pipeline import chat_host
 from social_data_pipeline.chat import __main__ as main
-from social_data_pipeline.chat import agent, openai, runner
+from social_data_pipeline.chat import agent, claude, openai, runner
+from social_data_pipeline.chat import prompt as chat_prompt
 
 MODEL = "vendor/model-1:free"
 # Runs as the agent's `python`: records what it was given (its environment as the kernel gave it), then runs the agent with the model's port set to the stand-in's.
@@ -88,6 +89,21 @@ def test_the_agent_gets_exactly_its_environment_and_command_line(openai_runner, 
     }
     assert record["argv"] == ["-P", "-s", "-m", "social_data_pipeline.chat.agent", "--home", str(r.work / chat / "home"), "--files", str(r.work / chat / "files")]
     assert record["cwd"] == str(r.work / chat / "files")
+
+
+def test_the_agent_runs_on_the_chats_prompt_file(openai_runner):
+    """Bug class: the OpenAI-compatible back end ignoring the chat's starting prompt (its system message the built-in role text), or given another file than the chat's own copy."""
+    r = openai_runner
+    pair = ("Answer in French.\n\n\tAlways.", "Queue rule.")
+    os.makedirs(r.prompt_folder)
+    with open(os.path.join(r.prompt_folder, chat_prompt.NAME), "wb") as handle:
+        handle.write(chat_prompt.encode(*pair))
+    chat = r.new()
+    r.call("chat.send", chat=chat, text="hi")
+    assert [e["type"] for e in r.wait(chat)] == ["user", "text", "end"]
+    assert r.endpoint.seen[-1]["doc"]["messages"][0] == {"role": "system", "content": claude.role(False, None, pair)}
+    argv = r.agent_records()[0]["argv"]
+    assert argv[argv.index("--prompt-file") + 1] == str(r.work / chat / chat_prompt.NAME)
 
 
 def test_the_command_line_and_environment_are_pinned():

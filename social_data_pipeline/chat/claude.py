@@ -126,15 +126,15 @@ def mcp_config(databases, gateway, queue=False):
     return {"mcpServers": servers}
 
 
-def command(executable, home, session, resume, databases, queue=False, model=None, query_seconds=None):
-    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has the queue's facts and instructions; with `model` (one of MODELS, checked by the runner) `--model` and its name, else none (Claude Code's default); with `query_seconds` the role text names the query time limit."""
+def command(executable, home, session, resume, databases, queue=False, model=None, query_seconds=None, prompt=None):
+    """The argument list of one turn: `--session-id` on a chat's first turn, `--resume` afterwards; with `queue` the server `jobs` is allowed too and the role text has the queue's facts and instructions; with `model` (one of MODELS, checked by the runner) `--model` and its name, else none (Claude Code's default); with `query_seconds` the role text names the query time limit; `prompt` is the chat's starting prompt (`role`'s pair, None: the built-in one)."""
     allowed = ",".join([*TOOLS, *(f"mcp__{name}" for name in databases), *([f"mcp__{QUEUE_SERVER}"] if queue else [])])
     return [
         executable, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
         "--mcp-config", os.path.join(home, MCP_NAME), "--strict-mcp-config", "--tools", ",".join(TOOLS),
         "--permission-mode", "dontAsk", "--allowedTools", allowed,
         "--setting-sources", "", "--settings", SETTINGS,
-        "--append-system-prompt", role(queue, query_seconds),
+        "--append-system-prompt", role(queue, query_seconds, prompt),
         "--resume" if resume else "--session-id", session,
         *(["--model", model] if model else []),
     ]
@@ -528,8 +528,8 @@ class ClaudeCode:
         """Where the transcript of the session `session` run in the working folder `files` is, for the runner: (the folders under the chat's folder, the folder `files` names under them, the file's name)."""
         return TRANSCRIPT_FOLDERS, project_folder(files), f"{session}.jsonl"
 
-    def turn(self, chat_fd, config, home, files, tmp, text, session, resume, model=None):
-        """A `Process` for one turn (not started) and its `Translator`. `config` is the chat's `home/`, into which `mcp.json` is written again first; `home` the turn's fresh `HOME`; `model` the chat's model (None: Claude Code's default)."""
+    def turn(self, chat_fd, config, home, files, tmp, text, session, resume, model=None, prompt=None):
+        """A `Process` for one turn (not started) and its `Translator`. `config` is the chat's `home/`, into which `mcp.json` is written again first; `home` the turn's fresh `HOME`; `model` the chat's model (None: Claude Code's default); `prompt` the chat's starting prompt, the pair the runner read from its `prompt.json` (None: the built-in one)."""
         payload = json.dumps(mcp_config(self.databases, self.gateway, self.queue), indent=2).encode("utf-8")
         home_fd = os.open("home", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=chat_fd)
         try:
@@ -542,6 +542,6 @@ class ClaudeCode:
                 os.close(fd)
         finally:
             os.close(home_fd)
-        argv = command(self.executable, config, session, resume, self.databases, self.queue, model, self.query_seconds)
+        argv = command(self.executable, config, session, resume, self.databases, self.queue, model, self.query_seconds, prompt)
         process = Process(argv, environment(home, config, tmp, self.gateway, self.queue, self.databases, self.query_seconds), files, user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
         return process, Translator()

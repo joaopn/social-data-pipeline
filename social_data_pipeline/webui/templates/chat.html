@@ -124,7 +124,7 @@
     <dl class="kv">
       <dt>Can reach</dt><dd>the model{% if hello.databases %}, the read-only MCP servers{% endif %}{% if hello.queue %}, the queue's submit endpoint{% endif %}: only through the chat's gateway</dd>
       <dt>Cannot</dt><dd>{% if hello.queue %}approve its own queries; {% endif %}reach Docker, the broker, this machine, the pipeline's files or the internet</dd>
-      <dt>Reads</dt><dd>{% if hello.databases %}the databases in reach, as read-only users{% else %}no database{% endif %}{% if hello.queue %}; results of its own queries once they ran{% endif %}</dd>
+      <dt>Reads</dt><dd>{% if hello.databases %}the databases in reach, as read-only users{% else %}no database{% endif %}{% if hello.queue %}; results of its own queries once they ran{% endif %}; the saved starting prompt (<code>.sdp/chat/prompt</code>, read-only)</dd>
       <dt>Writes to</dt><dd>the chats' folders (<code>.sdp/chat/work</code>, every chat's) and <code>.sdp/chat/socket</code> only</dd>
     </dl>
     <p class="small muted">Restart or stop the sandbox at the terminal: <code>sdp chat stop</code> / <code>sdp chat start</code></p>

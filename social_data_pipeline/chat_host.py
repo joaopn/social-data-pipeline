@@ -17,6 +17,8 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from social_data_pipeline.chat import claude as chat_claude
+from social_data_pipeline.chat import prompt as chat_prompt
 from social_data_pipeline.chat.claude import MODELS as CLAUDE_MODELS
 from social_data_pipeline.control import files
 from social_data_pipeline.gateway import table as gateway_table
@@ -36,7 +38,12 @@ CREDENTIAL_NAME = "credential"
 TOKEN_NAME = "model.token"
 WORK_NAME = "work"
 SOCKET_NAME = "socket"
-SUBFOLDERS = (CREDENTIAL_NAME, WORK_NAME, SOCKET_NAME)
+# The deployment's saved starting prompt: `prompt/prompt.json` (`chat.prompt`), absent for the built-in one; the folder is mounted read-only into the sandbox.
+PROMPT_NAME = "prompt"
+PROMPT_FOLDER = os.path.join(CHAT_FOLDER, PROMPT_NAME)
+PROMPT_FILE = os.path.join(PROMPT_FOLDER, chat_prompt.NAME)
+PROMPT_RECOVERY = "Set it again (python sdp.py chat prompt --instructions-file=<path> --queue-file=<path>) or go back to the built-in prompt (python sdp.py chat prompt --reset)"
+SUBFOLDERS = (CREDENTIAL_NAME, WORK_NAME, SOCKET_NAME, PROMPT_NAME)
 TOKEN_PATH = os.path.join(CHAT_FOLDER, CREDENTIAL_NAME, TOKEN_NAME)
 FOLDER_MODE = 0o700
 CONFIG_MAX_BYTES = 64 * 1024
@@ -491,7 +498,7 @@ def _remove(parent_fd, name, shown, *, folder):
 
 
 def cmd_unsetup(root, confirm, confirm_work):
-    """`sdp chat unsetup`: say what is removed; after `confirm()` says yes, refuse while a container of the chat exists for this deployment (exit code 1, nothing removed); else remove the two images, `config.json`, `credential/`, `socket/` and `gateway/` of `.sdp/chat`; `work/` (all chats and their files) only when `confirm_work()` also says yes; leftover temporary files beside `config.json`; `.sdp/chat` itself when it is then empty (else one line says how many other entries stayed). A missing piece is not an error. Exit code 0, or 1 when something could not be removed."""
+    """`sdp chat unsetup`: say what is removed; after `confirm()` says yes, refuse while a container of the chat exists for this deployment (exit code 1, nothing removed); else remove the two images, `config.json`, `credential/`, `socket/` and `gateway/` of `.sdp/chat`; `work/` (all chats and their files) only when `confirm_work()` also says yes; `prompt/` without a word when it is empty (a saved starting prompt stays); leftover temporary files beside `config.json`; `.sdp/chat` itself when it is then empty (else one line says how many other entries stayed). A missing piece is not an error. Exit code 0, or 1 when something could not be removed."""
     root = os.fspath(root)
     print(f"  This removes the images {GATEWAY_IMAGE} and {SANDBOX_IMAGE}, and the chat's settings and credential ({CHAT_FOLDER}: {CONFIG_NAME}, {CREDENTIAL_NAME}/, {SOCKET_NAME}/, {GATEWAY_NAME}/).")
     if not confirm():
@@ -539,6 +546,9 @@ def cmd_unsetup(root, confirm, confirm_work):
                         failed = True
                 if _sweep(chat_fd, _CONFIG_LEFTOVER):
                     print(f"  Removed leftover temporary files of an interrupted setup in {CHAT_FOLDER}.")
+                # The folder of the saved starting prompt goes only when it is empty (no prompt was saved): a saved prompt stays, like the chats.
+                with contextlib.suppress(OSError):
+                    os.rmdir(PROMPT_NAME, dir_fd=chat_fd)
                 left = os.listdir(chat_fd)
             finally:
                 os.close(chat_fd)
@@ -579,6 +589,8 @@ GATEWAY_MOUNT = "/run/sdp-gateway"
 CREDENTIAL_MOUNT = "/run/sdp-credential"
 WORK_MOUNT = "/work"
 SOCKET_MOUNT = "/run/sdp-chat"
+# The runner's default folder of the saved starting prompt (`chat.runner.PROMPT_DEFAULT`); Docker makes the mount point in the read-only root.
+PROMPT_MOUNT = "/run/sdp-chat-prompt"
 GATEWAY_ENV = "SDP_CHAT_GATEWAY"
 MODEL_PORT = 8080
 # How long `start` waits for the gateway to say that every listener listens.
@@ -754,13 +766,14 @@ def gateway_arguments(root, uid, gid, address):
 
 
 def sandbox_arguments(root, uid, gid, address, backend, databases, cap, model=None, queue=False, query_seconds=None, auto_title=True):
-    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`), the models a chat may be given (`SDP_CHAT_MODELS`: `CLAUDE_MODELS`, or the one model of an OpenAI-compatible back end), with `queue` `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler) with `query_seconds` `SDP_CHAT_QUERY_SECONDS` (the query time limit of the chat's MongoDB and StarRocks servers), and always `SDP_CHAT_AUTO_TITLE` (`on` or `off` from `auto_title`: whether a new chat gets a title made by the model), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
+    """The `docker create` argument list of the sandbox: on `sdp-chat` only, the work folder and the chat's socket folder mounted read-write, the folder of the saved starting prompt (`.sdp/chat/prompt`, the folder and not its file, so a replaced file is seen at once) read-only at PROMPT_MOUNT, and nothing else, no published port; its environment is the gateway's address, `HOME`, and for the runner the back end, the names of the attached databases (`databases`), the work folder's soft cap in GiB, for `openai-compatible` the model's name (`model`), the models a chat may be given (`SDP_CHAT_MODELS`: `CLAUDE_MODELS`, or the one model of an OpenAI-compatible back end), with `queue` `SDP_CHAT_QUEUE=1` (the gateway's port 8004 reaches the query scheduler) with `query_seconds` `SDP_CHAT_QUERY_SECONDS` (the query time limit of the chat's MongoDB and StarRocks servers), and always `SDP_CHAT_AUTO_TITLE` (`on` or `off` from `auto_title`: whether a new chat gets a title made by the model), none of them a secret. Docker's init runs as its first process, so that what a turn's processes leave behind is reaped."""
     return [
         *_confined(SANDBOX_CONTAINER, root, uid, gid),
         "--init", "--pids-limit", "512", "--memory", "4g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
         "--network", NETWORK,
         "--mount", f"type=bind,source={os.path.join(root, CHAT_FOLDER, WORK_NAME)},target={WORK_MOUNT}",
         "--mount", f"type=bind,source={os.path.join(root, CHAT_FOLDER, SOCKET_NAME)},target={SOCKET_MOUNT}",
+        "--mount", f"type=bind,source={os.path.join(root, PROMPT_FOLDER)},target={PROMPT_MOUNT},readonly",
         "-e", f"{GATEWAY_ENV}={address}", "-e", f"HOME={WORK_MOUNT}",
         "-e", f"SDP_CHAT_BACKEND={backend}", "-e", f"SDP_CHAT_DATABASES={','.join(databases)}", "-e", f"SDP_CHAT_CAP_GIB={cap}",
         *(["-e", f"SDP_CHAT_MODEL={model}"] if backend == OPENAI_COMPATIBLE else []),
@@ -1046,6 +1059,74 @@ def auto_title_setting(root):
     return data
 
 
+def _prompt_folder(chat_fd, *, create):
+    return _subfolder(chat_fd, PROMPT_NAME, PROMPT_FOLDER, create=create)
+
+
+def saved_prompt(root):
+    """The deployment's saved starting prompt as the pair (instructions, queue), or None when there is none (no `.sdp/chat/prompt/prompt.json`: the built-in prompt). Raises Refused, naming the file and how to recover, for a file that is a link, not a regular file of this user, larger than 64 KiB or not a starting prompt (`chat.prompt.parse`)."""
+    with _chat_folder(root, create=False) as chat_fd:
+        prompt_fd = None if chat_fd is None else _prompt_folder(chat_fd, create=False)
+        if prompt_fd is None:
+            return None
+        try:
+            data = files.read_file(prompt_fd, chat_prompt.NAME, chat_prompt.FILE_MAX_BYTES)
+        except files.BrokerFileError as error:
+            raise Refused(f"{PROMPT_FILE} cannot be read ({error.message}). {PROMPT_RECOVERY}") from None
+        finally:
+            os.close(prompt_fd)
+    if data is None:
+        return None
+    try:
+        return chat_prompt.parse(data)
+    except ValueError as error:
+        raise Refused(f"{PROMPT_FILE} is not a starting prompt: {error}. {PROMPT_RECOVERY}") from None
+
+
+def prompt_setting(root):
+    """The starting prompt as `chat prompt` and the web UI show it: {"saved": {"instructions", "queue"} of the saved prompt or None (the built-in one is in force), "builtin": {"instructions", "queue"} (`chat.claude`'s INSTRUCTIONS and QUEUE_INSTRUCTIONS), "facts": {"deployment", "queue"} (DEPLOYMENT_FACTS and QUEUE_FACTS, which every chat gets and no one edits), "max_bytes": the most bytes of each part, "problem": why the saved prompt cannot be shown (the file cannot be read or is not a starting prompt), else None}. A malformed file is a problem, never the built-in prompt. Never raises."""
+    data = {"saved": None, "builtin": {"instructions": chat_claude.INSTRUCTIONS, "queue": chat_claude.QUEUE_INSTRUCTIONS}, "facts": {"deployment": chat_claude.DEPLOYMENT_FACTS, "queue": chat_claude.QUEUE_FACTS}, "max_bytes": chat_prompt.TEXT_MAX_BYTES, "problem": None}
+    try:
+        pair = saved_prompt(root)
+        if pair is not None:
+            data["saved"] = {"instructions": pair[0], "queue": pair[1]}
+    except Refused as refusal:
+        data["problem"] = refusal.message
+    except Exception as error:
+        data["problem"] = f"{PROMPT_FILE} cannot be read ({type(error).__name__}). {PROMPT_RECOVERY}"
+    return data
+
+
+def save_prompt(root, instructions, queue):
+    """Write the deployment's starting prompt, `.sdp/chat/prompt/prompt.json`, in one step (`control.files.replace_file`, mode 0600), making `.sdp/chat/prompt` when it is missing. Raises ValueError for a part that is not one (`chat.prompt.encode`) before anything is written, and Refused when the folder or the file cannot be used."""
+    payload = chat_prompt.encode(instructions, queue)
+    with _chat_folder(root, create=True) as chat_fd:
+        prompt_fd = _prompt_folder(chat_fd, create=True)
+        try:
+            files.replace_file(prompt_fd, chat_prompt.NAME, payload)
+        except files.BrokerFileError as error:
+            raise Refused(f"{PROMPT_FILE} could not be written: {error.message}") from None
+        finally:
+            os.close(prompt_fd)
+
+
+def reset_prompt(root):
+    """Remove the deployment's saved starting prompt, so new chats get the built-in one. Returns whether there was a file to remove (no folder or no file is no error). Raises Refused when the folder or the file cannot be used."""
+    with _chat_folder(root, create=False) as chat_fd:
+        prompt_fd = None if chat_fd is None else _prompt_folder(chat_fd, create=False)
+        if prompt_fd is None:
+            return False
+        try:
+            os.unlink(chat_prompt.NAME, dir_fd=prompt_fd)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            raise Refused(f"{PROMPT_FILE} could not be removed") from None
+        finally:
+            os.close(prompt_fd)
+    return True
+
+
 def _find_queue(root):
     """((the scheduler's container id, its port), None) when exactly one container of the compose service `jobs` of this deployment runs, else (None, why)."""
     listing = _docker(compose_listing(JOBS_SERVICE))
@@ -1289,6 +1370,9 @@ def _gateway_config_removed(root):
 def _start(root, uid, gid):
     _check_root(root)
     settings = _settings_or_refuse(root)
+    # Deployments set up before the starting prompt have no folder for it; the sandbox's read-only mount needs one.
+    with _chat_folder(root, create=False) as chat_fd:
+        os.close(_prompt_folder(chat_fd, create=True))
     seconds = query_seconds(root)
     titles = auto_title(root)
     for image in (GATEWAY_IMAGE, SANDBOX_IMAGE):

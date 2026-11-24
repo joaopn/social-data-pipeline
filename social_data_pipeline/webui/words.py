@@ -150,6 +150,7 @@ CHAT_CODE_SENTENCES = {
     "not_usable": "The chat's folder in the sandbox cannot be used.",
     "model_not_allowed": "The chat's sandbox does not offer this model: choose one of the models the page offers.",
     "bad_title": "The chat's sandbox did not take the title: it must be 1 to 80 characters on one line. The old title is kept.",
+    "prompt_unreadable": "The deployment's starting prompt cannot be read, so no new chat is made: set it again, or go back to the built-in one with python sdp.py chat prompt --reset (python sdp.py chat prompt shows what is wrong).",
     "unavailable": "The chat's sandbox is stopping and takes no new request.",
     "internal": "The chat's sandbox could not answer this request.",
     "not_understood": "The chat's sandbox answered something this page does not understand, so nothing of it is shown.",

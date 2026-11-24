@@ -45,6 +45,8 @@ LOG_OFFSET_MAX = 2 ** 53
 CHAT_QUERY_SECONDS_MAX = 3600
 # The two values of the switch of generated chat titles (`control.verbs.AUTO_TITLE_CHOICES`).
 AUTO_TITLE_CHOICES = ("on", "off")
+# The most bytes of each part of the chat's starting prompt (`control.verbs.CHAT_PROMPT_MAX_BYTES`; a test compares them).
+CHAT_PROMPT_MAX_BYTES = 10000
 
 # Literal copies of the scheduler's control socket's rules (`jobs/door.py`: `JOB_ID`, `DIGEST`, `BY_LABEL`, `PHASES`, `JOBS_LIMIT_MAX`, `JOBS_OFFSET_MAX`, `REASON_MAX`): a test compares them.
 JOB_ID_PATTERN = r"(pg|sr|mg|job)_[0-9a-f]{8}"
@@ -612,6 +614,30 @@ AUTO_TITLE_SENTENCE = (
 )
 
 
+# What `chat prompt` does (`sdp.py` `do_chat_prompt`, `chat_host.save_prompt`, `reset_prompt`), and what the runner does with the file (`chat/runner.py` `_op_chat_new`, `_turn`).
+CHAT_PROMPT_SENTENCE = (
+    "It writes the deployment's starting prompt to .sdp/chat/prompt/prompt.json in one step (a reset removes that file instead, and new chats get the built-in prompt). "
+    "It restarts nothing: the sandbox sees the folder read-only, so every chat made afterwards starts with it at once, and every chat keeps the prompt it was made with (a chat already made goes on with its own). "
+    "The deployment's facts (charts and files, sdp_data, no internet, the query time limit, the query queue's mechanics) are always added and are not part of it."
+)
+
+
+def _check_chat_prompt(fields):
+    """The registry's rule of `chat.prompt`: a reset with no text, or both texts."""
+    texts = [name for name in ("instructions", "queue") if name in fields]
+    if fields.get("reset") is True:
+        if texts:
+            raise Refused(texts[0])
+    elif len(texts) != 2:
+        raise Refused("queue" if "instructions" in fields else "instructions")
+
+
+def _chat_prompt_command(fields):
+    if fields.get("reset") is True:
+        return _command("chat", "prompt", "--reset")
+    return _command("chat", "prompt", "--instructions-file=<a file holding the instructions>", "--queue-file=<a file holding the queue instructions>")
+
+
 def _table(*actions):
     by_name = {}
     for action in actions:
@@ -640,7 +666,7 @@ TABLE = _table(
     Action("db.index_targets", "read", "The tables, columns and indexes of a source in one database", {"source": _SOURCE, "db": Input("enum", "Database", required=True, choices=DATABASES)}, form="python sdp.py db index-targets --source=<name> --db=<database>"),
     Action("db.settings", "read", "The current answers of the database setup", form="python sdp.py db settings"),
     Action("source.settings", "read", "The current answers of a source's setup", {"name": _SOURCE}, form="python sdp.py source settings <name>"),
-    Action("chat.settings", "read", "The chat's settings for the whole deployment (the read-only query limit, generated chat titles)", form="python sdp.py chat settings"),
+    Action("chat.settings", "read", "The chat's settings for the whole deployment (the read-only query limit, generated chat titles, the starting prompt of new chats)", form="python sdp.py chat settings"),
     # ── write ──
     Action(
         "run.start", "write", "Start a pipeline run",
@@ -741,6 +767,16 @@ TABLE = _table(
         {"seconds": Input("int", "Read-only query limit for chats (seconds)", required=True, lo=1, hi=CHAT_QUERY_SECONDS_MAX)},
         form="python sdp.py chat query-limit <seconds>", command=lambda fields: _command("chat", "query-limit", str(fields["seconds"])),
         also=lambda fields: QUERY_LIMIT_SENTENCE,
+    ),
+    Action(
+        "chat.prompt", "write", "Change the starting prompt of new chats",
+        {
+            "instructions": Input("text", "Instructions", max_bytes=CHAT_PROMPT_MAX_BYTES, multiline=True),
+            "queue": Input("text", "Queue instructions", max_bytes=CHAT_PROMPT_MAX_BYTES, multiline=True),
+            "reset": Input("bool", "Go back to the built-in prompt"),
+        },
+        form="python sdp.py chat prompt [--instructions-file=<path>] [--queue-file=<path>] [--reset]", command=_chat_prompt_command, check=_check_chat_prompt,
+        also=lambda fields: CHAT_PROMPT_SENTENCE,
     ),
     Action("session.check_password", "step_up", "Check the management password again", form="(no command: asked before the Queue's auto-accept is switched on or its limit raised)", op=True),
     # ── the scheduler's control socket ──

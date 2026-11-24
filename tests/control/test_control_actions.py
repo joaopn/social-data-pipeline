@@ -55,6 +55,7 @@ ACTIONS = {
     "chat.settings": "get_chat_settings",
     "chat.query_limit": "do_chat_query_limit",
     "chat.auto_title": "do_chat_auto_title",
+    "chat.prompt": "do_chat_prompt",
 }
 
 # The private parameter an action has for each thing its command asks on the terminal.

@@ -183,7 +183,7 @@ def test_setup_gives_every_folder_and_file_its_mode_whatever_the_umask(root, doc
         os.umask(old)
     chat = root / CHAT
     modes = {str(path.relative_to(root)): stat.S_IMODE(path.lstat().st_mode) for path in [root / ".sdp", chat, *chat.rglob("*")]}
-    assert modes == {".sdp": 0o700, ".sdp/chat": 0o700, ".sdp/chat/config.json": 0o600, ".sdp/chat/credential": 0o700, ".sdp/chat/credential/model.token": 0o600, ".sdp/chat/work": 0o700, ".sdp/chat/socket": 0o700}
+    assert modes == {".sdp": 0o700, ".sdp/chat": 0o700, ".sdp/chat/config.json": 0o600, ".sdp/chat/credential": 0o700, ".sdp/chat/credential/model.token": 0o600, ".sdp/chat/work": 0o700, ".sdp/chat/socket": 0o700, ".sdp/chat/prompt": 0o700}
 
 
 def test_setup_makes_an_existing_folder_private(root, docker):
@@ -243,7 +243,7 @@ def test_a_second_setup_keeps_or_replaces_the_credential(root, docker, capsys, r
     assert ("Credential: saved" if replace else "Credential: kept") in capsys.readouterr().out
 
 
-FOLDERS = [".sdp", ".sdp/chat", ".sdp/chat/credential", ".sdp/chat/work", ".sdp/chat/socket"]
+FOLDERS = [".sdp", ".sdp/chat", ".sdp/chat/credential", ".sdp/chat/work", ".sdp/chat/socket", ".sdp/chat/prompt"]
 
 
 @pytest.mark.parametrize("folder", FOLDERS)
@@ -332,7 +332,7 @@ def test_unsetup_with_the_default_answer_removes_nothing(root, docker, capsys):
     asked = []
     assert host.cmd_unsetup(root, lambda: False, lambda: asked.append(1) or True) == 0
     assert docker.calls == [] and asked == []
-    assert sorted(p.name for p in (root / CHAT).iterdir()) == ["config.json", "credential", "socket", "work"]
+    assert sorted(p.name for p in (root / CHAT).iterdir()) == ["config.json", "credential", "prompt", "socket", "work"]
     out = capsys.readouterr().out
     assert "sdp-gateway and sdp-sandbox" in out and "Nothing was removed." in out
 

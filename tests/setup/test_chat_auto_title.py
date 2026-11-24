@@ -182,4 +182,4 @@ def test_chat_settings_prints_what_it_printed_before_and_its_data_carries_the_sw
     assert "title" not in capsys.readouterr().out
     data = sdp.get_chat_settings()
     assert data["auto_title"] == {"on": False, "default": False, "problem": None}
-    assert set(data) == {"query_limit", "auto_title"}
+    assert set(data) == {"query_limit", "auto_title", "prompt"}

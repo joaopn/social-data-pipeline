@@ -2,12 +2,13 @@
 
 - Where: `SDP_CHAT_SOCKET` (default `/run/sdp-chat/runner.sock`), mode 0600; a leftover socket in its place is removed, anything else there refuses the start.
 - How much: at most 8 connections at a time (the rest closed at once); one request and one reply per connection, each a `control.framing` frame; a request of at most 64 KiB within 10 seconds; a reply of at most 1 MiB (else `too_large`). A reply is `{"ok": true, "result": ...}` or `{"ok": false, "error": {"code", "message"}}` with a constant message. An unexpected exception is logged by the name of its kind only and answered `internal`.
-- The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `title_by`: who set the title, `question` (its first question, also when the field is missing or of another value), `model` (a generated title) or `user` (`chat.rename`), `session`, `turns`, `resume`, `model`: the chat's model, null for the back end's default). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
-- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}`; `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.rename {chat, title}` -> `{"title"}` (the title stored, `title_by` `user`: its runs of whitespace, line breaks included, made one space and its ends trimmed; 1 to 80 characters that UTF-8 can hold, else refused `bad_title`; taken while a turn runs; a later question never changes a title that is set); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "unlisted", "more"}` (a name is a path relative to `files/`, its parts joined by `/`: every regular file directly in `files/`, and those of its subfolders up to three folders down whose names end in one of `LISTED_ENDINGS`, folders whose names start with `.` not looked into; `left_out`: the names that are not of the rule; `unlisted`: the files of subfolders left out by their ending); `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}` (`name` a path of the same rule, of any ending); `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
+- The chats: one folder per chat in the work folder (`SDP_CHAT_WORK`, default `/work`): `<id>/` with `home/` (the back end's home), `files/` (the assistant's working folder), `events.jsonl` and `meta.json` (`created`, `title`, `title_by`: who set the title, `question` (its first question, also when the field is missing or of another value), `model` (a generated title) or `user` (`chat.rename`), `session`, `turns`, `resume`, `model`: the chat's model, null for the back end's default). A chat may also hold `prompt.json`, its starting prompt (below). A chat id is `c_` and 12 hex digits, checked before it is used for anything. At most 200 chats; at most 2 turns at a time in the sandbox, one per chat. Every file of a chat is opened relative to the folder above it without following a link.
+- The requests (`op`; every listed field is required, a field in brackets may be left out, nothing else is taken): `hello` -> `{"version", "backend", "databases", "queue", "models", "model_default"}` (`queue`: whether the query queue is attached; `models`: the models a chat may be given, the back end's allow-list; `model_default`: the model a chat without one runs on, null when it is the back end's own default); `chat.list` -> `{"chats": [{"id", "title", "created", "running", "model"}]}`, newest first; `chat.new {[model]}` -> `{"chat"}` (refused `prompt_unreadable` when the deployment's starting prompt is there but cannot be read or is not one: no chat is made); `chat.send {chat, text, [model]}` -> `{"offset"}` (the index of its `user` event; refused `busy`, `too_many`, `over_cap`, `chat_full`); a `model` is one of `models`, or null for the back end's default (anything else is refused `model_not_allowed`): the chat keeps it, and this turn and the next ones run on it until a send gives another; `chat.events {chat, offset, limit}` -> `{"events", "next", "running"}`; `chat.stop {chat}` -> `{"stopping"}`; `chat.delete {chat}` -> `{}` (refused `busy` while a turn runs); `chat.rename {chat, title}` -> `{"title"}` (the title stored, `title_by` `user`: its runs of whitespace, line breaks included, made one space and its ends trimmed; 1 to 80 characters that UTF-8 can hold, else refused `bad_title`; taken while a turn runs; a later question never changes a title that is set); `chat.files {chat}` -> `{"files": [{"name", "size", "mtime"}], "left_out", "unlisted", "more"}` (a name is a path relative to `files/`, its parts joined by `/`: every regular file directly in `files/`, and those of its subfolders up to three folders down whose names end in one of `LISTED_ENDINGS`, folders whose names start with `.` not looked into; `left_out`: the names that are not of the rule; `unlisted`: the files of subfolders left out by their ending); `chat.file {chat, name, offset, limit}` -> `{"data" (base64), "size", "next", "end"}` (`name` a path of the same rule, of any ending); `chat.transcript {chat, offset, limit}` -> `{"found": false}` when the back end keeps no transcript (OpenAI-compatible) or the chat has none yet, else `{"found": true, "data" (base64), "size", "next", "end"}`: a piece of Claude Code's own session file of this chat (`transcript`), read-only.
 - The events (one JSON object per line, each at most 64 KiB, the log at most 16 MiB and 1 line per 32 bytes of that, then one `error` event says the chat is full and the turn's `end` follows): `user {text}`, `text {text}`, `tool {name, input}`, `tool_result {text, is_error}`, `file {name, size}`, `end {is_error, cost_usd, duration_ms, turns}`, `error {message}`, `title {text, cost_usd}` (a generated title was stored; `cost_usd` a finite number of at least 0 or null; it belongs to no turn and may come between a turn's events); each has `n` (its index) and `t` (seconds since the epoch). Every turn ends with exactly one `end`.
 - Generated titles (`auto_title`, the sandbox's `SDP_CHAT_AUTO_TITLE`): the first question of a chat that has no title makes its start the title (`title_by` `question`) and starts a title job on a thread of its own: at most 2 run at a time (one that cannot start is skipped), and they are not turns. A job asks the back end's `title(text, seconds)` with the question's first 2,000 characters and a limit of 30 seconds; a failure, or an answer after the limit, is logged by its kind only and the title stays. The answer is model output: its first line that is not empty once cleaned (control characters made spaces, format characters such as direction marks dropped, runs of whitespace made one space, quotes, backticks, `*` and `#` taken off its ends), cut to 80 characters and written only when UTF-8 can hold it. It is stored only while `title_by` is still `question`, the chat is still listed and the runner is not stopping (all checked under the runner's lock, then the chat's): `title_by` becomes `model`, `meta.json` is written and a `title` event appended. `close` does not wait for a job.
+- The starting prompt (`chat.prompt`: `{"instructions", "queue"}`, the two editable parts of the role text, each 0 to 10,000 bytes of UTF-8 with no control character but tab and `\n`): the deployment's saved one is `prompt.json` in the folder `SDP_CHAT_PROMPT_DIR` (default `/run/sdp-chat-prompt`, `.sdp/chat/prompt` mounted read-only). `chat.new` reads it (at most 64 KiB, the last part not followed if a link, the exact shape checked) and stores it in the new chat's folder as `prompt.json` before the chat is listed; when there is no such folder or file the chat gets no `prompt.json` and runs on the built-in prompt. So a change of the saved prompt applies to chats made afterwards, and each chat keeps the prompt it was made with. Every turn reads the chat's `prompt.json` the same way (relative to the chat's folder) and passes the pair to the back end (`turn(..., prompt=)`: Claude Code's role text, the OpenAI-compatible agent's `--prompt-file`); one that cannot be read or is not a starting prompt ends the turn before the back end starts, with the `error` event "the chat's starting prompt cannot be read" and its `end`. The sandbox may write a chat's `prompt.json` like any file of its folders: what it puts there is what that chat's next turns run with.
 
-Standard library and `control.framing`/`errors` only. The runner is not a security boundary: it keeps itself useful and bounded against what the sandbox may do to its folders.
+Standard library, `control.framing`/`errors` and `chat.prompt` only. The runner is not a security boundary: it keeps itself useful and bounded against what the sandbox may do to its folders.
 """
 
 import array
@@ -31,10 +32,14 @@ from dataclasses import dataclass
 from social_data_pipeline.control import framing
 from social_data_pipeline.control.errors import ControlError
 
+from . import prompt as chat_prompt
+
 PROTOCOL = 1
 SOCKET_DEFAULT = "/run/sdp-chat/runner.sock"
 WORK_DEFAULT = "/work"
 TMP_DEFAULT = "/tmp"
+# The deployment's saved starting prompt: the folder `sdp chat start` mounts read-only (`.sdp/chat/prompt`), which may hold `prompt.json`.
+PROMPT_DEFAULT = "/run/sdp-chat-prompt"
 SOCKET_MODE = 0o600
 FOLDER_MODE = 0o700
 CHAT_ID = re.compile(r"c_[0-9a-f]{12}")
@@ -99,6 +104,7 @@ MESSAGES = {
     "not_usable": "the chat's folder cannot be used",
     "model_not_allowed": "the model is not one this back end allows",
     "bad_title": "a title must be 1 to 80 characters on one line",
+    "prompt_unreadable": "the deployment's starting prompt cannot be read: set it again or reset it (python sdp.py chat prompt)",
     "unavailable": "the runner is stopping",
     "internal": "the runner could not answer this request",
 }
@@ -107,6 +113,7 @@ STOPPED = "the turn was stopped"
 LIMIT = "the turn took longer than the limit"
 CHAT_FULL = "the chat is full"
 NOT_STARTED = "the back end could not be started"
+PROMPT_UNREADABLE = "the chat's starting prompt cannot be read"
 UNREADABLE = "this event could not be read"
 _SILENT_FRAME_ERRORS = (framing.FrameTimeout, framing.FrameHeaderIncomplete, framing.FrameIncomplete, framing.FrameReadFailed)
 
@@ -518,10 +525,11 @@ def _checked_meta(data, title_max, models=()):
 
 
 class Runner:
-    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`; its `models` are the models a chat may be given, its `model_default` the model of a chat without one, None for its own default; its `title(text, seconds)` makes a title), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap, `queue` whether the query queue is attached (for `hello`), `auto_title` whether a chat's first question starts a title job (the entry point gives it from `SDP_CHAT_AUTO_TITLE`, on unless switched off)."""
+    """The chats and their turns. `backend` is the back end object (`claude.ClaudeCode` or `openai.OpenAICompatible`; its `models` are the models a chat may be given, its `model_default` the model of a chat without one, None for its own default; its `title(text, seconds)` makes a title), `backend_name` its name, `databases` the names of the attached databases, `cap_bytes` the work folder's soft cap, `queue` whether the query queue is attached (for `hello`), `auto_title` whether a chat's first question starts a title job (the entry point gives it from `SDP_CHAT_AUTO_TITLE`, on unless switched off), `prompt_folder` the folder of the deployment's saved starting prompt (the entry point gives `SDP_CHAT_PROMPT_DIR`, `PROMPT_DEFAULT` when it is not set; None: there is none, every new chat gets the built-in prompt)."""
 
-    def __init__(self, work, backend, backend_name, databases, cap_bytes, *, queue=False, tmp=TMP_DEFAULT, limits=None, auto_title=False):
+    def __init__(self, work, backend, backend_name, databases, cap_bytes, *, queue=False, tmp=TMP_DEFAULT, limits=None, auto_title=False, prompt_folder=None):
         self.limits = limits or Limits()
+        self.prompt_folder = prompt_folder
         self.work = os.path.abspath(work)
         self.tmp = tmp
         self.backend = backend
@@ -765,9 +773,14 @@ class Runner:
         process = translator = None
         try:
             with self._chat_fd(chat) as chat_fd:
+                try:
+                    prompt = self._chat_prompt(chat_fd)
+                except ValueError:
+                    self._append(chat, "error", {"message": PROMPT_UNREADABLE})
+                    return
                 before = self._snapshot(chat_fd)
                 tmp = self._fresh_scratch(chat.id)
-                process, translator = self.backend.turn(chat_fd, os.path.join(self.work, chat.id, "home"), os.path.join(tmp, "home"), os.path.join(self.work, chat.id, "files"), tmp, text, chat.session, chat.resume, model)
+                process, translator = self.backend.turn(chat_fd, os.path.join(self.work, chat.id, "home"), os.path.join(tmp, "home"), os.path.join(self.work, chat.id, "files"), tmp, text, chat.session, chat.resume, model, prompt=prompt)
                 with self._lock:
                     chat.process = process
                     if chat.stop_asked:
@@ -985,8 +998,33 @@ class Runner:
             chats = sorted(self._chats.values(), key=lambda c: (c.created, c.id), reverse=True)
             return {"chats": [{"id": c.id, "title": c.title, "created": c.created, "running": c.running, "model": c.model} for c in chats]}
 
+    def _deployment_prompt(self):
+        """The deployment's saved starting prompt as a pair, or None when there is none (no folder, no file). Raises `_Refusal("prompt_unreadable")` for a file that cannot be read or is not a starting prompt."""
+        if self.prompt_folder is None:
+            return None
+        try:
+            folder_fd = os.open(self.prompt_folder, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise _Refusal("prompt_unreadable") from None
+        try:
+            return chat_prompt.load(chat_prompt.NAME, folder_fd)
+        except (OSError, ValueError):
+            raise _Refusal("prompt_unreadable") from None
+        finally:
+            os.close(folder_fd)
+
+    def _chat_prompt(self, chat_fd):
+        """The chat's own starting prompt (its `prompt.json`) as a pair, or None when it has none (the built-in prompt). Raises ValueError for a file that cannot be read or is not a starting prompt."""
+        try:
+            return chat_prompt.load(chat_prompt.NAME, chat_fd)
+        except OSError:
+            raise ValueError("not readable") from None
+
     def _op_chat_new(self, request):
         model = self._model_of(request) if "model" in request else None
+        prompt = self._deployment_prompt()
         with self._lock:
             if self._stopping:
                 raise _Refusal("unavailable")
@@ -1001,6 +1039,8 @@ class Runner:
                 try:
                     for name in ("home", "files"):
                         os.mkdir(name, FOLDER_MODE, dir_fd=chat_fd)
+                    if prompt is not None:
+                        _replace(chat_fd, chat_prompt.NAME, chat_prompt.encode(*prompt))
                     self._save_meta(chat, chat_fd)
                 finally:
                     os.close(chat_fd)

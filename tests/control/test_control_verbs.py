@@ -41,6 +41,8 @@ WIDE_INPUTS = {
     # `source configure` asks the folders and the classifiers' free text again; `source add-classifiers` the free text.
     ("source.configure", "dumps_path"), ("source.configure", "extracted_path"), ("source.configure", "parsed_path"), ("source.configure", "output_path"),
     ("source.configure", "remove_strings"), ("source.configure", "remove_patterns"), ("source.add_classifiers", "remove_strings"), ("source.add_classifiers", "remove_patterns"),
+    # `chat prompt`: the two parts of the chat's starting prompt, free text with line breaks (the terminal reads them from files).
+    ("chat.prompt", "instructions"), ("chat.prompt", "queue"),
 }
 
 # The security classification of every verb: (class, accepted over the socket). Changing one is a decision, so it is made in two places.
@@ -82,17 +84,21 @@ CLASSIFICATION = {
     "chat.settings": ("read", True),
     "chat.query_limit": ("step_up", True),
     "chat.auto_title": ("write", True),
+    "chat.prompt": ("write", True),
 }
+
+# The wide inputs that may sit on a write verb (no management password again): decided with the maintainer, one by one.
+WIDE_WITHOUT_STEP_UP = {("chat.prompt", "instructions"), ("chat.prompt", "queue")}
 
 ALL_VERBS = sorted(verbs.VERBS)
 ENABLED_VERBS = [name for name in ALL_VERBS if verbs.VERBS[name].socket_enabled]
 DISABLED_VERBS = [name for name in ALL_VERBS if not verbs.VERBS[name].socket_enabled]
 
 # Other fields a request needs so that a given field is admissible (a cross-field rule would refuse it otherwise).
-COMPANIONS = {("run.start", "classifier"): {"profile": "ml"}, ("source.add", "hf_dataset"): {"hf_groups": []}, ("source.add", "hf_groups"): {"hf_dataset": "org/dataset"}}
+COMPANIONS = {("run.start", "classifier"): {"profile": "ml"}, ("source.add", "hf_dataset"): {"hf_groups": []}, ("source.add", "hf_groups"): {"hf_dataset": "org/dataset"}, ("chat.prompt", "instructions"): {"queue": "x"}, ("chat.prompt", "queue"): {"instructions": "x"}}
 # The fields every request of a verb carries so that its cross-field rules take it, and the ones a given field cannot go with.
-BASES = {"db.setup": {"databases": ["postgres", "mongo", "starrocks"], "auth": True, "new_password": "correct horse", "new_password_confirm": "correct horse", "ro_user": True, "ro_password_mode": "typed", "ro_password": "correct-horse", "ro_password_confirm": "correct-horse"}}
-WITHOUT = {("db.setup", "add"): {"databases"}, ("db.setup", "ro_password_mode"): {"ro_password", "ro_password_confirm"}}
+BASES = {"chat.prompt": {"reset": True}, "db.setup": {"databases": ["postgres", "mongo", "starrocks"], "auth": True, "new_password": "correct horse", "new_password_confirm": "correct horse", "ro_user": True, "ro_password_mode": "typed", "ro_password": "correct-horse", "ro_password_confirm": "correct-horse"}}
+WITHOUT = {("db.setup", "add"): {"databases"}, ("db.setup", "ro_password_mode"): {"ro_password", "ro_password_confirm"}, ("chat.prompt", "instructions"): {"reset"}, ("chat.prompt", "queue"): {"reset"}}
 # A valid value where the type's sample would break a cross-field rule (an empty list of databases, a password with a space).
 VALID_VALUES = {("db.setup", "databases"): ["mongo"], ("db.setup", "ro_password"): "correct-horse", ("db.setup", "ro_password_confirm"): "correct-horse"}
 # Socket inputs named apart from the CLI destination they stand for, each with why: the run store keys a task's source by the field `source`, and the download's positional is `name`.
@@ -303,8 +309,9 @@ class TestSocketInputsAreNarrowerThanTheCli:
         assert {kind.__name__ for kind in types.WIDE_TYPES} == WIDE_TYPE_NAMES
         assert used <= set(types.INPUT_TYPES)
         assert wide == WIDE_INPUTS
-        # Decided with the maintainer: a path or a port from the browser needs the management password again.
-        assert all(verbs.VERBS[name].cls == "step_up" for name, _ in WIDE_INPUTS)
+        # Decided with the maintainer: a path or a port from the browser needs the management password again. The one exception, also the maintainer's (2026-11-24): the chat's starting prompt, free text that reaches only the sandbox's prompt file, is saved with one click.
+        assert all(verbs.VERBS[name].cls == "step_up" for name, _ in WIDE_INPUTS - WIDE_WITHOUT_STEP_UP)
+        assert all(verbs.VERBS[name].cls == "write" for name, _ in WIDE_WITHOUT_STEP_UP) and WIDE_WITHOUT_STEP_UP <= WIDE_INPUTS
         for name in ALLOWED_TYPE_NAMES - WIDE_TYPE_NAMES:
             assert not any(word in name.lower() for word in ("path", "dir", "port", "host", "url", "text", "string", "raw", "any"))
 
@@ -651,3 +658,34 @@ def test_the_chat_auto_title_takes_on_or_off_and_asks_no_management_password(val
     with pytest.raises(errors.InputError) as exc:
         verbs.validate_request("chat.auto_title", {"value": value} if value is not None else {})
     assert exc.value.field == "value"
+
+
+# ── the chat's starting prompt ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("fields, refused", [
+    ({"reset": True}, None),
+    ({"instructions": "Be brief.\n\tAlways.", "queue": ""}, None),
+    ({"instructions": "a", "queue": "b", "reset": False}, None),
+    ({"instructions": "a"}, "queue"),
+    ({"queue": "b"}, "instructions"),
+    ({}, "instructions"),
+    ({"reset": False}, "instructions"),
+    ({"reset": True, "instructions": "a", "queue": "b"}, "instructions"),
+    ({"reset": True, "queue": "b"}, "queue"),
+    ({"instructions": "a\r\nb", "queue": "b"}, "instructions"),
+    ({"instructions": "a", "queue": "x" * 10001}, "queue"),
+    ({"instructions": "\u00e9" * 5001, "queue": "b"}, "instructions"),
+])
+def test_the_chat_prompt_takes_both_texts_or_a_reset_and_nothing_between(fields, refused):
+    """Bug class: a request with one text reaching the action, which would keep the other part from the saved file the page never showed (or the built-in one) without a word; a reset that also carries a text, so one of the two is silently dropped; a text the runner later refuses (a `\\r`, over 10,000 bytes, multi-byte text counted in characters) written to the file, after which no new chat can be made."""
+    from social_data_pipeline.chat import prompt as chat_prompt
+
+    assert verbs.CHAT_PROMPT_MAX_BYTES == chat_prompt.TEXT_MAX_BYTES == verbs.VERBS["chat.prompt"].socket_inputs["queue"].type.max_bytes
+    assert verbs.VERBS["chat.prompt"].cls == "write"
+    if refused is None:
+        assert verbs.validate_request("chat.prompt", dict(fields)) == fields
+        return
+    with pytest.raises(errors.InputError) as exc:
+        verbs.validate_request("chat.prompt", dict(fields))
+    assert exc.value.field == refused

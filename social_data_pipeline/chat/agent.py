@@ -1,6 +1,6 @@
-"""The agent of the OpenAI-compatible back end: one process per turn, `python -P -s -m social_data_pipeline.chat.agent --home <chat's home/> --files <chat's files/>`, started by `chat.openai`.
+"""The agent of the OpenAI-compatible back end: one process per turn, `python -P -s -m social_data_pipeline.chat.agent --home <chat's home/> --files <chat's files/> [--prompt-file <chat's prompt.json>]`, started by `chat.openai`.
 
-It reads the user's text as one stream-json line on standard input and prints its progress as stream-json lines that `claude.Translator` understands (an `assistant` line with `text` and `tool_use` blocks, a `user` line with a `tool_result` block, a last `result` line without a cost). The loop: the role text of `claude.role` (the built-in instructions around the deployment's fixed facts), the chat's history and the question go to the gateway's model port (`http://<SDP_CHAT_GATEWAY>:8080/chat/completions`, no streaming, no credential: the gateway puts it in) with the tools `run_shell` and `<db>__<tool>` of each attached database's MCP server (`SDP_CHAT_DATABASES`, reached through the gateway's port for it), and with the query queue (`SDP_CHAT_QUEUE=1`) `jobs__<tool>` of the scheduler's assistant endpoint (`claude.queue_url`) and the role text's queue facts and instructions; with the query time limit (`SDP_CHAT_QUERY_SECONDS`) the role text names it and a tool's answer is waited for that plus a margin when that is longer than 120 seconds; each reply's tool calls are run in order and answered, a reply without tool calls is the answer; at most 40 model calls a turn. Every reply is untrusted: its size, its types, the tool names and the arguments are checked, and what cannot be used ends the turn or is answered to the model as a tool error; a refusal (any status but 200) ends the turn with a message naming the status only, never the body.
+It reads the user's text as one stream-json line on standard input and prints its progress as stream-json lines that `claude.Translator` understands (an `assistant` line with `text` and `tool_use` blocks, a `user` line with a `tool_result` block, a last `result` line without a cost). The loop: the role text of `claude.role` (the chat's starting prompt, read from `--prompt-file` and checked with `chat.prompt.load`, or without it the built-in one, around the deployment's fixed facts; a file that cannot be read or is not a starting prompt ends the turn before any request), the chat's history and the question go to the gateway's model port (`http://<SDP_CHAT_GATEWAY>:8080/chat/completions`, no streaming, no credential: the gateway puts it in) with the tools `run_shell` and `<db>__<tool>` of each attached database's MCP server (`SDP_CHAT_DATABASES`, reached through the gateway's port for it), and with the query queue (`SDP_CHAT_QUEUE=1`) `jobs__<tool>` of the scheduler's assistant endpoint (`claude.queue_url`) and the role text's queue facts and instructions; with the query time limit (`SDP_CHAT_QUERY_SECONDS`) the role text names it and a tool's answer is waited for that plus a margin when that is longer than 120 seconds; each reply's tool calls are run in order and answered, a reply without tool calls is the answer; at most 40 model calls a turn. Every reply is untrusted: its size, its types, the tool names and the arguments are checked, and what cannot be used ends the turn or is answered to the model as a tool error; a refusal (any status but 200) ends the turn with a message naming the status only, never the body.
 
 The history is kept in `<home>/openai-session.json` (0600, replaced whole): the messages of the earlier turns, tool outputs cut, cut to a character budget by dropping the oldest turns whole (the newest is always kept, cut further when it alone is over). A file of another shape is taken as empty. Within a turn the request is budgeted too (`squeezed`), and an endpoint that refuses a request with earlier turns as too large (400, 413) is asked once more without them. On SIGTERM the running shell command's process group is killed and the agent ends at once (the turn is not added to the history).
 """
@@ -23,6 +23,7 @@ import threading
 import time
 
 from . import claude
+from . import prompt as chat_prompt
 
 MODEL_PATH = "/chat/completions"
 CALLS_MAX = 40
@@ -66,6 +67,7 @@ NOT_AN_OBJECT = "the arguments are not a JSON object"
 TOO_LONG = f"the arguments are longer than {ARGUMENTS_MAX} characters"
 PLACEHOLDER = "[left out to keep the conversation within its size limit]"
 TURN_FAILED = "the turn failed"
+PROMPT_UNREADABLE = "the chat's starting prompt cannot be read"
 NOT_FINISHED = "the tool did not finish"
 NO_COMMAND = "the arguments need `command`, a string"
 TOOL_FAILED = "the tool could not be called"
@@ -674,9 +676,9 @@ def parse_reply(data, offered):
 
 
 class Agent:
-    """One turn's loop. `host`/`port` reach the model, `servers` are the open `Server`s, `env` is the shell commands' environment; `emit` prints a stream-json line. With `query_seconds` (the query time limit) the role text names it and a tool's answer is waited for that plus `claude.QUERY_MARGIN_SECONDS` when that is longer than TOOL_SECONDS, else TOOL_SECONDS."""
+    """One turn's loop. `host`/`port` reach the model, `servers` are the open `Server`s, `env` is the shell commands' environment; `emit` prints a stream-json line. With `query_seconds` (the query time limit) the role text names it and a tool's answer is waited for that plus `claude.QUERY_MARGIN_SECONDS` when that is longer than TOOL_SECONDS, else TOOL_SECONDS. `prompt` is the chat's starting prompt (`claude.role`'s pair; None: the built-in one)."""
 
-    def __init__(self, host, port, model, files, env, servers=(), *, queue=False, query_seconds=None, emit=emit, calls_max=CALLS_MAX, shell_seconds=SHELL_SECONDS):
+    def __init__(self, host, port, model, files, env, servers=(), *, queue=False, query_seconds=None, prompt=None, emit=emit, calls_max=CALLS_MAX, shell_seconds=SHELL_SECONDS):
         self.host, self.port, self.model, self.files, self.env = host, port, model, files, env
         self.emit, self.calls_max, self.shell_seconds = emit, calls_max, shell_seconds
         self.routes = {}
@@ -694,7 +696,7 @@ class Agent:
             _log(f"{left_out} tools of the databases are left out: their schemas together hold more than {TOOLS_CONTAINERS} objects and lists")
         self.specs = specs
         self.offered = {SHELL_TOOL, *self.routes}
-        self.system = {"role": "system", "content": claude.role(queue, query_seconds)}
+        self.system = {"role": "system", "content": claude.role(queue, query_seconds, prompt)}
         self.tool_seconds = None if query_seconds is None else max(TOOL_SECONDS, query_seconds + claude.QUERY_MARGIN_SECONDS)
 
     def body(self, earlier, current):
@@ -808,6 +810,17 @@ def settings(environ):
     return gateway, model, databases, queue == "1"
 
 
+def _prompt_of(path):
+    """The chat's starting prompt of the file `path` (`chat.prompt.load`). Raises ValueError with a constant text when it is missing, cannot be read or is not a starting prompt."""
+    try:
+        pair = chat_prompt.load(path)
+    except (OSError, ValueError):
+        pair = None
+    if pair is None:
+        raise ValueError(PROMPT_UNREADABLE)
+    return pair
+
+
 def question_of(data):
     """The user's text of the stream-json line on standard input, or None."""
     try:
@@ -818,11 +831,11 @@ def question_of(data):
     return content if isinstance(content, str) and content else None
 
 
-async def _run(gateway, model, databases, home, files, question, queue=False, query_seconds=None):
+async def _run(gateway, model, databases, home, files, question, queue=False, query_seconds=None, prompt=None):
     started = time.monotonic()
     servers = await open_servers(databases, gateway, queue)
     try:
-        agent = Agent(gateway, claude.MODEL_PORT, model, files, dict(os.environ), servers, queue=queue, query_seconds=query_seconds)
+        agent = Agent(gateway, claude.MODEL_PORT, model, files, dict(os.environ), servers, queue=queue, query_seconds=query_seconds, prompt=prompt)
         turns, result = await agent.turn(load_history(home), question)
     finally:
         for server in servers:
@@ -836,11 +849,13 @@ def main(argv=None, environ=None):
     parser = argparse.ArgumentParser(prog="agent")
     parser.add_argument("--home", required=True)
     parser.add_argument("--files", required=True)
+    parser.add_argument("--prompt-file")
     arguments = parser.parse_args(argv)
     started = time.monotonic()
     try:
         gateway, model, databases, queue = settings(os.environ if environ is None else environ)
         query_seconds = claude.query_seconds(os.environ if environ is None else environ)
+        prompt = None if arguments.prompt_file is None else _prompt_of(arguments.prompt_file)
     except ValueError as error:
         _log(f"refusing to run: {error}")
         emit({"type": "result", "subtype": "error", "is_error": True, "result": str(error), "duration_ms": 0, "num_turns": 0})
@@ -850,7 +865,7 @@ def main(argv=None, environ=None):
         _log("standard input holds no question")
         emit({"type": "result", "subtype": "error", "is_error": True, "result": "no question", "duration_ms": int((time.monotonic() - started) * 1000), "num_turns": 0})
         return 2
-    emit(asyncio.run(_run(gateway, model, databases, arguments.home, arguments.files, question, queue, query_seconds)))
+    emit(asyncio.run(_run(gateway, model, databases, arguments.home, arguments.files, question, queue, query_seconds, prompt)))
     return 0
 
 

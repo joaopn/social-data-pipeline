@@ -7444,9 +7444,9 @@ def cmd_chat_settings(args):
 
 
 def get_chat_settings():
-    """The chat's settings for the whole deployment: `query_limit`, the query time limit of the chat's MongoDB and StarRocks MCP servers (`chat_host.query_setting`: `seconds`, `default`, `default_seconds`, `max_seconds`, `problem`), and `auto_title`, the switch of generated chat titles (`chat_host.auto_title_setting`: `on`, `default`, `problem`), which `chat settings` does not print (`chat auto-title` does). Only those two values of .env are read. Prints nothing; never raises."""
+    """The chat's settings for the whole deployment: `query_limit`, the query time limit of the chat's MongoDB and StarRocks MCP servers (`chat_host.query_setting`: `seconds`, `default`, `default_seconds`, `max_seconds`, `problem`), `auto_title`, the switch of generated chat titles (`chat_host.auto_title_setting`: `on`, `default`, `problem`), and `prompt`, the starting prompt of new chats (`chat_host.prompt_setting`: `saved`, `builtin`, `facts`, `max_bytes`, `problem`); `chat settings` prints only the first (`chat auto-title` and `chat prompt` print the others). Only those two values of .env and the saved prompt's file are read. Prints nothing; never raises."""
     host = _chat_host()
-    return {"query_limit": host.query_setting(str(ROOT)), "auto_title": host.auto_title_setting(str(ROOT))}
+    return {"query_limit": host.query_setting(str(ROOT)), "auto_title": host.auto_title_setting(str(ROOT)), "prompt": host.prompt_setting(str(ROOT))}
 
 
 def print_chat_settings(data):
@@ -7532,6 +7532,114 @@ def do_chat_auto_title(*, value):
     print(f"  Updated:   .env ({host.AUTO_TITLE_KEY}={value})")
     print("  It takes effect at the chat's next start: python sdp.py chat stop, then python sdp.py chat start. Nothing was restarted.")
     return 0
+
+
+# What `chat prompt` says of the parts every chat gets and no one edits (`chat.claude` DEPLOYMENT_FACTS and QUEUE_FACTS).
+_CHAT_PROMPT_FACTS = "The deployment always adds its own facts, which are not edited here: after the instructions how to make charts and where to keep files, sdp_data, that there is no internet and the query time limit; with the query queue, before the queue instructions, how the queue works."
+_CHAT_PROMPT_APPLIES = "New chats use it at once; chats already made keep the prompt they were made with. Nothing was restarted."
+_CHAT_PROMPT_PARTS = (("instructions", "Instructions"), ("queue", "Queue instructions"))
+
+
+def _indented(text):
+    return "\n".join(f"    {line}" if line else "" for line in text.split("\n")) if text else "    (empty)"
+
+
+def cmd_chat_prompt(args):
+    """Without a flag, show the starting prompt of new chats; with `--instructions-file` and/or `--queue-file`, set its parts from those files (a line ending `\\r\\n` read as `\\n`); with `--reset`, go back to the built-in prompt (`do_chat_prompt`). The parser refuses `--reset` with a file flag."""
+    host = _chat_host()
+    if not args.reset and args.instructions is None and args.queue is None:
+        setting = host.prompt_setting(str(ROOT))
+        print()
+        if setting["problem"]:
+            print(f"  Error: {setting['problem']}.")
+        else:
+            saved = setting["saved"]
+            print(f"  Starting prompt of new chats: {'the saved one (' + host.PROMPT_FILE + ')' if saved else 'the built-in one (there is no ' + host.PROMPT_FILE + ')'}")
+            for key, label in _CHAT_PROMPT_PARTS:
+                text = (saved or setting["builtin"])[key]
+                size = len(text.encode("utf-8"))
+                where = " (given only when the query queue is attached)" if key == "queue" else ""
+                print()
+                print(f"  {label}{where}, {'saved' if saved else 'built-in'}, {size:,} of at most {setting['max_bytes']:,} bytes:")
+                print(_indented(text))
+            print()
+            print(f"  {_CHAT_PROMPT_FACTS}")
+        print("  Change it: python sdp.py chat prompt --instructions-file=<path> and/or --queue-file=<path> (a part not given is kept), or python sdp.py chat prompt --reset for the built-in prompt. New chats use a change at once; chats already made keep theirs.")
+        print()
+        return 1 if setting["problem"] else 0
+    texts = {}
+    for key, path in (("instructions", args.instructions), ("queue", args.queue)):
+        if path is None:
+            continue
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(host.chat_prompt.FILE_MAX_BYTES + 1)
+        except OSError as error:
+            print(f"  Error: {path} could not be read ({error.strerror or type(error).__name__}). Nothing was changed.")
+            return 1
+        try:
+            texts[key] = data.decode("utf-8").replace("\r\n", "\n")
+        except UnicodeDecodeError:
+            print(f"  Error: {path} is not UTF-8 text. Nothing was changed.")
+            return 1
+    try:
+        return do_chat_prompt(**texts, reset=args.reset)
+    except ActionError as error:
+        print(f"  Error: {error.message}. Nothing was changed.")
+        return error.exit_code
+
+
+def do_chat_prompt(*, instructions=None, queue=None, reset=False):
+    """`chat prompt` with its flags: set the deployment's starting prompt from the texts `instructions` and `queue` (a part not given is the part in force: the saved one, else the built-in one), written in one step to `.sdp/chat/prompt/prompt.json` (`chat_host.save_prompt`); with `reset` remove that file (none is no error), so new chats get the built-in prompt. New chats use it at once (the runner reads the file at `chat.new`); chats already made keep theirs; nothing is restarted. Asks nothing; returns the exit code. Raises ActionError, before anything is written, for `reset` with a text, for no input, for a text that is not one (0 to 10,000 bytes of UTF-8, no control character but tab and `\\n`) and for a part to keep from a saved file that cannot be read."""
+    host = _chat_host()
+    if reset is not True and reset is not False:
+        raise ActionError("reset must be true or false")
+    if reset and (instructions is not None or queue is not None):
+        raise ActionError("a reset takes no text")
+    if not reset and instructions is None and queue is None:
+        raise ActionError("give the instructions, the queue instructions or a reset")
+    if reset:
+        try:
+            removed = host.reset_prompt(str(ROOT))
+        except host.Refused as refusal:
+            print(f"  Error: {refusal.message}.")
+            return 1
+        print(f"  Removed:   {host.PROMPT_FILE}" if removed else f"  There was no {host.PROMPT_FILE}: the built-in prompt was already in force.")
+        print("  New chats get the built-in starting prompt at once; chats already made keep the prompt they were made with. Nothing was restarted.")
+        return 0
+    given = {"instructions": instructions, "queue": queue}
+    for key, label in _CHAT_PROMPT_PARTS:
+        if given[key] is not None:
+            problem = host.chat_prompt.text_problem(given[key])
+            if problem is not None:
+                raise ActionError(f"the {label.lower()} text {problem}")
+    kept = {}
+    if instructions is None or queue is None:
+        try:
+            saved = host.saved_prompt(str(ROOT))
+        except host.Refused as refusal:
+            raise ActionError(f"the part not given cannot be kept: {refusal.message[0].lower() + refusal.message[1:]}") from None
+        source = dict(zip(("instructions", "queue"), saved)) if saved else {"instructions": host.chat_claude.INSTRUCTIONS, "queue": host.chat_claude.QUEUE_INSTRUCTIONS}
+        kept = {key: source[key] for key in given if given[key] is None}
+        kept_from = "the saved prompt" if saved else "the built-in prompt"
+    try:
+        host.save_prompt(str(ROOT), given["instructions"] if instructions is not None else kept["instructions"], given["queue"] if queue is not None else kept["queue"])
+    except host.Refused as refusal:
+        print(f"  Error: {refusal.message}.")
+        return 1
+    said = "; ".join(f"{label.lower()}: {'given, ' + format(len(given[key].encode('utf-8')), ',') + ' bytes' if given[key] is not None else 'kept from ' + kept_from}" for key, label in _CHAT_PROMPT_PARTS)
+    print(f"  Saved:     {host.PROMPT_FILE} ({said})")
+    print(f"  {_CHAT_PROMPT_APPLIES}")
+    return 0
+
+
+class _ChatPromptFlag(argparse.Action):
+    """A flag of `chat prompt` (`--reset`, or a file flag) that refuses `--reset` together with a file flag, in whichever order they come."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, True if self.nargs == 0 else values)
+        if namespace.reset and (namespace.instructions is not None or namespace.queue is not None):
+            parser.error("--reset cannot go with --instructions-file or --queue-file")
 
 
 def cmd_chat_unsetup(args):
@@ -7855,6 +7963,12 @@ def build_parser():
     chat_auto_title_p = chat_sub.add_parser("auto-title", help="Show or set whether a new chat gets a short title made from its first question by the chat's model (on when not set); a change takes effect at the chat's next start, nothing is restarted")
     chat_auto_title_p.add_argument("value", nargs="?", default=None, choices=("on", "off"), help="on or off; without it, the setting in force is shown")
     chat_auto_title_p.set_defaults(func=cmd_chat_auto_title)
+
+    chat_prompt_p = chat_sub.add_parser("prompt", help="Show or set the starting prompt of new chats: its instructions and its queue instructions (the deployment's facts are always added); new chats use a change at once, chats already made keep theirs, nothing is restarted")
+    chat_prompt_p.add_argument("--instructions-file", dest="instructions", action=_ChatPromptFlag, default=None, metavar="PATH", help="Set the instructions from this UTF-8 text file (at most 10,000 bytes; Windows line endings are read as Unix ones); without it the instructions in force are kept")
+    chat_prompt_p.add_argument("--queue-file", dest="queue", action=_ChatPromptFlag, default=None, metavar="PATH", help="Set the queue instructions (given to the assistant only when the query queue is attached) from this UTF-8 text file, by the same rule; without it the queue instructions in force are kept")
+    chat_prompt_p.add_argument("--reset", action=_ChatPromptFlag, nargs=0, default=False, help="Remove the saved prompt: new chats get the built-in one (no error when none is saved); cannot go with a file flag")
+    chat_prompt_p.set_defaults(func=cmd_chat_prompt)
 
     chat_unsetup_p = chat_sub.add_parser("unsetup", help="Remove the chat's images, settings and credential (and, if asked, all chats)")
     chat_unsetup_p.set_defaults(func=cmd_chat_unsetup)

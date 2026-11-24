@@ -82,6 +82,7 @@ SUBCOMMANDS = [
     ["chat", "settings", "--help"],
     ["chat", "query-limit", "--help"],
     ["chat", "auto-title", "--help"],
+    ["chat", "prompt", "--help"],
 ]
 
 

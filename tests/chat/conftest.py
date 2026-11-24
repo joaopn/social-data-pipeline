@@ -13,7 +13,7 @@ from social_data_pipeline.chat import claude, runner
 
 @pytest.fixture
 def chat_runner(tmp_path):
-    """`chat_runner(limits=..., backend=..., databases=..., cap=..., queue=..., auto_title=..., titles=...)`: a started runner (with the stand-in `claude` unless another back end object is given; `queue` attaches the query queue; `auto_title` switches generated titles on; `titles`, a `chat_helpers.ScriptedTitles`, takes the place of the back end's `title`); `.call(op, **fields)`, `.plan(steps)`, `.records()`, `.wait(chat)`."""
+    """`chat_runner(limits=..., backend=..., databases=..., cap=..., queue=..., auto_title=..., titles=...)`: a started runner (with the stand-in `claude` unless another back end object is given; `queue` attaches the query queue; `auto_title` switches generated titles on; `titles`, a `chat_helpers.ScriptedTitles`, takes the place of the back end's `title`; `prompt_folder` the folder of the deployment's saved starting prompt, `tmp_path / "prompt"` when not given, which is missing until a test makes it); `.call(op, **fields)`, `.plan(steps)`, `.records()`, `.wait(chat)`."""
     made = []
     script = tmp_path / "claude"
     plan_path = tmp_path / "plan.json"
@@ -21,14 +21,15 @@ def chat_runner(tmp_path):
     script.write_text(f"#!{sys.executable}\nPLAN = {str(plan_path)!r}\n" + STANDIN)
     script.chmod(0o755)
 
-    def make(limits=None, backend=None, databases=("mongo",), cap=1 << 30, queue=False, auto_title=False, titles=None):
+    def make(limits=None, backend=None, databases=("mongo",), cap=1 << 30, queue=False, auto_title=False, titles=None, prompt_folder=None):
         work, tmp = tmp_path / "work", tmp_path / "tmp"
         work.mkdir(exist_ok=True)
         tmp.mkdir(exist_ok=True)
         back = backend or claude.ClaudeCode("127.0.0.1", databases, queue=queue, executable=str(script), grace=0.5, join=0.5)
         if titles is not None:
             back.title = titles
-        chats = runner.Runner(str(work), back, back.name, list(databases), cap, queue=queue, tmp=str(tmp), limits=limits or runner.Limits(), auto_title=auto_title)
+        prompt_folder = str(prompt_folder or tmp_path / "prompt")
+        chats = runner.Runner(str(work), back, back.name, list(databases), cap, queue=queue, tmp=str(tmp), limits=limits or runner.Limits(), auto_title=auto_title, prompt_folder=prompt_folder)
         socket_path = str(tmp_path / "runner.sock")
         server = runner.Server(chats, socket_path)
         server.start()
@@ -56,7 +57,7 @@ def chat_runner(tmp_path):
             return call("chat.new")["result"]["chat"]
 
         plan([INIT, result()])
-        return SimpleNamespace(runner=chats, server=server, socket=socket_path, work=work, tmp=tmp, call=call, plan=plan, records=records, wait=wait, new=new)
+        return SimpleNamespace(runner=chats, server=server, socket=socket_path, work=work, tmp=tmp, prompt_folder=prompt_folder, call=call, plan=plan, records=records, wait=wait, new=new)
 
     yield make
     for server, chats in made:

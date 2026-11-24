@@ -12,6 +12,7 @@ import sys
 import time
 
 from . import claude
+from . import prompt as chat_prompt
 
 MODULE = "social_data_pipeline.chat.agent"
 # The folder that holds the package (`/app` in the sandbox image).
@@ -22,9 +23,9 @@ TITLE_MAX_TOKENS = 30
 TitleFailed = claude.TitleFailed
 
 
-def command(python, config, files):
-    """The argument list of one turn: `config` is the chat's `home/` (where the history is kept), `files` its working folder."""
-    return [python, "-P", "-s", "-m", MODULE, "--home", config, "--files", files]
+def command(python, config, files, prompt_file=None):
+    """The argument list of one turn: `config` is the chat's `home/` (where the history is kept), `files` its working folder; with `prompt_file` (the chat's `prompt.json`) `--prompt-file` and its path, which the agent reads and checks itself, else none (the built-in prompt)."""
+    return [python, "-P", "-s", "-m", MODULE, "--home", config, "--files", files, *(["--prompt-file", prompt_file] if prompt_file else [])]
 
 
 def environment(home, tmp, gateway, model, databases, queue=False, query_seconds=None):
@@ -49,9 +50,9 @@ class OpenAICompatible:
         self.models, self.model_default = (model,), model
         self.line_max, self.grace, self.stderr_max, self.join = line_max, grace, stderr_max, join
 
-    def turn(self, chat_fd, config, home, files, tmp, text, session, resume, model=None):
-        """A `claude.Process` for one turn (not started) and its `claude.Translator`; `session` and `resume` are not used (the history is the agent's file in `config`), nor `model` (the runner takes only the configured model, which the agent always gets)."""
-        argv = command(self.python, config, files)
+    def turn(self, chat_fd, config, home, files, tmp, text, session, resume, model=None, prompt=None):
+        """A `claude.Process` for one turn (not started) and its `claude.Translator`; `session` and `resume` are not used (the history is the agent's file in `config`), nor `model` (the runner takes only the configured model, which the agent always gets). With `prompt` (the chat's starting prompt, which the runner read from the chat's `prompt.json`) the agent is given that file, `prompt.json` of the folder above `config` (the chat's folder), to read itself; None: the built-in prompt."""
+        argv = command(self.python, config, files, os.path.join(os.path.dirname(config), chat_prompt.NAME) if prompt is not None else None)
         env = environment(home, tmp, self.gateway, self.model, self.databases, self.queue, self.query_seconds)
         process = claude.Process(argv, env, files, claude.user_line(text), chat_fd, line_max=self.line_max, grace=self.grace, stderr_max=self.stderr_max, join=self.join)
         return process, claude.Translator()

@@ -34,3 +34,4 @@
 </form>
 {%- endif %}
 <p class="small muted">A new chat gets a short title made from its first question by the chat's model; a title you set is never replaced, and its cost counts in the chat's Cost. A change applies at the chat's next start.</p>
+<button type="button" class="btn" hx-get="/settings/prompt" hx-target="#prompt-box" hx-swap="innerHTML">Edit starting prompt…</button>

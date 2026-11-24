@@ -197,6 +197,11 @@ img { max-width: 100%; }
 .settings-box[hidden] { display: none; }
 .settings-box label { max-width: none; }
 .settings-box select { width: 100%; }
+/* the floating box of the starting prompt (_settings_prompt.html, swapped into frame.html's #prompt-box): hidden while empty, above the settings box; app.js empties it on Discard and Escape */
+.prompt-box:empty { display: none; }
+.prompt-box { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 30; width: min(760px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; padding: 16px; background: var(--surface); color: var(--ink); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow); }
+.prompt-box h3 { margin: 0; }
+.prompt-box textarea { width: 100%; font-family: var(--mono); font-size: 12px; resize: vertical; }
 
 /* the live indicators of the top bar (filled by GET /status) */
 .status { display: flex; align-items: center; gap: 8px; }

@@ -642,3 +642,26 @@ var sdpTabStore = {
     });
   });
 })();
+
+// The floating box of the starting prompt (frame.html's #prompt-box, filled by "Edit starting prompt…" of the settings box): Discard (data-prompt-close) and Escape empty it, which hides it (app.css: .prompt-box:empty).
+(function () {
+  function closePrompt() {
+    var box = document.getElementById("prompt-box");
+    if (box && box.firstChild) {
+      box.innerHTML = "";
+      return true;
+    }
+    return false;
+  }
+
+  document.addEventListener("click", function (event) {
+    if (event.target.closest && event.target.closest("[data-prompt-close]")) {
+      closePrompt();
+    }
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && closePrompt()) {
+      event.preventDefault();
+    }
+  });
+})();

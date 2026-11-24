@@ -222,6 +222,8 @@ The saved prompt is `.sdp/chat/prompt/prompt.json`; without it, the built-in pro
 
 A change applies at once to chats made afterwards, without a restart: the sandbox sees `.sdp/chat/prompt/` read-only, and a new chat copies the saved prompt into its own folder (`prompt.json`, see [A chat's files](#a-chats-files)). Each chat keeps the prompt it was made with, so chats already made go on with theirs. While the saved file cannot be read or is not a starting prompt, the sandbox refuses to make a new chat; a chat whose own `prompt.json` is broken ends each turn with "the chat's starting prompt cannot be read".
 
+The web UI's Settings → This deployment → **Edit starting prompt…** edits it: Save, Discard, Reset to built-in (see [The pages](webui.md#the-pages)).
+
 ## Stop, rebuild, status and unsetup
 
 - **`python sdp.py chat stop`** stops and removes both containers and the chat's copies of the MongoDB and StarRocks MCP servers, detaches every container from the chat's two networks (whatever its state: a container left attached to a removed network could no longer start; one that is already gone is no error), and removes both networks, the gateway's config and its copy of the scheduler's secret. The exit code is 0 when the chat ran, 1 when nothing ran (what an earlier start left is removed then too) or something could not be removed. It refuses, and stops nothing, when a container or network of the chat's names belongs to another deployment.

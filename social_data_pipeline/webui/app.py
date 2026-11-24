@@ -15,6 +15,7 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
 - The Chat window (`/chat`, `/chat/new`, `/chat/reach`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
 - `GET /settings/deployment`: the settings box's section "This deployment" (the read-only query limit for chats, `chat.settings`, and its form, which goes through `POST /pending` like every action), a part the box asks the first time it is opened.
+- `GET /settings/prompt`, `POST /settings/prompt`: the floating box of the starting prompt of new chats (`chat.settings`), saved with one click (`chat.prompt`, a write action) or reset to the built-in prompt.
 - `GET /status`: the top bar's live indicators (the broker, scheduler and sandbox pills, the number of queries waiting on the Queue window's tab), a part of the page that the frame asks once the page has loaded and every 30 seconds after, so that a slow or dead service never slows a page: see `status`.
 - `/static/...`: the stylesheets (`app.css`, the mock-up's kit; `chat.css`, `queue.css`, `manage.css`), the scripts (`theme.js`, run before the page is drawn, and `app.js`) and, in the image, htmx.
 
@@ -61,6 +62,8 @@ LOGIN_LINES = {
 }
 WRONG_PASSWORD = "The password is wrong."
 LIMITED = "There were too many failed logins from this address: wait five minutes before the next attempt."
+PROMPT_BUSY = "The starting prompt could not be asked now: close the box and open it again in a moment."
+PROMPT_BUSY_SAVE = "The server is busy: nothing was saved. Save again in a moment."
 BUSY = "The web UI is busy with other requests: try again in a moment."
 
 # The Management pages of the frame: (key, title, address).
@@ -381,6 +384,76 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
             model = pages_data.query_limit_model(kind, value)
             titles = pages_data.auto_title_model(kind, value)
         return render("_settings_deployment.html", limit=model, titles=titles, form_token=session.form_token)
+
+    def prompt_model(kind, value):
+        """The starting prompt's box (`_settings_prompt.html`) from an answer of `chat.settings`: `instructions` and `queue` (the saved part, else the built-in one), `problem` (why the saved prompt cannot be shown, cleaned; the built-in texts are shown then) and `failure` (the sentence of a failed read or of an answer of another shape: no form)."""
+        model = {"instructions": None, "queue": None, "problem": None, "failure": None}
+        if kind != "ok":
+            model["failure"] = words.sentence(value)
+            return model
+        try:
+            prompt = pages_data._data(value).get("prompt")
+            builtin, saved, problem = prompt.get("builtin"), prompt.get("saved"), prompt.get("problem")
+            shown = builtin if saved is None else saved
+            if not all(isinstance(part.get(name), str) for part in (builtin, shown) for name in ("instructions", "queue")) or not (problem is None or isinstance(problem, str)):
+                raise TypeError
+        except (AttributeError, TypeError, pages_data.ShapeError):
+            model["failure"] = pages_data.SHAPE_SENTENCE
+            return model
+        model.update(instructions=shown["instructions"], queue=shown["queue"], problem=None if problem is None else pages_data.text(problem[:pages_data.ERROR_TEXT_MAX_CHARS]))
+        return model
+
+    def read_prompt(session):
+        return call_broker(lambda: read_client(session.token), lambda made: actions.call(made, "chat.settings", {}))
+
+    @api.get("/settings/prompt")
+    async def prompt_box(request: Request):
+        """The starting prompt's floating box, asked by "Edit starting prompt…" of the settings box: the prompt new chats get, from `chat.settings`, in a form that posts to `POST /settings/prompt`. A full bound answers the box with a line, a session the broker has ended the usual way to the login."""
+        session_id, session = current(request)
+        if session is None:
+            return to_login(request, clear_cookie=bool(session_id))
+        answer = await indicators.run(lambda: read_prompt(session))
+        if answer is BUSY_GATE:
+            return render("_settings_prompt.html", prompt={"failure": PROMPT_BUSY}, message=None, form_token=session.form_token)
+        kind, value = answer
+        if kind == "error" and session_ends(value):
+            sessions.forget(session_id)
+            return to_login(request, why(value), clear_cookie=True)
+        return render("_settings_prompt.html", prompt=prompt_model(kind, value), message=None, form_token=session.form_token)
+
+    @api.post("/settings/prompt")
+    async def prompt_save(request: Request):
+        """Save the starting prompt of new chats with one click (`chat.prompt`, a write action: no pending page), or with `reset=1` go back to the built-in one; the box is answered again, with the prompt read afterwards and a line saying what was done, or with the texts as posted and why nothing was saved."""
+        session_id, session = current(request)
+        if session is None:
+            return to_login(request, clear_cookie=bool(session_id))
+        form = request.scope.get("sdp.form", {})
+        reset = form.get("reset") == "1"
+        posted = {name: str(form.get(name, "")).replace("\r\n", "\n") for name in ("instructions", "queue")}
+
+        def again(message, prompt=None):
+            return render("_settings_prompt.html", prompt=prompt or {**posted, "problem": None, "failure": None}, message=message, form_token=session.form_token)
+
+        if not reset:
+            for name, label in (("instructions", "Instructions"), ("queue", "The queue instructions")):
+                if len(posted[name].encode("utf-8", "surrogatepass")) > actions.CHAT_PROMPT_MAX_BYTES:
+                    return again(f"{label} is longer than 10,000 bytes; nothing was saved.")
+        fields = {"reset": True} if reset else posted
+        answer = await indicators.run(lambda: call_broker(lambda: read_client(session.token), lambda made: actions.call(made, "chat.prompt", fields)))
+        if answer is BUSY_GATE:
+            return again(PROMPT_BUSY_SAVE)
+        kind, value = answer
+        if kind == "error":
+            if session_ends(value):
+                sessions.forget(session_id)
+                return to_login(request, why(value), clear_cookie=True)
+            return again(words.sentence(value))
+        message = "Reset. New chats get the built-in prompt." if reset else "Saved. New chats use it."
+        read = await indicators.run(lambda: read_prompt(session))
+        model = prompt_model(*read) if read is not BUSY_GATE else {"failure": PROMPT_BUSY}
+        if model["failure"] is not None and not reset:
+            model = None
+        return again(message, model)
 
     @api.get("/overview/live")
     async def overview_live(request: Request):

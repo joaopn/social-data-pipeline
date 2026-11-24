@@ -1,0 +1,31 @@
+{#- The floating box of the starting prompt of new chats (`GET /settings/prompt`, `POST /settings/prompt`; swapped into the frame's `#prompt-box`): `prompt` holds `instructions` and `queue` (the saved parts, else the built-in ones), `problem` (why the saved prompt cannot be shown: the built-in texts are shown) and `failure` (a failed read: no form); `message` is the line of the last save, reset or refusal. Save posts both texts at once (`chat.prompt`, a write action, no confirm page); Reset to built-in removes the saved prompt; Discard empties the box (app.js, data-prompt-close). -#}
+<div class="prompt-in col" role="dialog" aria-label="Starting prompt of new chats">
+  <h3>Starting prompt of new chats</h3>
+  <p class="small muted">New chats use it at once; chats already made keep theirs.</p>
+  {%- if prompt.failure %}
+  <p class="notice">{{ prompt.failure }}</p>
+  {%- if message %}<p class="notice">{{ message }}</p>{% endif %}
+  <span class="row"><button type="button" class="btn" data-prompt-close>Discard</button></span>
+  {%- else %}
+  {%- if prompt.problem %}
+  <p class="notice">{{ prompt.problem }}</p>
+  {%- endif %}
+  <form class="col" hx-post="/settings/prompt" hx-target="#prompt-box" hx-swap="innerHTML">
+    <input type="hidden" name="form_token" value="{{ form_token }}">
+    <label for="prompt-instructions">Instructions</label>
+    <textarea id="prompt-instructions" name="instructions" rows="12">
+{{ prompt.instructions }}</textarea>
+    <label for="prompt-queue">With the query queue (sent only when the scheduler is attached)</label>
+    <textarea id="prompt-queue" name="queue" rows="12">
+{{ prompt.queue }}</textarea>
+    {%- if message %}
+    <p class="notice" role="status">{{ message }}</p>
+    {%- endif %}
+    <span class="row">
+      <button type="submit" class="btn primary">Save</button>
+      <button type="submit" class="btn" name="reset" value="1">Reset to built-in</button>
+      <button type="button" class="btn" data-prompt-close>Discard</button>
+    </span>
+  </form>
+  {%- endif %}
+</div>

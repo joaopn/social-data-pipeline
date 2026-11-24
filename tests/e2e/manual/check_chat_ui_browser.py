@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A check of the web UI's settings box, themes and Chat window keys and columns in a real browser, run by hand against a running page: `PYTHON tests/e2e/manual/check_chat_ui_browser.py https://127.0.0.1:<port>/ [<folder for screenshots>]` with the management password on standard input, where PYTHON has Playwright and its Chromium, and `PLAYWRIGHT_BROWSERS_PATH` is set to the folder of its browsers. The page must have at least one source and a database with an action form; the chat's backend must answer a question (any answer that ends its turn).
+"""A check of the web UI's settings box, themes and Chat window keys and columns in a real browser, run by hand against a running page: `PYTHON tests/e2e/manual/check_chat_ui_browser.py https://127.0.0.1:<port>/ [<folder for screenshots>]` with the management password on standard input, where PYTHON has Playwright and its Chromium, and `PLAYWRIGHT_BROWSERS_PATH` is set to the folder of its browsers. The page must have at least one source and a database with an action form; the chat's backend must answer a question (any answer that ends its turn), and generated chat titles must be on: a new chat's first question gets a generated title while its first turn runs.
 
 It is not collected by pytest (no test can run the page's script). In headless Chromium at 1440 x 900 (the self-signed certificate accepted for this one context), by clicking and typing:
 
@@ -7,6 +7,7 @@ It is not collected by pytest (no test can run the page's script). In headless C
 - every page (the Overview, a source page, Queue, Chat, a chat, a confirm page and the login) in both themes: no Content-Security-Policy violation, no console error, no failed request of the page's own origin; a screenshot of each when a folder is given;
 - the conversation's scroller: only `.convo` scrolls, it opens at its bottom with the answer box (which follows the conversation) in view, and a view scrolled up stays where it is;
 - the answer box: a box of blanks and Enter sends nothing, Shift+Enter makes a new line, an Enter while an input method composes (`isComposing`, and `keyCode` 229) does nothing, Enter sends the question, and the turn totals of the right column are asked again once the turn has ended;
+- a generated title: after a new chat's first question, the chat list's label and the title's field change to the generated title without a reload, the conversation shows nothing of it (no "not understood" line) and the turn totals' Cost says it includes the title; while the field has the focus, or holds an edit, it is left as it is (the list still changes), and a reload shows the generated title in the field;
 - the chat's title (the first line of the right column, a field of its own form): idle it has no box and no Save button, focused it shows Save; Enter saves it (one POST to `/title`, none to `/send`) and after the reload the field and the open chat's entry in the left list show it; Escape puts the saved title back, takes the focus away and hides Save again; a title of blanks is refused with the sentence under the field and what was typed kept; an empty field is stopped by the browser (nothing posted); screenshots of the column idle, focused and refused when a folder is given;
 - the right column: the model picker is in it; Hide gives the conversation its width (two grid columns), the handle covers no part of the conversation or the answer box, the state survives a reload (and a click elsewhere on the page does not show it again), the handle shows it again; the sandbox's facts stay open after a reload once opened;
 - the side columns' edges: a mouse drag of the left edge by +80 px and of the right one by -80 px widens each by about that, kept after a reload; a double-click gives the default width back; a drag past the maximum stops at it; a drag that would leave the conversation under 400 px stops there; the arrow keys change a focused edge's width by 16 px;
@@ -191,6 +192,56 @@ def main():
         expect(page.evaluate("document.querySelector('.cw .convo').scrollTop") == 0, "new events did not move a view scrolled up")
         changed = wait_until("(old) => { const part = document.getElementById('chat-totals'); return part !== null && part.innerText !== old && !part.innerText.includes('Adding up'); }", totals_before)
         expect(changed, f"the turn totals were asked again once the turn ended ({totals_before!r} -> {page.inner_text('#chat-totals')!r})")
+        violations()
+
+        # ── a generated title ──
+        def new_chat_asked(question):
+            """A new chat, its first question sent; the page after the send's reload, marked so that a later reload shows."""
+            page.goto(base + "chat")
+            page.wait_for_load_state("networkidle")
+            page.click("aside.left form[action='/chat/new'] button")
+            page.wait_for_load_state("networkidle")
+            page.fill(".cw form.send textarea", question)
+            with page.expect_navigation():
+                page.press(".cw form.send textarea", "Enter")
+            page.wait_for_load_state("networkidle")
+            page.evaluate("window.__sdpMark = 'not reloaded'")
+
+        def label():
+            return page.evaluate("document.querySelector('aside.left .navi.on .lbl').textContent")
+
+        def titled(question):
+            """Wait until the open chat's label in the list is no longer the question's start: the generated title came."""
+            return wait_until("(question) => { const label = document.querySelector('aside.left .navi.on .lbl'); return label !== null && label.textContent !== question; }", question, 60)
+
+        title_field = page.locator("#chat-title")
+        question = "Where does the data come from (title check)?"
+        new_chat_asked(question)
+        expect(label() == question and title_field.input_value() == question, "after the first question the list and the field show its start")
+        expect(titled(question), f"the generated title came into the chat list ({label()!r})")
+        generated = label()
+        expect(page.evaluate("window.__sdpMark") == "not reloaded", "without a reload")
+        expect(wait_until("(title) => document.getElementById('chat-title').value === title", generated, 5) and title_field.get_attribute("data-saved") == generated and not page.evaluate("document.querySelector('.chat-title-form').classList.contains('changed')"), f"the title's field shows it as its saved title ({title_field.input_value()!r})")
+        expect(page.locator(".cw .chat .chat-unknown").count() == 0 and generated not in page.inner_text(".cw .chat"), "the conversation shows nothing of it and no line it does not understand")
+        expect(wait_until("() => document.querySelectorAll('.cw .chat .chat-end').length > 0", None, 60), "the turn ended")
+        expect(wait_until("() => { const part = document.getElementById('chat-totals'); return part !== null && part.innerText.includes('(includes the title)'); }", None, 20), f"the turn totals' Cost includes the title ({page.inner_text('#chat-totals')!r})")
+        if shots:
+            page.screenshot(path=os.path.join(shots, f"title-generated-{theme()}.png"))
+        question = "Which sources are loaded (focus check)?"
+        new_chat_asked(question)
+        title_field.click()
+        expect(titled(question), "with the field focused, the generated title still came into the chat list")
+        expect(title_field.input_value() == question and page.evaluate("document.activeElement.id") == "chat-title" and title_field.get_attribute("data-saved") == question, f"a focused field is left as it is ({title_field.input_value()!r})")
+        generated = label()
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(title_field.input_value() == generated, "a reload shows the generated title in the field")
+        question = "How large is each source (edit check)?"
+        new_chat_asked(question)
+        title_field.fill("My own draft")
+        page.evaluate("document.activeElement.blur()")
+        expect(titled(question), "with an edit in the field, the generated title still came into the chat list")
+        expect(title_field.input_value() == "My own draft" and page.evaluate("document.querySelector('.chat-title-form').classList.contains('changed')"), f"an edited field is left as it is ({title_field.input_value()!r})")
         violations()
 
         # ── the chat's title ──

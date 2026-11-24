@@ -73,7 +73,7 @@ def test_the_totals_add_up_only_what_the_backend_reported():
         an_event("text", n=20, text="cost_usd 99"), "end", None, 7, [end(21)],
     ]
     totals = chat.turn_totals(events)
-    assert totals == {"turns": 8, "errors": 1, "ms": 4000, "ms_missing": 4, "cost": 1.25, "cost_missing": 6, "unread": 13}
+    assert totals == {"turns": 8, "errors": 1, "ms": 4000, "ms_missing": 4, "cost": 1.25, "cost_missing": 6, "unread": 13, "titles": 0, "titles_unread": 0}
     assert chat.turn_totals([end(22, cost_usd=0.5, duration_ms=500)], totals) is totals and totals["turns"] == 9 and totals["cost"] == 1.75
 
 

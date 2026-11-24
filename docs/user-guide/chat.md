@@ -150,8 +150,8 @@ A chat's files are in `.sdp/chat/work/<chat id>/` (a chat id is `c_` and 12 hexa
 |---|---|
 | `files/` | The assistant's working folder, where it writes its plots and other files |
 | `home/` | The back end's home: Claude Code's session files and its `mcp.json`, or the agent's `openai-session.json` |
-| `events.jsonl` | The chat's log: your messages, the assistant's text, each tool call and its result cut to 2,000 characters, each file that is new or changed in `files/` after a turn, and the end of each turn with its cost, for Claude Code |
-| `meta.json` | When it was made, its title (the first message, its runs of spaces and line breaks made one space and cut to 80 characters, or the title you gave it in the Chat window, which a later message does not change), its session id and its number of turns |
+| `events.jsonl` | The chat's log: your messages, the assistant's text, each tool call and its result cut to 2,000 characters, each file that is new or changed in `files/` after a turn, the end of each turn (with its cost, for Claude Code), and the generated title when one was made (with its cost; null with `openai-compatible`) |
+| `meta.json` | When it was made, its title (the first message, its runs of spaces and line breaks made one space and cut to 80 characters, then the [generated title](#generated-chat-titles) when one is made, or the title you gave it in the Chat window; a later message does not change it), who set the title (`title_by`: `question`, `model` for a generated one, `user` for yours), its session id and its number of turns |
 | `backend.log` | The last turn's error output of Claude Code or of the agent (at most 1 MiB) |
 
 The chats persist on this machine across `chat stop` and `chat start`. A deleted chat leaves the list at once and its files are removed in the background. `chat unsetup` removes all chats only when you say so.
@@ -165,7 +165,7 @@ The **Export** link in the Chat window's right column (**This chat**, under the 
 | `format` | `1`, the version of this layout |
 | `exported_at` | When the file was made (UTC, ISO 8601) |
 | `chat` | The chat's `id`, `title`, `model` (null for the back end's default), `backend` (`claude-code` or `openai-compatible`; null when the sandbox did not say) and `created` (seconds since 1970) |
-| `events` | Every event of the chat's log (`events.jsonl`) in order, as the page draws them: your questions, the assistant's text, each tool call with its whole input, each tool result cut at 2,000 characters, each file a turn made, and each turn's end with its time and cost |
+| `events` | Every event of the chat's log (`events.jsonl`) in order, as the page draws them: your questions, the assistant's text, each tool call with its whole input, each tool result cut at 2,000 characters, each file a turn made, each turn's end with its time and cost, and the generated title (`title`, with its cost) when one was made |
 | `backend_transcript` | With `claude-code`: Claude Code's own record of the chat's session, uncut (every message, tool call and whole tool result), one item per line of its file, each the JSON object the line holds, or the line as text when it is not one. It is in Claude Code's own format, which may change between its versions. `null` with `openai-compatible`, before the chat's first turn, or when it was not read |
 | `stopped` | `null` when the file is whole; otherwise one sentence saying where and why it stopped: past 50,000 events, past 64 MiB in all, past 10 minutes, or the sandbox could not be read |
 
@@ -208,7 +208,7 @@ When a copy cannot be started again (its image missing or built before the limit
 
 ## Generated chat titles
 
-A new chat gets a short title made from its first question by the chat's model a few seconds after you send it; until then, and whenever that call fails, the chat is titled with the start of the question. A title you set is never replaced, and later questions do not change the title. Its cost counts in the chat's Cost.
+A new chat gets a short title made from its first question by the chat's model a few seconds after you send it; until then, and whenever that call fails, the chat is titled with the start of the question. A title you set is never replaced, and later questions do not change the title. An open Chat window shows the new title by itself in the chat list and in **This chat**, without a reload, while the first turn runs; one that comes after that turn ended is shown at the next load. Its cost counts in the chat's Cost, which then says "(includes the title)"; it is not a turn and is not shown in the conversation.
 
 The switch is one value for the whole deployment, `CHAT_AUTO_TITLE` in `.env`: `on` or `off`, on when the key is missing or empty. Show it with `python sdp.py chat auto-title`: on or off, and whether it is the default; a value that is neither on nor off is shown as an error (exit code 1), and `chat start` refuses to start with it. Set it with `python sdp.py chat auto-title on` or `off` (anything else is refused by the command line with exit code 2 and changes nothing), or in the web UI's settings (the gear in the top bar, **This deployment**, see [The web UI](webui.md#the-pages)), which asks for no management password. Setting it writes the key to `.env` (every other line stays; a commented-out line of the key is replaced by it) and restarts nothing: the sandbox reads the setting when it starts, so a change takes effect at the chat's next start (`python sdp.py chat stop`, then `python sdp.py chat start`), and a running chat keeps the setting it started with. While it is off, a new chat keeps the start of its first question as its title.
 

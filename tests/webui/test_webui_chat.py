@@ -991,8 +991,8 @@ def test_the_conversation_page_shows_the_chats_and_the_data_in_reach_from_one_li
     scripted.answers["hello"] = {"version": 1, "backend": "claude-code", "databases": ["mongo", "starrocks"], "queue": True}
     page = client.get(f"/chat/{CHAT_ID}").text
     assert columns(page) == [("aside", "left"), ("section", "mid"), ("aside", "rightp")]
-    assert f'<a class="navi on" href="/chat/{CHAT_ID}" aria-current="page"><span class="lbl">the open one</span></a>' in page
-    assert re.search(rf'<a class="navi" href="/chat/{other}"><span class="lbl">the busy one</span><span class="dot run"', page)
+    assert f'<a class="navi on" href="/chat/{CHAT_ID}" aria-current="page"><span class="lbl" id="chat-label-{CHAT_ID}">the open one</span></a>' in page
+    assert re.search(rf'<a class="navi" href="/chat/{other}"><span class="lbl" id="chat-label-{other}">the busy one</span><span class="dot run"', page)
     assert page.count('class="dot run"') == 1
     text = main_text(page)
     assert "MongoDB: checking" in text and "StarRocks: checking" in text and 'hx-get="/chat/reach" hx-trigger="load"' in page and chat.QUEUE_ON in text and "Claude Code" in text

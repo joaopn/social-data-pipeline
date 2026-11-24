@@ -1,7 +1,9 @@
-{#- A part of the conversation, the answer to one request of its events (see `chat`): the events to append, then the element that makes the next request, or nothing once the turn has ended and nothing more came. With `running` known, the controls are replaced out of band (the stop button only while a turn runs). -#}
+{#- A part of the conversation, the answer to one request of its events (see `chat`): the events to append, then the element that makes the next request, or nothing once the turn has ended and nothing more came. With `running` known, the controls are replaced out of band (the stop button only while a turn runs). When the part carries a generated title (`title`, the last one of its events, `chat.last_title`), two elements are replaced out of band: the chat list's label of this chat (`#chat-label-<id>`, drawn through `vis`) and `#chat-title-next` beside the title's field, whose `data-title` (escaped, invisible characters as their escapes, as the field's own `data-saved`) app.js copies into the field only while it has no focus and holds its saved title. -#}
 {% import "_chat_macros.html" as m %}
+{% from "_queue_macros.html" import vis %}
 {%- for item in events %}{{ m.event(item) }}{% endfor %}
 {%- if line %}<p class="note warn">{{ line }}</p>{% endif %}
 {%- if trigger %}<div id="chat-next" hx-get="{{ next_href }}" hx-trigger="{{ trigger }}" hx-swap="outerHTML"></div>{% endif %}
 {%- if continue_href %}<p class="chat-note small muted">This view has shown 2,000 events and stops here. <a href="{{ continue_href }}">Continue from here</a></p>{% endif %}
 {%- if running is not none %}{% include "_chat_controls.html" %}{% endif %}
+{%- if title %}<span class="lbl" id="chat-label-{{ chat_id }}" hx-swap-oob="true">{{ vis(title.parts) }}</span><span id="chat-title-next" hidden data-title="{{ title.shown }}" hx-swap-oob="true"></span>{% endif %}

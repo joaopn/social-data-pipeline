@@ -8,6 +8,9 @@ The contracts pinned here:
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -16,6 +19,7 @@ pytest.importorskip("starlette.testclient")
 from webui_helpers import DONE, choose, confirm, form_token, log_in, pending_path
 
 from social_data_pipeline.control import client as broker_client
+from social_data_pipeline.control.broker import Broker
 from social_data_pipeline.webui import actions
 
 # What `sdp.py` `do_chat_auto_title` does, clause by clause: it checks the value, writes the one key with the setup's writer (`update_env_file`: the line where the key first appears, a commented-out one included, is replaced and its later lines dropped; a missing key is appended; a missing .env is created holding it), prints, and restarts nothing; the sandbox reads it at its start (`chat_host._start`, `sandbox_arguments`).
@@ -30,7 +34,7 @@ def answer(on=True, default=True, problem=None, auto_title=True):
     data = {"query_limit": {"seconds": 90, "default": True, "default_seconds": 90, "max_seconds": 3600, "problem": None}}
     if auto_title:
         data["auto_title"] = {"on": on, "default": default, "problem": problem}
-    return data
+    return {"data": data}
 
 
 @pytest.fixture
@@ -70,7 +74,7 @@ def test_the_part_shows_the_switch_in_its_form(client, broker, reply, line, sele
     answer(on=None, default=False, problem=None),
     answer(on="on", default=False),
     answer(on=True, default="yes"),
-    {**answer(), "auto_title": []},
+    {"data": {**answer()["data"], "auto_title": []}},
 ])
 def test_a_misshapen_switch_offers_no_form_for_it_and_keeps_the_limit(client, broker, reply):
     """Bug class: a form drawn from an answer that is not the setting in force (a broker of another version, a hostile shape), or one bad part taking the other setting's form with it."""
@@ -99,6 +103,25 @@ def test_a_failed_read_offers_no_form_at_all(client, broker):
     text = client.get("/settings/deployment").text
 
     assert "<form" not in text and "Generated chat titles could not be read" in text
+
+
+def test_the_real_getters_answer_as_the_broker_wraps_it_shows_both_forms(client, broker, tmp_path, monkeypatch):
+    """Bug class: a parser and the test stand-in agreeing on a shape the broker never sends (B102: both parts of "This deployment" always said "could not be read", because the real broker answers a `get_*` read with `{"data": ...}` and the stand-in was fed the bare getter result)."""
+    import sdp
+
+    monkeypatch.setattr(sdp, "ROOT", tmp_path)
+    (tmp_path / ".env").write_text("CHAT_QUERY_TIMEOUT_SECONDS=120\nCHAT_AUTO_TITLE=off\n")
+    # The child prints the getter's result as one JSON document (`control/child.py`); the broker's own `_getter_reply` wraps it, and the client returns the reply's `result`.
+    child = SimpleNamespace(stdout=json.dumps(sdp.get_chat_settings()).encode(), stderr=b"", trimmed={})
+    reply = Broker._getter_reply(None, "exited", 0, child)
+    assert reply["ok"] is True
+    broker.answers["chat.settings"] = reply["result"]
+
+    text = client.get("/settings/deployment").text
+
+    assert "could not be read" not in text
+    assert 'value="chat.query_limit"' in text and 'value="chat.auto_title"' in text
+    assert "Now: 120 s." in text and "Generated chat titles: off." in text
 
 
 def test_saving_asks_no_password_and_sends_the_value_chosen(client, broker, token):

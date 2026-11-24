@@ -19,7 +19,7 @@ from social_data_pipeline.control import client as broker_client
 
 
 def answer(seconds=90, default=True, problem=None):
-    return {"query_limit": {"seconds": seconds, "default": default, "default_seconds": 90, "max_seconds": 3600, "problem": problem}}
+    return {"data": {"query_limit": {"seconds": seconds, "default": default, "default_seconds": 90, "max_seconds": 3600, "problem": problem}}}
 
 
 @pytest.fixture
@@ -49,7 +49,7 @@ def test_the_part_shows_the_limit_in_its_form(client, broker):
     assert "Now: 90 s (the default)." in client.get("/settings/deployment").text
 
 
-@pytest.mark.parametrize("reply", [broker_client.BrokerError("internal", "x"), {"query_limit": {"seconds": True, "default": False, "default_seconds": 90, "problem": None}}, {"query_limit": {"seconds": 5000, "default": False, "default_seconds": 90, "problem": None}}, [], None])
+@pytest.mark.parametrize("reply", [broker_client.BrokerError("internal", "x"), {"data": {"query_limit": {"seconds": True, "default": False, "default_seconds": 90, "problem": None}}}, {"data": {"query_limit": {"seconds": 5000, "default": False, "default_seconds": 90, "problem": None}}}, {"data": []}, {"data": None}, [], None])
 def test_a_failed_or_misshapen_read_offers_no_form(client, broker, reply):
     """Bug class: a form drawn from an answer that is not the limit in force (an empty or wrong field the operator then saves), or a failed read that breaks the box."""
     broker.answers["chat.settings"] = reply
@@ -57,6 +57,16 @@ def test_a_failed_or_misshapen_read_offers_no_form(client, broker, reply):
     page = client.get("/settings/deployment")
 
     assert page.status_code == 200 and "could not be read" in page.text and "<form" not in page.text
+
+
+def test_an_answer_without_the_brokers_data_wrapper_offers_neither_form(client, broker):
+    """Bug class: a parser that reads the getter's bare result (a shape the broker never sends) instead of the broker's `{"data": ...}`, which once let the stand-in and the parser agree while the real page always failed."""
+    broker.answers["chat.settings"] = answer()["data"] | {"auto_title": {"on": True, "default": True, "problem": None}}
+
+    text = client.get("/settings/deployment").text
+
+    assert "The read-only query limit for chats could not be read" in text and "Generated chat titles could not be read" in text
+    assert "<form" not in text
 
 
 def test_saving_asks_for_the_management_password_before_anything_is_sent(client, broker, token):

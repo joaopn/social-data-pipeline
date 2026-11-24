@@ -325,14 +325,15 @@ def build(answers, makers):
 
 
 def query_limit_model(kind, value):
-    """The settings box's section "This deployment" from the answer of `chat.settings` (`kind`, `value` as `call_broker` gives them): `seconds` (the limit in force, or None), `default` (whether .env sets none), `default_seconds`, `max_seconds` (the form's bound, the web side's own copy), `problem` (the CLI's sentence why there is no limit to show, cleaned) and `failure` (the sentence of a failed read or of an answer of another shape). Without a failure the form is shown, with the limit in force as its value when there is one."""
+    """The settings box's section "This deployment" from the answer of `chat.settings` (`kind`, `value` as `call_broker` gives them; the broker answers this read with `{"data": <what sdp.get_chat_settings returns>}`): `seconds` (the limit in force, or None), `default` (whether .env sets none), `default_seconds`, `max_seconds` (the form's bound, the web side's own copy), `problem` (the CLI's sentence why there is no limit to show, cleaned) and `failure` (the sentence of a failed read or of an answer of another shape). Without a failure the form is shown, with the limit in force as its value when there is one."""
     model = {"seconds": None, "default": False, "default_seconds": None, "max_seconds": actions.CHAT_QUERY_SECONDS_MAX, "problem": None, "failure": None}
     if kind != "ok":
         model["failure"] = words.sentence(value)
         return model
     try:
-        _need(isinstance(value, dict))
-        limit = value.get("query_limit")
+        data = _data(value)
+        _need(isinstance(data, dict))
+        limit = data.get("query_limit")
         _need(isinstance(limit, dict))
         seconds, default, default_seconds, problem = limit.get("seconds"), limit.get("default"), limit.get("default_seconds"), limit.get("problem")
         _need(isinstance(default, bool) and _is_seconds(default_seconds))
@@ -345,14 +346,15 @@ def query_limit_model(kind, value):
 
 
 def auto_title_model(kind, value):
-    """The switch of generated chat titles in the settings box's section "This deployment", from the same answer of `chat.settings` (`kind`, `value` as `call_broker` gives them): `on` (True, False, or None when there is no setting to show), `default` (whether .env sets none), `problem` (the CLI's sentence why there is no setting to show, cleaned) and `failure` (the sentence of a failed read or of an answer of another shape, a broker without the switch included). Without a failure the form is shown, with the setting in force selected when there is one. A failure here leaves the query limit's part alone."""
+    """The switch of generated chat titles in the settings box's section "This deployment", from the same answer of `chat.settings` (`kind`, `value` as `call_broker` gives them; the broker answers this read with `{"data": <what sdp.get_chat_settings returns>}`): `on` (True, False, or None when there is no setting to show), `default` (whether .env sets none), `problem` (the CLI's sentence why there is no setting to show, cleaned) and `failure` (the sentence of a failed read or of an answer of another shape, a broker without the switch included). Without a failure the form is shown, with the setting in force selected when there is one. A failure here leaves the query limit's part alone."""
     model = {"on": None, "default": False, "problem": None, "failure": None}
     if kind != "ok":
         model["failure"] = words.sentence(value)
         return model
     try:
-        _need(isinstance(value, dict))
-        setting = value.get("auto_title")
+        data = _data(value)
+        _need(isinstance(data, dict))
+        setting = data.get("auto_title")
         _need(isinstance(setting, dict))
         on, default, problem = setting.get("on"), setting.get("default"), setting.get("problem")
         _need(isinstance(default, bool))

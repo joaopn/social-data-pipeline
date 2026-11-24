@@ -152,7 +152,7 @@ def test_the_page_draws_the_totals_lazily_and_not_when_the_events_failed(client,
 
 def test_the_settings_box_is_a_dialog_controlled_by_the_gear_on_every_page(client):
     """Bug class: a settings box hidden by an inline style (blocked by the policy, so always shown), a gear that is not a button or does not say whether the box is open, or a model choice other than the ones the new-chat form understands."""
-    for route in ("/", "/queue", "/chat", f"/chat/{CHAT_ID}"):
+    for route in ("/overview", "/queue", "/chat", f"/chat/{CHAT_ID}"):
         page = client.get(route).text
         assert inline_code(page) == [], route
         gear = re.search(r'<button type="button" class="btn ghost sm gear" id="settings-button" aria-expanded="false" aria-controls="settings-box" aria-haspopup="dialog" aria-label="Settings"', page)
@@ -166,7 +166,7 @@ def test_the_settings_box_is_a_dialog_controlled_by_the_gear_on_every_page(clien
 def test_the_theme_is_drawn_before_the_page_and_light_is_a_palette_of_the_kit(client, app, make_client):
     """Bug class: the theme set by the deferred script only (the page flashes dark, then turns light), or a light palette that leaves dark form controls."""
     login = make_client(app).get("/login").text
-    for page in (login, client.get("/").text):
+    for page in (login, client.get("/overview").text):
         head = page[:page.index("</head>")]
         assert '<script src="/static/theme.js"></script>' in head and head.index("/static/theme.js") < head.index("/static/app.css")
     served = client.get("/static/theme.js")

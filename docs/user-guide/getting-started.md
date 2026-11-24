@@ -18,7 +18,7 @@ python sdp.py webui setup                   # port (default 8443), addresses, ce
 python sdp.py webui start                   # start the page
 ```
 
-Open `https://localhost:<port>/`, by default `https://localhost:8443/`. The first visit shows the browser's certificate warning: compare the certificate's SHA-256 fingerprint with the one `webui setup` printed (see [The certificate](webui.md#the-certificate)). Log in with the management password.
+Open `https://localhost:<port>/`, by default `https://localhost:8443/`. The first visit shows the browser's certificate warning: compare the certificate's SHA-256 fingerprint with the one `webui setup` printed (see [The certificate](webui.md#the-certificate)). Log in with the management password. The web UI opens on the Chat window; **Management** in the top bar opens the pipeline's pages (Overview, Sources, Databases, Runs, System).
 
 ![The web UI's login form, asking for the management password](../assets/webui/login.png)
 

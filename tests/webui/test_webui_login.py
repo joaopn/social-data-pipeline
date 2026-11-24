@@ -48,13 +48,34 @@ def follow(client, response):
 def test_a_login_sets_the_session_cookie_with_exactly_its_attributes(client):
     """Bug class: a session cookie readable by script, sent over plain HTTP or by other sites, scoped to a parent domain, or kept on disk past the browser's session."""
     response = log_in(client)
-    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert response.status_code == 303 and response.headers["location"] == "/chat"
     cookies = response.headers.get_list("set-cookie")
     assert len(cookies) == 1
     value = session_cookie(response)
     assert cookies[0] == f"__Host-sdp_session={value}; Path=/; Secure; HttpOnly; SameSite=Strict"
     assert re.fullmatch(r"[A-Za-z0-9_-]{43}", value)
-    assert client.get("/").status_code == 200
+    assert client.get("/overview").status_code == 200
+
+
+def test_a_login_opens_the_chat_window(client):
+    """Bug class: a login landing on the Management window (or on `/`, a second redirect) instead of the Chat window; a new login sent to a chat it never opened."""
+    response = log_in(client)
+    assert response.status_code == 303 and response.headers["location"] == "/chat"
+    response = client.get("/login")
+    assert response.status_code == 303 and response.headers["location"] == "/chat"
+
+
+def test_without_a_session_the_web_ui_opens_on_the_login_page(make_client, app):
+    """Bug class: `/` answering a page, or a redirect to the Chat window, to a browser that is not logged in; a stale cookie kept."""
+    browser = make_client(app)
+    for method in (browser.get, browser.head):
+        response = method("/")
+        assert response.status_code == 303 and response.headers["location"] == "/login" and "set-cookie" not in response.headers
+    response = browser.get("/overview", headers=with_cookie("made-up-stale-id-0123456789abcdefghijklmnopqrs"))
+    assert response.status_code == 303 and response.headers["location"] == "/login"
+    assert response.headers.get_list("set-cookie") == ["__Host-sdp_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"]
+    response = browser.get("/overview", headers={"hx-request": "true"})
+    assert response.status_code == 204 and response.headers["hx-redirect"] == "/login"
 
 
 def test_an_id_sent_before_the_login_is_not_kept(make_client, app):
@@ -66,20 +87,20 @@ def test_an_id_sent_before_the_login_is_not_kept(make_client, app):
     second = session_cookie(browser.post("/login", data={"password": PASSWORD}, headers={"origin": ORIGIN, **with_cookie(first)}))
     assert second not in (None, first, planted)
     probe = make_client(app)
-    assert probe.get("/", headers=with_cookie(second)).status_code == 200
-    assert probe.get("/", headers=with_cookie(first)).status_code == 303
-    assert probe.get("/", headers=with_cookie(planted)).status_code == 303
+    assert probe.get("/overview", headers=with_cookie(second)).status_code == 200
+    assert probe.get("/overview", headers=with_cookie(first)).status_code == 303
+    assert probe.get("/overview", headers=with_cookie(planted)).status_code == 303
 
 
 def test_the_password_and_the_token_appear_in_no_answer_and_no_log(client, broker, caplog):
     """Bug class: the management password or the broker's token leaking into a page, a header, a cookie or a log line (the token is all a thief needs to act through the broker)."""
     caplog.set_level("DEBUG")
     answers = [client.get("/login"), log_in(client, PASSWORD + "-wrong"), log_in(client)]
-    answers += [client.get(route) for route in ("/", "/sources", "/login")]
+    answers += [client.get(route) for route in ("/overview", "/sources", "/login")]
     answers.append(client.post("/logout", data={"form_token": form_token(client)}, headers={"origin": ORIGIN}))
     answers.append(log_in(client))
     broker.answers["db.status"] = broker_client.BrokerError("unauthorized", "not logged in")
-    answers.append(client.get("/"))
+    answers.append(client.get("/overview"))
     for answer in answers:
         whole = answer.text + "".join(f"{key}: {value}\n" for key, value in answer.headers.multi_items())
         assert PASSWORD not in whole and TOKEN not in whole
@@ -292,17 +313,17 @@ def test_a_session_the_broker_ends_is_forgotten_and_the_login_page_says_why(clie
     """Bug class: a page that shows a broker error forever (or a stale session that seems logged in) after the broker restarted, the password changed or the session ran out."""
     cookie = session_cookie(log_in(client))
     probe = make_client(app)
-    assert probe.get("/", headers=with_cookie(cookie)).status_code == 200
+    assert probe.get("/overview", headers=with_cookie(cookie)).status_code == 200
     broker.calls.clear()
     broker.answers["source.list"] = error
-    response = client.get("/?fresh=1")
+    response = client.get("/overview?fresh=1")
     assert response.status_code == 303 and response.headers["location"] == f"/login?why={why}"
     assert "__Host-sdp_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" in response.headers.get_list("set-cookie")
     page = client.get(response.headers["location"])
     assert login_line(page) == webapp.LOGIN_LINES[why].replace("'", "&#39;")
     assert broker.verbs_called() == ["db.status", "source.list"]
     broker.answers["source.list"] = source_list()
-    assert probe.get("/", headers=with_cookie(cookie)).status_code == 303
+    assert probe.get("/overview", headers=with_cookie(cookie)).status_code == 303
 
 
 def test_an_unknown_why_shows_nothing(client):
@@ -315,12 +336,12 @@ def test_the_logout_forgets_the_session_logs_out_at_the_broker_and_clears_the_co
     """Bug class: a logout that leaves the id usable (a stolen cookie outlives the logout) or the broker's session alive."""
     cookie = session_cookie(log_in(client))
     probe = make_client(app)
-    assert probe.get("/", headers=with_cookie(cookie)).status_code == 200
+    assert probe.get("/overview", headers=with_cookie(cookie)).status_code == 200
     response = client.post("/logout", data={"form_token": form_token(client)}, headers={"origin": ORIGIN})
     assert response.status_code == 303 and response.headers["location"] == "/login?why=logged_out"
     assert response.headers.get_list("set-cookie") == ["__Host-sdp_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"]
     assert broker.calls[-1] == ("logout", TOKEN)
-    assert probe.get("/", headers=with_cookie(cookie)).status_code == 303
+    assert probe.get("/overview", headers=with_cookie(cookie)).status_code == 303
 
 
 def test_the_logout_reaches_the_broker_while_every_login_place_is_taken(make_app, make_client, broker):
@@ -385,11 +406,11 @@ def test_the_session_table_is_bounded(make_app, make_client):
     clients = [make_client(app) for _ in range(3)]
     for client in clients:
         assert log_in(client).status_code == 303
-    assert [client.get("/").status_code for client in clients] == [303, 200, 200]
+    assert [client.get("/overview").status_code for client in clients] == [303, 200, 200]
 
 
-def test_a_logged_in_browser_is_sent_from_the_login_page_to_the_overview(client):
+def test_a_logged_in_browser_is_sent_from_the_login_page_to_the_chat_window(client):
     """Bug class: a login form shown to a logged-in browser (a second login with a new id each time it is opened)."""
     log_in(client)
     response = client.get("/login")
-    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert response.status_code == 303 and response.headers["location"] == "/chat"

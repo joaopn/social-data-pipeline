@@ -146,7 +146,7 @@ def log_in(d, cafile, password=MANAGEMENT):
     status, _, _, cookies = page.request("POST", "/login", headers=page.origin, form={"password": password})
     check(status == 303 and cookies, "a login through the page")
     page.cookie = cookies[0].split(";")[0].split("=", 1)[1]
-    return page, re.search(r'name="form_token" value="([^"]+)"', page.request("GET", "/")[2]).group(1)
+    return page, re.search(r'name="form_token" value="([^"]+)"', page.request("GET", "/overview")[2]).group(1)
 
 
 def raw_get(page, path):

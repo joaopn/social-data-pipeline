@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A check of the web UI in a real browser, run by hand against a running page: `PYTHON tests/e2e/manual/check_webui_browser.py https://127.0.0.1:<port>/` with the management password on standard input, where PYTHON has Playwright and its Chromium, and `PLAYWRIGHT_BROWSERS_PATH` is set in the environment to the folder of its browsers (it has no default). `check_webui.py --browser PYTHON` runs it against the page it starts, whose deployment has a source `demo` whose profile `parse` runs a program that prints a line every second.
 
-It is not collected by pytest. In headless Chromium (the self-signed certificate accepted for this one context), by clicking: it loads the login page, logs in through the form, loads the Overview and the Sources page; starts a run of `parse` from the source's page (a box of its form ticked, its button, then Confirm on the pending page, which shows the command with the flag), opens the run from its outcome, sees the output view grow by itself, cancels the run from a second tab (its pending page, Confirm) and sees the first tab's output view stop with the program's last line; confirms `db.stop` of every configured service from the Databases page; confirms a step-up action (removing the scheduler's configuration, from the Databases page's Queue setup tab) with a wrong management password first, which is refused, then with the right one; starts a second run, ends the session behind the page's back (a logout sent by a second client with the browser's cookie) and sees the page load the login page by itself at its next poll; logs in again, cancels that run and logs out through the button. It fails on any Content-Security-Policy violation (the `securitypolicyviolation` event, collected by a script Playwright adds to every page before the page's own), any console error (but the one Chromium writes for the 403 of the wrong management password, which is listed apart), any failed request of the page's own origin (a poll that a navigation of the page itself cuts short, `net::ERR_ABORTED`, is listed apart and not counted), and on a page that is not the one expected after each step. It prints what it saw. Standard library and Playwright only.
+It is not collected by pytest. In headless Chromium (the self-signed certificate accepted for this one context), by clicking: it loads the login page, logs in through the form (which lands on the Chat window), opens the Overview by the Management tab and the Sources page; starts a run of `parse` from the source's page (a box of its form ticked, its button, then Confirm on the pending page, which shows the command with the flag), opens the run from its outcome, sees the output view grow by itself, cancels the run from a second tab (its pending page, Confirm) and sees the first tab's output view stop with the program's last line; confirms `db.stop` of every configured service from the Databases page; confirms a step-up action (removing the scheduler's configuration, from the Databases page's Queue setup tab) with a wrong management password first, which is refused, then with the right one; starts a second run, ends the session behind the page's back (a logout sent by a second client with the browser's cookie) and sees the page load the login page by itself at its next poll; logs in again, cancels that run and logs out through the button. It fails on any Content-Security-Policy violation (the `securitypolicyviolation` event, collected by a script Playwright adds to every page before the page's own), any console error (but the one Chromium writes for the 403 of the wrong management password, which is listed apart), any failed request of the page's own origin (a poll that a navigation of the page itself cuts short, `net::ERR_ABORTED`, is listed apart and not counted), and on a page that is not the one expected after each step. It prints what it saw. Standard library and Playwright only.
 """
 
 import os
@@ -116,9 +116,15 @@ def main():
         print(f"  login page: {page.title()!r}, htmx loaded: {page.evaluate('typeof window.htmx')}")
         violations()
         log_in()
-        if path_of(page) != "/" or "Overview" not in page.title():
-            problems.append(f"after the login the page is {page.url} ({page.title()!r})")
-        print(f"  after the login: {page.url}, title {page.title()!r}, the source demo listed: {page.locator('a[href=\"/sources/demo\"]:text-is(\"demo\")').count() == 1}")
+        if path_of(page) != "/chat":
+            problems.append(f"after the login the page is {page.url} ({page.title()!r}), not the Chat window")
+        print(f"  after the login: {page.url}, title {page.title()!r}")
+        violations()
+        page.click("a.win[href='/overview']")
+        page.wait_for_load_state("networkidle")
+        if path_of(page) != "/overview" or "Overview" not in page.title():
+            problems.append(f"the Management tab opened {page.url} ({page.title()!r})")
+        print(f"  the Management tab: {page.url}, title {page.title()!r}, the source demo listed: {page.locator('a[href=\"/sources/demo\"]:text-is(\"demo\")').count() == 1}")
         violations()
         page.click("a[href='/sources']")
         page.wait_for_load_state("networkidle")

@@ -412,7 +412,7 @@ def main_html(page):
 
 def form_token(client):
     """The current form token, read from the Overview's logout form."""
-    page = client.get("/")
+    page = client.get("/overview")
     assert page.status_code == 200, page.status_code
     found = re.search(r'name="form_token" value="([^"]+)"', page.text)
     assert found, "no form token in the page"

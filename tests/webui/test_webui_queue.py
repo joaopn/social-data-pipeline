@@ -963,7 +963,7 @@ def test_no_page_or_part_of_the_window_holds_inline_code_and_every_answer_has_th
 
 def test_the_navigation_links_the_queue(client):
     """Bug class: a Queue window that cannot be reached from the frame, or still marked as not available."""
-    page = client.get("/").text
+    page = client.get("/overview").text
     assert '<a class="win" href="/queue"><span class="ico" aria-hidden="true">☑</span>Queue<span id="queue-badge"></span></a>' in page and "not available yet" not in page
     queue_page = client.get("/queue").text
     assert '<nav class="subbar" aria-label="Queue">' in queue_page and 'href="/queue/auto-accept"' in queue_page
@@ -1562,7 +1562,7 @@ def pills(part):
 def test_the_frame_draws_the_indicators_grey_and_status_needs_a_live_session(client, app, broker, door, make_client):
     """Bug class: a page whose top bar waits for the scheduler or the sandbox (a slow service slows every page), or indicators shown to a browser without a session, or to a session the broker has ended (the login page swapped into the top bar instead of a redirect)."""
     door.add("pending", a_job())
-    page = client.get("/").text
+    page = client.get("/overview").text
     assert '<span class="status hide-s" hx-get="/status" hx-trigger="load, every 30s" hx-swap="outerHTML">' in page and '<span id="queue-badge"></span>' in page
     assert {name: dot for name, (dot, _) in pills(page).items()} == {"broker": "", "scheduler": "", "sandbox": ""} and door.requests == []
     stranger = make_client(app)

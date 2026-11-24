@@ -5,7 +5,7 @@
 <main class="main">
 <section class="card dialog{{ ' step' if pending.step_up else '' }}" aria-labelledby="pending-title">
   <h4>{% if refusal %}Refused{% else %}Confirm this action{% endif %}</h4>
-  <div class="row"><h2 id="pending-title">{{ pending.title }}</h2>{% if not refusal %}<a class="btn ghost sm right" href="{{ pending.leave_href if pending.queue else '/' }}" title="Leave it: nothing is done">✕</a>{% endif %}</div>
+  <div class="row"><h2 id="pending-title">{{ pending.title }}</h2>{% if not refusal %}<a class="btn ghost sm right" href="{{ pending.leave_href if pending.queue else '/overview' }}" title="Leave it: nothing is done">✕</a>{% endif %}</div>
   {%- if line %}
   <p class="notice notice-bad" role="alert">{{ line }}</p>
   {%- endif %}
@@ -85,7 +85,7 @@
     <div class="row wrap">
       <span class="tag {{ 'step' if pending.step_up else 'write' }}">{{ "step-up" if pending.step_up else "write" }}</span>
       <span class="small muted">kept for {{ pending.minutes_left }} more minute{{ "s" if pending.minutes_left != 1 }}; nothing is done until you confirm</span>
-      <span class="right row"><a class="btn" href="{{ pending.leave_href if pending.queue else '/' }}">Leave it</a><button type="submit" class="btn {{ 'danger' if pending.destroys else 'primary' }}">Confirm</button></span>
+      <span class="right row"><a class="btn" href="{{ pending.leave_href if pending.queue else '/overview' }}">Leave it</a><button type="submit" class="btn {{ 'danger' if pending.destroys else 'primary' }}">Confirm</button></span>
     </div>
   </form>
   {%- endif %}

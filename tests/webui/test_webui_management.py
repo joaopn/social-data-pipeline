@@ -161,7 +161,7 @@ def test_no_get_or_head_asks_the_broker_for_anything_but_reads_and_no_head_chang
     live_view = html.unescape(re.search(r'hx-get="([^"]+)" hx-trigger="load"', client.get("/runs/live-0123456789ab").text).group(1))
     broker.calls.clear()
     broker.requests.clear()
-    routes = [view, live_view, "/", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/databases/mongo", "/runs", f"/runs/{RUN_ID}", f"/runs/{RUN_ID}?offset=5", "/runs/live-0123456789ab", "/system", pending, outcome, "/login", "/healthz", "/static/app.css"]
+    routes = [view, live_view, "/", "/overview", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/databases/mongo", "/runs", f"/runs/{RUN_ID}", f"/runs/{RUN_ID}?offset=5", "/runs/live-0123456789ab", "/system", pending, outcome, "/login", "/healthz", "/static/app.css"]
     before = state_of(app, client)
     for route in routes:
         for headers in ({}, HX):
@@ -358,7 +358,7 @@ def test_a_task_shows_its_label_on_the_runs_page_its_page_and_the_overview(clien
 
     runs_page = client.get("/runs").text
     run_page = client.get(f"/runs/{RUN_ID}").text
-    overview = client.get("/").text
+    overview = client.get("/overview").text
 
     assert "<td>download \u00b7 demo</td>" in runs_page and '<td class="mono">lingua</td>' in runs_page
     assert '<h1 id="facts-title">download \u00b7 demo</h1>' in run_page and "python sdp.py run" not in run_page
@@ -369,8 +369,8 @@ def test_a_task_shows_its_label_on_the_runs_page_its_page_and_the_overview(clien
 
 def test_the_navigation_links_every_management_page(client):
     """Bug class: a Management page that cannot be reached from the frame, or one still marked as coming later."""
-    page = client.get("/").text
-    for address in ("/", "/sources", "/databases", "/runs", "/system"):
+    page = client.get("/overview").text
+    for address in ("/overview", "/sources", "/databases", "/runs", "/system"):
         assert f'href="{address}"' in page
     assert "next update" not in page and "next update" not in client.get("/runs").text
 

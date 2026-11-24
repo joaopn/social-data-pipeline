@@ -224,7 +224,7 @@ def log_in(deployment, cafile, password=MANAGEMENT):
     status, _, _, cookies = page.request("POST", "/login", headers=page.origin, form={"password": password})
     check(status == 303 and cookies, "a login through the page")
     page.cookie = cookies[0].split(";")[0].split("=", 1)[1]
-    _, _, text, _ = page.request("GET", "/")
+    _, _, text, _ = page.request("GET", "/overview")
     return page, re.search(r'name="form_token" value="([^"]+)"', text).group(1)
 
 

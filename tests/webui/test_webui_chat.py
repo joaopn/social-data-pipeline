@@ -622,9 +622,9 @@ def test_no_page_or_part_holds_inline_code_and_every_answer_has_the_headers(clie
 
 def test_the_navigation_names_chat_first_as_a_link(client):
     """Bug class: a Chat window that cannot be reached from the frame, or still shown as not available; the windows in another order than the mock-up's (Chat, Management, Queue)."""
-    page = client.get("/").text
+    page = client.get("/overview").text
     windows = re.search(r'<nav class="wins"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1)
-    assert re.findall(r'href="([^"]+)"', windows) == ["/chat", "/", "/queue"] and "not available" not in page
+    assert re.findall(r'href="([^"]+)"', windows) == ["/chat", "/overview", "/queue"] and "not available" not in page
     assert '<a class="win on" href="/chat" aria-current="page"><span class="ico" aria-hidden="true">✦</span>Chat</a>' in client.get("/chat").text
 
 
@@ -636,21 +636,41 @@ def chat_tab(page):
 
 def test_the_chat_tab_reopens_the_chat_last_opened_in_this_login(client, token, scripted):
     """Bug class: the top bar's Chat tab always landing on "No chat open" after a chat was opened, or still leading to a chat that was deleted here or is gone elsewhere (a dead link); Management and Queue moved along with it."""
-    assert chat_tab(client.get("/").text) == "/chat"
+    assert chat_tab(client.get("/overview").text) == "/chat"
     assert client.get(f"/chat/{CHAT_ID}").status_code == 200
-    for page in (client.get("/").text, client.get("/queue").text, client.get("/chat").text):
+    for page in (client.get("/overview").text, client.get("/queue").text, client.get("/chat").text):
         assert chat_tab(page) == f"/chat/{CHAT_ID}"
-        assert re.findall(r'href="([^"]+)"', re.search(r'<nav class="wins"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1))[1:] == ["/", "/queue"]
+        assert re.findall(r'href="([^"]+)"', re.search(r'<nav class="wins"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1))[1:] == ["/overview", "/queue"]
     scripted.answers["chat.delete"] = refuse("internal")
     post(client, f"/chat/{CHAT_ID}/delete", token)
-    assert chat_tab(client.get("/").text) == f"/chat/{CHAT_ID}"
+    assert chat_tab(client.get("/overview").text) == f"/chat/{CHAT_ID}"
     del scripted.answers["chat.delete"]
     assert post(client, f"/chat/{CHAT_ID}/delete", token).status_code == 303
-    assert chat_tab(client.get("/").text) == "/chat"
-    assert client.get(f"/chat/{CHAT_ID}").status_code == 200 and chat_tab(client.get("/").text) == f"/chat/{CHAT_ID}"
+    assert chat_tab(client.get("/overview").text) == "/chat"
+    assert client.get(f"/chat/{CHAT_ID}").status_code == 200 and chat_tab(client.get("/overview").text) == f"/chat/{CHAT_ID}"
     scripted.chats = []
     assert client.get(f"/chat/{CHAT_ID}").status_code == 404
-    assert chat_tab(client.get("/").text) == "/chat"
+    assert chat_tab(client.get("/overview").text) == "/chat"
+
+
+def test_the_web_ui_opens_on_the_chat_window_the_chat_tab_leads_to(client, scripted):
+    """Bug class: `/` still drawing the Management window, or opening on another chat than the top bar's Chat tab (a fresh login on a chat it never opened, or on the chat list after one was opened)."""
+    for method in (client.get, client.head):
+        response = method("/")
+        assert response.status_code == 303 and response.headers["location"] == "/chat"
+    assert client.get(f"/chat/{CHAT_ID}").status_code == 200
+    for method in (client.get, client.head):
+        response = method("/")
+        assert response.status_code == 303 and response.headers["location"] == f"/chat/{CHAT_ID}" == chat_tab(client.get("/queue").text)
+
+
+def test_the_management_tab_and_the_overview_tab_lead_to_the_overview(client):
+    """Bug class: the Management window's links still pointing at `/`, which now opens the Chat window, so Management cannot be reached from the frame."""
+    for page in (client.get("/overview").text, client.get("/chat").text, client.get("/sources").text):
+        assert re.findall(r'href="([^"]+)"', re.search(r'<nav class="wins"[^>]*>(.*?)</nav>', page, re.DOTALL).group(1))[1] == "/overview"
+    page = client.get("/overview").text
+    assert '<a class="win on" href="/overview" aria-current="page"><span class="ico" aria-hidden="true">▤</span>Management</a>' in page
+    assert '<a class="tab on" href="/overview" aria-current="page">Overview</a>' in page
 
 
 def test_the_left_column_has_no_bottom_note(client, scripted):
@@ -1142,7 +1162,7 @@ def test_the_page_and_the_events_part_draw_the_spec_container_only_for_a_listed_
     del scripted.files["a.vl.json"]
     assert spec_boxes(client.get(f"/chat/{CHAT_ID}").text) == []
     assert '<script src="/static/plots.js" defer></script>' in page and '<script src="/static/vendor/vega-embed.min.js" defer></script>' in page
-    assert "plots.js" not in client.get("/").text
+    assert "plots.js" not in client.get("/overview").text
 
 
 def test_the_spec_route_sends_the_checked_spec_with_the_fixed_headers(client, scripted):

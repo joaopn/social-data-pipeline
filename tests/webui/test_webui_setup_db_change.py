@@ -145,7 +145,7 @@ def test_the_form_filled_in_and_posted_as_drawn_writes_what_the_terminals_enter_
 
     outcome = confirm(client, pending_path(client.post("/databases/setup/confirm", data={"form_token": token}, headers={"origin": ORIGIN})), token, PASSWORD).headers["location"]
     wait_until(lambda: "Nothing was restarted. The output's last line names the running services that must restart to apply this" in client.get(outcome).text)
-    assert '<a href="/">Needs attention on the Overview</a> restarts them' in client.get(outcome).text
+    assert '<a href="/overview">Needs attention on the Overview</a> restarts them' in client.get(outcome).text
     harness._point(monkeypatch, browser)
     assert harness._tree(browser) == harness._tree(terminal)
     assert {name: path.read_bytes() for name, path in harness._credentials(browser).items()} == {name: path.read_bytes() for name, path in harness._credentials(terminal).items()}

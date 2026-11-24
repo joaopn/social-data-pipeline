@@ -25,7 +25,7 @@ from social_data_pipeline.webui import config, guard
 
 CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
 GET_ROUTES = [
-    "/", "/login", "/healthz", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/runs/r20261121T101500-0a1b2c", "/runs/r20261121T101500-0a1b2c/output?offset=0&view=0123456789abcdef", "/system",
+    "/", "/overview", "/login", "/healthz", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/runs/r20261121T101500-0a1b2c", "/runs/r20261121T101500-0a1b2c/output?offset=0&view=0123456789abcdef", "/system",
     "/pending/AAAAAAAAAAAAAAAAAAAAAA", "/actions/AAAAAAAAAAAAAAAAAAAAAA", "/static/app.css", "/static/app.js", "/static/vendor/htmx.min.js", "/no-such-page",
 ]
 POST_ROUTES = ["/login", "/logout", "/", "/healthz", "/pending", "/pending/AAAAAAAAAAAAAAAAAAAAAA/confirm", "/no-such-page"]
@@ -132,7 +132,7 @@ def test_a_foreign_origin_is_refused_on_every_non_get_route(logged_in, broker, r
     response = logged_in.post(route, data={"password": PASSWORD, "form_token": form_token(logged_in)}, headers={"origin": origin})
     assert refused_with(response, 403)
     assert [call for call in broker.calls if call[0] != "call"] == []
-    assert logged_in.get("/").status_code == 200
+    assert logged_in.get("/overview").status_code == 200
 
 
 @pytest.mark.parametrize("fetch_site", [None, "cross-site", "same-site", "none", "same-origin, cross-site"])
@@ -172,7 +172,7 @@ def test_a_missing_or_wrong_form_token_is_refused_and_the_session_stays(logged_i
         assert refused_with(response, 403)
     # The Overview's reads, made once to read the form token.
     assert broker.kinds() == ["call"] * len(webapp.overview.READ_VERBS)
-    assert logged_in.get("/").status_code == 200
+    assert logged_in.get("/overview").status_code == 200
 
 
 def test_the_form_token_is_the_sessions_own_and_stays_the_same(logged_in, app, make_client, broker):
@@ -219,7 +219,7 @@ def every_kind_of_answer(app, client, make_client, monkeypatch):
     answers.append(other.post("/logout", data={"form_token": form_token(other)}, headers={"origin": ORIGIN}))
     answers.append(log_in(other))
     monkeypatch.setattr(webapp.overview, "build", lambda answers: 1 / 0)
-    answers.append(other.get("/"))
+    answers.append(other.get("/overview"))
     return answers
 
 
@@ -254,7 +254,7 @@ def test_a_failing_page_is_a_constant_500(logged_in, monkeypatch, caplog):
     """Bug class: an exception's text or traceback sent to the browser, or logged with the values in its frames."""
     monkeypatch.setattr(webapp.overview, "build", lambda answers: (_ for _ in ()).throw(RuntimeError("made-up-secret-in-an-exception")))
     caplog.set_level("DEBUG")
-    response = logged_in.get("/")
+    response = logged_in.get("/overview")
     assert response.status_code == 500 and "made-up-secret" not in response.text
     assert "made-up-secret" not in caplog.text
 

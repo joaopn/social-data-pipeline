@@ -271,7 +271,7 @@ def test_a_poll_after_the_session_ended_gets_hx_redirect_and_no_page(client, bro
     broker.answers["run.logs"] = broker_client.BrokerError("unauthorized", "x")
     ended = client.get(href, headers=HX)
     assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended" and ended.text == ""
-    for route in (href, outcome, "/", "/runs"):
+    for route in (href, outcome, "/", "/overview", "/runs"):
         response = client.get(route, headers=HX)
         assert response.status_code == 204 and response.headers["hx-redirect"] == "/login" and response.text == ""
         plain = client.get(route)

@@ -89,9 +89,9 @@ def test_no_rendered_page_holds_inline_code(client, broker, make_app, make_clien
     """Bug class: inline code that only appears in a page as rendered (a block, a notice, an error output)."""
     broker.answers["db.status"] = db_status(auth={"enabled": False, "rw_users": []}, mcp=[{"db": "postgres", "port": 8000, "running": True}])
     broker.answers["run.list"] = run_list(a_run(), docker_available=False)
-    pages = [client.get(route).text for route in ("/", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/system")]
+    pages = [client.get(route).text for route in ("/overview", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/system")]
     broker.answers["source.list"] = broker_client.BrokerError("failed", "x", details={"errors": HOSTILE})
-    pages.append(client.get("/?fresh=1").text)
+    pages.append(client.get("/overview?fresh=1").text)
     stranger = make_client(make_app())
     pages += [stranger.get("/login").text, stranger.get("/login?why=ended").text, log_in(stranger, "made-up-wrong-pw").text]
     for page in pages:
@@ -107,12 +107,12 @@ def test_hostile_text_is_served_escaped(client, broker):
     broker.answers["db.status"] = db_status(configured=[HOSTILE], databases=[{"db": HOSTILE, "port": HOSTILE, "running": True}], auth={"enabled": True, "rw_users": []})
     broker.answers["source.list"] = source_list({"name": HOSTILE, "profiles": [HOSTILE]})
     broker.answers["run.list"] = broker_client.BrokerError("failed", "x", details={"errors": HOSTILE + "\x1b[31m"})
-    page = client.get("/").text
+    page = client.get("/overview").text
     assert HOSTILE not in page and "<script>" not in page
     assert page.count(str(escape(HOSTILE))) >= 5
 
     broker.answers["run.list"] = run_list(a_run(source=HOSTILE, profile=HOSTILE, id=HOSTILE, state="running"))
-    page = client.get("/?fresh=1").text
+    page = client.get("/overview?fresh=1").text
     assert HOSTILE not in page and "<script>" not in page
     assert page.count(str(escape(HOSTILE))) >= 3
 
@@ -122,7 +122,7 @@ def test_a_name_that_is_not_plain_is_not_a_link(client, broker, name):
     """Bug class: a link built from any name, which makes a path, a query, a fragment or a scheme of the name's author's choosing."""
     broker.answers["source.list"] = source_list({"name": name, "profiles": []})
     broker.answers["run.list"] = run_list(a_run(source=name))
-    page = client.get("/").text
+    page = client.get("/overview").text
     hrefs = re.findall(r'href="([^"]*)"', page)
     assert [href for href in hrefs if href.startswith("/sources/")] == []
     assert str(escape(overview.text(name))) in page
@@ -132,7 +132,7 @@ def test_a_plain_name_is_a_link_of_its_url_encoded_form(client, broker):
     """Bug class: a plain name linked without encoding (the pattern is the only thing standing between a name and a path), or linked to the wrong page."""
     names = ["demo", "Reddit_2024.v2-x", "0"]
     broker.answers["source.list"] = source_list(*({"name": name, "profiles": []} for name in names))
-    page = client.get("/").text
+    page = client.get("/overview").text
     # Each source's name and its grid cells link to its page; a cell of a profile it has adds the anchor of that profile's run form.
     hrefs = list(dict.fromkeys(href.split("#")[0] for href in re.findall(r'href="(/sources/[^"]*)"', page)))
     assert hrefs == [f"/sources/{name}" for name in names]
@@ -149,7 +149,7 @@ def test_each_read_failing_alone_leaves_the_other_blocks(client, broker, failing
     """Bug class: one failed read (Docker down for `run.list`, a damaged source for `source.list`) failing the whole page."""
     broker.answers["run.list"] = run_list(a_run())
     broker.answers[failing] = broker_client.BrokerError("timeout", "x")
-    response = client.get("/")
+    response = client.get("/overview")
     assert response.status_code == 200
     blocks = blocks_of(response.text)
     # A failed read is one line of "Needs attention"; what the other reads say stays in its place.
@@ -166,7 +166,7 @@ def test_an_answer_of_another_shape_fails_its_block_only(client, broker):
     broker.answers["db.status"] = {"data": {"configured": ["postgres"], "databases": "not a list"}}
     broker.answers["source.list"] = {"data": {"sources": [{"name": "demo", "profiles": "parse"}]}}
     broker.answers["run.list"] = run_list(a_run(id=10 ** 5000))
-    response = client.get("/")
+    response = client.get("/overview")
     assert response.status_code == 200
     assert response.text.count(str(escape(overview.SHAPE_SENTENCE))) == 3
 
@@ -174,13 +174,13 @@ def test_an_answer_of_another_shape_fails_its_block_only(client, broker):
 def test_a_database_without_authentication_gets_a_standing_notice(client, broker):
     """Bug class: a database that anyone on the network can read and change shown like any other."""
     broker.answers["db.status"] = db_status(auth={"enabled": False, "rw_users": []})
-    page = client.get("/").text
+    page = client.get("/overview").text
     assert "The database postgres runs without authentication" in page and "The database mongo runs without authentication" in page
     broker.answers["db.status"] = db_status()
-    page = client.get("/?fresh=1").text
+    page = client.get("/overview?fresh=1").text
     assert "without authentication" not in page
     broker.answers["db.status"] = db_status(auth={"enabled": True, "rw_users": [{"db": "postgres", "user": "postgres"}]})
-    page = client.get("/?fresh=1").text
+    page = client.get("/overview?fresh=1").text
     assert "The database mongo runs without authentication" in page and "The database postgres runs" not in page
 
 
@@ -193,25 +193,25 @@ def test_ports_open_beyond_the_machine_get_one_notice(client, broker):
         jobs={"port": 8050, "running": True},
         auth={"enabled": True, "rw_users": [{"db": "postgres"}, {"db": "starrocks"}]},
     )
-    page = client.get("/").text
+    page = client.get("/overview").text
     notices = re.findall(r"These services publish their ports.*?</p>", page, re.DOTALL)
     assert len(notices) == 1
     assert "postgres (5432), starrocks (9030, 8030, 8040), postgres-mcp (8000), jobs (8050)." in " ".join(notices[0].split())
     broker.answers["db.status"] = db_status(databases=[{"db": "postgres", "port": "5432", "running": False}], configured=["postgres"])
-    assert "These services publish their ports" not in client.get("/?fresh=1").text
+    assert "These services publish their ports" not in client.get("/overview?fresh=1").text
 
 
 def test_the_runs_block_lists_only_runs_alive_now(client, broker):
     """Bug class: finished runs listed as if alive, or a terminal run left out."""
     broker.answers["run.list"] = run_list(a_run(id="r20261121T101500-aaaaaa", state="finished"), a_run(id="r20261121T101500-bbbbbb", state="detached"), a_run(id="live-0123456789ab", kind="terminal", state="running"), a_run(id="r20261121T101500-cccccc", state="cancelled"))
-    runs = blocks_of(client.get("/").text)["Right now"]
+    runs = blocks_of(client.get("/overview").text)["Right now"]
     assert "bbbbbb" in runs and "live-0123456789ab" in runs
     assert "aaaaaa" not in runs and "cccccc" not in runs
 
 
 def test_the_pages_call_nothing_but_read_verbs(client, broker, make_app, make_client):
     """Bug class: a page or a GET calling a verb that changes something (the full sweep of every GET route is `test_webui_management.py`, property i)."""
-    for route in ("/", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/system", "/login", "/healthz"):
+    for route in ("/", "/overview", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/system", "/login", "/healthz"):
         client.get(route)
         client.head(route)
     client.post("/logout", data={"form_token": form_token(client)}, headers={"origin": ORIGIN})
@@ -235,7 +235,7 @@ def test_a_slow_broker_stalls_neither_the_login_page_nor_the_health_check(make_a
     broker.gate = threading.Event()
     results = []
     with TestClient(app, base_url="https://localhost:8443", client=("172.30.0.1", 50000), follow_redirects=False) as shared:
-        slow = threading.Thread(target=lambda: results.append(shared.get("/", headers=with_cookie(cookie)).status_code))
+        slow = threading.Thread(target=lambda: results.append(shared.get("/overview", headers=with_cookie(cookie)).status_code))
         slow.start()
         deadline = time.monotonic() + 10
         while broker.entered < 1 and time.monotonic() < deadline:
@@ -245,7 +245,7 @@ def test_a_slow_broker_stalls_neither_the_login_page_nor_the_health_check(make_a
         assert shared.get("/login").status_code == 200
         assert shared.get("/login", headers=with_cookie(cookie)).status_code == 303
         assert shared.get("/healthz").text == "ok"
-        busy = shared.get("/", headers=with_cookie(cookie))
+        busy = shared.get("/overview", headers=with_cookie(cookie))
         elapsed = time.monotonic() - started
         assert busy.status_code == 503 and webapp.BUSY in busy.text
         assert elapsed < 2
@@ -264,14 +264,14 @@ HX = {"hx-request": "true"}
 def test_the_live_figures_need_a_session_the_broker_still_knows(client, app, broker, door, make_client):
     """Bug class: the queue's number or a source's files shown to a browser without a session, or to one the broker has ended (the login page swapped into the Overview instead of a redirect); the Overview itself waiting for the scheduler."""
     door.add("pending", a_job())
-    page = client.get("/").text
+    page = client.get("/overview").text
     assert 'hx-get="/overview/live" hx-trigger="load" hx-swap="outerHTML"' in page and door.requests == []
     stranger = make_client(app)
     assert stranger.get("/overview/live").status_code == 303 and stranger.get("/overview/live", headers=HX).headers["hx-redirect"] == "/login"
     broker.answers["audit.list"] = broker_client.BrokerError("session_ended", "x")
     ended = client.get("/overview/live", headers=HX)
     assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended" and door.requests == []
-    assert client.get("/", headers=HX).status_code in (204, 303)
+    assert client.get("/overview", headers=HX).status_code in (204, 303)
     assert client.head("/overview/live").status_code == 405
 
 
@@ -301,7 +301,7 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
     loads = [{"db_type": "sr_ingest", "has_state_files": True, "entries": [{"label": "comments", "count": 40, "latest": "RC_2024-02", "in_progress": None, "failed_count": 2, "last_updated": None}, {"label": "submissions", "count": 8, "latest": "RS_2024-02", "in_progress": None, "failed_count": 0, "last_updated": None}]}]
     broker.answers["source.status"] = lambda fields: source_status(fields["name"], profiles=["parse", "sr_ingest"], ingestion=loads if fields["name"] == "demo" else [{**loads[0], "entries": [{**loads[0]["entries"][1]}]}])
     broker.answers["source.size"] = lambda fields: broker_client.BrokerError("failed", "x") if fields["name"] == "b.2" else source_size(fields["name"], total_bytes=1_449_950_000, complete=False)
-    page = client.get("/").text
+    page = client.get("/overview").text
     demo, other = overview.cell_key("demo"), overview.cell_key("b.2")
     assert f'</a></b> <span class="small muted src-size" id="s-{demo}"></span>' in page and f'id="s-{other}"></span>' in page
     cells = dict(re.findall(r'<a class="stage (\w+)"(?: id="[^"]*")? title="(\w+) on demo: [^"]*" href="/sources/demo(?:#run-\w+)?"', page)[i][::-1] for i in range(8))
@@ -349,7 +349,7 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
 
 # ── k. what the Overview keeps per login ────────────────────────────────────
 
-REFRESH = 'hx-get="/?fresh=1" hx-trigger="load" hx-select="main.main" hx-swap="outerHTML"'
+REFRESH = 'hx-get="/overview?fresh=1" hx-trigger="load" hx-select="main.main" hx-swap="outerHTML"'
 
 
 def without_live(markup):
@@ -365,11 +365,11 @@ def main_tag(page):
 def test_a_second_opening_is_drawn_from_the_kept_read_and_asks_the_fresh_page(client, broker):
     """Bug class: the second opening of the Overview waiting for the four reads again (the kept read not used), or drawn from the kept read with no request that refreshes it (stale forever); the first opening drawing nothing fresh or carrying the refresh request (two reads per opening)."""
     broker.calls.clear()
-    first = client.get("/")
+    first = client.get("/overview")
     assert first.status_code == 200 and sorted(broker.verbs_called()) == sorted(overview.READ_VERBS)
-    assert "hx-get" not in main_tag(first.text) and "/?fresh=1" not in first.text
+    assert "hx-get" not in main_tag(first.text) and "/overview?fresh=1" not in first.text
     broker.calls.clear()
-    second = client.get("/")
+    second = client.get("/overview")
     assert second.status_code == 200 and broker.calls == []
     assert REFRESH in main_tag(second.text) and 'hx-disinherit="*"' in main_tag(second.text)
     assert without_live(main_html(second.text)) == without_live(main_html(first.text))
@@ -377,21 +377,21 @@ def test_a_second_opening_is_drawn_from_the_kept_read_and_asks_the_fresh_page(cl
 
 def test_a_fresh_read_asks_every_verb_and_replaces_the_kept_answers(client, broker):
     """Bug class: `?fresh=1` drawn from the kept read (the page never refreshes), carrying the refresh request itself (a loop), or not keeping what it read (the next opening shows the first read for ever)."""
-    assert "PostgreSQL running · MongoDB stopped" in client.get("/").text
+    assert "PostgreSQL running · MongoDB stopped" in client.get("/overview").text
     broker.answers["db.status"] = db_status(databases=[{"db": "postgres", "port": "5432", "running": False}], configured=["postgres"])
     broker.calls.clear()
-    fresh = client.get("/?fresh=1", headers=HX)
+    fresh = client.get("/overview?fresh=1", headers=HX)
     assert fresh.status_code == 200 and sorted(broker.verbs_called()) == sorted(overview.READ_VERBS)
     assert "hx-get" not in main_tag(fresh.text) and "PostgreSQL stopped" in fresh.text
     broker.calls.clear()
-    kept = client.get("/")
+    kept = client.get("/overview")
     assert broker.calls == [] and "PostgreSQL stopped" in kept.text and "PostgreSQL running" not in kept.text
 
 
 def test_kept_live_figures_are_answered_at_once_and_ask_the_fresh_ones(client, broker, door):
     """Bug class: `?kept=1` asking the broker (no gain), drawing nothing, or not chaining to the fresh figures (stale figures for ever); the fresh part carrying a load request (it would ask itself again without end); the page drawn from the kept read asking the fresh figures as well as its fresh main area (two live reads per opening)."""
     key = overview.cell_key("demo")
-    page = client.get("/").text
+    page = client.get("/overview").text
     assert 'hx-get="/overview/live" hx-trigger="load"' in page
     broker.calls.clear()
     plain = client.get("/overview/live", headers=HX)
@@ -407,9 +407,9 @@ def test_kept_live_figures_are_answered_at_once_and_ask_the_fresh_ones(client, b
     only = client.get("/overview/live?kept=only", headers=HX)
     assert broker.calls == [] and f'id="c-{key}-parse" hx-swap-oob="true"' in only.text and "hx-get" not in only.text
 
-    from_kept = client.get("/").text
+    from_kept = client.get("/overview").text
     assert 'hx-get="/overview/live?kept=only" hx-trigger="load"' in from_kept
-    fresh = client.get("/?fresh=1", headers=HX).text
+    fresh = client.get("/overview?fresh=1", headers=HX).text
     assert 'hx-get="/overview/live?kept=1" hx-trigger="load"' in fresh
 
 
@@ -427,22 +427,22 @@ def test_kept_live_without_kept_figures_is_the_plain_route(client, broker, clock
     again = client.get("/overview/live?kept=1", headers=HX)
     assert broker.verbs_called() == ["audit.list"] and "live-chain" not in again.text
     assert client.get("/overview/live?kept=only", headers=HX).status_code == 204
-    client.get("/")
-    assert "/overview/live?kept" not in client.get("/").text and 'class="att live">' in client.get("/").text
+    client.get("/overview")
+    assert "/overview/live?kept" not in client.get("/overview").text and 'class="att live">' in client.get("/overview").text
 
 
 def test_an_ended_session_on_the_kept_pages_refresh_goes_to_the_login_and_drops_what_was_kept(client, app, broker):
     """Bug class: the login page swapped into the Overview's main area by its refresh (htmx follows a redirect), or the kept read surviving the end of the session and drawn to the next request with the old cookie."""
-    client.get("/")
+    client.get("/overview")
     client.get("/overview/live", headers=HX)
     session_id = client.cookies.get("__Host-sdp_session")
     session = app.sessions.get(session_id)
     assert session.overview is not None and session.live is not None
     broker.answers["db.status"] = broker_client.BrokerError("session_ended", "x")
-    ended = client.get("/?fresh=1", headers=HX)
+    ended = client.get("/overview?fresh=1", headers=HX)
     assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended"
     assert app.sessions.get(session_id) is None and len(app.sessions) == 0
-    assert client.get("/").status_code == 303
+    assert client.get("/overview").status_code == 303
 
 
 def test_a_busy_bound_leaves_the_kept_page_as_it_is(make_app, make_client, broker):
@@ -456,14 +456,14 @@ def test_a_busy_bound_leaves_the_kept_page_as_it_is(make_app, make_client, broke
     broker.entered = 0
     results = []
     with TestClient(app, base_url="https://localhost:8443", client=("172.30.0.1", 50000), follow_redirects=False) as shared:
-        slow = threading.Thread(target=lambda: results.append(shared.get("/", headers=with_cookie(cookie)).status_code))
+        slow = threading.Thread(target=lambda: results.append(shared.get("/overview", headers=with_cookie(cookie)).status_code))
         slow.start()
         deadline = time.monotonic() + 10
         while broker.entered < 1 and time.monotonic() < deadline:
             time.sleep(0.01)
         try:
-            refresh = shared.get("/?fresh=1", headers={**with_cookie(cookie), **HX})
-            page = shared.get("/?fresh=1", headers=with_cookie(cookie))
+            refresh = shared.get("/overview?fresh=1", headers={**with_cookie(cookie), **HX})
+            page = shared.get("/overview?fresh=1", headers=with_cookie(cookie))
         finally:
             broker.gate.set()
             slow.join(10)
@@ -524,7 +524,7 @@ def test_a_malformed_size_answer_is_a_shape_failure_of_its_row_only(client, brok
 
 def test_the_overview_legend_says_what_the_counts_are(client):
     """Bug class: cells whose counts nobody can read: files or loads, finished or attempted, and what "configured" and "–" mean."""
-    note = re.search(r'<p class="muted small mt" id="grid-note">(.*?)</p>', client.get("/").text, re.S)[1]
+    note = re.search(r'<p class="muted small mt" id="grid-note">(.*?)</p>', client.get("/overview").text, re.S)[1]
     text = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", note)).split())
     for words_ in ("✓ N files : the finished files of a stage", "✓ N loaded , ✕ M failed : the files a database profile loaded and failed, from its state files", "running : a run of the profile on the source is alive", "configured · nothing yet", "– : not configured", 'being written" only while a run of the source is alive'):
         assert words_ in text, words_

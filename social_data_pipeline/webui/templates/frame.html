@@ -4,7 +4,7 @@
 <header class="topbar">
   <div class="brand">SDP</div>
   <nav class="wins" aria-label="Windows">
-    {%- for key, label, icon, address in (("chat", "Chat", "✦", chat_href), ("management", "Management", "▤", "/"), ("queue", "Queue", "☑", "/queue")) %}
+    {%- for key, label, icon, address in (("chat", "Chat", "✦", chat_href), ("management", "Management", "▤", "/overview"), ("queue", "Queue", "☑", "/queue")) %}
     <a class="win{{ ' on' if key == window else '' }}" href="{{ address }}"{% if key == window %} aria-current="page"{% endif %}><span class="ico" aria-hidden="true">{{ icon }}</span>{{ label }}{% if key == "queue" %}<span id="queue-badge"></span>{% endif %}</a>
     {%- endfor %}
   </nav>

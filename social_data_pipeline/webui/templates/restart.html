@@ -5,7 +5,7 @@
 <main class="main">
 <section class="card dialog" aria-labelledby="restart-title">
   <h4>Restart to apply</h4>
-  <div class="row"><h2 id="restart-title">Restart {{ services | join(", ") }}</h2><a class="btn ghost sm right" href="/" title="Leave it: nothing is done">✕</a></div>
+  <div class="row"><h2 id="restart-title">Restart {{ services | join(", ") }}</h2><a class="btn ghost sm right" href="/overview" title="Leave it: nothing is done">✕</a></div>
   <p class="muted">Each service is stopped and started again, one after the other; each step runs only when the one before ended with exit code 0. Stopping a database also stops its MCP server, and starting it starts them both.</p>
   <div class="col mt">
   {%- for service in services %}
@@ -17,7 +17,7 @@
     {{ forms.token() }}
     <input type="hidden" name="services" value="{{ joined }}">
     {{ forms.admin_password(db_password_kept) }}
-    <div class="row wrap"><span class="tag step">step-up · db.stop, db.start</span><span class="right row"><a class="btn" href="/">Leave it</a><button type="submit" class="btn primary">Next: confirm</button></span></div>
+    <div class="row wrap"><span class="tag step">step-up · db.stop, db.start</span><span class="right row"><a class="btn" href="/overview">Leave it</a><button type="submit" class="btn primary">Next: confirm</button></span></div>
   </form>
 </section>
 </main>

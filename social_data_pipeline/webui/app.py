@@ -5,10 +5,11 @@
 Routes, each behind the checks of `guard` (host, origin, body, form token):
 
 - `GET /healthz`: `ok`, without a session.
-- `GET /login`: the login page; with a live session, a redirect to the Overview. `?why=` picks one of the constant lines of `LOGIN_LINES`; any other value shows nothing.
-- `POST /login`: the per-address limit (`limiter`: refused without asking the broker), then the broker's `login` with the channel `local` when the connection has both signs of the machine itself (it arrived on the local port, `config.LOCAL_PORT`, to which only 127.0.0.1 of the host is published, and its client address is the network's gateway, as which Docker's proxy shows a client on 127.0.0.1) and `remote` otherwise; on success a new session id in the cookie and the broker's token in memory only; the id the browser sent before is forgotten. Local logins share one key of the per-address limit; any other login is counted under its client address.
+- `GET /login`: the login page; with a live session, a redirect to the login's Chat window (`chat_address`). `?why=` picks one of the constant lines of `LOGIN_LINES`; any other value shows nothing.
+- `POST /login`: the per-address limit (`limiter`: refused without asking the broker), then the broker's `login` with the channel `local` when the connection has both signs of the machine itself (it arrived on the local port, `config.LOCAL_PORT`, to which only 127.0.0.1 of the host is published, and its client address is the network's gateway, as which Docker's proxy shows a client on 127.0.0.1) and `remote` otherwise; on success a new session id in the cookie and the broker's token in memory only, and a redirect to the Chat window (`/chat`: a new login has opened no chat); the id the browser sent before is forgotten. Local logins share one key of the per-address limit; any other login is counted under its client address.
 - `POST /logout`: the session forgotten, the broker's `logout` asked (under a bound of its own, waiting a few seconds for a place), the cookie cleared.
-- `GET /`: the Overview, from four read verbs; a block whose read failed says why, and the others stay. A session the broker no longer knows (`unauthorized`, `session_ended`) or a broker that cannot be reached ends the session here too, and the browser is sent to the login page with a line saying why (an htmx request gets 204 with `HX-Redirect`). The answers of a read that ended no session are kept in the login's session (`WebSession.overview`): from the second opening on, the page is drawn at once from them, without asking the broker, and its main area asks `GET /?fresh=1` once drawn, which reads the four verbs again, keeps their answers and takes the main area's place (a full bound answers that request 204, which leaves the page as it is).
+- `GET /`: a redirect to the login's Chat window, the address of the top bar's Chat tab (`chat_address`: the chat last opened in this login, else `/chat`); without a session, the login page.
+- `GET /overview`: the Overview, from four read verbs; a block whose read failed says why, and the others stay. A session the broker no longer knows (`unauthorized`, `session_ended`) or a broker that cannot be reached ends the session here too, and the browser is sent to the login page with a line saying why (an htmx request gets 204 with `HX-Redirect`). The answers of a read that ended no session are kept in the login's session (`WebSession.overview`): from the second opening on, the page is drawn at once from them, without asking the broker, and its main area asks `GET /overview?fresh=1` once drawn, which reads the four verbs again, keeps their answers and takes the main area's place (a full bound answers that request 204, which leaves the page as it is).
 - `GET /overview/live`: the Overview's live figures (the queries that wait for approval, the finished files per source and stage), a part of the page that the Overview asks once it has loaded, so that a slow scheduler or a large source never slows it: see `overview.read_live`. Its own bound (`Limits.live_workers`); a full bound answers 204, which leaves the page as it is. The figures are kept in the login's session (`WebSession.live`) unless the broker did not confirm the session; `?kept=1` answers the kept ones at once, with no call, and asks the fresh ones right after (as the plain route when none are kept), `?kept=only` (the page drawn from its kept read) the kept ones alone (204 when none are kept).
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
@@ -64,7 +65,7 @@ BUSY = "The web UI is busy with other requests: try again in a moment."
 
 # The Management pages of the frame: (key, title, address).
 MANAGEMENT_PAGES = (
-    ("overview", "Overview", "/"),
+    ("overview", "Overview", "/overview"),
     ("sources", "Sources", "/sources"),
     ("databases", "Databases", "/databases"),
     ("runs", "Runs", "/runs"),
@@ -198,12 +199,15 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
     def render(name, status=200, headers=None, **context):
         return HTMLResponse(templates.get_template(name).render(**context), status_code=status, headers=headers)
 
+    def chat_address(session):
+        """The login's Chat window: the chat last opened in this login (`WebSession.last_chat`), else `/chat` (before one is opened or after it was deleted). The top bar's Chat tab, `GET /` and the login's redirects lead there."""
+        return f"/chat/{session.last_chat}" if session.last_chat else "/chat"
+
     def frame(name, active, session, status=200, **context):
         """A page in the frame: the Queue window's navigation when `active` is one of its pages (`queue:...`), the Chat window's for `chat:...`, the Management window's otherwise. The top bar's Chat tab leads to the chat last opened in this login (`/chat` before one is opened or after it was deleted)."""
         window = "queue" if active.startswith("queue:") else "chat" if active.startswith("chat:") else "management"
         pages = {"queue": queue.QUEUE_PAGES, "chat": chat.CHAT_PAGES}.get(window, MANAGEMENT_PAGES)
-        chat_href = f"/chat/{session.last_chat}" if session.last_chat else "/chat"
-        return render(name, status, active=active, window=window, pages=pages, form_token=session.form_token, chat_href=chat_href, **context)
+        return render(name, status, active=active, window=window, pages=pages, form_token=session.form_token, chat_href=chat_address(session), **context)
 
     def to_login(request, why=None, clear_cookie=False):
         """The way to the login page: a redirect, or for a request of htmx (`HX-Request`) an empty answer whose `HX-Redirect` makes the browser load the login page, so that the login page is never swapped into a part of a page."""
@@ -235,7 +239,7 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
     async def login_form(request: Request):
         _, session = current(request)
         if session is not None:
-            return RedirectResponse("/", status_code=303)
+            return RedirectResponse(chat_address(session), status_code=303)
         why = request.query_params.get("why")
         return login_page(line=LOGIN_LINES.get(why) if isinstance(why, str) else None)
 
@@ -278,8 +282,8 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
         old_id = request.scope.get("sdp.session_id")
         if old_id:
             sessions.forget(old_id)
-        session_id, _ = sessions.create(token, number)
-        response = RedirectResponse("/", status_code=303)
+        session_id, session = sessions.create(token, number)
+        response = RedirectResponse(chat_address(session), status_code=303)
         response.headers.append("set-cookie", f"{guard.COOKIE_NAME}={session_id}; {COOKIE_ATTRIBUTES}")
         return response
 
@@ -295,8 +299,16 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
         return to_login(request, "logged_out", clear_cookie=True)
 
     @api.api_route("/", methods=["GET", "HEAD"])
+    async def home(request: Request):
+        """The web UI opens on the Chat window: a redirect to the login's Chat address (`chat_address`), the login page without a session."""
+        session_id, session = current(request)
+        if session is None:
+            return to_login(request, clear_cookie=bool(session_id))
+        return RedirectResponse(chat_address(session), status_code=303)
+
+    @api.api_route("/overview", methods=["GET", "HEAD"])
     async def overview_page(request: Request):
-        """The Overview. A login that keeps a read (`WebSession.overview`) gets it drawn at once, without asking the broker, with a main area that asks `/?fresh=1` once drawn and puts the fresh main area in its place; `?fresh=1`, or a login that keeps nothing, reads the four verbs, keeps their answers when none ended the session, and draws them with no such request."""
+        """The Overview. A login that keeps a read (`WebSession.overview`) gets it drawn at once, without asking the broker, with a main area that asks `/overview?fresh=1` once drawn and puts the fresh main area in its place; `?fresh=1`, or a login that keeps nothing, reads the four verbs, keeps their answers when none ended the session, and draws them with no such request."""
         session_id, session = current(request)
         if session is None:
             return to_login(request, clear_cookie=bool(session_id))

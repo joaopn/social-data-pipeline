@@ -149,7 +149,7 @@ def main():
         page.evaluate("localStorage.setItem('sdp.defaultModel', '')")
         for scheme in ("dark", "light"):
             page.evaluate(f"localStorage.setItem('sdp.theme', '{scheme}')")
-            for path, name in (("/", "overview"), (source, "source"), ("/queue", "queue"), ("/chat", "chat"), (chat, "chat-conversation"), (pending, "confirm")):
+            for path, name in (("/overview", "overview"), (source, "source"), ("/queue", "queue"), ("/chat", "chat"), (chat, "chat-conversation"), (pending, "confirm")):
                 visit(path, name, scheme)
                 expect(theme() == scheme, f"{name} is {scheme}")
 

@@ -478,7 +478,7 @@ def test_a_session_the_broker_ends_at_the_confirmation_leads_to_the_login(client
     path = pending_path(choose(client, "db.reset", token, db="mongo"))
     response = confirm(client, path, token, PASSWORD)
     assert response.status_code == 303 and response.headers["location"] == "/login?why=ended"
-    assert client.get("/").status_code == 303
+    assert client.get("/overview").status_code == 303
 
 
 def strings_reachable_from(root):
@@ -626,7 +626,7 @@ def test_a_call_longer_than_the_read_time_limit_is_not_cut_and_keeps_the_session
     assert outcome.kind == "result" and outcome.exit_code == 0
     assert [timeout for kind, verb, timeout in broker.timeouts if verb == "db.reset"] == [None]
     assert all(timeout == 0.05 for kind, verb, timeout in broker.timeouts if verb in ("db.status", "source.list", "run.list"))
-    assert client.get("/").status_code == 200
+    assert client.get("/overview").status_code == 200
 
 
 def test_an_unreachable_broker_is_an_outcome_not_a_logout(client, broker, token):
@@ -634,7 +634,7 @@ def test_an_unreachable_broker_is_an_outcome_not_a_logout(client, broker, token)
     broker.answers["db.stop"] = broker_client.BrokerUnreachable(broker_client.NO_SOCKET)
     response = confirm(client, pending_path(choose(client, "db.stop", token)), token)
     assert response.status_code == 200 and "The broker is not running" in response.text
-    assert client.get("/").status_code == 200
+    assert client.get("/overview").status_code == 200
 
 
 def test_another_sessions_outcome_is_not_found(client, token, app, make_client):

@@ -237,7 +237,7 @@ def check_https(deployment, cafile, browser):
     status, headers, _, cookies = page.request("POST", "/login", headers=origin, form={"password": MANAGEMENT})
     check(status == 303 and len(cookies) == 1 and re.fullmatch(r"__Host-sdp_session=[A-Za-z0-9_-]{43}; Path=/; Secure; HttpOnly; SameSite=Strict", cookies[0]) is not None, "the right login sets the session cookie: " + re.sub(r"=[A-Za-z0-9_-]{43};", "=<id>;", cookies[0]))
     page.cookie = cookies[0].split(";")[0].split("=", 1)[1]
-    status, _, text, _ = page.request("GET", "/")
+    status, _, text, _ = page.request("GET", "/overview")
     check(status == 200 and '<a href="/sources/demo">demo</a>' in text, "the Overview lists the source demo")
     check(MANAGEMENT not in text, "the Overview holds no password")
     token = re.search(r'name="form_token" value="([^"]+)"', text).group(1)
@@ -250,7 +250,7 @@ def check_https(deployment, cafile, browser):
         check(result.returncode == 0, "the browser check passed" + ("" if result.returncode == 0 else ": " + result.stderr.strip()[-2000:]))
     status, headers, _, cookies = page.request("POST", "/logout", headers=origin, form={"form_token": token})
     check(status == 303 and cookies and "Max-Age=0" in cookies[0], "the logout clears the cookie")
-    status, headers, _, _ = page.request("GET", "/")
+    status, headers, _, _ = page.request("GET", "/overview")
     check(status == 303 and headers.get("location") == "/login", "the old cookie no longer opens the Overview")
 
 
@@ -388,7 +388,7 @@ def check_channels(deployment, cafile):
     status, _, text, cookies = remote.request("POST", "/login", headers=remote.origin, form={"password": MANAGEMENT})
     check(status == 303 and cookies, f"a right login through {deployment.bridge} (the other port) succeeds while the local budget is empty: it was sent as `remote`")
     remote.cookie = cookies[0].split(";")[0].split("=", 1)[1]
-    status, _, text, _ = remote.request("GET", "/")
+    status, _, text, _ = remote.request("GET", "/overview")
     check(status == 200 and "demo" in text, "its Overview opens")
 
 

@@ -220,7 +220,7 @@ def test_needs_attention_names_the_services_and_restarts_each_database_once(clie
     assert "<b>Restart to apply:</b> the settings of postgres (docker-compose.override.yml), postgres-mcp (.env), jobs (config/jobs/config.local.yaml) changed after it started. Nothing restarts by itself." in page
     assert 'href="/restart?services=postgres,jobs"' in page
     broker.answers["db.restart_needed"] = restart_needed()
-    assert "Restart to apply" not in client.get("/").text
+    assert "Restart to apply" not in client.get("/?fresh=1").text
 
 
 def _restart(client, services="postgres,jobs", admin=""):

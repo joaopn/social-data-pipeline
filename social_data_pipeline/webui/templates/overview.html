@@ -1,4 +1,4 @@
-{#- The Overview, as the mock-up draws it: "Needs attention" and "Right now" side by side, then the grid of sources and pipeline profiles. The page shows what its three reads say at once; the queue's line and the cells' counts come from `/overview/live` once the page has loaded (`_overview_live.html`). -#}
+{#- The Overview, as the mock-up draws it: "Needs attention" and "Right now" side by side, then the grid of sources and pipeline profiles. The page shows what its four reads say at once; the queue's line and the cells' counts come from `/overview/live` once the page has loaded (`_overview_live.html`), first the login's kept figures (`?kept=1`, when `live_kept`) and then the fresh ones. `from_kept`: the page is drawn from the login's kept read, so the main area asks the fresh page (`/?fresh=1`) once drawn and takes its main area in its place (`hx-disinherit` keeps its `hx-select` from the live part's request), and the live part shows only the kept figures (`?kept=only`; nothing is asked when none are kept), since the fresh main area asks for the fresh ones itself. -#}
 {% extends "frame.html" %}
 {% from "_overview_cell.html" import cell with context %}
 {% block shell %}
@@ -6,7 +6,7 @@
 {%- set sources = blocks["source.list"] %}
 {%- set runs = blocks["run.list"] %}
 {%- set restarts = blocks["db.restart_needed"] %}
-<main class="main">
+<main class="main"{% if from_kept %} hx-get="/?fresh=1" hx-trigger="load" hx-select="main.main" hx-swap="outerHTML" hx-disinherit="*"{% endif %}>
 <div class="cards ov-top">
   <section class="card" aria-labelledby="attention-title">
     <h3 id="attention-title">Needs attention</h3>
@@ -33,7 +33,9 @@
     {%- if runs.ok and not runs.docker_available %}
     <div class="att"><span class="dot warn"></span><p>Docker cannot be asked: runs started in a terminal are not listed.</p></div>
     {%- endif %}
-    <div class="att live" hx-get="/overview/live{{ '?quiet=1' if quiet else '' }}" hx-trigger="load" hx-swap="outerHTML"><span class="dot"></span><p class="muted">Asking the scheduler and the sources' folders…</p></div>
+    {%- set live_query = ("?kept=only" if from_kept else "?kept=1") if live_kept else "" %}
+    {%- set live_query = live_query ~ (("&" if live_query else "?") ~ "quiet=1" if quiet else "") %}
+    <div class="att live"{% if live_kept or not from_kept %} hx-get="/overview/live{{ live_query }}" hx-trigger="load" hx-swap="outerHTML"{% endif %}><span class="dot"></span><p class="muted">Asking the scheduler and the sources' folders…</p></div>
   </section>
   <section class="card" aria-labelledby="now-title">
     <h3 id="now-title">Right now</h3>

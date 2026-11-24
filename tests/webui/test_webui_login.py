@@ -295,7 +295,7 @@ def test_a_session_the_broker_ends_is_forgotten_and_the_login_page_says_why(clie
     assert probe.get("/", headers=with_cookie(cookie)).status_code == 200
     broker.calls.clear()
     broker.answers["source.list"] = error
-    response = client.get("/")
+    response = client.get("/?fresh=1")
     assert response.status_code == 303 and response.headers["location"] == f"/login?why={why}"
     assert "__Host-sdp_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" in response.headers.get_list("set-cookie")
     page = client.get(response.headers["location"])

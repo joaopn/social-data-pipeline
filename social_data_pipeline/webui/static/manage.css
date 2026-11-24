@@ -13,6 +13,9 @@
 .att p { margin: 0; overflow-wrap: anywhere; }
 .att .grow pre { margin-top: 6px; }
 .att > .right { flex: none; }
+/* The kept live figures' lines, held by one element that asks the fresh ones (`_overview_live.html`): it draws no box, so the lines look as the fresh ones do; empty, it leaves the line before it the last one drawn. */
+.live-chain { display: contents; }
+.att:has(+ .live-chain:empty:last-child) { border-bottom: 0; }
 .grid-card { padding: 6px 8px; overflow-x: auto; }
 .matrix th.prof { text-transform: none; letter-spacing: 0; font-weight: 500; }
 .matrix td { padding: 10px 10px; }

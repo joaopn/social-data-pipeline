@@ -25,7 +25,7 @@ def _key(session_id):
 
 @dataclass
 class WebSession:
-    """One session: the broker's token, its form token, when it began (on the clock of `WebSessions`), its work, its number at the broker (from the login's reply; None when the reply had none), which names the session to the scheduler as `web-<number>`, and what the Chat window keeps for the login (the chat last opened, the read of "Data in reach")."""
+    """One session: the broker's token, its form token, when it began (on the clock of `WebSessions`), its work, its number at the broker (from the login's reply; None when the reply had none), which names the session to the scheduler as `web-<number>`, what the Chat window keeps for the login (the chat last opened, the read of "Data in reach") and what the Overview keeps for it (its last read, its last live figures)."""
 
     token: str = field(repr=False)
     form_token: str = field(repr=False)
@@ -36,6 +36,10 @@ class WebSession:
     last_chat: str | None = None
     # The login's kept read of the Chat window's "Data in reach": (the model `reach.read_reach` returned, the clock's time of the read), or None.
     reach: tuple | None = field(default=None, repr=False)
+    # The login's kept read of the Overview: (the answers of `overview.READ_VERBS` as the page's worker returned them, the clock's time of the read), or None before the first read that ended no session.
+    overview: tuple | None = field(default=None, repr=False)
+    # The login's kept live figures of the Overview: (the model `overview.read_live` returned, the clock's time of the read), or None before one or after a read the broker did not confirm.
+    live: tuple | None = field(default=None, repr=False)
 
 
 class WebSessions:

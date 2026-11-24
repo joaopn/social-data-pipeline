@@ -91,7 +91,7 @@ def test_no_rendered_page_holds_inline_code(client, broker, make_app, make_clien
     broker.answers["run.list"] = run_list(a_run(), docker_available=False)
     pages = [client.get(route).text for route in ("/", "/sources", "/sources/demo", "/databases", "/databases/postgres", "/runs", "/system")]
     broker.answers["source.list"] = broker_client.BrokerError("failed", "x", details={"errors": HOSTILE})
-    pages.append(client.get("/").text)
+    pages.append(client.get("/?fresh=1").text)
     stranger = make_client(make_app())
     pages += [stranger.get("/login").text, stranger.get("/login?why=ended").text, log_in(stranger, "made-up-wrong-pw").text]
     for page in pages:
@@ -112,7 +112,7 @@ def test_hostile_text_is_served_escaped(client, broker):
     assert page.count(str(escape(HOSTILE))) >= 5
 
     broker.answers["run.list"] = run_list(a_run(source=HOSTILE, profile=HOSTILE, id=HOSTILE, state="running"))
-    page = client.get("/").text
+    page = client.get("/?fresh=1").text
     assert HOSTILE not in page and "<script>" not in page
     assert page.count(str(escape(HOSTILE))) >= 3
 
@@ -177,10 +177,10 @@ def test_a_database_without_authentication_gets_a_standing_notice(client, broker
     page = client.get("/").text
     assert "The database postgres runs without authentication" in page and "The database mongo runs without authentication" in page
     broker.answers["db.status"] = db_status()
-    page = client.get("/").text
+    page = client.get("/?fresh=1").text
     assert "without authentication" not in page
     broker.answers["db.status"] = db_status(auth={"enabled": True, "rw_users": [{"db": "postgres", "user": "postgres"}]})
-    page = client.get("/").text
+    page = client.get("/?fresh=1").text
     assert "The database mongo runs without authentication" in page and "The database postgres runs" not in page
 
 
@@ -198,7 +198,7 @@ def test_ports_open_beyond_the_machine_get_one_notice(client, broker):
     assert len(notices) == 1
     assert "postgres (5432), starrocks (9030, 8030, 8040), postgres-mcp (8000), jobs (8050)." in " ".join(notices[0].split())
     broker.answers["db.status"] = db_status(databases=[{"db": "postgres", "port": "5432", "running": False}], configured=["postgres"])
-    assert "These services publish their ports" not in client.get("/").text
+    assert "These services publish their ports" not in client.get("/?fresh=1").text
 
 
 def test_the_runs_block_lists_only_runs_alive_now(client, broker):
@@ -345,6 +345,131 @@ def test_the_live_figures_fill_the_queue_line_and_each_cell_from_table_calls_onl
     part = client.get("/overview/live", headers=HX).text
     assert "the runs could not be read, so no cell says running" in part
     assert live_cells(part, demo)["lingua"] == ("done", "✓ 7 files 1 unfinished file: whether a run still writes them cannot be told", "unfinished")
+
+
+# ── k. what the Overview keeps per login ────────────────────────────────────
+
+REFRESH = 'hx-get="/?fresh=1" hx-trigger="load" hx-select="main.main" hx-swap="outerHTML"'
+
+
+def without_live(markup):
+    """A page's markup with the live part's placeholder reduced to its class (what it asks differs between a fresh and a kept page)."""
+    return re.sub(r'<div class="att live"[^>]*>', '<div class="att live">', markup)
+
+
+def main_tag(page):
+    """The opening tag of a page's `<main>`."""
+    return re.search(r"<main[^>]*>", page)[0]
+
+
+def test_a_second_opening_is_drawn_from_the_kept_read_and_asks_the_fresh_page(client, broker):
+    """Bug class: the second opening of the Overview waiting for the four reads again (the kept read not used), or drawn from the kept read with no request that refreshes it (stale forever); the first opening drawing nothing fresh or carrying the refresh request (two reads per opening)."""
+    broker.calls.clear()
+    first = client.get("/")
+    assert first.status_code == 200 and sorted(broker.verbs_called()) == sorted(overview.READ_VERBS)
+    assert "hx-get" not in main_tag(first.text) and "/?fresh=1" not in first.text
+    broker.calls.clear()
+    second = client.get("/")
+    assert second.status_code == 200 and broker.calls == []
+    assert REFRESH in main_tag(second.text) and 'hx-disinherit="*"' in main_tag(second.text)
+    assert without_live(main_html(second.text)) == without_live(main_html(first.text))
+
+
+def test_a_fresh_read_asks_every_verb_and_replaces_the_kept_answers(client, broker):
+    """Bug class: `?fresh=1` drawn from the kept read (the page never refreshes), carrying the refresh request itself (a loop), or not keeping what it read (the next opening shows the first read for ever)."""
+    assert "PostgreSQL running · MongoDB stopped" in client.get("/").text
+    broker.answers["db.status"] = db_status(databases=[{"db": "postgres", "port": "5432", "running": False}], configured=["postgres"])
+    broker.calls.clear()
+    fresh = client.get("/?fresh=1", headers=HX)
+    assert fresh.status_code == 200 and sorted(broker.verbs_called()) == sorted(overview.READ_VERBS)
+    assert "hx-get" not in main_tag(fresh.text) and "PostgreSQL stopped" in fresh.text
+    broker.calls.clear()
+    kept = client.get("/")
+    assert broker.calls == [] and "PostgreSQL stopped" in kept.text and "PostgreSQL running" not in kept.text
+
+
+def test_kept_live_figures_are_answered_at_once_and_ask_the_fresh_ones(client, broker, door):
+    """Bug class: `?kept=1` asking the broker (no gain), drawing nothing, or not chaining to the fresh figures (stale figures for ever); the fresh part carrying a load request (it would ask itself again without end); the page drawn from the kept read asking the fresh figures as well as its fresh main area (two live reads per opening)."""
+    key = overview.cell_key("demo")
+    page = client.get("/").text
+    assert 'hx-get="/overview/live" hx-trigger="load"' in page
+    broker.calls.clear()
+    plain = client.get("/overview/live", headers=HX)
+    assert plain.status_code == 200 and broker.verbs_called() and f'id="c-{key}-parse" hx-swap-oob="true"' in plain.text
+    assert 'hx-trigger="load"' not in plain.text and "hx-get" not in plain.text
+
+    broker.calls.clear()
+    asked = len(door.requests)
+    kept = client.get("/overview/live?kept=1&quiet=1", headers=HX)
+    assert kept.status_code == 200 and broker.calls == [] and len(door.requests) == asked
+    assert f'id="c-{key}-parse" hx-swap-oob="true"' in kept.text
+    assert re.search(r'^<div class="live-chain" hx-get="/overview/live\?quiet=1" hx-trigger="load" hx-swap="outerHTML">.*Nothing needs attention\..*</div>', kept.text, re.S)
+    only = client.get("/overview/live?kept=only", headers=HX)
+    assert broker.calls == [] and f'id="c-{key}-parse" hx-swap-oob="true"' in only.text and "hx-get" not in only.text
+
+    from_kept = client.get("/").text
+    assert 'hx-get="/overview/live?kept=only" hx-trigger="load"' in from_kept
+    fresh = client.get("/?fresh=1", headers=HX).text
+    assert 'hx-get="/overview/live?kept=1" hx-trigger="load"' in fresh
+
+
+def test_kept_live_without_kept_figures_is_the_plain_route(client, broker, clock):
+    """Bug class: `?kept=1` answering nothing when nothing is kept (the figures never come); figures the broker did not confirm kept and shown at the next opening."""
+    key = overview.cell_key("demo")
+    broker.calls.clear()
+    part = client.get("/overview/live?kept=1", headers=HX)
+    assert part.status_code == 200 and broker.verbs_called() and f'id="c-{key}-parse" hx-swap-oob="true"' in part.text and "hx-get" not in part.text
+    assert client.get("/overview/live?kept=1", headers=HX).text.startswith('<div class="live-chain"')
+    broker.answers["audit.list"] = broker_client.BrokerError("timeout", "x")
+    clock.now += 60
+    assert "<b>Live figures:</b>" in client.get("/overview/live", headers=HX).text
+    broker.calls.clear()
+    again = client.get("/overview/live?kept=1", headers=HX)
+    assert broker.verbs_called() == ["audit.list"] and "live-chain" not in again.text
+    assert client.get("/overview/live?kept=only", headers=HX).status_code == 204
+    client.get("/")
+    assert "/overview/live?kept" not in client.get("/").text and 'class="att live">' in client.get("/").text
+
+
+def test_an_ended_session_on_the_kept_pages_refresh_goes_to_the_login_and_drops_what_was_kept(client, app, broker):
+    """Bug class: the login page swapped into the Overview's main area by its refresh (htmx follows a redirect), or the kept read surviving the end of the session and drawn to the next request with the old cookie."""
+    client.get("/")
+    client.get("/overview/live", headers=HX)
+    session_id = client.cookies.get("__Host-sdp_session")
+    session = app.sessions.get(session_id)
+    assert session.overview is not None and session.live is not None
+    broker.answers["db.status"] = broker_client.BrokerError("session_ended", "x")
+    ended = client.get("/?fresh=1", headers=HX)
+    assert ended.status_code == 204 and ended.headers["hx-redirect"] == "/login?why=ended"
+    assert app.sessions.get(session_id) is None and len(app.sessions) == 0
+    assert client.get("/").status_code == 303
+
+
+def test_a_busy_bound_leaves_the_kept_page_as_it_is(make_app, make_client, broker):
+    """Bug class: the kept page's refresh answered with the busy page, which htmx would put in place of the Overview's main area."""
+    from starlette.testclient import TestClient
+
+    app = make_app(page_workers=1)
+    cookie = session_cookie(log_in(make_client(app)))
+    broker.gate = threading.Event()
+    broker.gate_kinds = {"call"}
+    broker.entered = 0
+    results = []
+    with TestClient(app, base_url="https://localhost:8443", client=("172.30.0.1", 50000), follow_redirects=False) as shared:
+        slow = threading.Thread(target=lambda: results.append(shared.get("/", headers=with_cookie(cookie)).status_code))
+        slow.start()
+        deadline = time.monotonic() + 10
+        while broker.entered < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        try:
+            refresh = shared.get("/?fresh=1", headers={**with_cookie(cookie), **HX})
+            page = shared.get("/?fresh=1", headers=with_cookie(cookie))
+        finally:
+            broker.gate.set()
+            slow.join(10)
+    assert refresh.status_code == 204 and refresh.text == ""
+    assert page.status_code == 503 and webapp.BUSY in page.text
+    assert results == [200]
 
 
 SIZES = [(0, "0 B"), (999, "999 B"), (1000, "1.0 kB"), (999_949, "999.9 kB"), (999_950, "1.0 MB"), (12_345_678, "12.3 MB"), (1_449_999_999, "1.4 GB"), (1_450_000_000, "1.5 GB"), (2 * 10 ** 12, "2.0 TB"), (999_950 * 10 ** 12, "1000.0 PB"), (10 ** 27 - 1, "1000000000000.0 PB"), (10 ** 27, "more than 1000000000000 PB"), (10 ** 5000, "more than 1000000000000 PB")]

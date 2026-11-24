@@ -8,8 +8,8 @@ Routes, each behind the checks of `guard` (host, origin, body, form token):
 - `GET /login`: the login page; with a live session, a redirect to the Overview. `?why=` picks one of the constant lines of `LOGIN_LINES`; any other value shows nothing.
 - `POST /login`: the per-address limit (`limiter`: refused without asking the broker), then the broker's `login` with the channel `local` when the connection has both signs of the machine itself (it arrived on the local port, `config.LOCAL_PORT`, to which only 127.0.0.1 of the host is published, and its client address is the network's gateway, as which Docker's proxy shows a client on 127.0.0.1) and `remote` otherwise; on success a new session id in the cookie and the broker's token in memory only; the id the browser sent before is forgotten. Local logins share one key of the per-address limit; any other login is counted under its client address.
 - `POST /logout`: the session forgotten, the broker's `logout` asked (under a bound of its own, waiting a few seconds for a place), the cookie cleared.
-- `GET /`: the Overview, from three read verbs; a block whose read failed says why, and the others stay. A session the broker no longer knows (`unauthorized`, `session_ended`) or a broker that cannot be reached ends the session here too, and the browser is sent to the login page with a line saying why.
-- `GET /overview/live`: the Overview's live figures (the queries that wait for approval, the finished files per source and stage), a part of the page that the Overview asks once it has loaded, so that a slow scheduler or a large source never slows it: see `overview.read_live`. Its own bound (`Limits.live_workers`); a full bound answers 204, which leaves the page as it is.
+- `GET /`: the Overview, from four read verbs; a block whose read failed says why, and the others stay. A session the broker no longer knows (`unauthorized`, `session_ended`) or a broker that cannot be reached ends the session here too, and the browser is sent to the login page with a line saying why (an htmx request gets 204 with `HX-Redirect`). The answers of a read that ended no session are kept in the login's session (`WebSession.overview`): from the second opening on, the page is drawn at once from them, without asking the broker, and its main area asks `GET /?fresh=1` once drawn, which reads the four verbs again, keeps their answers and takes the main area's place (a full bound answers that request 204, which leaves the page as it is).
+- `GET /overview/live`: the Overview's live figures (the queries that wait for approval, the finished files per source and stage), a part of the page that the Overview asks once it has loaded, so that a slow scheduler or a large source never slows it: see `overview.read_live`. Its own bound (`Limits.live_workers`); a full bound answers 204, which leaves the page as it is. The figures are kept in the login's session (`WebSession.live`) unless the broker did not confirm the session; `?kept=1` answers the kept ones at once, with no call, and asks the fresh ones right after (as the plain route when none are kept), `?kept=only` (the page drawn from its kept read) the kept ones alone (204 when none are kept).
 - The Management pages (`/sources`, `/sources/<name>`, `/databases`, `/databases/<database>`, `/runs`, `/runs/<run id>`, `/system`), the actions (`POST /pending`, `/pending/<id>`, `POST /pending/<id>/confirm`, `/actions/<id>`) and the output view of a run (`/runs/<run id>/output`): see `management`.
 - The Queue window (`/queue`, `/queue/running-rows`, `/queue/auto-accept`, `/queue/<job id>`, `/queue/<job id>/preview`, `/queue/<job id>/download/<part>`), whose actions go through the same pending, confirm and outcome routes: see `queue`.
 - The Chat window (`/chat`, `/chat/new`, `/chat/reach`, `/chat/<id>`, its events part, send, stop, delete, its files and images): see `chat`.
@@ -296,9 +296,13 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
 
     @api.api_route("/", methods=["GET", "HEAD"])
     async def overview_page(request: Request):
+        """The Overview. A login that keeps a read (`WebSession.overview`) gets it drawn at once, without asking the broker, with a main area that asks `/?fresh=1` once drawn and puts the fresh main area in its place; `?fresh=1`, or a login that keeps nothing, reads the four verbs, keeps their answers when none ended the session, and draws them with no such request."""
         session_id, session = current(request)
         if session is None:
             return to_login(request, clear_cookie=bool(session_id))
+        fresh = request.query_params.get("fresh") == "1"
+        if not fresh and session.overview is not None:
+            return overview_frame(session, session.overview[0], kept=True)
 
         def read_all():
             # One after the other in one worker: a page takes one place of the bound. A session that has ended stops the reads.
@@ -311,13 +315,21 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
 
         answers = await pages.run(read_all)
         if answers is BUSY_GATE:
+            # The kept page's own refresh: the page it drew stays as it is.
+            if request.headers.get("hx-request") == "true":
+                return Response(status_code=204)
             return frame("busy.html", "overview", session, 503, title="Overview", line=BUSY)
         for outcome, value in answers.values():
             if outcome == "error" and session_ends(value):
                 sessions.forget(session_id)
                 return to_login(request, why(value), clear_cookie=True)
+        session.overview = (answers, clock())
+        return overview_frame(session, answers, kept=False)
+
+    def overview_frame(session, answers, kept):
+        """The Overview drawn from the answers of its four reads. `kept`: the answers are the login's kept ones, so the main area asks the fresh page once drawn, and the live part draws only the kept figures (the fresh main area asks the fresh ones)."""
         blocks = overview.build(answers)
-        return frame("overview.html", "overview", session, title="Overview", blocks=blocks, grid=overview.grid(blocks["source.list"], blocks["run.list"]), profiles=overview.GRID_PROFILES)
+        return frame("overview.html", "overview", session, title="Overview", blocks=blocks, grid=overview.grid(blocks["source.list"], blocks["run.list"]), profiles=overview.GRID_PROFILES, from_kept=kept, live_kept=session.live is not None)
 
     context = Context(
         render=render, frame=frame, current=current, to_login=to_login, sessions=sessions, pages=pages, pieces=Gate(limits.piece_workers), tails=Gate(limits.tail_workers),
@@ -360,7 +372,7 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
 
     @api.get("/overview/live")
     async def overview_live(request: Request):
-        """The Overview's live figures, a part of the page asked by htmx once the page has loaded (see `overview.read_live`): the queue's line, which takes the place of its placeholder, and the counts of the grid's cells out of band. `?quiet=1`: the page had nothing else that needs attention, so the part says so when the queue has nothing either. A full bound answers 204, which leaves the page as it is."""
+        """The Overview's live figures, a part of the page asked by htmx once the page has loaded (see `overview.read_live`): the queue's line, which takes the place of its placeholder, and the counts of the grid's cells out of band. `?quiet=1`: the page had nothing else that needs attention, so the part says so when the queue has nothing either. A full bound answers 204, which leaves the page as it is. The figures read are kept in the login's session (`WebSession.live`) unless the broker did not confirm the session, which drops the kept ones. `?kept=1`: the kept figures at once, with no call, their line asking the fresh ones (with the same `quiet`) once drawn; with none kept, as without it. `?kept=only` (the page drawn from the kept read, whose fresh main area asks for itself): the kept figures with no such request; with none kept, 204."""
         session_id, session = current(request)
         if session is None:
             return to_login(request, clear_cookie=bool(session_id))
@@ -368,13 +380,22 @@ def create_app(settings, *, broker, scheduler=None, assistant=None, clock=time.m
         def ask(verb, fields):
             return call_broker(lambda: broker(token=session.token, timeout=overview.LIVE_SECONDS), lambda made: actions.call(made, verb, fields))
 
+        quiet = request.query_params.get("quiet") == "1"
+        kept = request.query_params.get("kept")
+        if kept in ("1", "only"):
+            if session.live is not None:
+                return render("_overview_live.html", live=session.live[0], quiet=quiet, then=f"/overview/live{'?quiet=1' if quiet else ''}" if kept == "1" else None)
+            if kept == "only":
+                return Response(status_code=204)
         made = await live.run(lambda: overview.read_live(lambda: queue.broker_session_error(context, session, timeout=overview.LIVE_SECONDS), scheduler, ask))
         if made is BUSY_GATE:
             return Response(status_code=204)
         if isinstance(made, overview.LiveSessionEnded):
             sessions.forget(session_id)
             return to_login(request, why(made.error), clear_cookie=True)
-        return render("_overview_live.html", live=made, quiet=request.query_params.get("quiet") == "1")
+        # Kept for the login's next Overview; figures the broker did not confirm are not kept, and drop the ones kept before.
+        session.live = (made, clock()) if made["broker"] is None else None
+        return render("_overview_live.html", live=made, quiet=quiet, then=None)
 
     # The Queue's routes first: `/queue/auto-accept` and `/queue/running-rows` before `/queue/<job id>`.
     hooks = queue.install(api, context)

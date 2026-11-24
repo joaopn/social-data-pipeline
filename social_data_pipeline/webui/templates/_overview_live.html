@@ -1,5 +1,6 @@
-{#- The Overview's live figures (`GET /overview/live`, `overview.read_live`): the queue's line in the place of its placeholder in "Needs attention", then the grid's cells that were read, a source's size on disk beside its name and a source's failed read out of band (each only for a row of the grid, whose name cell has the target). Every text is escaped; no element here asks again. -#}
+{#- The Overview's live figures (`GET /overview/live`, `overview.read_live`): the queue's line in the place of its placeholder in "Needs attention", then the grid's cells that were read, a source's size on disk beside its name and a source's failed read out of band (each only for a row of the grid, whose name cell has the target). Every text is escaped. `then` (the login's kept figures, `?kept=1`): the lines are held by one element that draws no box of its own (`.live-chain`) and asks `then`, the fresh figures, once drawn, taking their place; otherwise no element here asks again. -#}
 {% from "_overview_cell.html" import cell with context %}
+{%- if then %}<div class="live-chain" hx-get="{{ then }}" hx-trigger="load" hx-swap="outerHTML">{% endif %}
 {%- if live.broker %}
 <div class="att"><span class="dot bad"></span><p><b>Live figures:</b> {{ live.broker }}</p></div>
 {%- elif live.queue and live.queue.get("failed") %}
@@ -15,6 +16,7 @@
 {%- if live.runs %}
 <div class="att"><span class="dot bad"></span><p><b>Grid:</b> the runs could not be read, so no cell says running and no unfinished file is called being written: {{ live.runs }}</p></div>
 {%- endif %}
+{%- if then %}</div>{% endif %}
 {%- for row in live.rows %}
 {%- for profile, c in row.cells.items() %}
 {{ cell(c, oob=True) }}

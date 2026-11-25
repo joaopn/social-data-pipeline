@@ -724,7 +724,7 @@ def test_a_real_turn_through_the_page(make_app, make_client, real_runner):
         ["out", {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}],
         ["out", {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "made-up listing"}]}}],
         ["write", ["notes.txt", "made-up notes\n" * 50000]],
-        ["out", {"type": "assistant", "message": {"content": [{"type": "text", "text": "**Done**: see `notes.txt`"}]}}],
+        ["out", {"type": "assistant", "message": {"content": [{"type": "text", "text": "**Done**: see `notes.txt`\n\n| a | b |\n|---|--:|\n| 1 | 2 |\n\n3. c"}]}}],
         helpers.result(cost=0.5),
     ])
     made = make_client(make_app(assistant=assistant.Assistant(real_runner.path)))
@@ -741,6 +741,7 @@ def test_a_real_turn_through_the_page(make_app, make_client, real_runner):
     text = main_text(page)
     assert page.count('class="msg user"') == 1 and "What is there?" in text and '<span class="nm">Bash</span>' in page and "made-up listing" in text
     assert "<strong>Done</strong>: see <code>notes.txt</code>" in page and f'href="/chat/{chat_id}/file/notes.txt"' in page
+    assert '<table><thead><tr><th>a</th><th class="al-r">b</th></tr></thead><tbody><tr><td>1</td><td class="al-r">2</td></tr></tbody></table>' in page and '<ol start="3"><li>c</li></ol>' in page
     assert "The turn ended after 1.2 s, 2 model turns." in text and chat.NOT_UNDERSTOOD_EVENT not in text and NOT_UNDERSTOOD not in text
     assert nexts(page) == [(f"/chat/{chat_id}/events?offset=6&from=0", "load")]
     assert nexts(made.get(f"/chat/{chat_id}/events?offset=6", headers=HX).text) == []

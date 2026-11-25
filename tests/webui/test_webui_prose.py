@@ -2,7 +2,7 @@
 
 The contracts pinned here, each test naming the bug class it catches:
 
-- e. Each construct (paragraph, the three headings, bullet and numbered lists, a fenced block, a quote, bold, italic, both, code); the nesting limits (one level of lists, code holding no emphasis); markers that are not closed stay text; links, images and raw HTML are their literal text; the input is cut at 64 KiB; every text run passes the visible escapes; the steps are linear in the input for adversarial texts (30,000 asterisks, backticks or brackets, unclosed fences, nested markers, a list item with tens of thousands of continuation lines).
+- e. Each construct (paragraph, the three headings, bullet and numbered lists and a numbered list's first number, a fenced block, a quote, a table with its alignments, a divider, bold, italic, both, code); the nesting limits (one level of lists, code holding no emphasis); markers that are not closed stay text; links, images and raw HTML are their literal text; the input is cut at 64 KiB; every text run passes the visible escapes; the steps are linear in the input for adversarial texts (30,000 asterisks, backticks or brackets, unclosed fences, nested markers, a list item with tens of thousands of continuation lines, a table of many columns and many short rows).
 
 Every special character in this file is written as an escape.
 """
@@ -38,6 +38,36 @@ def test_an_unclosed_fence_runs_to_the_end():
     """Bug class: an unclosed fence dropping its content or parsing it as prose."""
     found, _ = prose.blocks("before\n```\n# not a heading\n*x*")
     assert [block["kind"] for block in found] == ["p", "code"] and "".join(part for _e, part in found[1]["parts"]) == "# not a heading\n*x*"
+
+
+def test_a_table_with_its_alignments_and_cells():
+    """Bug class: a table drawn as a paragraph of pipes, an alignment lost, an escaped pipe splitting a cell, a short row padded (a model that grows with rows times columns) or a long row drawn beyond the header."""
+    text = "intro\n| Left | Center | Right | Plain |\n|:--|:-:| --: |---|\n| **bold** | `code` | a \\| b | x |\n| short |\n1 | 2 | 3 | 4 | 5 | 6\n\nafter"
+    found, _ = prose.blocks(text)
+    assert [block["kind"] for block in found] == ["p", "table", "p"] and text_of(found[0]["runs"]) == "intro"
+    table = found[1]
+    assert table["align"] == ["left", "center", "right", None]
+    assert [text_of(cell) for cell in table["head"]] == ["Left", "Center", "Right", "Plain"]
+    assert [[styles(cell) for cell in row] for row in table["rows"]] == [[["b:bold"], ["c:code"], [":a | b"], [":x"]], [[":short"]], [[":1"], [":2"], [":3"], [":4"]]]
+
+
+def test_pipes_without_a_delimiter_line_stay_a_paragraph():
+    """Bug class: any text holding a pipe (a shell command, a comparison) taken as a table."""
+    found, _ = prose.blocks("a | b\nc | d")
+    assert [block["kind"] for block in found] == ["p"] and text_of(found[0]["runs"]) == "a | b\nc | d"
+
+
+def test_a_numbered_list_keeps_its_first_number():
+    """Bug class (B104): numbered items separated by a blank line all drawn as 1."""
+    found, _ = prose.blocks("1. a\n\n3. b")
+    assert [(block["kind"], block["start"]) for block in found] == [("ol", 1), ("ol", 3)]
+
+
+@pytest.mark.parametrize("text", ["a\n\n---\n\nb", "a\n* * *\nb"])
+def test_a_divider_between_paragraphs(text):
+    """Bug class: a divider drawn as text, or `* * *` taken as a list item."""
+    found, _ = prose.blocks(text)
+    assert [block["kind"] for block in found] == ["p", "hr", "p"]
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -85,14 +115,21 @@ def test_the_input_is_cut_at_64_kib():
     assert cut and len(text_of(found[0]["runs"]).encode("utf-8")) == prose.TEXT_MAX_BYTES
 
 
-@pytest.mark.parametrize("unit", ["*", "`", "[", "**a", "*a ", "`a", "# ", "- ", "> ", "```\n", "1. ", "\n", "**`*", "[x](", "<b>"])
+def table_text(count):
+    """A table of `count // 10` columns and as many rows of one cell each: a model that padded the rows would grow with their product."""
+    return "|a" * (count // 10) + "\n" + "|-" * (count // 10) + "\n" + "|x\n" * (count // 10)
+
+
+@pytest.mark.parametrize("unit", ["*", "`", "[", "**a", "*a ", "`a", "# ", "- ", "> ", "```\n", "1. ", "\n", "**`*", "[x](", "<b>", table_text])
 def test_the_steps_are_linear(unit):
-    """Bug class: a renderer whose work grows faster than its input (a backtracking pattern, a search for a closer from every opener), which a text of the assistant can make take minutes."""
+    """Bug class: a renderer whose work grows faster than its input (a backtracking pattern, a search for a closer from every opener, a table's rows padded to the header), which a text of the assistant can make take minutes."""
     measured = []
     for count in (3000, 30000):
         steps = []
-        prose.blocks(unit * count, steps)
-        measured.append(steps[0] / (len(unit) * count))
+        text = unit(count) if callable(unit) else unit * count
+        found, _ = prose.blocks(text, steps)
+        assert not callable(unit) or ([block["kind"] for block in found] == ["table"] and all(len(row) == 1 for row in found[0]["rows"]))
+        measured.append(steps[0] / len(text))
     assert measured[1] <= measured[0] * 1.5 + 1 and measured[1] < 12, measured
 
 

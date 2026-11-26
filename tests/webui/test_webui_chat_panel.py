@@ -159,12 +159,12 @@ def test_the_settings_box_is_a_dialog_controlled_by_the_gear_on_every_page(clien
         box = re.search(r'<div class="settings-box" id="settings-box" role="dialog" aria-label="Settings" hidden>(.*?)\n  </div>', page, re.DOTALL)
         assert gear and box and page.index("settings-button") < page.index('<span class="pill">operator</span>'), route
     selects = dict(re.findall(r'data-setting="([^"]+)">(.*?)</select>', box.group(1), re.DOTALL))
-    assert re.findall(r'<option value="([^"]*)"', selects["sdp.theme"]) == ["dark", "light", "system"]
+    assert re.findall(r'<option value="([^"]*)"', selects["sdp.theme"]) == ["dark", "nord", "dracula", "gruvbox-dark", "light", "solarized-light", "catppuccin-latte", "nord-light", "system"]
     assert re.findall(r'<option value="([^"]*)"', selects["sdp.defaultModel"]) == ["", "opus", "sonnet", "haiku"]
 
 
 def test_the_theme_is_drawn_before_the_page_and_light_is_a_palette_of_the_kit(client, app, make_client):
-    """Bug class: the theme set by the deferred script only (the page flashes dark, then turns light), or a light palette that leaves dark form controls."""
+    """Bug class: the theme set by the deferred script only (the page flashes dark, then turns light), a light palette that leaves dark form controls, or a theme offered in the settings box without a palette in the sheet (it silently draws dark)."""
     login = make_client(app).get("/login").text
     for page in (login, client.get("/overview").text):
         head = page[:page.index("</head>")]
@@ -174,6 +174,12 @@ def test_the_theme_is_drawn_before_the_page_and_light_is_a_palette_of_the_kit(cl
     sheet = client.get("/static/app.css").text
     light = re.search(r':root\[data-theme="light"\] \{(.*?)\}', sheet, re.DOTALL).group(1)
     assert "color-scheme: light;" in light and "--page:" in light and "--ink:" in light
+    box = client.get("/overview").text
+    options = re.findall(r'<option value="([^"]*)"', re.search(r'data-setting="sdp.theme">(.*?)</select>', box, re.DOTALL).group(1))
+    for value in options:
+        if value not in ("dark", "system"):
+            block = re.search(r':root\[data-theme="' + re.escape(value) + r'"\] \{(.*?)\}', sheet, re.DOTALL)
+            assert block and "color-scheme:" in block.group(1), value
 
 
 def test_the_right_column_is_this_chat_with_its_controls(client, scripted):

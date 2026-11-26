@@ -1,12 +1,22 @@
-{#- The settings box of the top bar: a gear button that opens a small floating box (a dialog placed by app.css, no inline style). What it holds is kept per browser (localStorage, through app.js and theme.js), never sent to the server: the theme (`sdp.theme`: dark, light or follow the browser) and the default model for new chats (`sdp.defaultModel`: "opus", "sonnet", "haiku", or empty for the backend's default; the new-chat form reads it). Without the browser's storage the box still changes the open page, and the page is dark. Under them, apart, "This deployment": the read-only query limit for chats and the switch of generated chat titles, values of the server for the whole deployment, asked from `GET /settings/deployment` the first time the box opens (`_settings_deployment.html`) and changed through the pending page (the limit with the management password); the two browser settings work without it. -#}
+{#- The settings box of the top bar: a gear button that opens a small floating box (a dialog placed by app.css, no inline style). What it holds is kept per browser (localStorage, through app.js and theme.js), never sent to the server: the theme (`sdp.theme`: dark, light, the dark themes "nord", "dracula", "gruvbox-dark", the light themes "solarized-light", "catppuccin-latte", "nord-light", or "system" to follow the browser) and the default model for new chats (`sdp.defaultModel`: "opus", "sonnet", "haiku", or empty for the backend's default; the new-chat form reads it). Without the browser's storage the box still changes the open page, and the page is dark. Under them, apart, "This deployment": the read-only query limit for chats and the switch of generated chat titles, values of the server for the whole deployment, asked from `GET /settings/deployment` the first time the box opens (`_settings_deployment.html`) and changed through the pending page (the limit with the management password); the two browser settings work without it. -#}
 <span class="settings">
   <button type="button" class="btn ghost sm gear" id="settings-button" aria-expanded="false" aria-controls="settings-box" aria-haspopup="dialog" aria-label="Settings" title="Settings"><span aria-hidden="true">⚙</span></button>
   <div class="settings-box" id="settings-box" role="dialog" aria-label="Settings" hidden>
     <h4>Settings</h4>
     <label>Theme
       <select id="setting-theme" data-setting="sdp.theme">
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
+        <optgroup label="Dark">
+          <option value="dark">Dark</option>
+          <option value="nord">Nord</option>
+          <option value="dracula">Dracula</option>
+          <option value="gruvbox-dark">Gruvbox Dark</option>
+        </optgroup>
+        <optgroup label="Light">
+          <option value="light">Light</option>
+          <option value="solarized-light">Solarized Light</option>
+          <option value="catppuccin-latte">Catppuccin Latte</option>
+          <option value="nord-light">Nord Light</option>
+        </optgroup>
         <option value="system">Follow the browser</option>
       </select>
     </label>

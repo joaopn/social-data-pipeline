@@ -1,5 +1,5 @@
 // What this browser keeps of the page's look, applied before the page is drawn (loaded without defer in the head, so that the page never flashes the other theme or the Chat window's columns in another state or width). No inline code and no eval. Each read of the browser's storage is wrapped: without it (a private window, blocked storage) the page is dark with every column shown at its default width.
-//   sdp.theme           "dark" (the default), "light" or "system" (follow the browser's prefers-color-scheme, also while the page is open)
+//   sdp.theme           "dark" (the default), "light", a named theme ("nord", "dracula", "gruvbox-dark", "solarized-light", "catppuccin-latte", "nord-light"; drawn as data-theme with that name) or "system" (follow the browser's prefers-color-scheme, also while the page is open: only dark or light); any other value is dark
 //   sdp.chatPanel       "closed" hides the Chat window's right column ("This chat"): data-chat-panel="closed" on the root
 //   sdp.chatLeft        "closed" hides the Chat window's left column (the chats): data-chat-left="closed" on the root
 //   sdp.chatLeftWidth   the left column's width in whole pixels (180 to 480; else ignored, and the default 236 holds): --chat-left-w on the root
@@ -8,6 +8,7 @@
 (function () {
   var root = document.documentElement;
   var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
+  var themes = ["dark", "light", "nord", "dracula", "gruvbox-dark", "solarized-light", "catppuccin-latte", "nord-light", "system"];
   var choice = "dark";
   var columns = {
     left: { property: "--chat-left-w", key: "sdp.chatLeftWidth", min: 180, max: 480, standard: 236, width: null },
@@ -23,11 +24,15 @@
   }
 
   function draw() {
-    root.dataset.theme = choice === "light" || (choice === "system" && media && media.matches) ? "light" : "dark";
+    if (choice === "system") {
+      root.dataset.theme = media && media.matches ? "light" : "dark";
+    } else {
+      root.dataset.theme = choice;
+    }
   }
 
   function setTheme(value) {
-    choice = value === "light" || value === "system" ? value : "dark";
+    choice = themes.indexOf(value) >= 0 ? value : "dark";
     draw();
   }
 

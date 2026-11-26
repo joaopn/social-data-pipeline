@@ -117,7 +117,7 @@ The gear beside them opens the **settings** (Escape or a click outside closes th
 
 | Setting | Choices |
 |---|---|
-| **Theme** | Dark (the default), Light, or Follow the browser (the browser's light or dark preference, also when it changes while the page is open). Every page, the login included, is drawn in it. |
+| **Theme** | Dark (the default) and Light, the dark themes Nord, Dracula and Gruvbox Dark, the light themes Solarized Light, Catppuccin Latte and Nord Light, or Follow the browser (plain Dark or Light by the browser's light or dark preference, also when it changes while the page is open). Every page, the login included, is drawn in it. |
 | **Default model for new chats** | The backend's default, `opus`, `sonnet` or `haiku`. It applies to Claude Code; an OpenAI-compatible backend always uses its one configured model. |
 
 In a private window, or with the site's storage blocked, the settings apply to the open page only and every page opens dark.

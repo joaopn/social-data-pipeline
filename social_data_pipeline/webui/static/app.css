@@ -1,4 +1,4 @@
-/* The web UI's stylesheet: the approved mock-up's kit (its dark palette, type, top bar, tab bars, buttons, pills, tags, cards, tables, chat), with no CSS framework under it, plus the base rules for unclassed elements and the web UI's own classes on the kit's tokens. Dark by default; the kit's light palette when theme.js sets `data-theme="light"` on the root (the settings box: dark, light or follow the browser). The content policy (default-src 'self') allows no inline style, so every look is a class here or in a window's own sheet (chat.css, queue.css, manage.css). */
+/* The web UI's stylesheet: the approved mock-up's kit (its dark palette, type, top bar, tab bars, buttons, pills, tags, cards, tables, chat), with no CSS framework under it, plus the base rules for unclassed elements and the web UI's own classes on the kit's tokens. Dark by default; the kit's light palette when theme.js sets `data-theme="light"` on the root, and a named theme's palette (the dark Nord, Dracula and Gruvbox Dark, the light Solarized Light, Catppuccin Latte and Nord Light) when it sets that theme's name (the settings box: dark, light, a named theme or follow the browser, which draws only dark or light). Each named theme sets every colour token, so none of the dark default shows through. The content policy (default-src 'self') allows no inline style, so every look is a class here or in a window's own sheet (chat.css, queue.css, manage.css). */
 :root {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --surface-2: #222220; --surface-3: #2a2a28;
@@ -18,6 +18,60 @@
   --accent: #2a78d6; --accent-soft: rgba(42,120,214,.10);
   --good-soft: rgba(12,163,12,.10); --warn-soft: rgba(250,178,25,.16); --crit-soft: rgba(208,59,59,.09);
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --shadow: 0 8px 30px rgba(0,0,0,.14);
+}
+:root[data-theme="nord"] {
+  color-scheme: dark;
+  --page: #242933; --surface: #2e3440; --surface-2: #3b4252; --surface-3: #434c5e;
+  --ink: #eceff4; --ink-2: #d8dee9; --muted: #949cae; --line: #3b4252; --line-2: #4c566a;
+  --accent: #88c0d0; --accent-ink: #2e3440; --accent-soft: rgba(136,192,208,.14);
+  --good: #a3be8c; --warn: #ebcb8b; --serious: #d08770; --crit: #bf616a;
+  --good-soft: rgba(163,190,140,.14); --warn-soft: rgba(235,203,139,.13); --crit-soft: rgba(191,97,106,.15);
+  --s1: #88c0d0; --s2: #b48ead; --s3: #a3be8c; --shadow: 0 8px 30px rgba(0,0,0,.45);
+}
+:root[data-theme="dracula"] {
+  color-scheme: dark;
+  --page: #21222c; --surface: #282a36; --surface-2: #343746; --surface-3: #44475a;
+  --ink: #f8f8f2; --ink-2: #d6d6cf; --muted: #8390b7; --line: #383a4a; --line-2: #4d5068;
+  --accent: #bd93f9; --accent-ink: #282a36; --accent-soft: rgba(189,147,249,.14);
+  --good: #50fa7b; --warn: #f1fa8c; --serious: #ffb86c; --crit: #ff5555;
+  --good-soft: rgba(80,250,123,.14); --warn-soft: rgba(241,250,140,.13); --crit-soft: rgba(255,85,85,.15);
+  --s1: #bd93f9; --s2: #ff79c6; --s3: #8be9fd; --shadow: 0 8px 30px rgba(0,0,0,.45);
+}
+:root[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --page: #1d2021; --surface: #282828; --surface-2: #32302f; --surface-3: #3c3836;
+  --ink: #ebdbb2; --ink-2: #d5c4a1; --muted: #a89984; --line: #3c3836; --line-2: #504945;
+  --accent: #83a598; --accent-ink: #1d2021; --accent-soft: rgba(131,165,152,.14);
+  --good: #b8bb26; --warn: #fabd2f; --serious: #fe8019; --crit: #fb4934;
+  --good-soft: rgba(184,187,38,.14); --warn-soft: rgba(250,189,47,.13); --crit-soft: rgba(251,73,52,.15);
+  --s1: #83a598; --s2: #fe8019; --s3: #8ec07c; --shadow: 0 8px 30px rgba(0,0,0,.45);
+}
+:root[data-theme="solarized-light"] {
+  color-scheme: light;
+  --page: #eee8d5; --surface: #fdf6e3; --surface-2: #f5efdc; --surface-3: #e4ddc8;
+  --ink: #073642; --ink-2: #566c73; --muted: #5f747b; --line: #e4ddc8; --line-2: #cdc5ae;
+  --accent: #2076b2; --accent-ink: #fdf6e3; --accent-soft: rgba(32,118,178,.10);
+  --good: #859900; --warn: #b58900; --serious: #cb4b16; --crit: #dc322f;
+  --good-soft: rgba(133,153,0,.10); --warn-soft: rgba(181,137,0,.16); --crit-soft: rgba(220,50,47,.09);
+  --s1: #2076b2; --s2: #cb4b16; --s3: #2aa198; --shadow: 0 8px 30px rgba(0,0,0,.14);
+}
+:root[data-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --page: #e6e9ef; --surface: #eff1f5; --surface-2: #e6e9ef; --surface-3: #dce0e8;
+  --ink: #4c4f69; --ink-2: #5c5f77; --muted: #6a6d82; --line: #dce0e8; --line-2: #bcc0cc;
+  --accent: #1d63ee; --accent-ink: #eff1f5; --accent-soft: rgba(29,99,238,.10);
+  --good: #40a02b; --warn: #df8e1d; --serious: #fe640b; --crit: #d20f39;
+  --good-soft: rgba(64,160,43,.10); --warn-soft: rgba(223,142,29,.16); --crit-soft: rgba(210,15,57,.09);
+  --s1: #1d63ee; --s2: #fe640b; --s3: #179299; --shadow: 0 8px 30px rgba(0,0,0,.14);
+}
+:root[data-theme="nord-light"] {
+  color-scheme: light;
+  --page: #e5e9f0; --surface: #eceff4; --surface-2: #e5e9f0; --surface-3: #d8dee9;
+  --ink: #2e3440; --ink-2: #3b4252; --muted: #4c566a; --line: #d8dee9; --line-2: #c0c8d6;
+  --accent: #506e92; --accent-ink: #eceff4; --accent-soft: rgba(80,110,146,.10);
+  --good: #7a8e69; --warn: #b09868; --serious: #d08770; --crit: #bf616a;
+  --good-soft: rgba(122,142,105,.10); --warn-soft: rgba(176,152,104,.16); --crit-soft: rgba(191,97,106,.09);
+  --s1: #506e92; --s2: #d08770; --s3: #b48ead; --shadow: 0 8px 30px rgba(0,0,0,.14);
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
